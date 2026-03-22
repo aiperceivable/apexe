@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="./apexe-logo.svg" alt="apexe logo" width="200"/>
+</div>
+
 # apexe
 
 Outside-In CLI-to-Agent Bridge — automatically wraps existing CLI tools into governed [apcore](https://github.com/aiperceivable) modules, served via MCP/A2A.

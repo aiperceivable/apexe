@@ -1,0 +1,60 @@
+<svg width="512" height="512" viewBox="46 70 420 420" xmlns="http://www.w3.org/2000/svg">
+  <!-- apexe orca logo - Refined Integrated Path Version -->
+
+  <defs>
+    <!-- Body radial gradient -->
+    <radialGradient id="bodyGrad" cx="50%" cy="45%" r="65%">
+      <stop offset="0%" stop-color="#818CF8"/>
+      <stop offset="100%" stop-color="#4338CA"/>
+    </radialGradient>
+
+    <!-- Accent glow -->
+    <radialGradient id="accentGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#67E8F9" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#67E8F9" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Integrated Body Path (Nose -> Back -> Fin -> Tail -> Belly -> Nose) -->
+  <path d="M 440,320 
+           C 440,240 380,180 350,180 
+           Q 325,180 315,90 
+           Q 305,180 270,185 
+           C 200,195 140,260 140,330 
+           C 100,290 60,290 55,340 
+           Q 53,365 85,365 
+           Q 53,365 55,390 
+           C 60,440 100,440 140,400 
+           Q 140,410 280,410 
+           Q 440,410 440,320 Z" 
+        fill="url(#bodyGrad)" stroke="#312E81" stroke-width="2"/>
+
+  <!-- White Belly Patch (Integrated follow-through) -->
+  <path d="M 170,395 Q 280,405 410,360 C 380,385 300,395 170,395 Z"
+        fill="#A5B4FC" opacity="0.35"/>
+
+  <!-- Iconic Orca Eye Patch -->
+  <ellipse cx="370" cy="225" rx="35" ry="18" fill="white" opacity="0.18" transform="rotate(-20 370 225)"/>
+
+  <!-- Eyes (Consistency with apcore) -->
+  <ellipse cx="350" cy="285" rx="22" ry="24" fill="white"/>
+  <ellipse cx="410" cy="285" rx="22" ry="24" fill="white"/>
+  <!-- Pupils -->
+  <circle cx="356" cy="290" r="13" fill="#1E1B4B"/>
+  <circle cx="416" cy="290" r="13" fill="#1E1B4B"/>
+  <!-- Eye highlights -->
+  <circle cx="361" cy="282" r="6" fill="white"/>
+  <circle cx="421" cy="282" r="6" fill="white"/>
+
+  <!-- Smile -->
+  <path d="M 365,330 Q 385,350 405,330"
+        stroke="#1E1B4B" stroke-width="4" fill="none" stroke-linecap="round"/>
+
+  <!-- Glow Overlay -->
+  <ellipse cx="330" cy="260" rx="110" ry="90" fill="url(#accentGlow)"/>
+
+  <!-- Top highlight for depth -->
+  <path d="M 360,200 Q 315,200 290,210" 
+        stroke="#A5B4FC" stroke-width="6" fill="none" opacity="0.2" stroke-linecap="round"/>
+
+</svg>
