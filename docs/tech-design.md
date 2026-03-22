@@ -2110,7 +2110,7 @@ sequenceDiagram
 cargo install apexe
 
 # From source
-git clone https://github.com/aipartnerup/apexe.git
+git clone https://github.com/aiperceivable/apexe.git
 cd apexe
 cargo install --path .
 ```

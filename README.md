@@ -1,6 +1,6 @@
 # apexe
 
-Outside-In CLI-to-Agent Bridge — automatically wraps existing CLI tools into governed [apcore](https://github.com/aipartnerup) modules, served via MCP/A2A.
+Outside-In CLI-to-Agent Bridge — automatically wraps existing CLI tools into governed [apcore](https://github.com/aiperceivable) modules, served via MCP/A2A.
 
 ## What is apexe?
 
