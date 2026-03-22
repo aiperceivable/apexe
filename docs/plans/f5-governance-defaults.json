@@ -1,0 +1,147 @@
+{
+  "feature": "f5-governance-defaults",
+  "description": "Governance Defaults (ACL + Annotation Inference)",
+  "language": "rust",
+  "tasks": [
+    {
+      "id": "F5-T1",
+      "title": "Annotation inference: destructive pattern detection",
+      "description": "Implement infer_annotations() in src/governance/annotations.rs that detects destructive commands by matching command names and descriptions against DESTRUCTIVE_PATTERNS (delete, remove, rm, drop, kill, destroy, purge, wipe, clean, reset, uninstall, truncate, erase, revoke). Destructive commands must also set requires_approval=true. Define the ModuleAnnotations and InferredAnnotations structs.",
+      "test_first": "Write parametrized tests (rstest) for destructive detection: 'rm' -> destructive=true+requires_approval=true, 'delete' -> same, 'kill' -> same, 'destroy' -> same. Also test description-based detection: command_name='foo' with description='permanently deletes files' -> destructive=true. Verify confidence > 0.5 for matched patterns.",
+      "implementation": "Create src/governance/mod.rs and src/governance/annotations.rs. Define DESTRUCTIVE_PATTERNS const array, ModuleAnnotations struct (readonly, destructive, idempotent, requires_approval, open_world), InferredAnnotations struct (annotations, confidence, reasoning). Implement infer_annotations() with lowercase normalization and pattern matching against command name and description. Force requires_approval=true when destructive=true.",
+      "acceptance": "All destructive pattern tests pass. 'rm', 'delete', 'kill', 'destroy' commands detected as destructive with requires_approval. Description-only matches also work. Confidence > 0.5.",
+      "status": "pending",
+      "depends_on": []
+    },
+    {
+      "id": "F5-T2",
+      "title": "Annotation inference: readonly pattern detection",
+      "description": "Extend infer_annotations() to detect readonly commands by matching against READONLY_PATTERNS (list, show, status, info, get, cat, ls, describe, inspect, view, print, help, version, check, diff, log, search, find, which, whoami, count, stat, top, ps, env, config). Readonly detection only applies when the command is NOT destructive.",
+      "test_first": "Write parametrized tests: 'status' -> readonly=true+destructive=false, 'ls' -> readonly=true, 'get' -> readonly=true, 'ps' -> readonly=true. Test mutual exclusivity: a command matching both destructive and readonly patterns (e.g., 'remove-status') should be destructive=true, readonly=false. Test description match: command_name='foo' with description='show current status' -> readonly=true.",
+      "implementation": "Add READONLY_PATTERNS const. In infer_annotations(), after destructive check, if not destructive, check readonly patterns against command name and description. Push reasoning strings for matches.",
+      "acceptance": "Readonly tests pass. Destructive takes precedence over readonly. Description-only readonly matches work.",
+      "status": "pending",
+      "depends_on": ["F5-T1"]
+    },
+    {
+      "id": "F5-T3",
+      "title": "Annotation inference: flag-based annotation boosting",
+      "description": "Extend infer_annotations() to check flags against APPROVAL_FLAGS (--force, -f, --hard, --recursive, -r, --all, --prune, --no-preserve-root, --cascade, --purge, --yes, -y) and IDEMPOTENT_FLAGS (--dry-run, --check, --diff, --noop, --simulate, --whatif, --plan). Approval flags set requires_approval=true. Idempotent flags set idempotent=true.",
+      "test_first": "Test --force flag -> requires_approval=true on a non-destructive command (e.g., 'push' with ['--force']). Test --hard flag -> requires_approval=true. Test --dry-run flag -> idempotent=true. Test combined: 'push' with ['--force', '--dry-run'] -> requires_approval=true AND idempotent=true. Test that each matched flag adds to reasoning string.",
+      "implementation": "Add APPROVAL_FLAGS and IDEMPOTENT_FLAGS consts. In infer_annotations(), iterate over provided flags, check membership in each list, set corresponding booleans and push reasoning entries.",
+      "acceptance": "All flag-based tests pass. Multiple flags combine correctly. Reasoning string contains each flag that triggered a match.",
+      "status": "pending",
+      "depends_on": ["F5-T2"]
+    },
+    {
+      "id": "F5-T4",
+      "title": "Annotation inference: confidence scoring and no-signal defaults",
+      "description": "Implement confidence scoring: base 0.3 when no signals detected, otherwise 0.5 + 0.1 per matched reason, capped at 0.95. When no signals match, reasoning should state 'No strong signals detected, using defaults' and all annotation flags default to false.",
+      "test_first": "Test unknown command 'foo' with no flags and empty description -> confidence=0.3, all flags false, reasoning contains 'No strong signals'. Test single-signal command (e.g., 'status') -> confidence=0.6. Test multi-signal command (e.g., 'delete' with '--force') -> confidence >= 0.7 (destructive keyword + approval flag + forced approval = 3 reasons -> 0.8). Test confidence never exceeds 0.95. Test reasoning is always non-empty.",
+      "implementation": "At end of infer_annotations(), calculate confidence as described. Ensure reasoning Vec is joined with '; ' separator into the reasoning String field.",
+      "acceptance": "Confidence range is [0.3, 0.95]. No-signal commands get 0.3. Multi-signal commands scale up. Reasoning always non-empty.",
+      "status": "pending",
+      "depends_on": ["F5-T3"]
+    },
+    {
+      "id": "F5-T5",
+      "title": "Subcommand annotation inheritance via annotate_bindings",
+      "description": "Implement annotate_bindings() that takes a mutable slice of GeneratedBinding and applies infer_annotations() to each. Extract command_name from module_id (last segment after 'cli.'), full_command from metadata['apexe_command'], and flags from input_schema properties (converting property keys to --flag-name format). Store inferred annotations in binding.annotations HashMap and confidence/reasoning in binding.metadata.",
+      "test_first": "Create test GeneratedBinding for 'cli.git.status' with description='Show working tree status' -> binding.annotations['readonly']=true. Create test for 'cli.docker.rm' -> binding.annotations['destructive']=true, binding.annotations['requires_approval']=true. Create test for a binding with input_schema containing 'force' property -> flags include '--force' -> requires_approval=true. Verify metadata contains 'apexe_annotation_confidence' and 'apexe_annotation_reasoning'.",
+      "implementation": "Implement annotate_bindings() in annotations.rs. For each binding: extract command_name via rsplit('.').next(), extract full_command from metadata, extract flags from input_schema properties, call infer_annotations(), populate binding.annotations and binding.metadata with results.",
+      "acceptance": "annotate_bindings correctly populates annotations and metadata for a Vec of mixed bindings (readonly, destructive, write). Confidence and reasoning metadata present on all processed bindings.",
+      "status": "pending",
+      "depends_on": ["F5-T4"]
+    },
+    {
+      "id": "F5-T6",
+      "title": "ACL generator: generate_acl from annotated bindings",
+      "description": "Implement generate_acl() in src/governance/acl.rs that takes a slice of binding maps and a default_effect string, categorizes bindings into readonly/destructive/write groups, and produces an ACL config map with $schema, version, rules array, default_effect, and audit settings.",
+      "test_first": "Test with mixed bindings: 2 readonly (cli.git.status, cli.git.log), 1 destructive (cli.git.clean), 2 write (cli.git.commit, cli.git.push). Verify 3 rules generated. Rule 1 targets readonly IDs with effect='allow'. Rule 2 targets destructive IDs. Rule 3 targets write IDs. Verify default_effect='deny'. Verify $schema and version fields. Test with empty bindings -> rules array empty. Test with only readonly bindings -> single rule. Test default_effect='allow' is respected.",
+      "implementation": "Create src/governance/acl.rs. Implement generate_acl() that filters bindings by annotation values, builds rule JSON objects for each non-empty group, and assembles the full ACL config map with schema, version, rules, default_effect, and audit block.",
+      "acceptance": "ACL correctly categorizes bindings into 3 groups. Rules only created for non-empty groups. Schema/version/audit fields present. Default effect configurable.",
+      "status": "pending",
+      "depends_on": ["F5-T5"]
+    },
+    {
+      "id": "F5-T7",
+      "title": "ACL YAML writer: write_acl to filesystem",
+      "description": "Implement write_acl() that serializes an ACL config map to YAML with a header comment and writes it to a specified path. Creates parent directories if needed. Non-fatal: logs warnings on failure but does not return errors.",
+      "test_first": "Test write_acl to a tempdir path -> file exists, content starts with '# Auto-generated by apexe', YAML is parseable by serde_yaml::from_str(). Test parent directory creation: write to tempdir/subdir/acl.yaml where subdir does not exist -> succeeds. Test roundtrip: generate_acl() output -> write_acl() -> read file -> serde_yaml::from_str() -> verify rules array length matches.",
+      "implementation": "Implement write_acl() in acl.rs. Use serde_yaml::to_string() for serialization. Prepend header comment. Use std::fs::create_dir_all for parent dirs. Use std::fs::write for atomic file write. Log via tracing on success/failure.",
+      "acceptance": "YAML file written with correct content. Parent dirs auto-created. Header comment present. File parseable as valid YAML.",
+      "status": "pending",
+      "depends_on": ["F5-T6"]
+    },
+    {
+      "id": "F5-T8",
+      "title": "ACL loader and enforcement integration",
+      "description": "Wire ACL loading into the serve pipeline. During apexe serve startup, check for ~/.apexe/acl.yaml (or --acl-path override), load it via registry.load_acl(), and ensure the Executor enforces ACL rules on tool invocations. User-provided annotation overrides in .binding.yaml must take precedence over inferred annotations.",
+      "test_first": "Test that serve_tools() with an acl_path loads the ACL into the registry. Test that when acl.yaml does not exist, serve proceeds without ACL (no error). Test annotation override: create a binding YAML with manually set 'readonly: true' on a destructive command -> after annotate_bindings, the user override persists (user annotation wins). Test that a denied call returns an appropriate error.",
+      "implementation": "In serve.rs serve_tools(), resolve acl_path from CLI flag or default ~/.apexe/acl.yaml. If file exists, call registry.load_acl(). Add annotation override logic: in annotate_bindings(), skip setting annotations that already have user-provided values in the binding. Ensure executor respects ACL deny rules.",
+      "acceptance": "ACL loaded on serve startup when file exists. Missing ACL file does not block serve. User annotation overrides survive inference. ACL deny rules enforced by executor.",
+      "status": "pending",
+      "depends_on": ["F5-T7"]
+    },
+    {
+      "id": "F5-T9",
+      "title": "Audit logger: AuditEntry struct and SHA-256 input hashing",
+      "description": "Implement AuditEntry struct and AuditLogger::hash_inputs() in src/governance/audit.rs. AuditEntry contains timestamp, trace_id, module_id, caller_id, inputs_hash, exit_code, duration_ms, error. hash_inputs() computes SHA-256 of canonical JSON serialization of input parameters for privacy-preserving audit.",
+      "test_first": "Test hash_inputs determinism: same input map -> same hash twice. Test hash_inputs privacy: hash of {'message':'hello'} != 'hello'. Test hash is 64-char hex string. Test AuditEntry::default() has non-empty timestamp and trace_id (UUID format). Test empty input map produces a valid hash (the SHA-256 of '{}').",
+      "implementation": "Create src/governance/audit.rs. Define AuditEntry with serde Serialize/Deserialize. Implement Default with Utc::now() timestamp and Uuid::new_v4() trace_id. Implement AuditLogger struct with log_path field. Implement hash_inputs() using sha2::Sha256 on serde_json::to_string() of the input map.",
+      "acceptance": "hash_inputs is deterministic and produces 64-char hex. AuditEntry default has valid timestamp and UUID. Privacy preserved (no raw input values in hash output).",
+      "status": "pending",
+      "depends_on": []
+    },
+    {
+      "id": "F5-T10",
+      "title": "Audit logger: JSONL append-only logging",
+      "description": "Implement AuditLogger::log() that appends a single JSONL line per AuditEntry to the log file. Creates parent directories and file on first write. Uses OpenOptions append mode. Non-fatal: audit failure must never block tool execution.",
+      "test_first": "Test single entry: log one entry -> file has 1 line, parseable as AuditEntry JSON. Test append-only: log 2 entries -> file has 2 lines, first entry preserved. Test directory creation: log to tempdir/nested/audit.jsonl -> directories created. Test each line contains expected fields (module_id, timestamp, inputs_hash).",
+      "implementation": "Implement AuditLogger::new(log_path) and AuditLogger::log(&self, entry). Use fs::create_dir_all for parent dirs. Serialize entry with serde_json::to_string. Open file with OpenOptions create+append. Write line with writeln!. Wrap all errors in tracing::warn, never panic or return Err.",
+      "acceptance": "JSONL file grows with each log call. Previous entries preserved. Directories auto-created. Each line is valid JSON containing all AuditEntry fields.",
+      "status": "pending",
+      "depends_on": ["F5-T9"]
+    },
+    {
+      "id": "F5-T11",
+      "title": "Audit logger: error resilience",
+      "description": "Ensure AuditLogger::log() gracefully handles failures: unwritable paths, serialization errors, and filesystem issues. Failures log warnings via tracing but never panic or propagate errors.",
+      "test_first": "Test logging to an unwritable path (e.g., /dev/null/impossible/audit.jsonl on Unix) -> no panic, function returns normally. Test that after a failed write, subsequent writes to a valid path still succeed (logger is not corrupted). Verify tracing warning is emitted on failure (use tracing-test or tracing_subscriber::fmt::TestWriter).",
+      "implementation": "Ensure all error paths in AuditLogger::log() use tracing::warn! and early-return without panicking. Verify no unwrap() calls on fallible operations in the log path.",
+      "acceptance": "No panics on unwritable paths. Logger remains functional after errors. Warning messages emitted.",
+      "status": "pending",
+      "depends_on": ["F5-T10"]
+    },
+    {
+      "id": "F5-T12",
+      "title": "Audit-wrapped CLI execution",
+      "description": "Implement execute_cli_with_audit() wrapper that wraps execute_cli() with timing, input hashing, and audit logging. Captures start time, calls execute_cli, measures duration, extracts exit_code and error from result, and logs an AuditEntry.",
+      "test_first": "Test that execute_cli_with_audit logs an entry after successful execution: run a simple command (e.g., 'echo hello'), verify audit.jsonl has 1 line with exit_code=0, duration_ms>0, non-empty inputs_hash. Test failed execution: run a nonexistent command, verify audit entry has exit_code=-1 and error field populated. Test that the wrapper returns the same result as execute_cli (transparent passthrough).",
+      "implementation": "Implement execute_cli_with_audit() in audit.rs. Capture Instant::now() before execute_cli(). After execution, compute duration_ms, extract exit_code from Ok result or -1 from Err, build AuditEntry with module_id from command parts joined by '.', and call audit_logger.log().",
+      "acceptance": "Audit entry written for both success and failure cases. Duration measured. Input hash computed. Return value matches underlying execute_cli.",
+      "status": "pending",
+      "depends_on": ["F5-T10"]
+    },
+    {
+      "id": "F5-T13",
+      "title": "Audit log rotation and cleanup",
+      "description": "Implement audit log rotation based on file size. When the log file exceeds a configurable max size (default 10MB), rotate it to audit.jsonl.1 (shifting existing rotations), keeping a configurable number of backups (default 3). Rotation check happens at the start of each log() call.",
+      "test_first": "Test rotation trigger: create a log file larger than max_size (use a small threshold like 1KB for testing), log a new entry -> original file rotated to .1, new file created with latest entry. Test backup limit: create .1, .2, .3 backups, trigger rotation -> .3 is deleted, others shift up. Test no rotation when file is under threshold. Test rotation with missing log file (first write) -> no rotation, file created normally.",
+      "implementation": "Add max_log_size_bytes and max_backups fields to AuditLogger (with defaults). In log(), before writing, check file size with fs::metadata(). If over threshold, rotate: rename .2->.3, .1->.2, current->.1 (in reverse order). Delete oldest if exceeding max_backups. Then proceed with normal append to fresh file.",
+      "acceptance": "Log files rotate when exceeding size threshold. Old backups shift correctly. Oldest backup deleted when limit exceeded. Normal logging unaffected when under threshold.",
+      "status": "pending",
+      "depends_on": ["F5-T10"]
+    },
+    {
+      "id": "F5-T14",
+      "title": "Integration test: scan -> annotate -> ACL -> audit pipeline",
+      "description": "End-to-end integration test that exercises the full F5 governance pipeline: scan a CLI tool (git or a mock), auto-annotate bindings, generate ACL, write ACL to disk, execute a tool call with audit, and verify the audit log. This validates all components work together.",
+      "test_first": "Write an integration test that: (1) Creates mock ScannedCLITool data for a git-like tool with subcommands: status (readonly), commit (write), rm (destructive). (2) Runs BindingGenerator::generate() to produce bindings. (3) Calls annotate_bindings() -> verify status has readonly=true, rm has destructive=true+requires_approval=true. (4) Converts bindings to ACL input format and calls generate_acl() -> verify 3 rule groups. (5) Calls write_acl() to tempdir -> verify YAML file valid. (6) Creates AuditLogger, logs entries for each mock invocation -> verify 3 JSONL lines. (7) Verify audit entries have correct module_ids and non-empty hashes.",
+      "implementation": "Create tests/governance_integration.rs. Build mock ScannedCLITool with 3 subcommands. Wire through the full pipeline: generate bindings, annotate, generate ACL, write ACL, create audit logger, log mock invocations. Assert all intermediate and final outputs.",
+      "acceptance": "Integration test passes end-to-end. All annotations correct. ACL has proper rule groupings. YAML file valid. Audit log has correct entries. No panics or unexpected errors.",
+      "status": "pending",
+      "depends_on": ["F5-T5", "F5-T7", "F5-T12"]
+    }
+  ]
+}

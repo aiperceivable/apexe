@@ -1,0 +1,87 @@
+{
+  "feature": "f4-serve-integration",
+  "description": "Serve Integration (apcore-mcp + apcore-a2a)",
+  "language": "rust",
+  "tasks": [
+    {
+      "id": "F4-T1",
+      "title": "Binding loader: discover and parse .binding.yaml files",
+      "description": "Implement a BindingDiscovery module that scans a directory for .binding.yaml files and returns parsed BindingFile structs. This is the first step of the serve pipeline -- given a modules_dir path, glob for *.binding.yaml, read each file, deserialize via serde_yaml, and return a Vec of results. Malformed files are logged as warnings and skipped rather than aborting.",
+      "test_first": "Write tests in src/serve/binding_discovery.rs (or tests/serve_binding_discovery.rs): (1) test_discover_empty_dir -- create a TempDir with no .binding.yaml files, assert result is Ok with empty vec. (2) test_discover_valid_bindings -- create TempDir with 2 valid .binding.yaml files (minimal: module_id, name, target fields), assert 2 entries returned with correct module IDs. (3) test_discover_skips_malformed -- create TempDir with 1 valid and 1 invalid YAML, assert 1 entry returned and no error (malformed skipped). (4) test_discover_nonexistent_dir -- pass a path that does not exist, assert error contains 'not found' or 'does not exist'.",
+      "implementation": "Create src/serve/binding_discovery.rs with a discover_bindings(dir: &Path) -> Result<Vec<BindingFile>> function. Use glob or std::fs::read_dir to find *.binding.yaml files. Deserialize each with serde_yaml. Collect successes, log warnings for failures. Return error if dir does not exist.",
+      "acceptance": "All 4 tests pass. Valid binding files are parsed, malformed ones are skipped with a warning, missing directory returns an error.",
+      "status": "pending",
+      "depends_on": []
+    },
+    {
+      "id": "F4-T2",
+      "title": "Registry population from loaded bindings",
+      "description": "Given parsed binding files from F4-T1, register each binding as an apcore module in a Registry. Each binding entry becomes a FunctionModule backed by the execute_cli executor. The registry population step bridges the binding YAML format to apcore's runtime Registry.",
+      "test_first": "Write tests: (1) test_populate_registry_single_binding -- create a BindingFile with 2 module entries (e.g., cli.echo, cli.echo.verbose), populate a Registry, assert registry.list() contains both module IDs. (2) test_populate_registry_multiple_files -- 2 BindingFiles with 3 total modules, assert all 3 registered. (3) test_populate_registry_empty -- pass empty vec of bindings, assert registry.list() is empty (no error). (4) test_populate_registry_duplicate_id -- two bindings with the same module_id, assert the second overwrites or an appropriate warning is logged.",
+      "implementation": "Create src/serve/registry_builder.rs with populate_registry(bindings: &[BindingFile], registry: &mut Registry) -> Result<usize>. Iterate bindings, for each module entry create a FunctionModule pointing to execute_cli, register in registry. Return count of registered modules.",
+      "acceptance": "All tests pass. Modules from binding files are registered in the apcore Registry and discoverable via registry.list().",
+      "status": "pending",
+      "depends_on": ["F4-T1"]
+    },
+    {
+      "id": "F4-T3",
+      "title": "MCP serve command with transport selection",
+      "description": "Implement the MCP-only path of serve_command. After loading bindings and populating the registry, build an APCoreMCP instance and call its serve method with the selected transport. Handle transport mapping (http -> streamable-http). Handle input validation: nonexistent modules dir, empty modules dir, explorer/a2a incompatible with stdio.",
+      "test_first": "Write tests: (1) test_serve_nonexistent_dir -- call serve_command with a nonexistent path, assert error contains 'Modules directory not found'. (2) test_serve_empty_modules_dir -- TempDir with no binding files, assert error about no binding files found. (3) test_transport_mapping_http -- assert that when transport='http', the value passed to APCoreMCP is 'streamable-http'. (4) test_a2a_disabled_with_stdio -- call with transport='stdio' and a2a=true, assert a2a is effectively disabled (warning logged, MCP-only serve path taken). (5) test_explorer_disabled_with_stdio -- call with transport='stdio' and explorer=true, assert explorer is disabled.",
+      "implementation": "Implement src/serve.rs serve_command() function as specified in the feature spec. Wire up BindingDiscovery and registry population from T1/T2. Build APCoreMCP with builder pattern. Map transport strings. Add validation guards and warning logs for incompatible flag combinations.",
+      "acceptance": "All validation tests pass. Transport mapping is correct. Incompatible flags produce warnings and graceful fallbacks rather than errors.",
+      "status": "pending",
+      "depends_on": ["F4-T1", "F4-T2"]
+    },
+    {
+      "id": "F4-T4",
+      "title": "A2A serve command with Agent Card generation",
+      "description": "Implement the A2A serving path. When --a2a is enabled with an HTTP transport, create an apcore-a2a SkillMapper from the populated Registry, build its router, and generate the Agent Card at /.well-known/agent.json. The Agent Card lists all registered modules as skills with name and description.",
+      "test_first": "Write tests: (1) test_agent_card_generation -- given a Registry with 2 modules (cli.git.status, cli.git.commit), generate the agent card JSON, assert it contains both skill names and descriptions. (2) test_agent_card_structure -- assert the card has required fields: name, description, url, skills array. (3) test_skill_mapper_from_registry -- create SkillMapper from a populated Registry, assert build_router() succeeds. (4) test_a2a_requires_http -- assert that A2A path is only taken when transport is 'http' or 'sse', not 'stdio'.",
+      "implementation": "In src/serve.rs, implement the A2A branch. Use apcore_a2a::SkillMapper::new(registry) to create the mapper. Build the A2A router. Generate the agent card JSON from registry module metadata (name, description). Serve at /.well-known/agent.json.",
+      "acceptance": "Agent Card is generated with correct structure. Skills list matches registered modules. A2A only activates with HTTP-compatible transports.",
+      "status": "pending",
+      "depends_on": ["F4-T2", "F4-T3"]
+    },
+    {
+      "id": "F4-T5",
+      "title": "Combined MCP + A2A serve on single axum Router",
+      "description": "Implement serve_combined() that mounts both MCP and A2A on a single axum Router. MCP is nested at /mcp, A2A at /a2a, Agent Card at /.well-known/agent.json, and optionally Tool Explorer at /explorer. Both share the same Registry and Executor instance.",
+      "test_first": "Write tests: (1) test_combined_router_has_mcp_route -- build the combined router, assert /mcp path is routable. (2) test_combined_router_has_a2a_route -- assert /a2a path is routable. (3) test_combined_router_agent_card -- send GET to /.well-known/agent.json on the router (using axum::test helpers or tower::ServiceExt), assert 200 response with valid JSON agent card. (4) test_combined_router_explorer_enabled -- when explorer=true, assert /explorer route exists. (5) test_combined_router_explorer_disabled -- when explorer=false, assert /explorer returns 404. (6) test_combined_binds_to_address -- use a random available port, start serve_combined in a spawned task, assert the server accepts a TCP connection, then shut down.",
+      "implementation": "Implement serve_combined() in src/serve.rs as specified. Call mcp.into_router(explorer) for the MCP app. Call SkillMapper::new(registry).build_router() for A2A. Compose with Router::new().nest('/mcp', mcp_app).nest('/a2a', a2a_app). Bind to host:port with tokio TcpListener.",
+      "acceptance": "Combined router serves both protocols on correct paths. Agent card is accessible. Explorer toggles correctly. Server binds and accepts connections.",
+      "status": "pending",
+      "depends_on": ["F4-T3", "F4-T4"]
+    },
+    {
+      "id": "F4-T6",
+      "title": "Claude Desktop / Cursor config generation helper",
+      "description": "Implement a helper that generates integration configuration snippets for Claude Desktop (stdio and HTTP modes) and Cursor. Given the serve parameters (transport, host, port), produce the correct JSON config that users can paste into their editor/agent settings.",
+      "test_first": "Write tests: (1) test_generate_claude_desktop_stdio_config -- call generator with transport='stdio', assert output JSON matches {mcpServers: {apexe: {command: 'apexe', args: ['serve', '--transport', 'stdio']}}}. (2) test_generate_claude_desktop_http_config -- call with transport='http', port=8000, assert output contains url 'http://localhost:8000/mcp'. (3) test_generate_cursor_config -- call for cursor format, assert correct structure. (4) test_config_custom_name -- pass name='my-tools', assert it appears in the config key. (5) test_config_custom_port -- pass port=9000, assert URL contains 9000.",
+      "implementation": "Create src/serve/config_gen.rs with functions: generate_claude_desktop_config(transport, host, port, name) -> String and generate_cursor_config(name) -> String. Return pretty-printed JSON. Integrate into CLI as 'apexe serve --print-config claude-desktop' or similar, or as a separate 'apexe config' subcommand output.",
+      "acceptance": "Generated configs are valid JSON. Claude Desktop stdio/HTTP and Cursor configs match the documented formats. Custom name and port values are reflected.",
+      "status": "pending",
+      "depends_on": ["F4-T3"]
+    },
+    {
+      "id": "F4-T7",
+      "title": "CLI integration: ServeArgs clap command",
+      "description": "Wire the ServeArgs clap struct into the CLI command hierarchy. The serve subcommand parses all flags (transport, host, port, a2a, explorer, modules-dir, acl, name) and delegates to serve_command(). Integrate with ApexeConfig for default modules_dir resolution.",
+      "test_first": "Write tests: (1) test_serve_args_defaults -- parse 'serve' with no flags, assert transport='stdio', host='127.0.0.1', port=8000, a2a=false, explorer=false, name='apexe'. (2) test_serve_args_all_flags -- parse with all flags set, assert each is captured. (3) test_serve_args_transport_validation -- parse with transport='invalid', assert clap rejects it. (4) test_serve_args_port_range -- parse with port=0, assert rejected; port=65535, assert accepted. (5) test_serve_execute_delegates -- mock or verify that execute() calls serve_command with correct args from config.",
+      "implementation": "Create src/cli/serve.rs with the ServeArgs struct as specified in the feature spec. Add the Serve variant to the main CLI enum. Implement execute() to build a tokio runtime and call serve_command() with resolved parameters, merging CLI flags with ApexeConfig defaults.",
+      "acceptance": "All clap parsing tests pass. Default values match spec. Invalid inputs are rejected by clap. Execute delegates correctly to serve_command.",
+      "status": "pending",
+      "depends_on": ["F4-T3"]
+    },
+    {
+      "id": "F4-T8",
+      "title": "Integration test: scan -> serve -> call tool via MCP",
+      "description": "End-to-end integration test that scans a simple CLI tool (e.g., echo), generates bindings, starts the MCP server, and verifies a tool call works. This validates the full F1-F4 pipeline.",
+      "test_first": "Write an integration test in tests/integration_serve.rs: (1) test_scan_serve_call_tool -- scan 'echo' (or a test fixture CLI), verify .binding.yaml is generated in a TempDir, start serve_command with stdio transport in a background task, connect as an MCP client, call list_tools and assert cli.echo is present, call call_tool('cli.echo', {text: 'hello'}) and assert stdout contains 'hello'. (2) test_scan_serve_http_list_tools -- start HTTP serve, GET /mcp endpoint, verify tool listing response. (3) test_serve_acl_blocks_tool -- load an ACL that denies cli.echo, call the tool, assert it is rejected.",
+      "implementation": "Create tests/integration_serve.rs. Use assert_cmd or direct function calls. For stdio tests, spawn the serve process and communicate via stdin/stdout using MCP JSON-RPC protocol. For HTTP tests, use reqwest to call the HTTP endpoint. Set up TempDirs for isolation.",
+      "acceptance": "Full pipeline works: scan produces bindings, serve loads them, MCP client can list and call tools, results are correct. ACL enforcement is verified.",
+      "status": "pending",
+      "depends_on": ["F4-T1", "F4-T2", "F4-T3", "F4-T4", "F4-T5", "F4-T6", "F4-T7"]
+    }
+  ]
+}

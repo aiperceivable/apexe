@@ -1,0 +1,467 @@
+{
+  "feature": "f2-cli-scanner-engine",
+  "description": "CLI Scanner Engine - Three-tier deterministic parser that scans arbitrary CLI tools into structured metadata",
+  "language": "rust",
+  "tasks": [
+    {
+      "id": "F2-T1",
+      "title": "ValueType enum and HelpFormat enum",
+      "description": "Define the ValueType enum (String, Integer, Float, Boolean, Path, Enum, Url, Unknown) and HelpFormat enum (Gnu, Click, Argparse, Cobra, Clap, Unknown) in src/models/mod.rs with serde rename_all lowercase.",
+      "test_first": "Write tests that ValueType and HelpFormat variants serialize/deserialize correctly to/from JSON lowercase strings (e.g., ValueType::Boolean -> \"boolean\"). Test Debug and Clone derive. Test PartialEq comparisons.",
+      "implementation": "Define both enums with #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)] and #[serde(rename_all = \"lowercase\")]. Add all variants per spec.",
+      "acceptance": "All serde round-trip tests pass. Enums compile with required derives.",
+      "status": "pending",
+      "depends_on": []
+    },
+    {
+      "id": "F2-T2",
+      "title": "ScannedFlag struct and canonical_name()",
+      "description": "Define ScannedFlag struct with all fields (long_name, short_name, description, value_type, required, default, enum_values, repeatable, value_name). Implement canonical_name() method.",
+      "test_first": "Test canonical_name(): --message -> \"message\", --dry-run -> \"dry_run\", -m (short only) -> \"m\", neither -> \"unknown\". Test serde round-trip for ScannedFlag with all fields populated and with optional fields as None.",
+      "implementation": "Define ScannedFlag struct with Serialize/Deserialize derives. Implement canonical_name() that prefers long_name, strips --, replaces - with _.",
+      "acceptance": "canonical_name tests pass for all edge cases. Serde round-trip works.",
+      "status": "pending",
+      "depends_on": ["F2-T1"]
+    },
+    {
+      "id": "F2-T3",
+      "title": "ScannedArg struct",
+      "description": "Define ScannedArg struct with fields: name, description, value_type, required, variadic.",
+      "test_first": "Test serde round-trip for ScannedArg. Test a variadic arg (variadic: true) and a required arg (required: true) serialize correctly.",
+      "implementation": "Define ScannedArg with derives and all fields per spec.",
+      "acceptance": "Serde tests pass. Struct compiles with Debug, Clone, Serialize, Deserialize.",
+      "status": "pending",
+      "depends_on": ["F2-T1"]
+    },
+    {
+      "id": "F2-T4",
+      "title": "StructuredOutputInfo struct",
+      "description": "Define StructuredOutputInfo with fields: supported (bool), flag (Option<String>), format (Option<String>). Implement Default (supported: false, others None).",
+      "test_first": "Test Default::default() gives supported=false, flag=None, format=None. Test serde round-trip with supported=true, flag=\"--json\", format=\"json\".",
+      "implementation": "Define struct with Default derive and Serialize/Deserialize.",
+      "acceptance": "Default and serde tests pass.",
+      "status": "pending",
+      "depends_on": []
+    },
+    {
+      "id": "F2-T5",
+      "title": "ScannedCommand struct",
+      "description": "Define ScannedCommand with all fields: name, full_command, description, flags, positional_args, subcommands (recursive), examples, help_format, structured_output, raw_help.",
+      "test_first": "Test serde round-trip for a ScannedCommand with nested subcommands (at least 2 levels deep). Test empty subcommands list. Test that all field types are correct.",
+      "implementation": "Define ScannedCommand struct. The subcommands field is Vec<ScannedCommand> enabling recursive nesting.",
+      "acceptance": "Nested serde round-trip works. Struct compiles with all derives.",
+      "status": "pending",
+      "depends_on": ["F2-T2", "F2-T3", "F2-T4"]
+    },
+    {
+      "id": "F2-T6",
+      "title": "ScannedCLITool struct",
+      "description": "Define the top-level ScannedCLITool struct with: name, binary_path, version, subcommands, global_flags, structured_output, scan_tier, warnings.",
+      "test_first": "Test serde round-trip for ScannedCLITool with populated subcommands and global_flags. Test with version=None. Test warnings as Vec<String>.",
+      "implementation": "Define ScannedCLITool struct with all fields per tech design section 7.2.2.",
+      "acceptance": "Full model hierarchy (ScannedCLITool -> ScannedCommand -> nested) serializes to JSON and back.",
+      "status": "pending",
+      "depends_on": ["F2-T5"]
+    },
+    {
+      "id": "F2-T7",
+      "title": "ParsedHelp struct",
+      "description": "Define ParsedHelp struct (intermediate parser output) with: description, flags, positional_args, subcommand_names, examples, structured_output. Implement Default.",
+      "test_first": "Test Default::default() gives empty strings/vecs and default StructuredOutputInfo. Test serde round-trip with populated fields.",
+      "implementation": "Define ParsedHelp in src/scanner/protocol.rs with Default derive.",
+      "acceptance": "Default and serde tests pass.",
+      "status": "pending",
+      "depends_on": ["F2-T2", "F2-T3", "F2-T4"]
+    },
+    {
+      "id": "F2-T8",
+      "title": "CliParser trait definition",
+      "description": "Define the CliParser trait with methods: name() -> &str, priority() -> u32, can_parse(help_text, tool_name) -> bool, parse(help_text, tool_name) -> Result<ParsedHelp>. Trait must be Send + Sync.",
+      "test_first": "Create a MockParser implementing CliParser. Test that name(), priority(), can_parse(), and parse() work correctly. Verify the mock can be stored as Box<dyn CliParser> (Send + Sync).",
+      "implementation": "Define the trait in src/scanner/protocol.rs with the four required methods.",
+      "acceptance": "MockParser compiles, implements all methods, and is object-safe (Box<dyn CliParser>).",
+      "status": "pending",
+      "depends_on": ["F2-T7"]
+    },
+    {
+      "id": "F2-T9",
+      "title": "ResolvedTool struct",
+      "description": "Define ResolvedTool struct with: name, binary_path, version (Option<String>).",
+      "test_first": "Test serde round-trip for ResolvedTool with version=Some and version=None.",
+      "implementation": "Define struct in src/scanner/resolver.rs with Serialize/Deserialize.",
+      "acceptance": "Serde tests pass.",
+      "status": "pending",
+      "depends_on": []
+    },
+    {
+      "id": "F2-T10",
+      "title": "ToolResolver - resolve binary path",
+      "description": "Implement ToolResolver::resolve() that uses which::which to find binary path on PATH. Return Err(ToolNotFound) if not found.",
+      "test_first": "Test resolve(\"sh\") or resolve(\"echo\") returns Ok with a valid binary_path. Test resolve(\"zzz_no_such_tool_xyz\") returns Err(ToolNotFound).",
+      "implementation": "Implement resolve() using which::which(). Map the which error to ApexeError::ToolNotFound. Build ResolvedTool with name and binary_path.",
+      "acceptance": "Known tool resolves. Unknown tool returns ToolNotFound error.",
+      "status": "pending",
+      "depends_on": ["F2-T9"]
+    },
+    {
+      "id": "F2-T11",
+      "title": "ToolResolver - get_version()",
+      "description": "Implement get_version() that runs <binary> --version, parses first line for semver-like pattern (\\d+\\.\\d+[\\.\\d]*).",
+      "test_first": "Test with mock output strings: \"git version 2.43.0\" -> Some(\"2.43.0\"), \"curl 8.1.2 (...)\" -> Some(\"8.1.2\"), \"no version here\" -> None, empty string -> None.",
+      "implementation": "Run Command::new(binary).arg(\"--version\").output(). Parse first line with regex. Return Option<String>.",
+      "acceptance": "Version extraction works for common patterns. Returns None for unparseable output.",
+      "status": "pending",
+      "depends_on": ["F2-T10"]
+    },
+    {
+      "id": "F2-T12",
+      "title": "Help format detection function",
+      "description": "Implement detect_help_format() that identifies GNU, Click, Cobra, Clap, or Unknown from help text heuristics.",
+      "test_first": "Test with sample help texts: Cobra text containing 'Available Commands:' -> HelpFormat::Cobra. Clap text with 'SUBCOMMANDS:' -> HelpFormat::Clap. Click text with '[OPTIONS]' and 'Commands:' -> HelpFormat::Click. GNU text with 'Usage:' -> HelpFormat::Gnu. Random text -> HelpFormat::Unknown.",
+      "implementation": "Implement the cascading if/else heuristic per tech design section 7.2.6.",
+      "acceptance": "All five format types detected correctly from representative samples.",
+      "status": "pending",
+      "depends_on": ["F2-T1"]
+    },
+    {
+      "id": "F2-T13",
+      "title": "GNU parser - can_parse() detection",
+      "description": "Implement GnuHelpParser struct and its can_parse() method that returns true for GNU-style help and false for Cobra/Clap/Click.",
+      "test_first": "Test can_parse with real-ish GNU help (git commit --help style) -> true. Test with Cobra help (Available Commands:) -> false. Test with Clap help (SUBCOMMANDS:) -> false. Test with empty string -> false.",
+      "implementation": "Implement GnuHelpParser as unit struct. can_parse checks for 'Usage:' presence, GNU option patterns, and excludes Cobra/Clap markers.",
+      "acceptance": "Correctly identifies GNU help and rejects other formats.",
+      "status": "pending",
+      "depends_on": ["F2-T8"]
+    },
+    {
+      "id": "F2-T14",
+      "title": "GNU parser - extract_description()",
+      "description": "Implement extract_description() that extracts the description paragraph before Usage:/Options: lines, capped at 200 chars.",
+      "test_first": "Test: help text with description before 'Usage:' line extracts the description. Test: help starting with 'Usage:' returns empty. Test: long description is truncated to 200 chars.",
+      "implementation": "Iterate lines, collect non-empty lines before first Usage:/Options: line, join with space, truncate to 200 chars.",
+      "acceptance": "Description extraction works for standard GNU help layouts.",
+      "status": "pending",
+      "depends_on": ["F2-T13"]
+    },
+    {
+      "id": "F2-T15",
+      "title": "GNU parser - extract_flags() basic",
+      "description": "Implement extract_flags() using regex to parse GNU-style option lines like '  -m, --message=MSG  Use the given message'.",
+      "test_first": "Test parsing: '  -m, --message MSG  Use the given message' -> short=-m, long=--message, value_type=String. '  -a, --all  Stage all' -> Boolean flag. '  --config FILE  Config path' -> value_type=Path. '  -n, --count NUM  Number' -> value_type=Integer.",
+      "implementation": "Use regex pattern to match option lines. Extract short/long names, value placeholder, description. Map placeholders to ValueType.",
+      "acceptance": "Basic flag extraction works for short+long, long-only, and boolean flags with correct type inference.",
+      "status": "pending",
+      "depends_on": ["F2-T14"]
+    },
+    {
+      "id": "F2-T16",
+      "title": "GNU parser - enum, default, required, repeatable detection",
+      "description": "Enhance extract_flags() to detect enum values ({json,text,csv}), defaults ([default: 80]), required flags, and repeatable flags.",
+      "test_first": "Test: description containing '{json,text,csv}' -> enum_values=[json,text,csv], value_type=Enum. '[default: 80]' -> default=Some(\"80\"). 'required' in description -> required=true. 'can be repeated' -> repeatable=true.",
+      "implementation": "Add regex patterns for default_re, enum_re. Check description text for required/repeatable keywords. Override value_type to Enum when enum_values present.",
+      "acceptance": "All four detection patterns work correctly in isolation and combined.",
+      "status": "pending",
+      "depends_on": ["F2-T15"]
+    },
+    {
+      "id": "F2-T17",
+      "title": "GNU parser - extract_positional_args()",
+      "description": "Implement extract_positional_args() that parses positional arguments from Usage: line patterns like <file>...",
+      "test_first": "Test: 'Usage: tool <file>' -> one required arg named 'file'. 'Usage: tool <src> <dst>' -> two args. 'Usage: tool <file>...' -> variadic=true. 'Usage: tool [OPTIONS]' -> no positional args.",
+      "implementation": "Regex match <name>(...)? patterns in Usage: lines. Create ScannedArg for each match.",
+      "acceptance": "Positional args extracted correctly including variadic detection.",
+      "status": "pending",
+      "depends_on": ["F2-T13"]
+    },
+    {
+      "id": "F2-T18",
+      "title": "GNU parser - extract_subcommands()",
+      "description": "Implement extract_subcommands() that finds command names from Commands/Subcommands sections.",
+      "test_first": "Test: help text with 'Commands:\\n  commit  Record changes\\n  push  Upload changes' -> [\"commit\", \"push\"]. Test: no commands section -> empty vec. Test: section ends at blank line.",
+      "implementation": "Find section header matching /commands|subcommands/i. Parse indented lines for command names until section boundary.",
+      "acceptance": "Subcommand names extracted from standard GNU help layouts.",
+      "status": "pending",
+      "depends_on": ["F2-T13"]
+    },
+    {
+      "id": "F2-T19",
+      "title": "GNU parser - extract_examples()",
+      "description": "Implement extract_examples() that finds example invocations from Examples: sections.",
+      "test_first": "Test: help with 'Examples:\\n  $ git commit -m \"msg\"\\n  $ git commit --amend' -> two examples. Test: no examples section -> empty vec. Test: lines starting with $ or # are captured.",
+      "implementation": "Find Examples/Usage examples section header. Collect lines starting with $ or # until blank line.",
+      "acceptance": "Examples extracted from help text. Empty vec when no examples section.",
+      "status": "pending",
+      "depends_on": ["F2-T13"]
+    },
+    {
+      "id": "F2-T20",
+      "title": "GNU parser - full parse() integration",
+      "description": "Wire up GnuHelpParser::parse() to call all extract_* functions and return a complete ParsedHelp. Include detect_structured_output().",
+      "test_first": "Test with a comprehensive GNU-style help text (pre-captured git commit --help style) that exercises description, flags, args, subcommands, and structured output detection. Verify all ParsedHelp fields populated.",
+      "implementation": "Implement parse() calling extract_description, extract_flags, extract_positional_args, extract_subcommands, extract_examples, detect_structured_output.",
+      "acceptance": "Full parse of representative GNU help text returns correctly populated ParsedHelp.",
+      "status": "pending",
+      "depends_on": ["F2-T14", "F2-T15", "F2-T16", "F2-T17", "F2-T18", "F2-T19"]
+    },
+    {
+      "id": "F2-T21",
+      "title": "Click/argparse parser",
+      "description": "Implement ClickHelpParser with can_parse() and parse(). Handles Click-specific patterns: TEXT/INTEGER/FLOAT/PATH value types, --flag/--no-flag booleans, [required], [default: X], [opt1|opt2] enums.",
+      "test_first": "Test can_parse with Click-style help (contains [OPTIONS] and Options: but not Available Commands:) -> true. Test parse() with pre-captured Click help: extract flags with TEXT->String, INTEGER->Integer, PATH->Path types. Test --flag/--no-flag -> Boolean. Test [required] and [default: X] detection.",
+      "implementation": "Implement ClickHelpParser struct, can_parse (priority 110), and parse with Click-specific regex patterns for value types and metadata.",
+      "acceptance": "Click help text parsed correctly with appropriate type mappings. Commands section parsed for subcommands.",
+      "status": "pending",
+      "depends_on": ["F2-T8"]
+    },
+    {
+      "id": "F2-T22",
+      "title": "Cobra (Go) parser",
+      "description": "Implement CobraHelpParser with can_parse() and parse(). Handles Cobra patterns: 'Available Commands:' section, 'Flags:' section (not Options:), 'Global Flags:' section, inline type after flag name.",
+      "test_first": "Test can_parse with Cobra help (Available Commands: present) -> true. Test parse() with pre-captured kubectl/docker-style help: extract Available Commands list, parse Flags section with inline types (--flag string Description), detect Global Flags separately.",
+      "implementation": "Implement CobraHelpParser (priority 120). Parse Available Commands for subcommands, Flags section with type-after-flag pattern, Global Flags section.",
+      "acceptance": "Cobra help parsed with subcommands, flags with inline types, and global flags.",
+      "status": "pending",
+      "depends_on": ["F2-T8"]
+    },
+    {
+      "id": "F2-T23",
+      "title": "Clap (Rust) parser",
+      "description": "Implement ClapHelpParser with can_parse() and parse(). Handles Clap patterns: SUBCOMMANDS: (uppercase), Options: with <VALUE> placeholders, -h/--help always present.",
+      "test_first": "Test can_parse with Clap help (SUBCOMMANDS: present or angle-bracket values with Options:) -> true. Test parse() with pre-captured ripgrep-style help: extract SUBCOMMANDS list, parse options with <VALUE> syntax.",
+      "implementation": "Implement ClapHelpParser (priority 130). Parse SUBCOMMANDS section, Options with <VALUE> placeholders.",
+      "acceptance": "Clap help parsed with subcommands and flags using angle-bracket value names.",
+      "status": "pending",
+      "depends_on": ["F2-T8"]
+    },
+    {
+      "id": "F2-T24",
+      "title": "StructuredOutputDetector",
+      "description": "Implement StructuredOutputDetector that checks parsed flags and raw help text for JSON output support patterns (--format, --json, -j, etc.).",
+      "test_first": "Test: flag with long_name=--format and enum_values containing 'json' -> supported=true, flag='--format json'. Test: flag --json -> supported=true. Test: no json flags -> supported=false. Test: regex fallback on help text containing '--json' pattern.",
+      "implementation": "Implement detect() method checking flags first (enum_values for json), then regex patterns on raw help text.",
+      "acceptance": "Structured output correctly detected from both parsed flags and raw help text patterns.",
+      "status": "pending",
+      "depends_on": ["F2-T2", "F2-T4"]
+    },
+    {
+      "id": "F2-T25",
+      "title": "ParserPipeline - initialization with built-in parsers",
+      "description": "Implement ParserPipeline::new() that registers all built-in parsers (GNU, Click, Cobra, Clap) sorted by priority, with optional plugin parsers.",
+      "test_first": "Test new(None) creates pipeline with 4 built-in parsers. Test new(Some(vec![mock_plugin])) includes the plugin. Test parsers are sorted by priority ascending.",
+      "implementation": "Create ParserPipeline struct holding Vec<Box<dyn CliParser>>. In new(), push all built-in parsers, extend with plugins, sort by priority.",
+      "acceptance": "Pipeline initialized with correct parser count and priority ordering.",
+      "status": "pending",
+      "depends_on": ["F2-T20", "F2-T21", "F2-T22", "F2-T23"]
+    },
+    {
+      "id": "F2-T26",
+      "title": "ParserPipeline - parse() priority routing",
+      "description": "Implement ParserPipeline::parse() that tries parsers in priority order, using first matching parser. Falls back to raw help text if none match.",
+      "test_first": "Test: GNU help text -> uses GnuHelpParser. Cobra help text -> uses CobraHelpParser. Test: all parsers reject -> returns fallback ParsedHelp with truncated raw text as description. Test: parser that can_parse but fails parse() -> tries next parser.",
+      "implementation": "Iterate parsers, call can_parse(), then parse(). On parse error, log warning and continue. If none match, return fallback ParsedHelp.",
+      "acceptance": "Priority routing selects correct parser. Fallback works when no parser matches.",
+      "status": "pending",
+      "depends_on": ["F2-T25"]
+    },
+    {
+      "id": "F2-T27",
+      "title": "ParserPipeline - user override support",
+      "description": "Implement user_override parameter in parse() that loads a YAML file as ParsedHelp, bypassing all parsers.",
+      "test_first": "Test: provide a temp YAML file with ParsedHelp content -> returns parsed YAML content, skips all parsers. Test: override path does not exist -> falls through to parser pipeline. Test: override is invalid YAML -> falls through to parsers.",
+      "implementation": "In parse(), check user_override path first. If exists and valid YAML, deserialize and return. Otherwise proceed to parsers.",
+      "acceptance": "User override YAML loaded when present. Gracefully falls through on missing/invalid override.",
+      "status": "pending",
+      "depends_on": ["F2-T26"]
+    },
+    {
+      "id": "F2-T28",
+      "title": "SubcommandDiscovery - basic recursive discovery",
+      "description": "Implement SubcommandDiscovery struct that recursively discovers subcommands by running <tool> <subcmd> --help and parsing results.",
+      "test_first": "Test with mocked run_help (inject help text instead of running subprocess): given top-level subcommand_names [\"sub1\", \"sub2\"], mock sub1 help returning flags and no nested subcommands, mock sub2 help returning nested subcommand \"sub2a\". Verify correct ScannedCommand tree built with nesting.",
+      "implementation": "Implement discover() that iterates subcommand_names, calls run_help for each, parses with pipeline, recursively discovers nested subcommands. Build ScannedCommand for each.",
+      "acceptance": "Recursive discovery builds correct command tree. Nested subcommands resolved.",
+      "status": "pending",
+      "depends_on": ["F2-T26"]
+    },
+    {
+      "id": "F2-T29",
+      "title": "SubcommandDiscovery - max depth enforcement",
+      "description": "Implement max_depth guard in discover() to prevent infinite recursion.",
+      "test_first": "Test with max_depth=1: top-level subcommands discovered, but their nested subcommands are NOT discovered (returns empty vec at depth >= max_depth). Test with max_depth=0 returns empty immediately.",
+      "implementation": "Check depth >= max_depth at start of discover(). If exceeded, log warning and return empty Vec.",
+      "acceptance": "Recursion stops at max_depth. No infinite loops possible.",
+      "status": "pending",
+      "depends_on": ["F2-T28"]
+    },
+    {
+      "id": "F2-T30",
+      "title": "SubcommandDiscovery - stderr fallback for help",
+      "description": "Implement run_help() to capture both stdout and stderr, using stderr when stdout is empty (some tools output help to stderr).",
+      "test_first": "Test: tool with help on stdout -> returns stdout. Test: tool with empty stdout but help on stderr -> returns stderr. Test: both empty -> returns None.",
+      "implementation": "In run_help(), run Command, check stdout first, fall back to stderr. Return None if both empty.",
+      "acceptance": "Help text captured regardless of stdout/stderr destination.",
+      "status": "pending",
+      "depends_on": ["F2-T28"]
+    },
+    {
+      "id": "F2-T31",
+      "title": "Man page parser (Tier 2)",
+      "description": "Implement ManPageParser::parse_man_page() that runs 'man -P cat <tool>' and extracts DESCRIPTION section.",
+      "test_first": "Test extract_man_description with sample man page text containing DESCRIPTION section -> extracts first paragraph. Test with no DESCRIPTION section -> returns empty. Test parse_man_page returns None when man command fails.",
+      "implementation": "Run man -P cat <tool>. Parse output for DESCRIPTION section. Return ParsedHelp with description populated.",
+      "acceptance": "Man page description extracted. Returns None when man page unavailable.",
+      "status": "pending",
+      "depends_on": ["F2-T7"]
+    },
+    {
+      "id": "F2-T32",
+      "title": "Shell completion parser (Tier 3)",
+      "description": "Implement CompletionParser::parse_completions() that reads zsh/bash completion files and extracts subcommand names.",
+      "test_first": "Test extract_completion_subcommands with sample zsh completion content containing subcommand definitions -> returns subcommand names. Test with nonexistent completion files -> returns None.",
+      "implementation": "Check known completion file paths. Read and parse completion script for subcommand patterns. Return ParsedHelp with subcommand_names.",
+      "acceptance": "Completion file read and basic subcommand extraction works. Graceful None on missing files.",
+      "status": "pending",
+      "depends_on": ["F2-T7"]
+    },
+    {
+      "id": "F2-T33",
+      "title": "ScanCache - store and retrieve",
+      "description": "Implement ScanCache with get() and put() methods for filesystem-based caching of ScannedCLITool as JSON.",
+      "test_first": "Test: put() a ScannedCLITool, then get() with same tool_name and version -> returns the stored tool. Test: get() with wrong version -> None. Test: get() on empty cache -> None. Use tempdir for cache_dir.",
+      "implementation": "Cache key is {tool_name}_{version}.scan.json. put() creates dir, writes JSON. get() reads and deserializes.",
+      "acceptance": "Round-trip cache store/load works. Cache miss returns None.",
+      "status": "pending",
+      "depends_on": ["F2-T6"]
+    },
+    {
+      "id": "F2-T34",
+      "title": "ScanCache - invalidation",
+      "description": "Implement ScanCache::invalidate() that removes all cached results for a given tool name.",
+      "test_first": "Test: put() two versions of same tool, invalidate(tool_name), then get() both -> None. Test: invalidate on empty cache -> no error.",
+      "implementation": "Read cache_dir, remove files matching {tool_name}_*.scan.json pattern.",
+      "acceptance": "All versions of tool removed from cache. No errors on empty cache.",
+      "status": "pending",
+      "depends_on": ["F2-T33"]
+    },
+    {
+      "id": "F2-T35",
+      "title": "Plugin system - discover_parser_plugins()",
+      "description": "Implement discover_parser_plugins() that scans plugins directory for .so/.dylib files. Returns empty vec when no plugins or directory missing.",
+      "test_first": "Test: empty plugins dir -> returns empty vec. Test: nonexistent dir -> returns empty vec. Test: dir with non-.so files -> returns empty vec. Test: function returns Vec<Box<dyn CliParser>>.",
+      "implementation": "Read plugins dir, filter for .so/.dylib extensions, attempt load_plugin for each. Log warnings on failures. Sort by priority.",
+      "acceptance": "Plugin discovery handles all edge cases gracefully. Returns empty vec when no valid plugins.",
+      "status": "pending",
+      "depends_on": ["F2-T8"]
+    },
+    {
+      "id": "F2-T36",
+      "title": "Plugin system - programmatic registration",
+      "description": "Implement the ability to register custom CliParser implementations programmatically via ParserPipeline::new(Some(plugins)).",
+      "test_first": "Test: create two mock parsers with different priorities. Register via new(Some(vec![...])). Call parse() with text that only mock1 can handle -> mock1.parse() called. Test priority ordering: lower priority parser used first.",
+      "implementation": "ParserPipeline::new already accepts Option<Vec<Box<dyn CliParser>>>. Ensure plugins are merged with built-ins and sorted.",
+      "acceptance": "Custom parsers registered and used in correct priority order alongside built-ins.",
+      "status": "pending",
+      "depends_on": ["F2-T25"]
+    },
+    {
+      "id": "F2-T37",
+      "title": "ScanOrchestrator - construction",
+      "description": "Implement ScanOrchestrator::new() that wires together ToolResolver, ParserPipeline, ScanCache, ManPageParser, and CompletionParser from ApexeConfig.",
+      "test_first": "Test: construct ScanOrchestrator with a test config (temp dirs). Verify it can be created without panicking. Test that cache_dir from config is used.",
+      "implementation": "Implement new() that initializes all sub-components from config fields.",
+      "acceptance": "Orchestrator constructed successfully from config. All components initialized.",
+      "status": "pending",
+      "depends_on": ["F2-T10", "F2-T26", "F2-T33", "F2-T31", "F2-T32"]
+    },
+    {
+      "id": "F2-T38",
+      "title": "ScanOrchestrator - single tool scan (Tier 1)",
+      "description": "Implement scan() for a single tool: resolve binary, run --help, parse with pipeline, discover subcommands, build ScannedCLITool.",
+      "test_first": "Test with a commonly available tool (e.g., 'echo' or 'ls'): scan returns ScannedCLITool with name, binary_path, and scan_tier=1. Test that help text is parsed (at least description or flags present).",
+      "implementation": "In scan(), iterate tool_names: resolve -> run --help -> parse -> discover subcommands -> build ScannedCLITool with tier=1.",
+      "acceptance": "Single tool scanned end-to-end. ScannedCLITool populated with basic metadata.",
+      "status": "pending",
+      "depends_on": ["F2-T37", "F2-T29"]
+    },
+    {
+      "id": "F2-T39",
+      "title": "ScanOrchestrator - cache integration",
+      "description": "Implement cache check in scan(): skip scanning if cached result exists, unless no_cache=true.",
+      "test_first": "Test: scan a tool, scan again -> second scan returns cached result (verify by checking that no subprocess would be needed). Test: scan with no_cache=true -> always runs fresh scan even if cached.",
+      "implementation": "Before scanning, check cache.get(). If hit and !no_cache, return cached. After scan, call cache.put().",
+      "acceptance": "Cache hit skips scanning. no_cache flag forces re-scan.",
+      "status": "pending",
+      "depends_on": ["F2-T38", "F2-T34"]
+    },
+    {
+      "id": "F2-T40",
+      "title": "ScanOrchestrator - Tier 2/3 enrichment",
+      "description": "Implement man page (Tier 2) and shell completion (Tier 3) enrichment in scan(). Enrich sparse Tier 1 results with additional metadata.",
+      "test_first": "Test: mock man_parser returning Some(ParsedHelp) with a description -> tool.scan_tier set to 2 when Tier 1 description was sparse. Test: mock completion_parser returning Some -> scan_tier bumped to 3.",
+      "implementation": "After Tier 1 scan, call man_parser.parse_man_page(). If result has useful data and Tier 1 was sparse, merge. Then call completion_parser for Tier 3.",
+      "acceptance": "Tier 2/3 enrichment upgrades scan_tier. Man page descriptions merged when Tier 1 sparse.",
+      "status": "pending",
+      "depends_on": ["F2-T38"]
+    },
+    {
+      "id": "F2-T41",
+      "title": "ScanOrchestrator - multi-tool scan",
+      "description": "Implement scanning multiple tools in a single scan() call, returning Vec<ScannedCLITool>.",
+      "test_first": "Test: scan([\"echo\", \"ls\"]) returns two ScannedCLITool results. Test: one tool not found -> returns error (or partial results depending on error strategy).",
+      "implementation": "Iterate tool_names, scan each, collect results. Propagate ToolNotFound error.",
+      "acceptance": "Multiple tools scanned in one call. Results returned for each.",
+      "status": "pending",
+      "depends_on": ["F2-T38"]
+    },
+    {
+      "id": "F2-T42",
+      "title": "Error handling - scan timeout and permissions",
+      "description": "Implement timeout handling for --help subprocess calls and graceful error handling for permission-denied scenarios.",
+      "test_first": "Test: mock a slow --help that would exceed timeout -> scan returns warning or error. Test: tool that returns non-zero exit code for --help -> still captures help from stderr. Test: empty help output -> warning added to ScannedCLITool.warnings.",
+      "implementation": "Add timeout to Command execution (via std::time::Duration). Handle non-zero exit codes by checking stderr. Add warnings to ScannedCLITool.warnings vec.",
+      "acceptance": "Timeouts handled gracefully. Non-zero exit codes for --help handled. Warnings populated.",
+      "status": "pending",
+      "depends_on": ["F2-T38"]
+    },
+    {
+      "id": "F2-T43",
+      "title": "GNU parser - nom-based flag line parser",
+      "description": "Implement parse_flag_line() using nom combinators as an alternative/supplement to regex-based extraction for more robust parsing.",
+      "test_first": "Test parse_flag_line: '  -m, --message=MSG   Use the given message' -> (Some(\"m\"), Some(\"message\"), Some(\"MSG\"), \"Use the given message\"). '  --all  Stage all' -> (None, Some(\"all\"), None, \"Stage all\"). '  -v  Verbose' -> (Some(\"v\"), None, None, \"Verbose\").",
+      "implementation": "Use nom combinators: multispace0, char('-'), take_while1, opt, preceded, tag(\"--\") to parse flag line structure.",
+      "acceptance": "Nom parser handles all GNU flag line variants including short-only, long-only, combined, with/without values.",
+      "status": "pending",
+      "depends_on": ["F2-T15"]
+    },
+    {
+      "id": "F2-T44",
+      "title": "Integration test - scan git",
+      "description": "End-to-end integration test that scans 'git' and verifies the command tree structure.",
+      "test_first": "Test (marked #[ignore] for CI): scan(\"git\") produces ScannedCLITool with name=\"git\", version present, subcommands including 'commit', 'push', 'pull', 'clone'. Verify 'git commit' has --message flag. Verify subcommand count > 20.",
+      "implementation": "Integration test using real git binary. Assert key structural properties of the scan result.",
+      "acceptance": "Git scan produces complete command tree with 50+ subcommands, flags on key commands verified.",
+      "status": "pending",
+      "depends_on": ["F2-T41"]
+    },
+    {
+      "id": "F2-T45",
+      "title": "Integration test - scan docker (nested subcommands)",
+      "description": "End-to-end integration test for docker with nested subcommand discovery (docker container ls).",
+      "test_first": "Test (marked #[ignore]): scan(\"docker\") with depth=2 discovers nested subcommands. Verify 'docker container' has subcommand 'ls'. Verify 'docker container ls' has --format flag.",
+      "implementation": "Integration test using real docker binary. Assert nested command tree structure.",
+      "acceptance": "Docker scan discovers multi-level subcommand tree.",
+      "status": "pending",
+      "depends_on": ["F2-T41"]
+    },
+    {
+      "id": "F2-T46",
+      "title": "Integration test - graceful degradation",
+      "description": "Test scanning a tool with unusual or minimal help output to verify graceful fallback.",
+      "test_first": "Test: scan a tool whose help output doesn't match any parser -> ScannedCLITool returned with raw description, empty flags, warnings populated. No panic or crash.",
+      "implementation": "Use a tool with non-standard help or mock a binary that outputs unusual text. Verify fallback behavior.",
+      "acceptance": "Scanner degrades gracefully. No crashes on unparseable help. Warnings present.",
+      "status": "pending",
+      "depends_on": ["F2-T41"]
+    }
+  ]
+}

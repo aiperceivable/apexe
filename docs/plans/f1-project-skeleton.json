@@ -1,0 +1,147 @@
+{
+  "feature": "f1-project-skeleton",
+  "description": "Project Skeleton & CLI Framework",
+  "language": "rust",
+  "tasks": [
+    {
+      "id": "F1-T1",
+      "title": "Initialize Cargo project with dependencies",
+      "description": "Create the apexe Cargo project with Cargo.toml containing all required dependencies (clap, serde, serde_json, serde_yaml, tokio, tracing, tracing-subscriber, thiserror, anyhow, dirs, which, shell-words, nom, regex, sha2, uuid, chrono) and dev-dependencies (assert_cmd, predicates, rstest, tempfile, tokio-test). Create minimal src/main.rs and src/lib.rs that compile.",
+      "test_first": "Write a test in tests/smoke.rs that runs `cargo build` via assert_cmd or std::process::Command and asserts exit code 0. Alternatively, a unit test in lib.rs that asserts apexe::VERSION is not empty (will fail because lib.rs doesn't exist yet).",
+      "implementation": "Create Cargo.toml with all dependencies as specified in the feature spec. Create src/lib.rs with `pub const VERSION: &str = env!(\"CARGO_PKG_VERSION\");` and placeholder module declarations (commented out). Create src/main.rs with a minimal `fn main() { println!(\"apexe\"); }`. Run `cargo build` to verify.",
+      "acceptance": "`cargo build` succeeds. `cargo test` passes the VERSION smoke test. All dependencies resolve without conflicts.",
+      "status": "pending",
+      "depends_on": []
+    },
+    {
+      "id": "F1-T2",
+      "title": "Define error types with thiserror",
+      "description": "Create src/errors.rs with the ApexeError enum covering all error variants: ToolNotFound, ScanError, ScanTimeout, ScanPermission, CommandInjection, ParseError, and transparent wrappers for Io, Yaml, and Json errors.",
+      "test_first": "Write unit tests in errors.rs that construct each error variant and assert its Display output matches the expected message. E.g., `ApexeError::ToolNotFound { tool_name: \"git\".into() }.to_string()` equals `\"Tool 'git' not found on PATH\"`.",
+      "implementation": "Create src/errors.rs with the ApexeError enum using #[derive(Debug, Error)] and all variants from the spec. Add `pub mod errors;` to lib.rs.",
+      "acceptance": "All error variants construct correctly. Display strings match the spec. `cargo test` passes all error formatting tests.",
+      "status": "pending",
+      "depends_on": ["F1-T1"]
+    },
+    {
+      "id": "F1-T3",
+      "title": "Define ApexeConfig struct and Default impl",
+      "description": "Create src/config.rs with the ApexeConfig struct (modules_dir, cache_dir, config_dir, audit_log, log_level, default_timeout, scan_depth, json_output_preference) with Serialize/Deserialize derives and a Default impl that resolves paths relative to ~/.apexe/.",
+      "test_first": "Write unit tests that: (1) ApexeConfig::default() has modules_dir ending in `.apexe/modules`, (2) default log_level is \"info\", (3) default_timeout is 30, (4) scan_depth is 2, (5) json_output_preference is true.",
+      "implementation": "Create src/config.rs with the ApexeConfig struct and Default impl as specified. Use dirs::home_dir() for platform-independent home resolution. Add `pub mod config;` to lib.rs.",
+      "acceptance": "All default value tests pass. Struct serializes to YAML and deserializes back correctly.",
+      "status": "pending",
+      "depends_on": ["F1-T1"]
+    },
+    {
+      "id": "F1-T4",
+      "title": "Config file loading from YAML",
+      "description": "Implement the load_config() function that reads a config.yaml file, deserializes it into ApexeConfig, and falls back to defaults when the file does not exist or is malformed.",
+      "test_first": "Write tests using tempfile::TempDir that: (1) load_config with no file returns defaults, (2) load_config with a valid YAML file returns parsed values, (3) load_config with malformed YAML returns defaults (not an error).",
+      "implementation": "Implement load_config(config_path, cli_overrides) in config.rs. When config_path is None, derive the path from default config_dir. If file exists, parse YAML; on parse error, warn and use defaults. Return anyhow::Result<ApexeConfig>.",
+      "acceptance": "Tests pass for: missing file (defaults), valid file (parsed), malformed file (defaults with warning). No panics on any input.",
+      "status": "pending",
+      "depends_on": ["F1-T3"]
+    },
+    {
+      "id": "F1-T5",
+      "title": "Config env var overrides",
+      "description": "Extend load_config() to check environment variables (APEXE_MODULES_DIR, APEXE_CACHE_DIR, APEXE_LOG_LEVEL, APEXE_TIMEOUT) and override config file values.",
+      "test_first": "Write rstest parameterized tests that set each env var, call load_config(), and assert the corresponding field is overridden. Test invalid APEXE_TIMEOUT (non-numeric) falls back to default. Use serial test execution or temp env to avoid test interference.",
+      "implementation": "After loading from file, check each env var with std::env::var() and override the matching ApexeConfig field. For APEXE_TIMEOUT, parse to u64 and warn on failure.",
+      "acceptance": "Each env var correctly overrides its field. Invalid values produce warnings but do not cause errors. Tests are isolated (env vars cleaned up after each test).",
+      "status": "pending",
+      "depends_on": ["F1-T4"]
+    },
+    {
+      "id": "F1-T6",
+      "title": "Config CLI flag overrides",
+      "description": "Extend load_config() to accept a HashMap of CLI overrides that take highest priority over both config file and env vars.",
+      "test_first": "Write tests that provide cli_overrides HashMap with modules_dir, log_level, and scan_depth entries, and assert they override both file and env var values.",
+      "implementation": "After env var resolution, apply cli_overrides HashMap entries to the matching ApexeConfig fields. Support keys: modules_dir, log_level, scan_depth.",
+      "acceptance": "CLI overrides take highest priority. Three-tier resolution order is correct: defaults < file < env vars < CLI flags.",
+      "status": "pending",
+      "depends_on": ["F1-T5"]
+    },
+    {
+      "id": "F1-T7",
+      "title": "Output directory management (ensure_dirs)",
+      "description": "Implement ApexeConfig::ensure_dirs() that creates modules_dir, cache_dir, and config_dir if they do not exist.",
+      "test_first": "Write tests using tempfile::TempDir that: (1) ensure_dirs creates all three directories when they don't exist, (2) ensure_dirs succeeds when directories already exist (idempotent), (3) ensure_dirs returns io::Error on permission denied (if testable).",
+      "implementation": "Add ensure_dirs(&self) -> std::io::Result<()> to ApexeConfig that calls std::fs::create_dir_all for each directory path.",
+      "acceptance": "Directories are created. Method is idempotent. Returns proper errors on filesystem failures.",
+      "status": "pending",
+      "depends_on": ["F1-T3"]
+    },
+    {
+      "id": "F1-T8",
+      "title": "Define CLI struct with clap derive (Cli and Commands)",
+      "description": "Create src/cli/mod.rs with the Cli struct (Parser derive, log_level global arg, Commands subcommand) and Commands enum with Scan, Serve, List, Config variants. Each variant uses a placeholder Args struct.",
+      "test_first": "Write unit tests that: (1) Cli::try_parse_from([\"apexe\", \"scan\", \"git\"]) succeeds and command is Commands::Scan, (2) Cli::try_parse_from([\"apexe\"]) fails (subcommand required), (3) Cli::try_parse_from([\"apexe\", \"--log-level\", \"debug\", \"scan\", \"git\"]) sets log_level to \"debug\".",
+      "implementation": "Create src/cli/mod.rs with Cli, Commands, ScanArgs, ServeArgs, ListArgs, ConfigArgs as specified in the feature spec. All execute() methods return todo!(). Add `pub mod cli;` to lib.rs.",
+      "acceptance": "All subcommands parse correctly. Global --log-level flag works. Required arguments are enforced by clap. try_parse_from tests all pass.",
+      "status": "pending",
+      "depends_on": ["F1-T3", "F1-T2"]
+    },
+    {
+      "id": "F1-T9",
+      "title": "ScanArgs validation (tools required, depth range)",
+      "description": "Ensure ScanArgs enforces: tools is non-empty (required = true), depth is 1-5 (value_parser range), format is one of json/yaml/table.",
+      "test_first": "Write tests that: (1) `apexe scan` with no tools fails with exit code 2, (2) `apexe scan git --depth 0` fails, (3) `apexe scan git --depth 6` fails, (4) `apexe scan git --depth 3` succeeds, (5) `apexe scan git --format xml` fails, (6) `apexe scan git --format json` succeeds.",
+      "implementation": "ScanArgs fields already have the correct clap attributes from T8. This task verifies edge cases via tests and adjusts any attribute details if needed.",
+      "acceptance": "All argument validation tests pass. Invalid inputs produce helpful clap error messages.",
+      "status": "pending",
+      "depends_on": ["F1-T8"]
+    },
+    {
+      "id": "F1-T10",
+      "title": "ServeArgs and ListArgs validation",
+      "description": "Verify ServeArgs enforces: transport is one of stdio/http/sse, port is 1-65535. Verify ListArgs enforces: format is one of json/table.",
+      "test_first": "Write tests that: (1) `apexe serve` parses with all defaults, (2) `apexe serve --transport invalid` fails, (3) `apexe serve --port 0` fails, (4) `apexe list --format json` succeeds, (5) `apexe list --format xml` fails.",
+      "implementation": "ServeArgs and ListArgs fields already have correct clap attributes from T8. This task adds validation edge-case tests and fixes any issues.",
+      "acceptance": "All argument validation tests pass for serve and list subcommands.",
+      "status": "pending",
+      "depends_on": ["F1-T8"]
+    },
+    {
+      "id": "F1-T11",
+      "title": "Logging setup with tracing",
+      "description": "Wire up tracing-subscriber in main.rs with EnvFilter that respects the --log-level CLI flag and RUST_LOG env var.",
+      "test_first": "Write a test that verifies: (1) default log level is \"info\" when no flag or env var is set, (2) --log-level debug flag is passed through to the Cli struct. (Tracing subscriber initialization is hard to unit test, so test the Cli parsing and verify main.rs compiles with the subscriber setup.)",
+      "implementation": "Update src/main.rs to parse Cli, initialize tracing_subscriber::fmt() with EnvFilter from RUST_LOG or cli.log_level, then call cli.run(). The subscriber uses try_from_default_env() with fallback to the CLI flag value.",
+      "acceptance": "Binary compiles and runs. RUST_LOG=debug produces debug output. --log-level trace produces trace output. Default produces info-level output only.",
+      "status": "pending",
+      "depends_on": ["F1-T8"]
+    },
+    {
+      "id": "F1-T12",
+      "title": "Cli::run() dispatches to subcommands with config",
+      "description": "Implement Cli::run() that loads config via load_config(), calls ensure_dirs(), and dispatches to the appropriate subcommand's execute() method. Subcommand execute() methods remain todo!() stubs except for config.",
+      "test_first": "Write a test that constructs a Cli with Commands::Config(ConfigArgs { show: false, init: false }) and calls run() -- it should succeed (no-op config command). Test that run() calls ensure_dirs by verifying directories are created in a temp environment.",
+      "implementation": "Implement Cli::run(self) -> anyhow::Result<()> that calls load_config(None, None), config.ensure_dirs(), then matches on self.command to dispatch. Config execute with no flags is a no-op Ok(()).",
+      "acceptance": "Cli::run() dispatches correctly. Config directories are created. Config subcommand with no flags returns Ok(()).",
+      "status": "pending",
+      "depends_on": ["F1-T7", "F1-T8", "F1-T4"]
+    },
+    {
+      "id": "F1-T13",
+      "title": "ConfigArgs --show and --init implementation",
+      "description": "Implement ConfigArgs::execute() for --show (print resolved config as YAML) and --init (write default config.yaml if it doesn't exist).",
+      "test_first": "Write tests that: (1) --show prints valid YAML that deserializes back to ApexeConfig, (2) --init creates config.yaml in a temp dir with valid YAML content, (3) --init on existing file prints 'already exists' message without overwriting.",
+      "implementation": "In ConfigArgs::execute(), if show: serialize config to YAML and println. If init: check if config_dir/config.yaml exists; if not, write default config; if yes, print 'already exists'.",
+      "acceptance": "config --show outputs valid parseable YAML. config --init creates file only when absent. Existing files are not overwritten.",
+      "status": "pending",
+      "depends_on": ["F1-T12"]
+    },
+    {
+      "id": "F1-T14",
+      "title": "CLI integration tests with assert_cmd",
+      "description": "Create tests/cli_integration.rs with end-to-end tests using assert_cmd that test the compiled binary: --help, --version, scan --help, serve --help, scan with no args, and config subcommand.",
+      "test_first": "Write integration tests: (1) `apexe --help` succeeds and stdout contains scan/serve/list/config, (2) `apexe --version` succeeds and stdout contains version string, (3) `apexe scan --help` shows TOOLS, --output-dir, --depth, --no-cache, --format, (4) `apexe serve --help` shows --transport, --host, --port, --a2a, --explorer, (5) `apexe scan` with no args exits with code 2, (6) `apexe config --show` succeeds.",
+      "implementation": "Create tests/cli_integration.rs using assert_cmd::Command::cargo_bin(\"apexe\") and predicates for output assertions. These tests compile the binary and run it as a subprocess.",
+      "acceptance": "All integration tests pass. Tests verify user-facing behavior of the CLI including help text, version, argument validation, and basic command execution.",
+      "status": "pending",
+      "depends_on": ["F1-T12", "F1-T13"]
+    }
+  ]
+}
