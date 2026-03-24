@@ -143,10 +143,7 @@ mod tests {
     fn test_run_help_nonexistent_tool() {
         let pipeline = ParserPipeline::new(None);
         let discovery = SubcommandDiscovery::new(&pipeline, 2);
-        let result = discovery.run_help(
-            "zzz_no_such_tool_xyz",
-            &["zzz_no_such_tool_xyz".into()],
-        );
+        let result = discovery.run_help("zzz_no_such_tool_xyz", &["zzz_no_such_tool_xyz".into()]);
         assert!(result.is_none());
     }
 }

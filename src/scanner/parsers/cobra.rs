@@ -33,7 +33,8 @@ impl CliParser for CobraHelpParser {
         let global_flags = extract_cobra_flags(help_text, "Global Flags:");
         flags.extend(global_flags);
         let positional_args = extract_cobra_args(help_text);
-        let structured_output = super::structured_output::StructuredOutputDetector.detect(&flags, help_text);
+        let structured_output =
+            super::structured_output::StructuredOutputDetector.detect(&flags, help_text);
 
         Ok(ParsedHelp {
             description,
@@ -108,12 +109,19 @@ fn extract_cobra_flags(help_text: &str, section_header: &str) -> Vec<ScannedFlag
     let section_end = section_text
         .lines()
         .skip(1) // skip the blank line after header
-        .position(|line| {
-            !line.starts_with(' ') && !line.trim().is_empty()
-        })
+        .position(|line| !line.starts_with(' ') && !line.trim().is_empty())
         .map(|pos| {
-            section_text.lines().skip(1).take(pos).map(|l| l.len() + 1).sum::<usize>()
-                + section_text.lines().next().map(|l| l.len() + 1).unwrap_or(0)
+            section_text
+                .lines()
+                .skip(1)
+                .take(pos)
+                .map(|l| l.len() + 1)
+                .sum::<usize>()
+                + section_text
+                    .lines()
+                    .next()
+                    .map(|l| l.len() + 1)
+                    .unwrap_or(0)
         })
         .unwrap_or(section_text.len());
 
@@ -269,10 +277,7 @@ Global Flags:
             .find(|f| f.long_name.as_deref() == Some("--kubeconfig"));
         assert!(kubeconfig.is_some());
         let kubeconfig = kubeconfig.unwrap();
-        assert_eq!(
-            kubeconfig.default.as_deref(),
-            Some("~/.kube/config")
-        );
+        assert_eq!(kubeconfig.default.as_deref(), Some("~/.kube/config"));
     }
 
     #[test]

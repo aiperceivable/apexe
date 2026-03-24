@@ -40,13 +40,7 @@ pub fn generate_cursor_config(name: &str) -> String {
 }
 
 /// Generate config based on transport type.
-pub fn generate_config(
-    format: &str,
-    name: &str,
-    transport: &str,
-    host: &str,
-    port: u16,
-) -> String {
+pub fn generate_config(format: &str, name: &str, transport: &str, host: &str, port: u16) -> String {
     match (format, transport) {
         ("claude-desktop", "stdio") => generate_claude_config_stdio(name),
         ("claude-desktop", _) => generate_claude_config_http(name, host, port),
@@ -66,9 +60,7 @@ mod tests {
         let parsed: Value = serde_json::from_str(&config).unwrap();
 
         assert_eq!(parsed["mcpServers"]["apexe"]["command"], "apexe");
-        let args = parsed["mcpServers"]["apexe"]["args"]
-            .as_array()
-            .unwrap();
+        let args = parsed["mcpServers"]["apexe"]["args"].as_array().unwrap();
         assert_eq!(args, &["serve", "--transport", "stdio"]);
     }
 
@@ -89,9 +81,7 @@ mod tests {
         let parsed: Value = serde_json::from_str(&config).unwrap();
 
         assert_eq!(parsed["mcpServers"]["apexe"]["command"], "apexe");
-        let args = parsed["mcpServers"]["apexe"]["args"]
-            .as_array()
-            .unwrap();
+        let args = parsed["mcpServers"]["apexe"]["args"].as_array().unwrap();
         assert_eq!(args, &["serve"]);
     }
 

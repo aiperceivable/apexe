@@ -84,9 +84,7 @@ mod tests {
     #[test]
     fn test_too_long_module_id() {
         // Create a path that will exceed 128 chars
-        let long_segments: Vec<String> = (0..30)
-            .map(|i| format!("segment{i}"))
-            .collect();
+        let long_segments: Vec<String> = (0..30).map(|i| format!("segment{i}")).collect();
         let result = generate_module_id("toolname", &long_segments);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();

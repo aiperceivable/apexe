@@ -32,7 +32,8 @@ impl CliParser for ClapHelpParser {
         let flags = extract_clap_flags(help_text);
         let positional_args = extract_clap_args(help_text);
         let subcommand_names = extract_clap_subcommands(help_text);
-        let structured_output = super::structured_output::StructuredOutputDetector.detect(&flags, help_text);
+        let structured_output =
+            super::structured_output::StructuredOutputDetector.detect(&flags, help_text);
 
         Ok(ParsedHelp {
             description,
@@ -67,10 +68,9 @@ fn extract_clap_description(help_text: &str) -> String {
 fn extract_clap_flags(help_text: &str) -> Vec<ScannedFlag> {
     // Clap format: "  -f, --flag <VALUE>  Description"
     // Or: "      --flag <VALUE>  Description"
-    let flag_re = Regex::new(
-        r"(?m)^\s{2,}(-([a-zA-Z]),?\s+)?(--([a-z][\w-]*))(?:\s+<([^>]+)>)?\s{2,}(.+)"
-    )
-    .unwrap();
+    let flag_re =
+        Regex::new(r"(?m)^\s{2,}(-([a-zA-Z]),?\s+)?(--([a-z][\w-]*))(?:\s+<([^>]+)>)?\s{2,}(.+)")
+            .unwrap();
 
     let default_re = Regex::new(r"\[default:\s*([^\]]+)\]").unwrap();
     let enum_re = Regex::new(r"\[possible values:\s*([^\]]+)\]").unwrap();
@@ -281,7 +281,9 @@ SUBCOMMANDS:
     fn test_clap_possible_values() {
         let help = "Usage: tool [OPTIONS]\n\nOptions:\n  -f, --format <FMT>  Output format [possible values: json, yaml, toml]\n";
         let flags = extract_clap_flags(help);
-        let fmt = flags.iter().find(|f| f.long_name.as_deref() == Some("--format"));
+        let fmt = flags
+            .iter()
+            .find(|f| f.long_name.as_deref() == Some("--format"));
         assert!(fmt.is_some());
         let fmt = fmt.unwrap();
         assert_eq!(fmt.value_type, ValueType::Enum);

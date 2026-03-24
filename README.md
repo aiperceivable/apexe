@@ -219,6 +219,15 @@ RUST_LOG=debug apexe scan git
 apexe --log-level debug scan git
 ```
 
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [User Manual](docs/user-manual.md) | Installation, commands, configuration, and troubleshooting guide |
+| [Technical Design](docs/tech-design.md) | Architecture, design decisions, and protocol details |
+| [Feature Manifest](docs/FEATURE_MANIFEST.md) | Feature decomposition, status, and scope summary |
+| [Feature Specs](docs/features/overview.md) | Detailed specifications for each feature (F1–F5) |
+
 ## License
 
 Apache-2.0

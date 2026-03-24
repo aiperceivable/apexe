@@ -89,8 +89,7 @@ pub fn extract_flags(help_text: &str) -> Vec<ScannedFlag> {
     ).unwrap();
 
     // Also match short-only flags: "  -v  Verbose"
-    let short_only_re =
-        Regex::new(r"(?m)^\s{2,}-([a-zA-Z0-9])(?:\s([A-Z_]+))?\s{2,}(.+)").unwrap();
+    let short_only_re = Regex::new(r"(?m)^\s{2,}-([a-zA-Z0-9])(?:\s([A-Z_]+))?\s{2,}(.+)").unwrap();
 
     let default_re = Regex::new(r"\[default:\s*([^\]]+)\]").unwrap();
     let enum_re = Regex::new(r"\{([^}]+)\}").unwrap();
@@ -102,7 +101,9 @@ pub fn extract_flags(help_text: &str) -> Vec<ScannedFlag> {
     for cap in flag_re.captures_iter(help_text) {
         let short_name = cap.get(2).map(|m| format!("-{}", m.as_str()));
         let long_name = cap.get(4).map(|m| format!("--{}", m.as_str()));
-        let value_name = cap.get(6).map(|m| m.as_str().trim_matches('<').trim_matches('>').to_string());
+        let value_name = cap
+            .get(6)
+            .map(|m| m.as_str().trim_matches('<').trim_matches('>').to_string());
         let description = cap
             .get(7)
             .map(|m| m.as_str().trim().to_string())
@@ -117,7 +118,14 @@ pub fn extract_flags(help_text: &str) -> Vec<ScannedFlag> {
             seen_short.insert(sn.clone());
         }
 
-        let flag = build_flag(long_name, short_name, description, value_name, &default_re, &enum_re);
+        let flag = build_flag(
+            long_name,
+            short_name,
+            description,
+            value_name,
+            &default_re,
+            &enum_re,
+        );
         flags.push(flag);
     }
 
@@ -141,7 +149,14 @@ pub fn extract_flags(help_text: &str) -> Vec<ScannedFlag> {
             .unwrap_or_default();
 
         seen_short.insert(short_name.clone());
-        let flag = build_flag(None, Some(short_name), description, value_name, &default_re, &enum_re);
+        let flag = build_flag(
+            None,
+            Some(short_name),
+            description,
+            value_name,
+            &default_re,
+            &enum_re,
+        );
         flags.push(flag);
     }
 
@@ -368,8 +383,7 @@ fn parse_value_name(input: &str) -> IResult<&str, &str> {
         }
         // Try uppercase value name — must be all uppercase and followed by whitespace
         if after_space.starts_with(|c: char| c.is_uppercase()) {
-            let (rest, val) =
-                take_while1(|c: char| c.is_uppercase() || c == '_')(after_space)?;
+            let (rest, val) = take_while1(|c: char| c.is_uppercase() || c == '_')(after_space)?;
             // Ensure the token is followed by whitespace or end of input
             // to distinguish "MSG  description" from "Message text"
             if rest.is_empty() || rest.starts_with(' ') {
@@ -460,7 +474,8 @@ mod tests {
     #[test]
     fn test_can_parse_rejects_cobra() {
         let parser = GnuHelpParser;
-        let cobra_help = "Usage:\n  kubectl [command]\n\nAvailable Commands:\n  apply  Apply config\n";
+        let cobra_help =
+            "Usage:\n  kubectl [command]\n\nAvailable Commands:\n  apply  Apply config\n";
         assert!(!parser.can_parse(cobra_help, "kubectl"));
     }
 
@@ -538,8 +553,7 @@ mod tests {
     // T16: enum, default, required, repeatable detection
     #[test]
     fn test_extract_flags_enum_values() {
-        let help =
-            "Options:\n  -f, --format FMT   Output format {json,text,csv}\n";
+        let help = "Options:\n  -f, --format FMT   Output format {json,text,csv}\n";
         let flags = extract_flags(help);
         assert_eq!(flags.len(), 1);
         assert_eq!(flags[0].value_type, ValueType::Enum);
@@ -611,7 +625,8 @@ mod tests {
     // T18: extract_subcommands
     #[test]
     fn test_extract_subcommands() {
-        let help = "Commands:\n  commit  Record changes\n  push    Upload changes\n\nSome other section\n";
+        let help =
+            "Commands:\n  commit  Record changes\n  push    Upload changes\n\nSome other section\n";
         let subs = extract_subcommands(help);
         assert_eq!(subs, vec!["commit", "push"]);
     }

@@ -20,12 +20,8 @@ impl CompletionParser {
     /// Returns ParsedHelp or None.
     pub fn parse_completions(&self, tool_name: &str) -> Option<ParsedHelp> {
         let paths = [
-            PathBuf::from(format!(
-                "/usr/share/zsh/functions/Completion/_{tool_name}"
-            )),
-            PathBuf::from(format!(
-                "/usr/local/share/zsh/site-functions/_{tool_name}"
-            )),
+            PathBuf::from(format!("/usr/share/zsh/functions/Completion/_{tool_name}")),
+            PathBuf::from(format!("/usr/local/share/zsh/site-functions/_{tool_name}")),
             PathBuf::from(format!("/etc/bash_completion.d/{tool_name}")),
         ];
 

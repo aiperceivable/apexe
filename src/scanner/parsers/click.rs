@@ -32,7 +32,8 @@ impl CliParser for ClickHelpParser {
         let flags = extract_click_flags(help_text);
         let positional_args = extract_click_args(help_text);
         let subcommand_names = extract_click_subcommands(help_text);
-        let structured_output = super::structured_output::StructuredOutputDetector.detect(&flags, help_text);
+        let structured_output =
+            super::structured_output::StructuredOutputDetector.detect(&flags, help_text);
 
         Ok(ParsedHelp {
             description,
@@ -69,9 +70,8 @@ fn extract_click_flags(help_text: &str) -> Vec<ScannedFlag> {
     ).unwrap();
 
     // Separate pattern for --flag/--no-flag boolean toggles
-    let toggle_re = Regex::new(
-        r"(?m)^\s{2,}(--([a-z][\w-]*))\s*/\s*(--no-[\w-]+)\s{2,}(.+)"
-    ).unwrap();
+    let toggle_re =
+        Regex::new(r"(?m)^\s{2,}(--([a-z][\w-]*))\s*/\s*(--no-[\w-]+)\s{2,}(.+)").unwrap();
 
     let default_re = Regex::new(r"\[default:\s*([^\]]+)\]").unwrap();
     let enum_re = Regex::new(r"\[([a-zA-Z0-9_]+(?:\|[a-zA-Z0-9_]+)+)\]").unwrap();
@@ -104,7 +104,10 @@ fn extract_click_flags(help_text: &str) -> Vec<ScannedFlag> {
         let short_name = cap.get(2).map(|m| format!("-{}", m.as_str()));
         let long_name = Some(format!("--{}", &cap[4]));
         let type_str = cap.get(5).map(|m| m.as_str());
-        let description = cap.get(6).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
+        let description = cap
+            .get(6)
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
 
         if let Some(ref ln) = long_name {
             if !seen.insert(ln.clone()) {
@@ -258,7 +261,10 @@ Commands:
     fn test_click_parse_flags_text_type() {
         let parser = ClickHelpParser;
         let result = parser.parse(CLICK_HELP, "flask").unwrap();
-        let env_flag = result.flags.iter().find(|f| f.long_name.as_deref() == Some("--env"));
+        let env_flag = result
+            .flags
+            .iter()
+            .find(|f| f.long_name.as_deref() == Some("--env"));
         assert!(env_flag.is_some());
         let env_flag = env_flag.unwrap();
         assert_eq!(env_flag.value_type, ValueType::String);
@@ -269,7 +275,10 @@ Commands:
     fn test_click_parse_toggle_flag() {
         let parser = ClickHelpParser;
         let result = parser.parse(CLICK_HELP, "flask").unwrap();
-        let debug_flag = result.flags.iter().find(|f| f.long_name.as_deref() == Some("--debug"));
+        let debug_flag = result
+            .flags
+            .iter()
+            .find(|f| f.long_name.as_deref() == Some("--debug"));
         assert!(debug_flag.is_some());
         assert_eq!(debug_flag.unwrap().value_type, ValueType::Boolean);
     }
@@ -278,7 +287,9 @@ Commands:
     fn test_click_integer_type() {
         let help = "Usage: tool [OPTIONS]\n\nOptions:\n  --count INTEGER  Number of items\n";
         let flags = extract_click_flags(help);
-        let count = flags.iter().find(|f| f.long_name.as_deref() == Some("--count"));
+        let count = flags
+            .iter()
+            .find(|f| f.long_name.as_deref() == Some("--count"));
         assert!(count.is_some());
         assert_eq!(count.unwrap().value_type, ValueType::Integer);
     }
@@ -287,7 +298,9 @@ Commands:
     fn test_click_path_type() {
         let help = "Usage: tool [OPTIONS]\n\nOptions:\n  --input PATH  Input file\n";
         let flags = extract_click_flags(help);
-        let input = flags.iter().find(|f| f.long_name.as_deref() == Some("--input"));
+        let input = flags
+            .iter()
+            .find(|f| f.long_name.as_deref() == Some("--input"));
         assert!(input.is_some());
         assert_eq!(input.unwrap().value_type, ValueType::Path);
     }
@@ -296,16 +309,21 @@ Commands:
     fn test_click_required_detection() {
         let help = "Usage: tool [OPTIONS]\n\nOptions:\n  --name TEXT  Your name [required]\n";
         let flags = extract_click_flags(help);
-        let name = flags.iter().find(|f| f.long_name.as_deref() == Some("--name"));
+        let name = flags
+            .iter()
+            .find(|f| f.long_name.as_deref() == Some("--name"));
         assert!(name.is_some());
         assert!(name.unwrap().required);
     }
 
     #[test]
     fn test_click_enum_detection() {
-        let help = "Usage: tool [OPTIONS]\n\nOptions:\n  --format TEXT  Output format [json|text|csv]\n";
+        let help =
+            "Usage: tool [OPTIONS]\n\nOptions:\n  --format TEXT  Output format [json|text|csv]\n";
         let flags = extract_click_flags(help);
-        let fmt = flags.iter().find(|f| f.long_name.as_deref() == Some("--format"));
+        let fmt = flags
+            .iter()
+            .find(|f| f.long_name.as_deref() == Some("--format"));
         assert!(fmt.is_some());
         let fmt = fmt.unwrap();
         assert_eq!(fmt.value_type, ValueType::Enum);

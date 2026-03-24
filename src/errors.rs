@@ -67,10 +67,7 @@ mod tests {
             command: "git status".into(),
             timeout: 30,
         };
-        assert_eq!(
-            err.to_string(),
-            "Command 'git status' timed out after 30s"
-        );
+        assert_eq!(err.to_string(), "Command 'git status' timed out after 30s");
     }
 
     #[test]
@@ -78,10 +75,7 @@ mod tests {
         let err = ApexeError::ScanPermission {
             command: "secret-tool".into(),
         };
-        assert_eq!(
-            err.to_string(),
-            "Permission denied executing 'secret-tool'"
-        );
+        assert_eq!(err.to_string(), "Permission denied executing 'secret-tool'");
     }
 
     #[test]

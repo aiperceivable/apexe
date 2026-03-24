@@ -48,12 +48,8 @@ fn test_full_governance_pipeline() {
 
     // Verify all bindings have confidence metadata
     for binding in &bindings {
-        assert!(binding
-            .metadata
-            .contains_key("apexe_annotation_confidence"));
-        assert!(binding
-            .metadata
-            .contains_key("apexe_annotation_reasoning"));
+        assert!(binding.metadata.contains_key("apexe_annotation_confidence"));
+        assert!(binding.metadata.contains_key("apexe_annotation_reasoning"));
     }
 
     // Step 3: Convert to ACL input format and generate ACL

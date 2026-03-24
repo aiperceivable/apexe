@@ -64,10 +64,7 @@ impl ParserPipeline {
                         return result;
                     }
                     Err(e) => {
-                        warn!(
-                            parser = parser.name(),
-                            "Parser failed, trying next: {e}"
-                        );
+                        warn!(parser = parser.name(), "Parser failed, trying next: {e}");
                     }
                 }
             }
@@ -171,7 +168,8 @@ mod tests {
     #[test]
     fn test_pipeline_uses_cobra_for_cobra_help() {
         let pipeline = ParserPipeline::new(None);
-        let cobra_help = "A tool\n\nAvailable Commands:\n  sub1  First\n\nFlags:\n  --verbose  Be verbose\n";
+        let cobra_help =
+            "A tool\n\nAvailable Commands:\n  sub1  First\n\nFlags:\n  --verbose  Be verbose\n";
         let result = pipeline.parse(cobra_help, "tool", None);
         assert!(result.subcommand_names.contains(&"sub1".to_string()));
     }

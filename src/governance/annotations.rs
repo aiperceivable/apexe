@@ -5,8 +5,20 @@ use crate::binding::binding_gen::GeneratedBinding;
 
 /// Command name patterns that indicate destructive operations.
 const DESTRUCTIVE_PATTERNS: &[&str] = &[
-    "delete", "remove", "rm", "drop", "kill", "destroy", "purge", "wipe", "clean", "reset",
-    "uninstall", "truncate", "erase", "revoke",
+    "delete",
+    "remove",
+    "rm",
+    "drop",
+    "kill",
+    "destroy",
+    "purge",
+    "wipe",
+    "clean",
+    "reset",
+    "uninstall",
+    "truncate",
+    "erase",
+    "revoke",
 ];
 
 /// Command name patterns that indicate read-only operations.
@@ -189,7 +201,8 @@ pub fn annotate_bindings(bindings: &mut [GeneratedBinding]) {
             })
             .unwrap_or_default();
 
-        let inferred = infer_annotations(&command_name, &full_command, &flags, &binding.description);
+        let inferred =
+            infer_annotations(&command_name, &full_command, &flags, &binding.description);
 
         // Only set annotations that are not already user-provided
         if !binding.annotations.contains_key("readonly") {
@@ -299,34 +312,19 @@ mod tests {
     // T3: Flag-based annotation boosting
     #[test]
     fn test_force_flag_requires_approval() {
-        let result = infer_annotations(
-            "push",
-            "git push",
-            &["--force".to_string()],
-            "",
-        );
+        let result = infer_annotations("push", "git push", &["--force".to_string()], "");
         assert!(result.annotations.requires_approval);
     }
 
     #[test]
     fn test_hard_flag_requires_approval() {
-        let result = infer_annotations(
-            "reset",
-            "git reset",
-            &["--hard".to_string()],
-            "",
-        );
+        let result = infer_annotations("reset", "git reset", &["--hard".to_string()], "");
         assert!(result.annotations.requires_approval);
     }
 
     #[test]
     fn test_dry_run_sets_idempotent() {
-        let result = infer_annotations(
-            "apply",
-            "kubectl apply",
-            &["--dry-run".to_string()],
-            "",
-        );
+        let result = infer_annotations("apply", "kubectl apply", &["--dry-run".to_string()], "");
         assert!(result.annotations.idempotent);
     }
 
@@ -361,12 +359,7 @@ mod tests {
     #[test]
     fn test_multi_signal_confidence() {
         // "delete" + --force -> destructive keyword + approval flag + forced approval = 3 reasons
-        let result = infer_annotations(
-            "delete",
-            "delete",
-            &["--force".to_string()],
-            "",
-        );
+        let result = infer_annotations("delete", "delete", &["--force".to_string()], "");
         assert!(result.confidence >= 0.7);
     }
 
@@ -501,10 +494,7 @@ mod tests {
             annotations: HashMap::new(),
             metadata: {
                 let mut m = HashMap::new();
-                m.insert(
-                    "apexe_command".to_string(),
-                    json!(["git", "commit"]),
-                );
+                m.insert("apexe_command".to_string(), json!(["git", "commit"]));
                 m
             },
         }];

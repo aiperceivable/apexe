@@ -89,9 +89,7 @@ impl ScanArgs {
             match binding_generator.generate(tool) {
                 Ok(mut binding_file) => {
                     // F5: Annotate bindings with governance metadata
-                    crate::governance::annotations::annotate_bindings(
-                        &mut binding_file.bindings,
-                    );
+                    crate::governance::annotations::annotate_bindings(&mut binding_file.bindings);
 
                     match binding_writer.write(&binding_file, &output_dir) {
                         Ok(path) => {
@@ -124,8 +122,7 @@ impl ScanArgs {
                                 m
                             })
                             .collect();
-                    let acl_config =
-                        crate::governance::acl::generate_acl(&acl_bindings, "deny");
+                    let acl_config = crate::governance::acl::generate_acl(&acl_bindings, "deny");
                     let acl_path = config.config_dir.join("acl.yaml");
                     crate::governance::acl::write_acl(&acl_config, &acl_path);
                 }
@@ -334,9 +331,7 @@ impl ListArgs {
             "json" => {
                 let json: Vec<serde_json::Value> = bindings
                     .iter()
-                    .map(|(id, desc)| {
-                        serde_json::json!({"module_id": id, "description": desc})
-                    })
+                    .map(|(id, desc)| serde_json::json!({"module_id": id, "description": desc}))
                     .collect();
                 println!("{}", serde_json::to_string_pretty(&json)?);
             }
@@ -519,8 +514,16 @@ mod tests {
     #[test]
     fn test_serve_with_all_flags() {
         let cli = Cli::try_parse_from([
-            "apexe", "serve", "--transport", "http", "--host", "0.0.0.0", "--port", "9000",
-            "--a2a", "--explorer",
+            "apexe",
+            "serve",
+            "--transport",
+            "http",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "9000",
+            "--a2a",
+            "--explorer",
         ])
         .unwrap();
         if let Commands::Serve(args) = cli.command {

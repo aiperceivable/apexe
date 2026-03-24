@@ -166,7 +166,10 @@ pub fn check_access(acl: &serde_json::Map<String, JsonValue>, caller: &str, targ
     };
 
     for rule in rules {
-        let effect = rule.get("effect").and_then(|v| v.as_str()).unwrap_or("deny");
+        let effect = rule
+            .get("effect")
+            .and_then(|v| v.as_str())
+            .unwrap_or("deny");
 
         let callers_match = rule
             .get("callers")

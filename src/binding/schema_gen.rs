@@ -212,7 +212,16 @@ mod tests {
 
     #[test]
     fn test_string_required_flag() {
-        let flag = make_flag(Some("--message"), Some("-m"), "Commit message", ValueType::String, true, None, None, false);
+        let flag = make_flag(
+            Some("--message"),
+            Some("-m"),
+            "Commit message",
+            ValueType::String,
+            true,
+            None,
+            None,
+            false,
+        );
         let cmd = make_command(vec![flag], vec![]);
         let gen = SchemaGenerator;
         let schema = gen.generate_input_schema(&cmd);
@@ -224,7 +233,16 @@ mod tests {
 
     #[test]
     fn test_boolean_flag_default_false() {
-        let flag = make_flag(Some("--all"), None, "All files", ValueType::Boolean, false, None, None, false);
+        let flag = make_flag(
+            Some("--all"),
+            None,
+            "All files",
+            ValueType::Boolean,
+            false,
+            None,
+            None,
+            false,
+        );
         let cmd = make_command(vec![flag], vec![]);
         let gen = SchemaGenerator;
         let schema = gen.generate_input_schema(&cmd);
@@ -235,7 +253,16 @@ mod tests {
 
     #[test]
     fn test_integer_flag_with_default() {
-        let flag = make_flag(Some("--count"), None, "Number of items", ValueType::Integer, false, Some("10"), None, false);
+        let flag = make_flag(
+            Some("--count"),
+            None,
+            "Number of items",
+            ValueType::Integer,
+            false,
+            Some("10"),
+            None,
+            false,
+        );
         let cmd = make_command(vec![flag], vec![]);
         let gen = SchemaGenerator;
         let schema = gen.generate_input_schema(&cmd);
@@ -246,7 +273,16 @@ mod tests {
 
     #[test]
     fn test_float_flag_with_default() {
-        let flag = make_flag(Some("--ratio"), None, "Ratio value", ValueType::Float, false, Some("0.5"), None, false);
+        let flag = make_flag(
+            Some("--ratio"),
+            None,
+            "Ratio value",
+            ValueType::Float,
+            false,
+            Some("0.5"),
+            None,
+            false,
+        );
         let cmd = make_command(vec![flag], vec![]);
         let gen = SchemaGenerator;
         let schema = gen.generate_input_schema(&cmd);
@@ -258,7 +294,12 @@ mod tests {
     #[test]
     fn test_enum_flag() {
         let flag = make_flag(
-            Some("--format"), None, "Output format", ValueType::Enum, false, None,
+            Some("--format"),
+            None,
+            "Output format",
+            ValueType::Enum,
+            false,
+            None,
             Some(vec!["json".to_string(), "text".to_string()]),
             false,
         );
@@ -273,7 +314,16 @@ mod tests {
 
     #[test]
     fn test_repeatable_flag() {
-        let flag = make_flag(Some("--include"), None, "Include pattern", ValueType::String, false, None, None, true);
+        let flag = make_flag(
+            Some("--include"),
+            None,
+            "Include pattern",
+            ValueType::String,
+            false,
+            None,
+            None,
+            true,
+        );
         let cmd = make_command(vec![flag], vec![]);
         let gen = SchemaGenerator;
         let schema = gen.generate_input_schema(&cmd);
@@ -284,7 +334,16 @@ mod tests {
 
     #[test]
     fn test_path_flag() {
-        let flag = make_flag(Some("--config"), None, "Config file", ValueType::Path, false, None, None, false);
+        let flag = make_flag(
+            Some("--config"),
+            None,
+            "Config file",
+            ValueType::Path,
+            false,
+            None,
+            None,
+            false,
+        );
         let cmd = make_command(vec![flag], vec![]);
         let gen = SchemaGenerator;
         let schema = gen.generate_input_schema(&cmd);
@@ -354,7 +413,16 @@ mod tests {
 
     #[test]
     fn test_no_required_when_all_optional() {
-        let flag = make_flag(Some("--verbose"), None, "", ValueType::Boolean, false, None, None, false);
+        let flag = make_flag(
+            Some("--verbose"),
+            None,
+            "",
+            ValueType::Boolean,
+            false,
+            None,
+            None,
+            false,
+        );
         let cmd = make_command(vec![flag], vec![]);
         let gen = SchemaGenerator;
         let schema = gen.generate_input_schema(&cmd);

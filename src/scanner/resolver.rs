@@ -1,8 +1,8 @@
 use std::process::Command;
 
+use crate::errors::ApexeError;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use crate::errors::ApexeError;
 
 /// Resolved tool binary information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,10 +38,7 @@ impl ToolResolver {
 
     /// Extract version from --version output.
     fn get_version(&self, binary_path: &str, _tool_name: &str) -> Option<String> {
-        let output = Command::new(binary_path)
-            .arg("--version")
-            .output()
-            .ok()?;
+        let output = Command::new(binary_path).arg("--version").output().ok()?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let first_line = stdout.lines().next()?;
@@ -186,9 +183,6 @@ mod tests {
     #[test]
     fn test_detect_unknown() {
         let text = "This is just random text with no patterns.";
-        assert_eq!(
-            detect_help_format(text),
-            crate::models::HelpFormat::Unknown
-        );
+        assert_eq!(detect_help_format(text), crate::models::HelpFormat::Unknown);
     }
 }

@@ -92,11 +92,7 @@ impl McpHandler {
         let tool_name = match params.get("name").and_then(|v| v.as_str()) {
             Some(name) => name.to_string(),
             None => {
-                return JsonRpcResponse::error(
-                    id,
-                    INVALID_PARAMS,
-                    "Missing 'name' in params",
-                );
+                return JsonRpcResponse::error(id, INVALID_PARAMS, "Missing 'name' in params");
             }
         };
 
@@ -112,19 +108,12 @@ impl McpHandler {
         };
 
         // Extract arguments from params
-        let arguments = params
-            .get("arguments")
-            .cloned()
-            .unwrap_or(json!({}));
+        let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
         // Validate arguments against input_schema (basic type check)
         if let Some(schema_type) = binding.input_schema.get("type").and_then(|t| t.as_str()) {
             if schema_type == "object" && !arguments.is_object() {
-                return JsonRpcResponse::error(
-                    id,
-                    INVALID_PARAMS,
-                    "Arguments must be an object",
-                );
+                return JsonRpcResponse::error(id, INVALID_PARAMS, "Arguments must be an object");
             }
         }
 
@@ -173,10 +162,7 @@ impl McpHandler {
                 let is_error = if exit_code != 0 { Some(true) } else { None };
 
                 let call_result = ToolsCallResult { content, is_error };
-                JsonRpcResponse::success(
-                    id,
-                    serde_json::to_value(call_result).unwrap_or(json!({})),
-                )
+                JsonRpcResponse::success(id, serde_json::to_value(call_result).unwrap_or(json!({})))
             }
             Err(e) => {
                 let call_result = ToolsCallResult {
@@ -186,10 +172,7 @@ impl McpHandler {
                     }],
                     is_error: Some(true),
                 };
-                JsonRpcResponse::success(
-                    id,
-                    serde_json::to_value(call_result).unwrap_or(json!({})),
-                )
+                JsonRpcResponse::success(id, serde_json::to_value(call_result).unwrap_or(json!({})))
             }
         }
     }
@@ -277,10 +260,7 @@ mod tests {
     #[test]
     fn test_handle_tools_call_not_found() {
         let handler = make_handler();
-        let req = make_request(
-            "tools/call",
-            Some(json!({"name": "nonexistent"})),
-        );
+        let req = make_request("tools/call", Some(json!({"name": "nonexistent"})));
         let resp = handler.handle_request(req);
 
         assert!(resp.error.is_some());

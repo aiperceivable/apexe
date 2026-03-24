@@ -51,10 +51,7 @@ struct RawBindingFile {
 /// Malformed files are logged as warnings and skipped.
 pub fn load_bindings(modules_dir: &Path) -> Result<Vec<LoadedBinding>> {
     if !modules_dir.is_dir() {
-        bail!(
-            "Modules directory not found: {}",
-            modules_dir.display()
-        );
+        bail!("Modules directory not found: {}", modules_dir.display());
     }
 
     let mut loaded = Vec::new();

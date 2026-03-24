@@ -6,8 +6,8 @@ use std::time::Instant;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use serde_json::Value as JsonValue;
+use sha2::{Digest, Sha256};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -144,7 +144,9 @@ impl AuditLogger {
 
         // Rotate: shift existing backups
         // Delete oldest if exceeding max_backups
-        let oldest = self.log_path.with_extension(format!("jsonl.{}", self.max_backups));
+        let oldest = self
+            .log_path
+            .with_extension(format!("jsonl.{}", self.max_backups));
         if oldest.exists() {
             let _ = fs::remove_file(&oldest);
         }
@@ -369,9 +371,7 @@ mod tests {
     // T11: Error resilience
     #[test]
     fn test_log_unwritable_path_no_panic() {
-        let logger = AuditLogger::new(PathBuf::from(
-            "/dev/null/impossible/path/audit.jsonl",
-        ));
+        let logger = AuditLogger::new(PathBuf::from("/dev/null/impossible/path/audit.jsonl"));
 
         let entry = AuditEntry {
             module_id: "test".into(),
@@ -383,9 +383,7 @@ mod tests {
 
     #[test]
     fn test_logger_functional_after_error() {
-        let logger_bad = AuditLogger::new(PathBuf::from(
-            "/dev/null/impossible/path/audit.jsonl",
-        ));
+        let logger_bad = AuditLogger::new(PathBuf::from("/dev/null/impossible/path/audit.jsonl"));
         let entry = AuditEntry {
             module_id: "test".into(),
             ..Default::default()
@@ -411,15 +409,7 @@ mod tests {
         let command = vec!["echo".to_string(), "hello".to_string()];
         let kwargs = serde_json::Map::new();
 
-        let result = execute_cli_with_audit(
-            &logger,
-            "echo",
-            &command,
-            30,
-            None,
-            None,
-            &kwargs,
-        );
+        let result = execute_cli_with_audit(&logger, "echo", &command, 30, None, None, &kwargs);
         assert!(result.is_ok());
 
         let content = std::fs::read_to_string(&log_path).unwrap();
@@ -470,16 +460,8 @@ mod tests {
         let command = vec!["echo".to_string(), "test".to_string()];
         let kwargs = serde_json::Map::new();
 
-        let audited = execute_cli_with_audit(
-            &logger,
-            "echo",
-            &command,
-            30,
-            None,
-            None,
-            &kwargs,
-        )
-        .unwrap();
+        let audited =
+            execute_cli_with_audit(&logger, "echo", &command, 30, None, None, &kwargs).unwrap();
 
         let direct = execute_cli("echo", &command, 30, None, None, &kwargs).unwrap();
 

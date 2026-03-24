@@ -81,10 +81,7 @@ pub fn execute_cli(
     let mut result = serde_json::Map::new();
     result.insert("stdout".to_string(), JsonValue::String(stdout.clone()));
     result.insert("stderr".to_string(), JsonValue::String(stderr));
-    result.insert(
-        "exit_code".to_string(),
-        JsonValue::Number(exit_code.into()),
-    );
+    result.insert("exit_code".to_string(), JsonValue::Number(exit_code.into()));
 
     // Attempt to parse JSON output
     if apexe_json_flag.is_some() && !stdout.trim().is_empty() {
@@ -99,7 +96,10 @@ pub fn execute_cli(
 /// Validate that a value does not contain shell injection characters.
 pub fn validate_no_injection(param_name: &str, value: &str) -> Result<(), ApexeError> {
     let injection_set: HashSet<char> = SHELL_INJECTION_CHARS.iter().copied().collect();
-    let found: Vec<char> = value.chars().filter(|c| injection_set.contains(c)).collect();
+    let found: Vec<char> = value
+        .chars()
+        .filter(|c| injection_set.contains(c))
+        .collect();
     if !found.is_empty() {
         return Err(ApexeError::CommandInjection {
             param_name: param_name.to_string(),
@@ -230,12 +230,16 @@ mod tests {
     #[test]
     fn test_json_output_parsed() {
         // echo valid JSON and set json_flag
-        let command = vec![
-            "echo".to_string(),
-            r#"{"key":"value"}"#.to_string(),
-        ];
-        let result =
-            execute_cli("echo", &command, 30, Some("--not-real"), None, &empty_kwargs()).unwrap();
+        let command = vec!["echo".to_string(), r#"{"key":"value"}"#.to_string()];
+        let result = execute_cli(
+            "echo",
+            &command,
+            30,
+            Some("--not-real"),
+            None,
+            &empty_kwargs(),
+        )
+        .unwrap();
 
         // json_output should be present since we set a json_flag
         // Note: the --not-real flag gets appended to echo args, but echo prints them
@@ -248,10 +252,7 @@ mod tests {
 
     #[test]
     fn test_no_json_output_without_flag() {
-        let command = vec![
-            "echo".to_string(),
-            r#"{"key":"value"}"#.to_string(),
-        ];
+        let command = vec!["echo".to_string(), r#"{"key":"value"}"#.to_string()];
         let result = execute_cli("echo", &command, 30, None, None, &empty_kwargs()).unwrap();
 
         // Without json_flag, json_output should NOT be present
@@ -262,9 +263,15 @@ mod tests {
     fn test_json_flag_split_two_parts() {
         // --format json should be split into two args
         let command = vec!["echo".to_string()];
-        let result =
-            execute_cli("echo", &command, 30, Some("--format json"), None, &empty_kwargs())
-                .unwrap();
+        let result = execute_cli(
+            "echo",
+            &command,
+            30,
+            Some("--format json"),
+            None,
+            &empty_kwargs(),
+        )
+        .unwrap();
 
         let stdout = result["stdout"].as_str().unwrap();
         assert!(stdout.contains("--format"));
@@ -274,9 +281,15 @@ mod tests {
     #[test]
     fn test_json_flag_single_part() {
         let command = vec!["echo".to_string()];
-        let result =
-            execute_cli("echo", &command, 30, Some("--output=json"), None, &empty_kwargs())
-                .unwrap();
+        let result = execute_cli(
+            "echo",
+            &command,
+            30,
+            Some("--output=json"),
+            None,
+            &empty_kwargs(),
+        )
+        .unwrap();
 
         let stdout = result["stdout"].as_str().unwrap();
         assert!(stdout.contains("--output=json"));

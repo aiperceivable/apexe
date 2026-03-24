@@ -103,10 +103,7 @@ fn test_scan_docker() {
     assert!(docker.version.is_some());
 
     // Check that 'container' is a subcommand
-    let container = docker
-        .subcommands
-        .iter()
-        .find(|s| s.name == "container");
+    let container = docker.subcommands.iter().find(|s| s.name == "container");
     assert!(
         container.is_some(),
         "Expected 'container' subcommand in docker"

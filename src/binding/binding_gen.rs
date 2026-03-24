@@ -51,12 +51,7 @@ impl BindingGenerator {
     /// Generate a complete binding file from a scanned tool.
     pub fn generate(&self, tool: &ScannedCLITool) -> Result<GeneratedBindingFile, ApexeError> {
         let mut bindings = Vec::new();
-        self.generate_command_bindings(
-            &tool.name,
-            &tool.subcommands,
-            &[],
-            &mut bindings,
-        )?;
+        self.generate_command_bindings(&tool.name, &tool.subcommands, &[], &mut bindings)?;
 
         // Deduplicate module IDs
         deduplicate_ids(&mut bindings);
@@ -82,7 +77,9 @@ impl BindingGenerator {
 
             let module_id = generate_module_id(tool_name, &command_path)?;
             let input_schema = self.schema_gen.generate_input_schema(command);
-            let output_schema = self.schema_gen.generate_output_schema(&command.structured_output);
+            let output_schema = self
+                .schema_gen
+                .generate_output_schema(&command.structured_output);
 
             let mut metadata = HashMap::new();
             metadata.insert("apexe_binary".to_string(), json!(tool_name));
@@ -230,9 +227,7 @@ mod tests {
 
     #[test]
     fn test_binding_metadata() {
-        let tool = make_tool_with_commands(vec![
-            make_simple_command("status", "Show status"),
-        ]);
+        let tool = make_tool_with_commands(vec![make_simple_command("status", "Show status")]);
 
         let gen = BindingGenerator::new();
         let result = gen.generate(&tool).unwrap();
@@ -269,7 +264,10 @@ mod tests {
         let gen = BindingGenerator::new();
         let result = gen.generate(&tool).unwrap();
 
-        assert_eq!(result.bindings[0].metadata["apexe_json_flag"], json!("--format=json"));
+        assert_eq!(
+            result.bindings[0].metadata["apexe_json_flag"],
+            json!("--format=json")
+        );
         assert!(result.bindings[0].output_schema["properties"]["json_output"].is_object());
     }
 
@@ -308,9 +306,7 @@ mod tests {
     #[test]
     fn test_default_impl() {
         let gen = BindingGenerator::default();
-        let tool = make_tool_with_commands(vec![
-            make_simple_command("test", "A test"),
-        ]);
+        let tool = make_tool_with_commands(vec![make_simple_command("test", "A test")]);
         let result = gen.generate(&tool);
         assert!(result.is_ok());
     }

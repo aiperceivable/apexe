@@ -143,7 +143,8 @@ mod tests {
 
     #[test]
     fn test_request_with_params() {
-        let json_str = r#"{"jsonrpc":"2.0","id":"abc","method":"tools/call","params":{"name":"cli.echo"}}"#;
+        let json_str =
+            r#"{"jsonrpc":"2.0","id":"abc","method":"tools/call","params":{"name":"cli.echo"}}"#;
         let req: JsonRpcRequest = serde_json::from_str(json_str).unwrap();
         assert_eq!(req.method, "tools/call");
         assert!(req.params.is_some());

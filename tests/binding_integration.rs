@@ -179,7 +179,10 @@ fn test_end_to_end_generate_and_write() {
     // F3-T8: Verify module IDs follow cli. prefix convention
     let module_ids: Vec<&str> = doc.bindings.iter().map(|b| b.module_id.as_str()).collect();
     for id in &module_ids {
-        assert!(id.starts_with("cli."), "Module ID '{id}' should start with 'cli.'");
+        assert!(
+            id.starts_with("cli."),
+            "Module ID '{id}' should start with 'cli.'"
+        );
     }
 
     // Verify specific module IDs
@@ -197,8 +200,16 @@ fn test_binding_schemas_present() {
 
     for binding in &binding_file.bindings {
         // Every binding should have input and output schemas
-        assert!(binding.input_schema.is_object(), "input_schema should be object for {}", binding.module_id);
-        assert!(binding.output_schema.is_object(), "output_schema should be object for {}", binding.module_id);
+        assert!(
+            binding.input_schema.is_object(),
+            "input_schema should be object for {}",
+            binding.module_id
+        );
+        assert!(
+            binding.output_schema.is_object(),
+            "output_schema should be object for {}",
+            binding.module_id
+        );
 
         // Every binding should have a target
         assert_eq!(binding.target, "apexe::executor::execute_cli");
