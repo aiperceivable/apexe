@@ -19,11 +19,15 @@ Outside-In CLI-to-Agent Bridge — automatically wraps existing CLI tools into g
 
 ## Installation
 
+Requires Rust 1.70+ and Cargo.
+
 ```bash
+# Install from crates.io
+cargo install apexe
+
+# Or install from source (for development)
 cargo install --path .
 ```
-
-Requires Rust 1.70+ and Cargo.
 
 ## Quick Start
 
@@ -137,43 +141,6 @@ CLI Tool Binary
 - Flag boosting: `--force` / `--hard` → requires_approval; `--dry-run` → idempotent
 
 ## Developer Guide
-
-### Project Structure
-
-```
-src/
-├── main.rs                 # Entry point
-├── lib.rs                  # Library root
-├── cli/mod.rs              # CLI commands (clap derive)
-├── config.rs               # Three-tier config resolution
-├── errors.rs               # Error types (thiserror)
-├── models/mod.rs           # Shared data types
-├── scanner/                # CLI Scanner Engine
-│   ├── orchestrator.rs     # Top-level scan coordinator
-│   ├── resolver.rs         # Binary path + version detection
-│   ├── pipeline.rs         # Priority-based parser selection
-│   ├── protocol.rs         # CliParser trait
-│   ├── discovery.rs        # Recursive subcommand scanning
-│   ├── cache.rs            # Filesystem scan cache
-│   └── parsers/            # GNU, Click, Cobra, Clap parsers
-├── binding/                # Binding Generator
-│   ├── binding_gen.rs      # ScannedCLITool → binding YAML
-│   ├── module_id.rs        # Command path → module ID
-│   ├── schema_gen.rs       # Flags/args → JSON Schema
-│   └── writer.rs           # YAML serialization
-├── executor/mod.rs         # Subprocess execution (injection prevention)
-├── serve/                  # MCP Server
-│   ├── handler.rs          # JSON-RPC dispatch
-│   ├── stdio.rs            # Stdio transport
-│   ├── http.rs             # Axum HTTP transport
-│   ├── loader.rs           # Binding file loader
-│   ├── registry.rs         # Tool registry
-│   └── config_gen.rs       # Integration config snippets
-└── governance/             # Governance Defaults
-    ├── annotations.rs      # Destructive/readonly inference
-    ├── acl.rs              # ACL generation
-    └── audit.rs            # JSONL audit trail
-```
 
 ### Build & Test
 

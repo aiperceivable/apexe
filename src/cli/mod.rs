@@ -225,25 +225,29 @@ impl ServeArgs {
             .modules_dir
             .unwrap_or_else(|| config.modules_dir.clone());
 
-        // Validate modules directory
-        if !modules_dir.is_dir() {
-            anyhow::bail!("Modules directory not found: {}", modules_dir.display());
-        }
-
-        // Load bindings
-        let bindings = crate::serve::loader::load_bindings(&modules_dir)?;
-        if bindings.is_empty() {
-            anyhow::bail!(
-                "No .binding.yaml files found in {}. Run `apexe scan` first.",
+        // Load bindings (empty is OK — server starts with zero tools)
+        let bindings = if modules_dir.is_dir() {
+            let loaded = crate::serve::loader::load_bindings(&modules_dir)?;
+            if loaded.is_empty() {
+                eprintln!(
+                    "Warning: No .binding.yaml files found in {}. Run `apexe scan` to add tools.",
+                    modules_dir.display()
+                );
+            } else {
+                eprintln!(
+                    "Loaded {} tool(s) from {}",
+                    loaded.len(),
+                    modules_dir.display()
+                );
+            }
+            loaded
+        } else {
+            eprintln!(
+                "Warning: Modules directory not found: {}. Starting with zero tools.",
                 modules_dir.display()
             );
-        }
-
-        eprintln!(
-            "Loaded {} tool(s) from {}",
-            bindings.len(),
-            modules_dir.display()
-        );
+            vec![]
+        };
 
         // Build registry and handler
         let registry = crate::serve::registry::ToolRegistry::from_bindings(bindings);

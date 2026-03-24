@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
@@ -33,9 +33,11 @@ pub async fn serve_http(handler: McpHandler, host: &str, port: u16) -> Result<()
 /// Build the axum router (exposed for testing).
 pub(crate) fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
+        .route("/", get(handle_root))
         .route("/mcp", post(handle_mcp_post))
         .route("/mcp/sse", get(handle_sse_stub))
         .route("/health", get(handle_health))
+        .route("/explorer", get(handle_explorer))
         .with_state(state)
 }
 
@@ -57,6 +59,76 @@ async fn handle_sse_stub() -> impl IntoResponse {
 
 async fn handle_health() -> impl IntoResponse {
     Json(json!({"status": "ok"}))
+}
+
+async fn handle_root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let tools: Vec<&str> = state
+        .handler
+        .registry()
+        .list()
+        .iter()
+        .map(|b| b.module_id.as_str())
+        .collect();
+    Json(json!({
+        "name": state.handler.server_name(),
+        "version": crate::VERSION,
+        "protocol": "MCP",
+        "transport": "http",
+        "tools_count": tools.len(),
+        "endpoints": {
+            "mcp": "POST /mcp",
+            "health": "GET /health",
+            "explorer": "GET /explorer"
+        }
+    }))
+}
+
+async fn handle_explorer(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let tools = state.handler.registry().list();
+    let mut rows = String::new();
+    for tool in &tools {
+        let annotations_json =
+            serde_json::to_string(&tool.annotations).unwrap_or_else(|_| "{}".to_string());
+        rows.push_str(&format!(
+            "<tr><td><code>{}</code></td><td>{}</td><td><code>{}</code></td></tr>\n",
+            tool.module_id, tool.description, annotations_json,
+        ));
+    }
+    if rows.is_empty() {
+        rows = "<tr><td colspan=\"3\">No tools loaded. Run <code>apexe scan &lt;tool&gt;</code> to add tools.</td></tr>".to_string();
+    }
+    Html(format!(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{name} — Tool Explorer</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }}
+  h1 {{ border-bottom: 2px solid #7c3aed; padding-bottom: 0.5rem; }}
+  table {{ width: 100%; border-collapse: collapse; margin-top: 1rem; }}
+  th, td {{ text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #e5e7eb; }}
+  th {{ background: #f9fafb; font-weight: 600; }}
+  code {{ background: #f3f4f6; padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.9em; }}
+  .meta {{ color: #6b7280; font-size: 0.9rem; margin-bottom: 1rem; }}
+</style>
+</head>
+<body>
+<h1>{name}</h1>
+<p class="meta">apexe v{version} — {count} tool(s) loaded</p>
+<table>
+<thead><tr><th>Module ID</th><th>Description</th><th>Annotations</th></tr></thead>
+<tbody>
+{rows}
+</tbody>
+</table>
+</body>
+</html>"#,
+        name = state.handler.server_name(),
+        version = crate::VERSION,
+        count = tools.len(),
+        rows = rows,
+    ))
 }
 
 /// Create an app state for testing.

@@ -20,6 +20,16 @@ impl McpHandler {
         }
     }
 
+    /// Returns a reference to the tool registry.
+    pub fn registry(&self) -> &ToolRegistry {
+        &self.registry
+    }
+
+    /// Returns the server name.
+    pub fn server_name(&self) -> &str {
+        &self.server_name
+    }
+
     /// Handle a JSON-RPC request and return a response.
     pub fn handle_request(&self, request: JsonRpcRequest) -> JsonRpcResponse {
         info!(method = %request.method, "Handling MCP request");
