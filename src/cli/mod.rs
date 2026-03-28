@@ -184,28 +184,61 @@ pub struct ServeArgs {
     /// Print integration config snippet (claude-desktop, cursor)
     #[arg(long)]
     pub show_config: Option<String>,
+
+    /// Filter exposed tools by tags (comma-separated, AND logic)
+    #[arg(long)]
+    pub tags: Option<String>,
+
+    /// Filter exposed tools by module ID prefix
+    #[arg(long)]
+    pub prefix: Option<String>,
+
+    /// Path to ACL policy YAML file
+    #[arg(long)]
+    pub acl: Option<PathBuf>,
+
+    /// Enable approval handler for destructive commands
+    #[arg(long)]
+    pub enable_approval: bool,
+
+    /// Disable structured logging middleware
+    #[arg(long)]
+    pub no_logging: bool,
+
+    /// Skip input validation against tool schemas
+    #[arg(long)]
+    pub skip_validation: bool,
 }
 
 impl ServeArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
-        // Handle --show-config
         if let Some(ref format) = self.show_config {
-            let output = config_gen::generate_config(
-                format,
-                &self.name,
-                &self.transport,
-                &self.host,
-                self.port,
+            println!(
+                "{}",
+                config_gen::generate_config(
+                    format,
+                    &self.name,
+                    &self.transport,
+                    &self.host,
+                    self.port,
+                )
             );
-            println!("{output}");
             return Ok(());
         }
 
+        let server = self.build_server(config)?;
+        let opts = self.serve_options();
+        server
+            .serve_with_options(opts)
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    fn build_server(&self, config: &ApexeConfig) -> anyhow::Result<apcore_mcp::APCoreMCP> {
         let modules_dir = self
             .modules_dir
+            .clone()
             .unwrap_or_else(|| config.modules_dir.clone());
-
-        let server = crate::mcp::McpServerBuilder::new()
+        let mut builder = crate::mcp::McpServerBuilder::new()
             .name(&self.name)
             .transport(&self.transport)
             .host(&self.host)
@@ -213,10 +246,36 @@ impl ServeArgs {
             .explorer(self.explorer)
             .modules_dir(modules_dir)
             .timeout_ms(config.default_timeout * 1000)
-            .build()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            .enable_logging(!self.no_logging)
+            .enable_approval(self.enable_approval)
+            .validate_inputs(!self.skip_validation);
 
-        server.serve().map_err(|e| anyhow::anyhow!("{e}"))
+        // Only load ACL when explicitly specified via --acl flag.
+        // Without --acl, the server runs without access control (all tools allowed).
+        if let Some(ref acl_path) = self.acl {
+            builder = builder.acl_path(acl_path);
+        }
+
+        if let Some(ref tags_str) = self.tags {
+            let tags: Vec<String> = tags_str.split(',').map(|s| s.trim().to_string()).collect();
+            builder = builder.tags(tags);
+        }
+        if let Some(ref prefix) = self.prefix {
+            builder = builder.prefix(prefix);
+        }
+
+        builder.build().map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    fn serve_options(&self) -> apcore_mcp::ServeOptions {
+        apcore_mcp::ServeOptions {
+            explorer: apcore_mcp::ExplorerOptions {
+                explorer: self.explorer,
+                allow_execute: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
     }
 }
 

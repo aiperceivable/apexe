@@ -64,7 +64,7 @@ apexe --version
 See [Quick Start Guide](quickstart.md) for the fastest path to a working setup.
 
 ```bash
-apexe scan git docker kubectl    # scan tools
+apexe scan git curl grep         # scan tools
 apexe list                       # verify modules
 apexe serve                      # start MCP server (stdio)
 ```
@@ -91,8 +91,8 @@ apexe scan <TOOLS>... [OPTIONS]
 
 ```bash
 apexe scan git                         # basic scan
-apexe scan git docker ffmpeg           # multiple tools
-apexe scan kubectl --depth 3           # deeper subcommand discovery
+apexe scan git curl grep lsof          # multiple tools
+apexe scan git --depth 3               # deeper subcommand discovery
 apexe scan git --no-cache              # force re-scan
 apexe scan git --format json           # JSON output
 ```
@@ -419,7 +419,7 @@ let tools = McpServerBuilder::new()
 ### Claude Desktop
 
 ```bash
-apexe scan git docker kubectl
+apexe scan git curl grep
 apexe serve --show-config claude-desktop
 ```
 
@@ -453,7 +453,7 @@ apexe generates display metadata for MCP clients:
 |-----------|------------------|
 | `cli.git.commit` | `git_commit` |
 | `cli.docker.container.ls` | `docker_container_ls` |
-| `cli.kubectl.get` | `kubectl_get` |
+| `cli.curl` | `curl` |
 
 Aliases are auto-sanitized for MCP compatibility (dots replaced with underscores, digit prefixes escaped).
 

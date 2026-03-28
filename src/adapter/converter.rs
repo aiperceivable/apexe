@@ -77,17 +77,7 @@ impl CliToolConverter {
             .version
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
-        let suggested_alias = if path.is_empty() {
-            tool.name.clone()
-        } else {
-            format!("{}_{}", tool.name, path.join("_"))
-        };
-
-        let mut metadata = HashMap::new();
-        metadata.insert("scan_tier".to_string(), json!(tool.scan_tier));
-        metadata.insert("help_format".to_string(), json!(help_format_name));
-        metadata.insert("binary_path".to_string(), json!(tool.binary_path));
-        metadata.insert("suggested_alias".to_string(), json!(suggested_alias));
+        let metadata = self.build_metadata(tool, path, help_format_name);
 
         let mut module = ScannedModule::new(
             module_id,
@@ -104,6 +94,26 @@ impl CliToolConverter {
         module.warnings = tool.warnings.clone();
 
         module
+    }
+
+    /// Build metadata HashMap for a module.
+    fn build_metadata(
+        &self,
+        tool: &ScannedCLITool,
+        path: &[String],
+        help_format_name: &str,
+    ) -> HashMap<String, serde_json::Value> {
+        let suggested_alias = if path.is_empty() {
+            tool.name.clone()
+        } else {
+            format!("{}_{}", tool.name, path.join("_"))
+        };
+        let mut metadata = HashMap::new();
+        metadata.insert("scan_tier".to_string(), json!(tool.scan_tier));
+        metadata.insert("help_format".to_string(), json!(help_format_name));
+        metadata.insert("binary_path".to_string(), json!(tool.binary_path));
+        metadata.insert("suggested_alias".to_string(), json!(suggested_alias));
+        metadata
     }
 
     /// Extract description, schemas, annotations, docs, and full_command from a command.

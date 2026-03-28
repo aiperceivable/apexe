@@ -204,7 +204,7 @@ server.serve()?; // blocking — starts the server
 ### Scan multiple tools at once
 
 ```bash
-apexe scan git docker kubectl terraform --depth 3
+apexe scan git curl grep find lsof --depth 3
 apexe list
 # Shows all modules from all tools
 ```
@@ -221,7 +221,7 @@ apexe serve --transport http --port 8000 --explorer
 
 ```bash
 # 1. Scan tools
-apexe scan git docker
+apexe scan git curl grep
 
 # 2. Get integration config
 apexe serve --show-config claude-desktop

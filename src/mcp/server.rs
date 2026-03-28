@@ -21,7 +21,6 @@ pub struct McpServerBuilder {
     host: String,
     port: u16,
     explorer: bool,
-    require_auth: bool,
     validate_inputs: bool,
     modules_dir: Option<std::path::PathBuf>,
     timeout_ms: u64,
@@ -46,7 +45,6 @@ impl McpServerBuilder {
             host: "127.0.0.1".to_string(),
             port: 8000,
             explorer: false,
-            require_auth: false,
             validate_inputs: true,
             modules_dir: None,
             timeout_ms: 30_000,
@@ -89,11 +87,6 @@ impl McpServerBuilder {
     }
 
     /// Enable or disable authentication requirement.
-    pub fn require_auth(mut self, required: bool) -> Self {
-        self.require_auth = required;
-        self
-    }
-
     /// Enable or disable input validation against tool schemas.
     pub fn validate_inputs(mut self, enabled: bool) -> Self {
         self.validate_inputs = enabled;
@@ -241,9 +234,6 @@ impl McpServerBuilder {
         if self.explorer {
             builder = builder.include_explorer(true);
         }
-        if self.require_auth {
-            builder = builder.require_auth(true);
-        }
         if let Some(tags) = self.tags {
             builder = builder.tags(tags);
         }
@@ -346,7 +336,7 @@ mod tests {
         assert_eq!(builder.host, "127.0.0.1");
         assert_eq!(builder.port, 8000);
         assert!(!builder.explorer);
-        assert!(!builder.require_auth);
+
         assert!(builder.validate_inputs);
         assert!(builder.modules_dir.is_none());
         assert_eq!(builder.timeout_ms, 30_000);
@@ -360,7 +350,6 @@ mod tests {
             .host("0.0.0.0")
             .port(9090)
             .explorer(true)
-            .require_auth(true)
             .validate_inputs(false)
             .modules_dir("/tmp/modules")
             .timeout_ms(60_000);
@@ -370,7 +359,6 @@ mod tests {
         assert_eq!(builder.host, "0.0.0.0");
         assert_eq!(builder.port, 9090);
         assert!(builder.explorer);
-        assert!(builder.require_auth);
         assert!(!builder.validate_inputs);
         assert_eq!(
             builder.modules_dir,
