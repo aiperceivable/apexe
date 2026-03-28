@@ -198,22 +198,63 @@ impl ScanOrchestrator {
     fn enrich_with_man_page(&self, tool: &mut ScannedCLITool, tool_name: &str) {
         if let Some(man_help) = self.man_parser.parse_man_page(tool_name) {
             if !man_help.description.is_empty() {
-                // Enrich if Tier 1 description was sparse
-                let tier1_desc_len = tool
-                    .subcommands
-                    .first()
-                    .map(|c| c.description.len())
-                    .unwrap_or(0);
-                if tier1_desc_len < 20 || tool.subcommands.is_empty() {
-                    tool.scan_tier = tool.scan_tier.max(2);
+                tool.scan_tier = tool.scan_tier.max(2);
+
+                // Enrich subcommands with sparse descriptions
+                for cmd in &mut tool.subcommands {
+                    if cmd.description.len() < 20 && !cmd.description.is_empty() {
+                        cmd.description = format!("{} — {}", cmd.description, man_help.description);
+                    }
+                }
+
+                // Merge man page flag descriptions into flags with empty/sparse descriptions
+                if !man_help.flags.is_empty() {
+                    for cmd in &mut tool.subcommands {
+                        for flag in &mut cmd.flags {
+                            if flag.description.len() < 10 {
+                                let canonical = flag.canonical_name();
+                                for man_flag in &man_help.flags {
+                                    let man_name = man_flag.canonical_name();
+                                    if canonical == man_name && !man_flag.description.is_empty() {
+                                        flag.description.clone_from(&man_flag.description);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 
     fn enrich_with_completions(&self, tool: &mut ScannedCLITool, tool_name: &str) {
-        if let Some(_comp_help) = self.completion_parser.parse_completions(tool_name) {
+        if let Some(comp_help) = self.completion_parser.parse_completions(tool_name) {
             tool.scan_tier = tool.scan_tier.max(3);
+
+            // Merge completion-discovered subcommands that Tier 1 missed
+            let existing_names: std::collections::HashSet<String> =
+                tool.subcommands.iter().map(|c| c.name.clone()).collect();
+
+            for sub_name in &comp_help.subcommand_names {
+                if !existing_names.contains(sub_name) {
+                    // Discovered a new subcommand via completions — add a stub
+                    tool.subcommands.push(crate::models::ScannedCommand {
+                        name: sub_name.clone(),
+                        full_command: format!("{} {}", tool_name, sub_name),
+                        description: format!("{tool_name} {sub_name}"),
+                        flags: vec![],
+                        positional_args: vec![],
+                        subcommands: vec![],
+                        examples: vec![],
+                        help_format: crate::models::HelpFormat::Unknown,
+                        structured_output: crate::models::StructuredOutputInfo::default(),
+                        raw_help: String::new(),
+                    });
+                    tool.warnings.push(format!(
+                        "Subcommand '{sub_name}' discovered via shell completion (stub only)"
+                    ));
+                }
+            }
         }
     }
 }
@@ -233,6 +274,7 @@ mod tests {
             default_timeout: 10,
             scan_depth: 2,
             json_output_preference: true,
+            ..ApexeConfig::default()
         }
     }
 

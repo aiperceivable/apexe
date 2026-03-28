@@ -4,185 +4,130 @@
 
 **apexe** -- Outside-In CLI-to-Agent Bridge. Automatically wraps CLI tools into governed apcore modules, served via MCP/A2A.
 
-**Status:** All 5 features implemented. 393 tests passing, 0 failures. ~9,500 LOC Rust.
+**Version:** 0.1.0 — Full apcore ecosystem integration.
 
-## Feature Decomposition
+**Status:** All features implemented. 335 tests passing, 0 failures. ~8,850 LOC Rust.
+
+## Architecture (v0.1.0)
 
 ```
-F1: Project Skeleton & CLI Framework         [DONE]
- |
-F2: CLI Scanner Engine                        [DONE]
- |
-F3: Binding Generator                         [DONE]
- |
-F4: Serve Integration (self-built MCP)        [DONE]
- |
-F5: Governance Defaults (ACL + Annotations)   [DONE]
+CLI Tool Binary
+      |
+      v
+[Scanner Engine] ──→ ScannedCLITool
+      |
+      v
+[Adapter Layer] ──→ ScannedModule (apcore-toolkit)
+      |
+      ├──→ [YamlOutput] ──→ .binding.yaml files
+      ├──→ [AclManager] ──→ acl.yaml (apcore ACL)
+      └──→ [CliModule]  ──→ apcore Module trait
+              |
+              v
+      [McpServerBuilder] ──→ apcore-mcp (stdio/http/sse)
 ```
 
-## Features
+## Module Map
 
-### F1: Project Skeleton & CLI Framework
-**Priority:** P0 | **Status:** DONE | **Actual LOC:** 1,424
+```
+src/
+├── adapter/         ScannedCLITool → ScannedModule conversion
+│   ├── converter    CliToolConverter (tree flattening, module ID generation)
+│   ├── schema       JSON Schema from flags/args (extracted from v0.1.x)
+│   └── annotations  ModuleAnnotations inference (readonly/destructive/idempotent)
+├── cli/             clap CLI entry point (scan/serve/list/config)
+│   └── config_gen   Claude Desktop / Cursor config snippet generation
+├── config           ApexeConfig + apcore CoreConfig integration
+├── errors           ApexeError + From<ApexeError> for ModuleError
+├── governance/      Access control, audit, sandbox
+│   ├── acl          AclManager wrapping apcore::ACL
+│   ├── audit        AuditManager wrapping apcore_cli::AuditLogger
+│   └── sandbox      SandboxManager wrapping apcore_cli::Sandbox
+├── mcp/             MCP server integration
+│   └── server       McpServerBuilder wrapping apcore_mcp::APCoreMCP
+├── models/          ScannedCLITool, ScannedCommand, ScannedFlag, ScannedArg
+├── module/          apcore Module trait implementation
+│   ├── cli_module   CliModule (subprocess execution via Module trait)
+│   └── executor     Argument building, injection prevention, spawn_blocking
+├── output/          Binding file I/O
+│   ├── yaml         YamlOutput wrapping apcore_toolkit::YAMLWriter
+│   └── loader       load_modules_from_dir (reads .binding.yaml)
+└── scanner/         3-tier deterministic CLI scanner engine
+    ├── orchestrator  ScanOrchestrator (top-level coordinator)
+    ├── pipeline      ParserPipeline (priority-based parser selection)
+    ├── parsers/      GNU, Click, Cobra, Clap format parsers
+    ├── discovery     SubcommandDiscovery (recursive subcommand scanning)
+    ├── cache         ScanCache (JSON filesystem caching)
+    └── resolver      ToolResolver (binary path + version + format detection)
+```
 
-Rust crate with clap-based CLI:
-- `apexe scan <tool> [<tool>...]` -- scans CLI tools, generates .binding.yaml
-- `apexe serve [--transport stdio|http] [--a2a]` -- starts MCP server
-- `apexe list [--format json|table]` -- lists scanned tools and modules
-- `apexe config [--show] [--init]` -- shows/initializes configuration
-- Config resolution: `~/.apexe/config.yaml` → env vars → CLI flags (three-tier)
-- Output directory: `~/.apexe/modules/` (default) or `--output-dir`
+## apcore Ecosystem Integration
 
-**Verified:**
-- `cargo install --path .` ✓
-- `apexe --help` shows scan, serve, list, config ✓
-- `apexe scan --help` shows TOOLS, --output-dir, --depth, --no-cache, --format ✓
-- 61 tests passing ✓
+| Crate | Version | Usage |
+|-------|---------|-------|
+| `apcore` | 0.14 | Module trait, Registry, ACL, ModuleError, ErrorCode, Context, Config |
+| `apcore-toolkit` | 0.4 | ScannedModule, YAMLWriter, Verifier, ModuleAnnotations |
+| `apcore-mcp` | 0.11 | APCoreMCP server (stdio, streamable-http, SSE, JWT auth, Explorer UI) |
+| `apcore-cli` | 0.3 | AuditLogger (JSONL audit), Sandbox (subprocess isolation) |
 
----
+## v0.1.0 Features
 
-### F2: CLI Scanner Engine
-**Priority:** P0 | **Status:** DONE | **Actual LOC:** 3,537
-
+### Scanner Engine (preserved from v0.1.x)
 Three-tier deterministic scanner with plugin system:
 
-1. **Tier 1 -- `--help` parser** (4 built-in parsers)
-   - GnuHelpParser (regex + nom-based flag line parser)
-   - ClickHelpParser (Click/argparse patterns)
-   - CobraHelpParser (Go Cobra patterns)
-   - ClapHelpParser (Rust Clap patterns)
+1. **Tier 1 -- `--help` parser** (4 built-in parsers: GNU, Click, Cobra, Clap)
+2. **Tier 2 -- Man page parser** (DESCRIPTION extraction)
+3. **Tier 3 -- Shell completion parser** (zsh/bash subcommand discovery)
 
-2. **Tier 2 -- Man page parser**
-   - Extracts DESCRIPTION section from `man -P cat <tool>`
+Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin system.
 
-3. **Tier 3 -- Shell completion parser**
-   - Parses zsh/bash completion scripts for subcommand discovery
+### Adapter Layer (v0.1.0 new)
+- `CliToolConverter`: flattens subcommand trees → `Vec<ScannedModule>`
+- `schema::build_input_schema/output_schema`: JSON Schema from flags/args
+- `annotations::infer`: readonly/destructive/idempotent inference from command names
 
-**Additional components:**
-- `ParserPipeline` with priority routing + user YAML override
-- `SubcommandDiscovery` with recursive discovery + max depth + stderr fallback
-- `ScanCache` with JSON filesystem caching + invalidation
-- `ToolResolver` with binary path resolution + version detection + help format detection
-- Plugin system via `CliParser` trait (programmatic registration)
+### Module Executor (v0.1.0 new)
+- `CliModule`: implements apcore `Module` trait for CLI subprocess execution
+- Async execution via `tokio::task::spawn_blocking` with `tokio::time::timeout`
+- Shell injection prevention (`;|&$\`'"` blocked)
+- Preflight validation on all string inputs
 
-**Verified:**
-- 138 tests passing ✓
-- Integration tests for git/docker scan (marked #[ignore], require real tools) ✓
-- Graceful degradation on unparseable help ✓
+### Output Layer (v0.1.0 new, replaces v0.1.x binding generator)
+- `YamlOutput`: wraps apcore-toolkit `YAMLWriter` with verification
+- `load_modules_from_dir`: reads `.binding.yaml` files back as `Vec<ScannedModule>`
 
----
+### MCP Server (v0.1.0 new, replaces v0.1.x self-built server)
+- `McpServerBuilder`: modules_dir → Registry → Executor → APCoreMCP
+- Transports: stdio, streamable-http (was "http"), SSE
+- Full MCP protocol compliance via apcore-mcp
+- JWT authentication support, Explorer UI (HTTP transports)
 
-### F3: Binding Generator
-**Priority:** P0 | **Status:** DONE | **Actual LOC:** 993
-
-- **Module ID generator:** `git commit` → `cli.git.commit` (sanitized, 128-char limit)
-- **JSON Schema generator:** flags → properties with type mapping, enums, defaults, arrays for repeatable
-- **Binding YAML writer:** one `.binding.yaml` per tool, multiple bindings per file
-- **CLI executor:** `std::process::Command` (no shell), command injection prevention via character validation
-- **Structured output:** auto-detect JSON output flags (`--format json`, `--json`), parse JSON stdout
-
-**Verified:**
-- `apexe scan <tool> --output-dir ./modules` produces valid `.binding.yaml` ✓
-- Command injection blocked (`;|&$` backtick etc.) ✓
-- 63 tests passing ✓
-
----
-
-### F4: Serve Integration
-**Priority:** P1 | **Status:** DONE | **Actual LOC:** 1,544
-
-Self-built MCP JSON-RPC 2.0 server (apcore-mcp-rust does not exist yet):
-
-1. **Binding loader:** discovers and parses `.binding.yaml` files from modules directory
-2. **Tool registry:** HashMap-backed tool lookup with register/get/list
-3. **MCP handler:** dispatches `initialize`, `tools/list`, `tools/call` JSON-RPC methods
-4. **Stdio transport:** one JSON-RPC message per line (Claude Desktop / Cursor compatible)
-5. **HTTP transport:** axum server with POST `/mcp` + GET `/health`
-6. **Config generator:** `--show-config claude-desktop|cursor` prints integration snippets
-
-**Known limitations:**
-- A2A protocol: **stub only** (prints warning, falls back to MCP-only)
-- Agent Card (`/.well-known/agent.json`): **not yet implemented**
-- SSE transport: **stub endpoint only**
-- Will migrate to apcore-mcp-rust when available
-
-**Verified:**
-- `apexe serve --transport stdio` works with Claude Desktop ✓
-- `apexe serve --transport http --port 8000` exposes MCP endpoint ✓
-- 62 tests passing ✓
-
----
-
-### F5: Governance Defaults
-**Priority:** P1 | **Status:** DONE | **Actual LOC:** 1,492
-
-1. **Annotation inference engine:**
-   - Destructive patterns: delete, remove, rm, drop, kill, destroy, purge, wipe, erase, force-push
-   - Readonly patterns: list, show, status, info, get, cat, ls, describe, inspect, view, display, print, find, search, help, version
-   - Flag boosting: `--force`/`--hard` → requires_approval, `--dry-run` → idempotent
-   - Confidence scoring [0.3, 0.95]
-
-2. **ACL generation:**
-   - Default-deny model
-   - Readonly → auto-allow, destructive → deny (needs explicit allow), unknown → deny
-   - Wildcard pattern matching (`*`, `cli.*`, `cli.git.*`)
-   - YAML output compatible with apcore ACL format
-
-3. **Audit trail:**
-   - JSONL append-only logging to `~/.apexe/audit.jsonl`
-   - SHA-256 input hashing (privacy: raw inputs not logged)
-   - Error-resilient (never causes execution failure)
-   - Log rotation with configurable size threshold
-
-**Verified:**
-- `git push` → destructive, `git status` → readonly ✓
-- ACL generated and loaded ✓
-- Audit entries written with trace_id, inputs_hash, duration_ms ✓
-- 68 tests passing ✓
-
----
-
-## Actual Scope
-
-| Feature | Estimated LOC | Actual LOC | Tests |
-|---------|--------------|------------|-------|
-| F1: Skeleton | ~700 | 1,424 | 61 |
-| F2: Scanner | ~2,500 | 3,537 | 138 |
-| F3: Binding Gen | ~1,000 | 993 | 63 |
-| F4: Serve | ~400 | 1,544 | 62 |
-| F5: Governance | ~900 | 1,492 | 68 |
-| **Total** | **~5,500** | **9,543** | **393** |
-
-LOC exceeded estimate by ~73%, primarily because F4 required a self-built MCP implementation (apcore-mcp-rust not yet available).
+### Governance (v0.1.0 rewritten)
+- `AclManager`: wraps `apcore::ACL`, generates default rules from annotations
+- `AuditManager`: wraps `apcore_cli::AuditLogger`, JSONL append-only with SHA-256 hashing
+- `SandboxManager`: wraps `apcore_cli::Sandbox`, subprocess isolation with timeout
 
 ## Key Rust Crates
 
 | Crate | Purpose |
 |-------|---------|
+| `apcore` | Core module system, ACL, errors |
+| `apcore-toolkit` | Scanner types, YAML writer, verifiers |
+| `apcore-mcp` | MCP protocol server |
+| `apcore-cli` | Audit logging, sandbox isolation |
 | `clap` (derive mode) | CLI argument parsing |
-| `serde` + `serde_json` + `serde_yaml` | Serialization/deserialization |
-| `tokio` | Async runtime (serve) |
-| `axum` | HTTP server (serve) |
+| `serde` + `serde_json` + `serde_yaml` | Serialization |
+| `tokio` | Async runtime |
 | `tracing` + `tracing-subscriber` | Structured logging |
 | `thiserror` | Typed error definitions |
-| `anyhow` | Application-level error propagation |
-| `nom` | Parser combinators for help text parsing |
+| `nom` | Parser combinators for help text |
 | `regex` | Pattern matching for help format detection |
 | `sha2` | SHA-256 hashing for audit privacy |
-| `uuid` | UUID v4 generation for trace IDs |
-| `chrono` | Timestamps for audit entries |
-| `dirs` | Platform-specific home directory resolution |
-| `which` | Binary path resolution on $PATH |
+| `uuid` | UUID v4 for trace IDs |
 | `shell-words` | Shell argument splitting |
-| `tempfile` | (dev) Temporary directories |
-| `assert_cmd` | (dev) CLI integration testing |
-| `rstest` | (dev) Parameterized test cases |
-| `predicates` | (dev) Assertion helpers |
 
 ## Open Items
 
-1. **A2A protocol** -- Stub only. Implement when apcore-a2a-rust is available or self-build.
-2. **Agent Card** -- `/.well-known/agent.json` endpoint not yet implemented.
-3. **SSE transport** -- Stub endpoint, no streaming implementation.
-4. **apcore-mcp-rust migration** -- When published, replace self-built MCP with apcore-mcp-rust.
-5. **`apexe evo`** -- Deferred. Depends on apevo product maturity.
+1. **A2A protocol** -- Deferred to v0.3.0.
+2. **CLI rewiring completion** -- `apexe scan` fully rewired; `apexe serve` uses McpServerBuilder.
+3. **`apexe evo`** -- Deferred. Depends on apevo product maturity.

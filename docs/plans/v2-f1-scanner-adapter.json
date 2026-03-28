@@ -1,0 +1,97 @@
+{
+  "feature": "v2-f1-scanner-adapter",
+  "description": "Bridge ScannedCLITool to apcore-toolkit ScannedModule. Create src/adapter/ with converter, schema, and annotation modules.",
+  "language": "rust",
+  "tasks": [
+    {
+      "id": "F1-T1",
+      "title": "Add apcore-toolkit dependency and create adapter module skeleton",
+      "description": "Add apcore-toolkit as path dependency. Create src/adapter/mod.rs with sub-module declarations. Register in lib.rs.",
+      "test_first": "Write a compile test that imports apcore_toolkit::ScannedModule and constructs one via ScannedModule::new(). Verify cargo test --lib passes.",
+      "implementation": "Add apcore-toolkit = { path = '../apcore-toolkit-rust' } to Cargo.toml. Create src/adapter/mod.rs (pub mod converter; pub mod schema; pub mod annotations;). Create empty src/adapter/converter.rs, schema.rs, annotations.rs. Add 'pub mod adapter;' to lib.rs.",
+      "acceptance": "cargo build succeeds. apcore_toolkit::ScannedModule is importable.",
+      "status": "done",
+      "depends_on": []
+    },
+    {
+      "id": "F1-T2",
+      "title": "Adapter schema: build_input_schema (extract from schema_gen.rs)",
+      "description": "Extract input schema generation from src/binding/schema_gen.rs into src/adapter/schema.rs as a standalone function build_input_schema(command, global_flags) -> Value.",
+      "test_first": "Write tests: test_schema_string_flag, test_schema_boolean_flag, test_schema_enum_flag, test_schema_required_flag, test_schema_repeatable_flag, test_schema_positional_arg, test_schema_variadic_arg, test_schema_global_flags_included. Mirror existing schema_gen tests but call the new function.",
+      "implementation": "Copy the value_type_to_json_schema(), flag_to_schema(), arg_to_schema() logic from schema_gen.rs into adapter/schema.rs as standalone functions. Rename entry point to pub fn build_input_schema(command: &ScannedCommand, global_flags: &[ScannedFlag]) -> Value. Merge global_flags into command flags.",
+      "acceptance": "All 8 schema tests pass. Output matches existing SchemaGenerator behavior.",
+      "status": "done",
+      "depends_on": ["F1-T1"]
+    },
+    {
+      "id": "F1-T3",
+      "title": "Adapter schema: build_output_schema",
+      "description": "Extract output schema generation into adapter/schema.rs as build_output_schema(command) -> Value.",
+      "test_first": "Write test_schema_output_json (structured output) and test_schema_output_raw (no structured output).",
+      "implementation": "Add pub fn build_output_schema(command: &ScannedCommand) -> Value to adapter/schema.rs. Use command.structured_output to decide schema shape.",
+      "acceptance": "Both tests pass.",
+      "status": "done",
+      "depends_on": ["F1-T2"]
+    },
+    {
+      "id": "F1-T4",
+      "title": "Adapter annotations: infer(command) -> ModuleAnnotations",
+      "description": "Implement annotation inference that maps command names to apcore::ModuleAnnotations fields (readonly, destructive, idempotent, requires_approval, cacheable, streaming=false).",
+      "test_first": "Write tests: test_annotations_list_is_readonly, test_annotations_delete_is_destructive, test_annotations_create_is_write, test_annotations_get_is_idempotent, test_annotations_readonly_is_cacheable, test_annotations_unknown_defaults.",
+      "implementation": "Create pub fn infer(command: &ScannedCommand) -> ModuleAnnotations in adapter/annotations.rs. Define READONLY_PATTERNS, DESTRUCTIVE_PATTERNS, IDEMPOTENT_PATTERNS as const arrays. Match command.name against patterns. Set cacheable = readonly && idempotent. streaming = false always.",
+      "acceptance": "All 6 annotation tests pass.",
+      "status": "done",
+      "depends_on": ["F1-T1"]
+    },
+    {
+      "id": "F1-T5",
+      "title": "CliToolConverter: basic single-command tool conversion",
+      "description": "Implement CliToolConverter::new() and convert() for the simplest case: a tool with no subcommands produces a single ScannedModule.",
+      "test_first": "Write test_converter_single_command_tool (ffmpeg-like tool with no subcommands) -> 1 ScannedModule with module_id 'cli.ffmpeg', correct description, tags, target, version.",
+      "implementation": "Create CliToolConverter struct with namespace field (default 'cli'). Implement convert() that walks the subcommand tree. For leaf commands, build ScannedModule using adapter/schema and adapter/annotations. Handle the root-only case (no subcommands).",
+      "acceptance": "Single-command conversion test passes with correct module_id, tags, target format.",
+      "status": "done",
+      "depends_on": ["F1-T2", "F1-T3", "F1-T4"]
+    },
+    {
+      "id": "F1-T6",
+      "title": "CliToolConverter: subcommand tree flattening",
+      "description": "Handle tools with subcommands. Each leaf command produces a ScannedModule. Nested subcommands produce dot-separated module_ids.",
+      "test_first": "Write test_converter_tool_with_subcommands (3 leaf subcommands -> 3 modules), test_converter_nested_subcommands (docker container ls -> cli.docker.container.ls), test_converter_deeply_nested (3 levels).",
+      "implementation": "Add recursive walk_commands() helper that collects leaf commands with their full path. For each leaf, construct module_id as namespace.tool_name.path.parts.",
+      "acceptance": "All subcommand tests pass. Correct number of modules, correct module_ids.",
+      "status": "done",
+      "depends_on": ["F1-T5"]
+    },
+    {
+      "id": "F1-T7",
+      "title": "CliToolConverter: metadata, warnings, examples, documentation",
+      "description": "Populate metadata (scan_tier, help_format, binary_path), warnings, documentation (raw_help), and examples on ScannedModule.",
+      "test_first": "Write test_converter_metadata_populated, test_converter_warnings_propagated, test_converter_version_present, test_converter_version_missing, test_converter_tags_include_help_format, test_converter_tags_structured_output.",
+      "implementation": "In the convert loop, populate module.metadata with scan_tier, help_format, binary_path. Set documentation from raw_help. Copy examples as empty Vec (ScannedCommand.examples are strings, not ModuleExample). Copy warnings from tool and command levels.",
+      "acceptance": "All metadata/warning/version tests pass.",
+      "status": "done",
+      "depends_on": ["F1-T6"]
+    },
+    {
+      "id": "F1-T8",
+      "title": "CliToolConverter: custom namespace, convert_all, From trait",
+      "description": "Add with_namespace(), convert_all(), and impl From<&ScannedCLITool> for Vec<ScannedModule>.",
+      "test_first": "Write test_converter_custom_namespace ('myns' prefix), test_converter_convert_all (two tools), test_converter_from_trait (From trait gives same result).",
+      "implementation": "Add with_namespace constructor. convert_all iterates tools and calls convert. From trait delegates to CliToolConverter::new().convert().",
+      "acceptance": "All 3 tests pass.",
+      "status": "done",
+      "depends_on": ["F1-T7"]
+    },
+    {
+      "id": "F1-T9",
+      "title": "Edge cases and quality gates",
+      "description": "Handle edge cases: empty tool, empty description fallback, deduplication. Run fmt + clippy + full test suite.",
+      "test_first": "Write test_converter_empty_tool (tool with no subcommands, no flags -> valid single module), test_converter_empty_description_fallback (empty description -> 'Execute {command}').",
+      "implementation": "Add fallback for empty description. Ensure all edge cases are handled. Run cargo fmt, cargo clippy -D warnings, cargo test --all-features.",
+      "acceptance": "All tests pass. fmt clean. clippy clean. Full suite green.",
+      "status": "done",
+      "depends_on": ["F1-T8"]
+    }
+  ]
+}

@@ -3,11 +3,11 @@
 | Field | Value |
 |-------|-------|
 | **Title** | apexe -- Outside-In CLI-to-Agent Bridge |
-| **Authors** | AIPartnerUp Engineering |
-| **Status** | DRAFT |
+| **Authors** | AIPerceivable Engineering |
+| **Status** | SUPERSEDED by docs/apcore-integration/tech-design.md |
 | **Date** | 2026-03-21 |
-| **Version** | 0.1.0 |
-| **Spec Version** | apcore 1.5.0-draft |
+| **Version** | 0.1.0 (current design at [docs/apcore-integration/tech-design.md](apcore-integration/tech-design.md)) |
+| **Spec Version** | apcore 0.14 |
 
 ---
 

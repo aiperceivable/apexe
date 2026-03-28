@@ -1,6 +1,9 @@
+mod config_gen;
+
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use tracing::{info, warn};
 
 use crate::config::{load_config, ApexeConfig};
 
@@ -22,7 +25,7 @@ pub struct Cli {
 pub enum Commands {
     /// Scan CLI tools and generate apcore binding files.
     Scan(ScanArgs),
-    /// Start MCP/A2A server for scanned CLI tools.
+    /// Start MCP server for scanned CLI tools.
     Serve(ServeArgs),
     /// List previously scanned CLI tools and their modules.
     List(ListArgs),
@@ -73,104 +76,85 @@ pub struct ScanArgs {
 impl ScanArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
         let orchestrator = crate::scanner::ScanOrchestrator::new(config.clone());
-
         let results = orchestrator.scan(&self.tools, self.no_cache, self.depth)?;
 
-        // Generate binding files (F3)
         let output_dir = self
             .output_dir
             .clone()
             .unwrap_or_else(|| config.modules_dir.clone());
-        let binding_generator = crate::binding::BindingGenerator::new();
-        let binding_writer = crate::binding::BindingYAMLWriter;
 
-        for tool in &results {
-            // Generate and write binding YAML
-            match binding_generator.generate(tool) {
-                Ok(mut binding_file) => {
-                    // F5: Annotate bindings with governance metadata
-                    crate::governance::annotations::annotate_bindings(&mut binding_file.bindings);
+        let converter = crate::adapter::CliToolConverter::new();
+        let modules = converter.convert_all(&results);
 
-                    match binding_writer.write(&binding_file, &output_dir) {
-                        Ok(path) => {
-                            println!(
-                                "Generated binding: {} ({} modules)",
-                                path.display(),
-                                binding_file.bindings.len()
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("Warning: Failed to write binding for {}: {e}", tool.name);
-                        }
-                    }
-
-                    // F5: Generate and write ACL
-                    let acl_bindings: Vec<serde_json::Map<String, serde_json::Value>> =
-                        binding_file
-                            .bindings
-                            .iter()
-                            .map(|b| {
-                                let mut m = serde_json::Map::new();
-                                m.insert(
-                                    "module_id".to_string(),
-                                    serde_json::Value::String(b.module_id.clone()),
-                                );
-                                m.insert(
-                                    "annotations".to_string(),
-                                    serde_json::json!(b.annotations),
-                                );
-                                m
-                            })
-                            .collect();
-                    let acl_config = crate::governance::acl::generate_acl(&acl_bindings, "deny");
-                    let acl_path = config.config_dir.join("acl.yaml");
-                    crate::governance::acl::write_acl(&acl_config, &acl_path);
-                }
-                Err(e) => {
-                    eprintln!("Warning: Failed to generate binding for {}: {e}", tool.name);
-                }
-            }
-
-            match self.format.as_str() {
-                "json" => {
-                    let json = serde_json::to_string_pretty(tool)?;
-                    println!("{json}");
-                }
-                "yaml" => {
-                    let yaml = serde_yaml::to_string(tool)?;
-                    println!("{yaml}");
-                }
-                _ => {
-                    // table format
-                    println!(
-                        "Tool: {} ({})",
-                        tool.name,
-                        tool.version.as_deref().unwrap_or("unknown")
-                    );
-                    println!("  Binary: {}", tool.binary_path);
-                    println!("  Scan tier: {}", tool.scan_tier);
-                    println!("  Subcommands: {}", tool.subcommands.len());
-                    println!("  Global flags: {}", tool.global_flags.len());
-                    if tool.structured_output.supported {
-                        println!(
-                            "  Structured output: {} ({})",
-                            tool.structured_output.flag.as_deref().unwrap_or(""),
-                            tool.structured_output.format.as_deref().unwrap_or("")
-                        );
-                    }
-                    if !tool.warnings.is_empty() {
-                        println!("  Warnings: {}", tool.warnings.join(", "));
-                    }
-                    println!();
-                }
-            }
-        }
+        self.write_bindings(&modules, &output_dir);
+        self.write_acl(&modules, config);
+        self.print_results(&results)?;
 
         Ok(())
     }
+
+    fn write_bindings(
+        &self,
+        modules: &[apcore_toolkit::ScannedModule],
+        output_dir: &std::path::Path,
+    ) {
+        let yaml_output = crate::output::YamlOutput::new();
+        match yaml_output.write(modules, output_dir, false) {
+            Ok(write_results) => {
+                for wr in &write_results {
+                    if let Some(ref path) = wr.path {
+                        info!(path, "Generated binding");
+                    }
+                }
+            }
+            Err(e) => warn!(error = %e, "Failed to write binding files"),
+        }
+    }
+
+    fn write_acl(&self, modules: &[apcore_toolkit::ScannedModule], config: &ApexeConfig) {
+        let acl_manager = crate::governance::AclManager::generate_default(modules);
+        let acl_path = config.config_dir.join("acl.yaml");
+        if let Err(e) = acl_manager.write_config(&acl_path) {
+            warn!(error = %e, "Failed to write ACL");
+        }
+    }
+
+    fn print_results(&self, results: &[crate::models::ScannedCLITool]) -> anyhow::Result<()> {
+        for tool in results {
+            match self.format.as_str() {
+                "json" => println!("{}", serde_json::to_string_pretty(tool)?),
+                "yaml" => println!("{}", serde_yaml::to_string(tool)?),
+                _ => Self::print_tool_table(tool),
+            }
+        }
+        Ok(())
+    }
+
+    fn print_tool_table(tool: &crate::models::ScannedCLITool) {
+        println!(
+            "Tool: {} ({})",
+            tool.name,
+            tool.version.as_deref().unwrap_or("unknown")
+        );
+        println!("  Binary: {}", tool.binary_path);
+        println!("  Scan tier: {}", tool.scan_tier);
+        println!("  Subcommands: {}", tool.subcommands.len());
+        println!("  Global flags: {}", tool.global_flags.len());
+        if tool.structured_output.supported {
+            println!(
+                "  Structured output: {} ({})",
+                tool.structured_output.flag.as_deref().unwrap_or(""),
+                tool.structured_output.format.as_deref().unwrap_or("")
+            );
+        }
+        if !tool.warnings.is_empty() {
+            println!("  Warnings: {}", tool.warnings.join(", "));
+        }
+        println!();
+    }
 }
 
-/// Start MCP/A2A server for scanned CLI tools.
+/// Start MCP server for scanned CLI tools.
 #[derive(Debug, clap::Args)]
 pub struct ServeArgs {
     /// MCP transport type
@@ -184,10 +168,6 @@ pub struct ServeArgs {
     /// Port for HTTP transports (1-65535)
     #[arg(long, default_value = "8000", value_parser = clap::value_parser!(u16).range(1..))]
     pub port: u16,
-
-    /// Enable A2A protocol alongside MCP
-    #[arg(long)]
-    pub a2a: bool,
 
     /// Enable browser-based Tool Explorer UI (HTTP only)
     #[arg(long)]
@@ -210,7 +190,7 @@ impl ServeArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
         // Handle --show-config
         if let Some(ref format) = self.show_config {
-            let output = crate::serve::config_gen::generate_config(
+            let output = config_gen::generate_config(
                 format,
                 &self.name,
                 &self.transport,
@@ -225,53 +205,18 @@ impl ServeArgs {
             .modules_dir
             .unwrap_or_else(|| config.modules_dir.clone());
 
-        // Load bindings (empty is OK — server starts with zero tools)
-        let bindings = if modules_dir.is_dir() {
-            let loaded = crate::serve::loader::load_bindings(&modules_dir)?;
-            if loaded.is_empty() {
-                eprintln!(
-                    "Warning: No .binding.yaml files found in {}. Run `apexe scan` to add tools.",
-                    modules_dir.display()
-                );
-            } else {
-                eprintln!(
-                    "Loaded {} tool(s) from {}",
-                    loaded.len(),
-                    modules_dir.display()
-                );
-            }
-            loaded
-        } else {
-            eprintln!(
-                "Warning: Modules directory not found: {}. Starting with zero tools.",
-                modules_dir.display()
-            );
-            vec![]
-        };
+        let server = crate::mcp::McpServerBuilder::new()
+            .name(&self.name)
+            .transport(&self.transport)
+            .host(&self.host)
+            .port(self.port)
+            .explorer(self.explorer)
+            .modules_dir(modules_dir)
+            .timeout_ms(config.default_timeout * 1000)
+            .build()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-        // Build registry and handler
-        let registry = crate::serve::registry::ToolRegistry::from_bindings(bindings);
-        let handler = crate::serve::handler::McpHandler::new(registry, self.name.clone());
-
-        // Serve based on transport
-        match self.transport.as_str() {
-            "stdio" => {
-                if self.a2a {
-                    eprintln!("Warning: A2A requires HTTP transport. Falling back to MCP-only.");
-                }
-                if self.explorer {
-                    eprintln!("Warning: Explorer requires HTTP transport. Ignored.");
-                }
-                crate::serve::stdio::serve_stdio(&handler)
-            }
-            "http" | "sse" => {
-                let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(crate::serve::http::serve_http(
-                    handler, &self.host, self.port,
-                ))
-            }
-            _ => anyhow::bail!("Unsupported transport: {}", self.transport),
-        }
+        server.serve().map_err(|e| anyhow::anyhow!("{e}"))
     }
 }
 
@@ -291,72 +236,58 @@ impl ListArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
         let modules_dir = self.modules_dir.as_ref().unwrap_or(&config.modules_dir);
 
-        if !modules_dir.exists() {
-            println!("No modules directory found at {}", modules_dir.display());
-            println!("Run 'apexe scan <tool>' first to generate binding files.");
+        let modules = self.load_modules(modules_dir)?;
+        if modules.is_empty() {
+            println!("No modules found. Run 'apexe scan <tool>' first.");
             return Ok(());
         }
 
-        let mut bindings = Vec::new();
-        for entry in std::fs::read_dir(modules_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("yaml")
-                && path.to_string_lossy().contains(".binding.")
-            {
-                let contents = std::fs::read_to_string(&path)?;
-                if let Ok(file) = serde_yaml::from_str::<serde_yaml::Value>(&contents) {
-                    if let Some(entries) = file.get("bindings").and_then(|b| b.as_sequence()) {
-                        for entry in entries {
-                            let module_id = entry
-                                .get("module_id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown");
-                            let description = entry
-                                .get("description")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            bindings.push((module_id.to_string(), description.to_string()));
-                        }
-                    }
-                }
-            }
-        }
+        self.print_modules(&modules)?;
+        Ok(())
+    }
 
-        bindings.sort_by(|a, b| a.0.cmp(&b.0));
-
-        if bindings.is_empty() {
-            println!("No binding files found in {}", modules_dir.display());
-            println!("Run 'apexe scan <tool>' first to generate binding files.");
-            return Ok(());
+    fn load_modules(
+        &self,
+        dir: &std::path::Path,
+    ) -> anyhow::Result<Vec<apcore_toolkit::ScannedModule>> {
+        if !dir.exists() {
+            return Ok(vec![]);
         }
+        match crate::output::load_modules_from_dir(dir) {
+            Ok(m) => Ok(m),
+            Err(_) => Ok(vec![]),
+        }
+    }
+
+    fn print_modules(&self, modules: &[apcore_toolkit::ScannedModule]) -> anyhow::Result<()> {
+        let mut sorted: Vec<_> = modules
+            .iter()
+            .map(|m| (m.module_id.as_str(), m.description.as_str()))
+            .collect();
+        sorted.sort_by(|a, b| a.0.cmp(b.0));
 
         match self.format.as_str() {
             "json" => {
-                let json: Vec<serde_json::Value> = bindings
+                let json: Vec<serde_json::Value> = sorted
                     .iter()
                     .map(|(id, desc)| serde_json::json!({"module_id": id, "description": desc}))
                     .collect();
                 println!("{}", serde_json::to_string_pretty(&json)?);
             }
             _ => {
-                let header_id = "MODULE ID";
-                let header_desc = "DESCRIPTION";
-                println!("{header_id:<40} {header_desc}");
-                println!("{:<40} {}", "─".repeat(40), "─".repeat(40));
-                for (id, desc) in &bindings {
-                    let desc_truncated = if desc.chars().count() > 60 {
-                        let truncated: String = desc.chars().take(57).collect();
-                        format!("{truncated}...")
+                println!("{:<40} DESCRIPTION", "MODULE ID");
+                println!("{:<40} {}", "\u{2500}".repeat(40), "\u{2500}".repeat(40));
+                for (id, desc) in &sorted {
+                    let truncated = if desc.chars().count() > 60 {
+                        format!("{}...", desc.chars().take(57).collect::<String>())
                     } else {
-                        desc.clone()
+                        desc.to_string()
                     };
-                    println!("{:<40} {}", id, desc_truncated);
+                    println!("{:<40} {}", id, truncated);
                 }
-                println!("\n{} module(s) found.", bindings.len());
+                println!("\n{} module(s) found.", sorted.len());
             }
         }
-
         Ok(())
     }
 }
@@ -425,7 +356,7 @@ mod tests {
         assert_eq!(cli.log_level, "info");
     }
 
-    // ScanArgs validation tests (F1-T9)
+    // ScanArgs validation tests
     #[test]
     fn test_scan_no_tools_fails() {
         let result = Cli::try_parse_from(["apexe", "scan"]);
@@ -490,7 +421,7 @@ mod tests {
         }
     }
 
-    // ServeArgs validation tests (F1-T10)
+    // ServeArgs validation tests
     #[test]
     fn test_serve_defaults() {
         let cli = Cli::try_parse_from(["apexe", "serve"]).unwrap();
@@ -498,7 +429,6 @@ mod tests {
             assert_eq!(args.transport, "stdio");
             assert_eq!(args.host, "127.0.0.1");
             assert_eq!(args.port, 8000);
-            assert!(!args.a2a);
             assert!(!args.explorer);
         }
     }
@@ -526,7 +456,6 @@ mod tests {
             "0.0.0.0",
             "--port",
             "9000",
-            "--a2a",
             "--explorer",
         ])
         .unwrap();
@@ -534,12 +463,11 @@ mod tests {
             assert_eq!(args.transport, "http");
             assert_eq!(args.host, "0.0.0.0");
             assert_eq!(args.port, 9000);
-            assert!(args.a2a);
             assert!(args.explorer);
         }
     }
 
-    // ListArgs validation tests (F1-T10)
+    // ListArgs validation tests
     #[test]
     fn test_list_default_format() {
         let cli = Cli::try_parse_from(["apexe", "list"]).unwrap();
@@ -590,7 +518,7 @@ mod tests {
         }
     }
 
-    // ConfigArgs execute tests (F1-T13)
+    // ConfigArgs execute tests
     #[test]
     fn test_config_no_flags_is_noop() {
         let config = ApexeConfig::default();
@@ -614,6 +542,7 @@ mod tests {
             default_timeout: 30,
             scan_depth: 2,
             json_output_preference: true,
+            ..ApexeConfig::default()
         };
 
         // --show should serialize to valid YAML
@@ -635,6 +564,7 @@ mod tests {
             default_timeout: 30,
             scan_depth: 2,
             json_output_preference: true,
+            ..ApexeConfig::default()
         };
 
         let args = ConfigArgs {
@@ -667,6 +597,7 @@ mod tests {
             default_timeout: 30,
             scan_depth: 2,
             json_output_preference: true,
+            ..ApexeConfig::default()
         };
 
         let args = ConfigArgs {

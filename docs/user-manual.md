@@ -3,7 +3,7 @@
 | Field | Value |
 |-------|-------|
 | **Version** | 0.1.0 |
-| **Date** | 2026-03-24 |
+| **Date** | 2026-03-28 |
 | **Platform** | macOS / Linux |
 
 ---
@@ -13,30 +13,30 @@
 1. [Introduction](#1-introduction)
 2. [Installation](#2-installation)
 3. [Quick Start](#3-quick-start)
-4. [Commands](#4-commands)
-   - [scan](#41-apexe-scan)
-   - [list](#42-apexe-list)
-   - [serve](#43-apexe-serve)
-   - [config](#44-apexe-config)
+4. [Commands Reference](#4-commands-reference)
 5. [Configuration](#5-configuration)
-6. [How Scanning Works](#6-how-scanning-works)
-7. [Governance](#7-governance)
-8. [Integrating with AI Agents](#8-integrating-with-ai-agents)
-9. [File Locations](#9-file-locations)
-10. [Logging & Debugging](#10-logging--debugging)
-11. [Troubleshooting](#11-troubleshooting)
+6. [Scanning Engine](#6-scanning-engine)
+7. [Schema Generation](#7-schema-generation)
+8. [Behavioral Annotations](#8-behavioral-annotations)
+9. [Governance](#9-governance)
+10. [MCP Server](#10-mcp-server)
+11. [Integrating with AI Agents](#11-integrating-with-ai-agents)
+12. [Error Handling & AI Guidance](#12-error-handling--ai-guidance)
+13. [File Locations](#13-file-locations)
+14. [Logging & Debugging](#14-logging--debugging)
+15. [Troubleshooting](#15-troubleshooting)
 
 ---
 
 ## 1. Introduction
 
-**apexe** is a CLI tool that turns any command-line program on your system into a governed, schema-enforced tool that AI agents can invoke safely. It works in three steps:
+**apexe** turns any CLI tool on your system into a governed, schema-enforced service that AI agents can invoke safely via the MCP protocol. It works in three steps:
 
-1. **Scan** a CLI tool to extract its commands, flags, and arguments.
-2. **Generate** binding files that describe the tool in a machine-readable format.
-3. **Serve** the bindings over the MCP protocol so AI agents (Claude Desktop, Cursor, etc.) can use them.
+1. **Scan** — Deterministically extract commands, flags, and arguments from CLI tools (no LLM required).
+2. **Govern** — Classify commands as readonly/destructive, generate ACL rules, enable audit logging.
+3. **Serve** — Expose tools via MCP (stdio for Claude Desktop/Cursor, HTTP for remote agents).
 
-apexe also adds governance: it classifies commands as readonly or destructive, generates access control rules, and maintains an audit trail of every invocation.
+apexe is built on the [apcore](https://github.com/aiperceivable/apcore-rust) ecosystem: apcore (core types), apcore-toolkit (output), apcore-mcp (server), apcore-cli (audit/sandbox).
 
 ---
 
@@ -44,9 +44,9 @@ apexe also adds governance: it classifies commands as readonly or destructive, g
 
 ### Prerequisites
 
-- **Rust** 1.70 or later
+- **Rust** 1.75 or later (uses async fn in traits)
 - **Cargo** (included with Rust)
-- macOS or Linux (Windows is not supported in v0.1)
+- macOS or Linux
 
 ### Install from source
 
@@ -54,180 +54,113 @@ apexe also adds governance: it classifies commands as readonly or destructive, g
 git clone https://github.com/aiperceivable/apexe.git
 cd apexe
 cargo install --path .
-```
-
-Verify the installation:
-
-```bash
-apexe --help
+apexe --version
 ```
 
 ---
 
 ## 3. Quick Start
 
-Scan a tool, list the results, and start serving — all in three commands:
+See [Quick Start Guide](quickstart.md) for the fastest path to a working setup.
 
 ```bash
-# Scan git
-apexe scan git
-
-# Check what was generated
-apexe list
-
-# Start an MCP server for Claude Desktop
-apexe serve --transport stdio
+apexe scan git docker kubectl    # scan tools
+apexe list                       # verify modules
+apexe serve                      # start MCP server (stdio)
 ```
-
-That's it. Your AI agent can now invoke git commands through a schema-enforced, governed interface.
 
 ---
 
-## 4. Commands
+## 4. Commands Reference
 
 ### 4.1 `apexe scan`
 
-Scans one or more CLI tools and generates `.binding.yaml` files.
+Scans one or more CLI tools and generates `.binding.yaml` files + ACL rules.
 
 ```
-apexe scan <TOOL> [<TOOL>...] [OPTIONS]
+apexe scan <TOOLS>... [OPTIONS]
 ```
 
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<TOOL>` | Name of the CLI tool(s) to scan (must be on your `$PATH`) |
-
-**Options:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--depth <N>` | `2` | How many levels of subcommands to recurse (max: 5). For example, `git remote add` is depth 2. |
-| `--no-cache` | off | Force a fresh scan, ignoring any cached results. |
-| `--format <FMT>` | `yaml` | Output format: `yaml`, `json`, or `table`. |
-| `--output-dir <DIR>` | `~/.apexe/modules/` | Directory to write binding files to. |
-
-**Examples:**
+| Argument / Option | Default | Description |
+|-------------------|---------|-------------|
+| `<TOOLS>...` | (required) | CLI tool names to scan (must be on `$PATH`) |
+| `--output-dir <DIR>` | `~/.apexe/modules/` | Directory to write binding files |
+| `--depth <N>` | `2` | Subcommand recursion depth (1-5). `git remote add` = depth 2 |
+| `--no-cache` | off | Force fresh scan, bypass cache |
+| `--format <FMT>` | `table` | Output format: `json`, `yaml`, or `table` |
 
 ```bash
-# Scan a single tool
-apexe scan docker
-
-# Scan multiple tools at once
-apexe scan git docker ffmpeg kubectl
-
-# Deep scan with 3 levels of subcommands
-apexe scan git --depth 3
-
-# Force re-scan (bypass cache)
-apexe scan git --no-cache
-
-# Write bindings to a custom directory
-apexe scan git --output-dir ./my-bindings
-
-# Output scan results as JSON
-apexe scan git --format json
+apexe scan git                         # basic scan
+apexe scan git docker ffmpeg           # multiple tools
+apexe scan kubectl --depth 3           # deeper subcommand discovery
+apexe scan git --no-cache              # force re-scan
+apexe scan git --format json           # JSON output
 ```
 
-### 4.2 `apexe list`
+### 4.2 `apexe serve`
 
-Lists all previously scanned tools and their generated modules.
-
-```
-apexe list [OPTIONS]
-```
-
-**Options:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--format <FMT>` | `table` | Output format: `table` or `json`. |
-
-**Examples:**
-
-```bash
-# List tools in a table
-apexe list
-
-# List as JSON (useful for scripting)
-apexe list --format json
-```
-
-### 4.3 `apexe serve`
-
-Starts an MCP server that exposes scanned tools to AI agents.
+Starts an MCP server exposing scanned tools to AI agents.
 
 ```
 apexe serve [OPTIONS]
 ```
 
-**Options:**
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--transport <TYPE>` | `stdio` | Transport: `stdio`, `http`, or `sse` |
+| `--host <HOST>` | `127.0.0.1` | Host for HTTP/SSE transports |
+| `--port <PORT>` | `8000` | Port for HTTP/SSE transports (1-65535) |
+| `--explorer` | off | Enable browser-based Tool Explorer UI (HTTP only) |
+| `--modules-dir <DIR>` | `~/.apexe/modules/` | Directory containing binding files |
+| `--name <NAME>` | `apexe` | MCP server name |
+| `--show-config <TARGET>` | - | Print config snippet: `claude-desktop` or `cursor` |
+
+```bash
+apexe serve                                        # stdio (Claude Desktop/Cursor)
+apexe serve --transport http --port 8000            # HTTP server
+apexe serve --transport http --explorer             # HTTP + browser UI
+apexe serve --show-config claude-desktop            # print integration config
+```
+
+### 4.3 `apexe list`
+
+Lists all registered modules from binding files.
+
+```
+apexe list [OPTIONS]
+```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--transport <TYPE>` | `stdio` | Transport protocol: `stdio` or `http`. |
-| `--port <PORT>` | `3000` | Port for HTTP transport. |
-| `--name <NAME>` | `apexe` | Server name reported in MCP `initialize` response. |
-| `--show-config <TARGET>` | — | Print integration config snippet instead of starting the server. Targets: `claude-desktop`, `cursor`. |
-
-**Examples:**
-
-```bash
-# Start stdio server (for Claude Desktop / Cursor)
-apexe serve
-
-# Start HTTP server on port 8000
-apexe serve --transport http --port 8000
-
-# Print Claude Desktop integration config
-apexe serve --show-config claude-desktop
-
-# Print Cursor integration config
-apexe serve --show-config cursor
-
-# Custom server name
-apexe serve --name my-dev-tools
-```
+| `--format <FMT>` | `table` | Output format: `table` or `json` |
+| `--modules-dir <DIR>` | `~/.apexe/modules/` | Directory to read binding files from |
 
 ### 4.4 `apexe config`
 
-Shows or initializes the apexe configuration.
+Shows or initializes apexe configuration.
 
 ```
 apexe config [OPTIONS]
 ```
 
-**Options:**
-
 | Option | Description |
 |--------|-------------|
-| `--show` | Print the current resolved configuration as YAML. |
-| `--init` | Create a default config file at `~/.apexe/config.yaml`. |
-
-**Examples:**
-
-```bash
-# View current config
-apexe config --show
-
-# Create default config file
-apexe config --init
-```
+| `--show` | Print resolved configuration as YAML |
+| `--init` | Create default config at `~/.apexe/config.yaml` |
 
 ---
 
 ## 5. Configuration
 
-apexe resolves configuration from three tiers. Higher tiers override lower ones:
+Configuration resolves in 4 tiers (highest priority wins):
 
 ```
-CLI flags  >  Environment variables  >  Config file (~/.apexe/config.yaml)
+CLI flags  >  Environment variables  >  Config file  >  Defaults
 ```
 
 ### Config file
 
-Located at `~/.apexe/config.yaml`. Create it with `apexe config --init`.
+Located at `~/.apexe/config.yaml`. Create with `apexe config --init`.
 
 ```yaml
 modules_dir: ~/.apexe/modules
@@ -241,265 +174,391 @@ json_output_preference: true
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `modules_dir` | path | `~/.apexe/modules` | Where binding files are stored. |
-| `cache_dir` | path | `~/.apexe/cache` | Where scan cache is stored. |
-| `audit_log` | path | `~/.apexe/audit.jsonl` | Path to the audit trail file. |
-| `log_level` | string | `info` | Log level: `error`, `warn`, `info`, `debug`, `trace`. |
-| `default_timeout` | integer | `30` | Default timeout in seconds for CLI subprocess execution. |
-| `scan_depth` | integer | `2` | Default subcommand recursion depth for `apexe scan`. |
-| `json_output_preference` | boolean | `true` | Prefer JSON output from scanned tools when available. |
+| `modules_dir` | path | `~/.apexe/modules` | Binding file storage |
+| `cache_dir` | path | `~/.apexe/cache` | Scan result cache |
+| `audit_log` | path | `~/.apexe/audit.jsonl` | Audit trail file |
+| `log_level` | string | `info` | Log level: error, warn, info, debug, trace |
+| `default_timeout` | integer | `30` | CLI subprocess timeout (seconds) |
+| `scan_depth` | integer | `2` | Default subcommand recursion depth |
+| `json_output_preference` | boolean | `true` | Prefer JSON output from CLI tools when available |
 
 ### Environment variables
 
-| Variable | Overrides |
-|----------|-----------|
-| `APEXE_MODULES_DIR` | `modules_dir` |
-| `APEXE_CACHE_DIR` | `cache_dir` |
-| `APEXE_LOG_LEVEL` | `log_level` |
-| `APEXE_TIMEOUT` | `default_timeout` |
+| Variable | Overrides | Example |
+|----------|-----------|---------|
+| `APEXE_MODULES_DIR` | `modules_dir` | `/opt/apexe/modules` |
+| `APEXE_CACHE_DIR` | `cache_dir` | `/tmp/apexe-cache` |
+| `APEXE_LOG_LEVEL` | `log_level` | `debug` |
+| `APEXE_TIMEOUT` | `default_timeout` | `120` |
+| `APEXE_SCAN_DEPTH` | `scan_depth` | `3` |
 
 ---
 
-## 6. How Scanning Works
+## 6. Scanning Engine
 
-When you run `apexe scan <tool>`, the scanner engine goes through three tiers in order:
+apexe uses a three-tier deterministic scanning engine. No LLM is involved.
 
-### Tier 1 — Help text parsing
+### Tier 1: `--help` Parsing
 
-Runs `<tool> --help` (or `<tool> -h`) and parses the output. Four built-in parsers handle the most common CLI frameworks:
+Runs `<tool> --help` and auto-detects the help format. Four built-in parsers:
 
-| Parser | Detects |
-|--------|---------|
-| **GNU** | Standard GNU-style help (most Linux tools) |
-| **Click** | Python Click / argparse output |
-| **Cobra** | Go Cobra-based CLIs (kubectl, docker, gh) |
-| **Clap** | Rust Clap-based CLIs |
+| Parser | Detects | Examples |
+|--------|---------|---------|
+| **GNU** | Standard GNU-style help | ls, grep, curl, git |
+| **Click** | Python Click / argparse | aws, pip |
+| **Cobra** | Go Cobra framework | kubectl, docker, gh |
+| **Clap** | Rust Clap framework | ripgrep, fd, bat |
 
-The parser pipeline automatically selects the best-matching parser based on the help text format.
+Extracts: subcommands, flags (long/short), positional args, types, defaults, enum values, descriptions.
 
-### Tier 2 — Man page parsing
+### Tier 2: Man Page Enrichment
 
-If Tier 1 yields incomplete results, apexe falls back to parsing `man <tool>` output for additional descriptions.
+Parses `man <tool>` output to supplement Tier 1:
 
-### Tier 3 — Shell completion parsing
+- **DESCRIPTION section**: Enriches commands that have sparse descriptions (< 20 chars).
+- **OPTIONS section**: Extracts flag descriptions and merges into flags that have sparse descriptions (< 10 chars) from Tier 1.
 
-As a final fallback, apexe parses zsh/bash completion scripts to discover subcommands that may not appear in `--help`.
+### Tier 3: Shell Completion Discovery
 
-### Subcommand discovery
+Parses zsh/bash completion scripts from standard paths:
+- `/usr/share/zsh/functions/Completion/_<tool>`
+- `/usr/local/share/zsh/site-functions/_<tool>`
+- `/etc/bash_completion.d/<tool>`
 
-For tools with subcommands (e.g., `git`, `docker`), apexe recursively discovers subcommands up to the configured depth. For example, with `--depth 2`, scanning `git` discovers both `git commit` and `git remote add`.
+Discovers subcommands that Tier 1 missed and merges them into the result (added as stubs with a warning).
+
+### Subcommand Discovery
+
+For tools with subcommands, apexe recursively runs `--help` on each subcommand up to `--depth` levels. For example, with `--depth 2`:
+
+```
+git --help          → discovers: commit, push, remote, ...
+git remote --help   → discovers: add, remove, show, ...
+```
 
 ### Caching
 
-Scan results are cached in `~/.apexe/cache/`. Subsequent scans of the same tool are instant unless:
-- You pass `--no-cache`
-- The tool's binary has changed (version detection)
+Scan results are cached in `~/.apexe/cache/`. Cache is keyed by tool name + version. Use `--no-cache` to force a fresh scan.
 
 ---
 
-## 7. Governance
+## 7. Schema Generation
 
-apexe automatically applies governance to every scanned tool. This happens during the `scan` phase — no extra steps required.
+Each scanned flag/argument becomes a JSON Schema property.
 
-### 7.1 Annotation inference
+### Type Mapping
 
-Each command is classified based on its name and flags:
+| CLI Type | JSON Schema | Example |
+|----------|-------------|---------|
+| String | `"type": "string"` | `--message "hello"` |
+| Integer | `"type": "integer"` | `--count 5` |
+| Float | `"type": "number"` | `--ratio 0.5` |
+| Boolean | `"type": "boolean"` | `--verbose` |
+| Path | `"type": "string", "format": "path"` | `--config /etc/app.yaml` |
+| URL | `"type": "string", "format": "uri"` | `--url https://...` |
+| Enum | `"type": "string", "enum": [...]` | `--format json\|yaml\|table` |
 
-| Classification | Trigger patterns | Example |
-|----------------|-----------------|---------|
-| **Destructive** | `delete`, `remove`, `rm`, `drop`, `kill`, `destroy`, `purge`, `wipe`, `erase`, `force-push` | `git push --force` |
-| **Readonly** | `list`, `show`, `status`, `info`, `get`, `cat`, `ls`, `describe`, `inspect`, `view`, `help` | `git status` |
+### Special handling
 
-Certain flags modify the classification:
+- **Required flags**: Added to the schema's `required` array.
+- **Repeatable flags** (`--include a --include b`): Wrapped as `"type": "array", "items": {...}`.
+- **Default values**: Included with type-correct coercion (`"10"` becomes `10` for integers).
+- **Boolean defaults**: `false` unless explicitly set.
+- **Format hints**: `Path` and `URL` types emit `"format"` so AI agents can distinguish paths from plain strings.
 
-| Flag | Effect |
-|------|--------|
-| `--force`, `--hard` | Escalates to `requires_approval` |
-| `--dry-run` | Marks as `idempotent` |
+### Output Schema
 
-Each annotation carries a confidence score (0.3–0.95).
+Tools with detected JSON output flags get an enhanced output schema:
 
-### 7.2 Access control (ACL)
-
-apexe generates an `acl.yaml` file at `~/.apexe/acl.yaml` using a default-deny model:
-
-| Command type | Default ACL |
-|-------------|-------------|
-| Readonly | `allow` |
-| Destructive | `deny` (requires explicit allow) |
-| Unknown | `deny` |
-
-You can edit `acl.yaml` to customize permissions. The ACL supports wildcard patterns:
-
-```yaml
-# Allow all git read commands
-- pattern: "cli.git.status"
-  action: allow
-
-# Allow all docker commands
-- pattern: "cli.docker.*"
-  action: allow
-
-# Deny all destructive git operations
-- pattern: "cli.git.push"
-  action: deny
+```json
+{
+  "type": "object",
+  "properties": {
+    "stdout": { "type": "string" },
+    "stderr": { "type": "string" },
+    "exit_code": { "type": "integer" },
+    "json_output": { "type": "object" }
+  }
+}
 ```
 
-### 7.3 Audit trail
+---
 
-Every tool invocation through `apexe serve` is logged to `~/.apexe/audit.jsonl` in append-only JSONL format. Each entry includes:
+## 8. Behavioral Annotations
 
-- **Timestamp** — when the invocation occurred
-- **Trace ID** — UUID for correlation
-- **Module ID** — which tool/command was invoked (e.g., `cli.git.commit`)
-- **Inputs hash** — SHA-256 hash of the inputs (raw inputs are not logged for privacy)
-- **Duration** — execution time in milliseconds
-- **Result status** — success or error
+apexe automatically infers behavioral annotations from command names and flags.
 
-The audit trail never causes execution failures — logging errors are silently ignored. Log rotation is supported with configurable size thresholds.
+### Command Name Patterns
+
+| Annotation | Trigger Patterns |
+|------------|-----------------|
+| **readonly** | list, ls, show, get, status, info, version, help, describe, view, cat, log, diff, search, find, check, inspect, display, print, whoami, env, top, ps |
+| **destructive** + **requires_approval** | delete, rm, remove, destroy, purge, drop, kill, prune, clean, reset, format, wipe, erase |
+| **idempotent** | get, list, show, status, info, describe, version, help, check |
+| **cacheable** | (readonly AND idempotent) |
+
+### Flag Boosting
+
+Certain flags escalate the annotation regardless of command name:
+
+| Flags | Effect |
+|-------|--------|
+| `--force`, `-f`, `--hard`, `--recursive`, `-r`, `--all`, `--prune`, `--no-preserve-root`, `--cascade`, `--purge`, `--yes`, `-y` | `requires_approval = true` |
+| `--dry-run`, `--check`, `--diff`, `--noop`, `--simulate`, `--whatif`, `--plan` | `idempotent = true` |
+
+**Example**: `git push` has flag `--force`, so it gets `requires_approval = true` even though "push" is not in the destructive list.
 
 ---
 
-## 8. Integrating with AI Agents
+## 9. Governance
+
+### 9.1 Access Control (ACL)
+
+`apexe scan` automatically generates `~/.apexe/acl.yaml` using a **default-deny** model:
+
+| Module type | Default rule |
+|-------------|-------------|
+| Readonly modules | `effect: allow` |
+| Destructive modules | `effect: deny` with `require_approval: true` |
+| All others | Default deny (no explicit rule) |
+
+ACL format (editable):
+
+```yaml
+default_effect: deny
+rules:
+  - callers: ["*"]
+    targets: ["cli.git.status", "cli.git.log", "cli.git.diff"]
+    effect: allow
+    description: "Auto-allow readonly git commands"
+  - callers: ["*"]
+    targets: ["cli.git.push"]
+    effect: deny
+    description: "Block destructive git commands"
+    conditions:
+      require_approval: true
+```
+
+### 9.2 Audit Trail
+
+Every tool invocation via `apexe serve` is logged to `~/.apexe/audit.jsonl`:
+
+```json
+{
+  "timestamp": "2026-03-28T10:30:00.123Z",
+  "user": "tercelyi",
+  "module_id": "cli.git.commit",
+  "input_hash": "a3f2b8...",
+  "status": "success",
+  "exit_code": 0,
+  "duration_ms": 42
+}
+```
+
+- **Privacy**: Inputs are SHA-256 hashed with a random salt. Raw input values are never logged.
+- **Resilience**: Audit logging never causes execution failures. Write errors are silently logged via tracing.
+
+### 9.3 Sandbox (Optional)
+
+The `SandboxManager` wraps `apcore-cli`'s subprocess isolation with environment variable whitelisting and timeout enforcement. Available programmatically via the library API.
+
+---
+
+## 10. MCP Server
+
+### Transport Options
+
+| Transport | Use case | Command |
+|-----------|----------|---------|
+| **stdio** | Claude Desktop, Cursor (default) | `apexe serve` |
+| **streamable-http** | Remote agents, browser UI | `apexe serve --transport http --port 8000` |
+| **sse** | Server-Sent Events transport | `apexe serve --transport sse --port 8000` |
+
+### Built-in Middleware
+
+| Middleware | Status | Effect |
+|-----------|--------|--------|
+| **LoggingMiddleware** | Enabled by default | Structured logging of inputs/outputs with sensitive field redaction |
+| **ElicitationApprovalHandler** | Opt-in (programmatic) | Sends approval request to MCP client for destructive commands |
+
+### Tool Filtering
+
+The `McpServerBuilder` API supports filtering which tools are exposed:
+
+```rust
+McpServerBuilder::new()
+    .tags(vec!["readonly".to_string()])     // only expose readonly tools
+    .prefix("cli.git")                       // only expose git tools
+    .build()?;
+```
+
+### Explorer UI
+
+Enable with `--explorer` (HTTP transport only):
+
+```bash
+apexe serve --transport http --port 8000 --explorer
+```
+
+Provides a browser-based interface to explore available tools, view schemas, and test invocations.
+
+### OpenAI Tools Export
+
+Export tool definitions in OpenAI function calling format (programmatic API):
+
+```rust
+let tools = McpServerBuilder::new()
+    .modules_dir("~/.apexe/modules")
+    .export_openai_tools()?;
+```
+
+---
+
+## 11. Integrating with AI Agents
 
 ### Claude Desktop
 
-1. Scan the tools you want to expose:
+```bash
+apexe scan git docker kubectl
+apexe serve --show-config claude-desktop
+```
 
-   ```bash
-   apexe scan git docker kubectl
-   ```
+Copy the JSON output into:
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Linux**: `~/.config/claude/claude_desktop_config.json`
 
-2. Get the integration config:
-
-   ```bash
-   apexe serve --show-config claude-desktop
-   ```
-
-3. Copy the output into your Claude Desktop MCP configuration file (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS).
-
-4. Restart Claude Desktop. Your tools will appear in the available MCP tools.
+Restart Claude Desktop. Scanned tools appear as MCP tools.
 
 ### Cursor
 
-1. Scan and generate bindings as above.
-
-2. Get the Cursor-specific config:
-
-   ```bash
-   apexe serve --show-config cursor
-   ```
-
-3. Add the config to Cursor's MCP settings.
-
-### HTTP mode (remote agents)
-
-For agents that connect via HTTP:
-
 ```bash
-apexe serve --transport http --port 8000
+apexe serve --show-config cursor
 ```
 
-The server exposes:
-- `POST /mcp` — MCP JSON-RPC 2.0 endpoint
-- `GET /health` — Health check
+Add the JSON to Cursor's MCP settings.
+
+### HTTP Mode (Remote Agents)
+
+```bash
+apexe serve --transport http --host 0.0.0.0 --port 8000
+```
+
+The MCP endpoint is at `POST /mcp`.
+
+### Display Names
+
+apexe generates display metadata for MCP clients:
+
+| Module ID | MCP Display Alias |
+|-----------|------------------|
+| `cli.git.commit` | `git_commit` |
+| `cli.docker.container.ls` | `docker_container_ls` |
+| `cli.kubectl.get` | `kubectl_get` |
+
+Aliases are auto-sanitized for MCP compatibility (dots replaced with underscores, digit prefixes escaped).
 
 ---
 
-## 9. File Locations
+## 12. Error Handling & AI Guidance
 
-| Path | Purpose |
-|------|---------|
-| `~/.apexe/config.yaml` | Configuration file |
-| `~/.apexe/modules/` | Generated `.binding.yaml` files |
-| `~/.apexe/modules/<tool>.binding.yaml` | Binding file for a specific tool |
-| `~/.apexe/cache/` | Scan result cache |
-| `~/.apexe/acl.yaml` | Access control rules |
-| `~/.apexe/audit.jsonl` | Audit trail |
+Every error includes `ai_guidance` to help AI agents self-correct:
+
+| Error | ai_guidance |
+|-------|-------------|
+| Tool not found | "The tool 'xyz' is not installed. Install it and try again." |
+| Command timeout | "The command took too long. Try with simpler arguments or increase timeout." |
+| Shell injection detected | "Remove shell metacharacters (;, \|) from parameter 'file'." |
+| Permission denied | "Permission denied. Check file permissions or run with appropriate privileges." |
+| Non-zero exit code | "Command 'git push' exited with code 1. stderr: (first 200 chars)" |
+
+Additionally, each execution response includes:
+- `trace_id` for end-to-end correlation
+- `duration_ms` for performance tracking
+- `exit_code` for programmatic error detection
+
+---
+
+## 13. File Locations
+
+| Path | Purpose | Created by |
+|------|---------|------------|
+| `~/.apexe/config.yaml` | Configuration | `apexe config --init` |
+| `~/.apexe/modules/*.binding.yaml` | Tool binding files | `apexe scan` |
+| `~/.apexe/cache/` | Scan result cache | `apexe scan` |
+| `~/.apexe/acl.yaml` | Access control rules | `apexe scan` |
+| `~/.apexe/audit.jsonl` | Audit trail | `apexe serve` (runtime) |
+| `~/.apexe/apcore.yaml` | apcore ecosystem config (optional) | Manual |
 
 All directories are created automatically on first use.
 
 ---
 
-## 10. Logging & Debugging
+## 14. Logging & Debugging
 
 apexe uses structured logging via the `tracing` crate.
 
-### Set log level
-
 ```bash
+# Via CLI flag (global)
+apexe --log-level debug scan git
+
 # Via environment variable
 RUST_LOG=debug apexe scan git
-
-# Via CLI flag
-apexe --log-level debug scan git
 
 # Via config file
 # log_level: debug
 ```
 
-### Log levels
-
-| Level | What it shows |
-|-------|--------------|
+| Level | Shows |
+|-------|-------|
 | `error` | Failures only |
-| `warn` | Warnings and errors |
-| `info` | Normal operation (default) |
-| `debug` | Detailed internal state — parser selection, cache hits/misses, subcommand discovery |
-| `trace` | Very verbose — raw help text, parsed structures |
+| `warn` | Warnings (e.g., failed to write ACL, cache miss) |
+| `info` | Normal operation: tool loaded, modules registered, server started |
+| `debug` | Internal detail: parser selection, cache hits, enrichment decisions |
+| `trace` | Very verbose: raw help text, parsed structures |
 
 ---
 
-## 11. Troubleshooting
+## 15. Troubleshooting
 
 ### "Tool not found" during scan
 
-The tool must be on your `$PATH`. Verify with:
-
+The tool must be on `$PATH`:
 ```bash
 which <tool>
 ```
 
 ### Scan produces incomplete results
 
-Some tools have non-standard help output. Try:
-
-1. Increasing depth: `apexe scan <tool> --depth 3`
-2. Forcing a fresh scan: `apexe scan <tool> --no-cache`
-3. Enabling debug logs to see which parser was selected: `RUST_LOG=debug apexe scan <tool>`
-
-If the tool uses a non-standard help format, a custom parser plugin can be added (see the Developer Guide in the README).
+1. Increase depth: `apexe scan <tool> --depth 3`
+2. Force re-scan: `apexe scan <tool> --no-cache`
+3. Check parser selection: `RUST_LOG=debug apexe scan <tool>`
 
 ### Serve command does nothing (stdio mode)
 
-In stdio mode, apexe reads JSON-RPC messages from stdin and writes responses to stdout. It is designed to be launched by an AI agent, not run interactively. Use `--show-config` to get the agent integration snippet.
+Stdio mode reads JSON-RPC from stdin and writes to stdout. It is launched by AI agents, not run interactively. Use `--show-config` to get the agent integration snippet.
 
-### Permission denied when invoking a tool
+### Tool invocation fails with ACL denied
 
-The ACL defaults to deny for destructive and unknown commands. Edit `~/.apexe/acl.yaml` to allow the specific command:
+The default ACL denies destructive and unknown commands. Edit `~/.apexe/acl.yaml`:
 
 ```yaml
-- pattern: "cli.<tool>.<command>"
-  action: allow
+rules:
+  - callers: ["*"]
+    targets: ["cli.<tool>.<command>"]
+    effect: allow
 ```
 
-### Cached results are stale
-
-Force a re-scan:
+### Stale scan results
 
 ```bash
 apexe scan <tool> --no-cache
-```
-
-Or clear the cache directory:
-
-```bash
+# Or clear cache entirely:
 rm -rf ~/.apexe/cache/
 ```
 
-### Known limitations (v0.1)
+### Known Limitations
 
-- **A2A protocol** — Stub only; not yet functional.
-- **SSE transport** — Stub endpoint only; no streaming.
-- **Windows** — Not supported.
-- **Agent Card** — `/.well-known/agent.json` endpoint is not yet implemented.
+- **A2A protocol**: Not yet implemented. Architecture supports future addition (~150 LOC).
+- **Windows**: Not supported.
+- **Interactive CLI tools**: Tools requiring stdin input (e.g., `ssh`, `vim`) cannot be wrapped.
+- **Streaming output**: CLI subprocess output is collected in full, then returned. No real-time streaming.

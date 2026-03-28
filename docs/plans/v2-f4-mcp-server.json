@@ -1,0 +1,10 @@
+{
+  "feature": "v2-f4-mcp-server",
+  "description": "Add apcore-mcp integration. McpServerBuilder wraps APCoreMCP with apexe-specific module registration.",
+  "language": "rust",
+  "tasks": [
+    {"id": "F4-T1", "title": "Add apcore-mcp dependency and create mcp module", "status": "done", "depends_on": []},
+    {"id": "F4-T2", "title": "Implement McpServerBuilder", "status": "done", "depends_on": ["F4-T1"]},
+    {"id": "F4-T3", "title": "Tests and quality gates", "status": "done", "depends_on": ["F4-T2"]}
+  ]
+}

@@ -48,7 +48,6 @@ fn test_serve_help_shows_expected_flags() {
         .stdout(predicate::str::contains("--transport"))
         .stdout(predicate::str::contains("--host"))
         .stdout(predicate::str::contains("--port"))
-        .stdout(predicate::str::contains("--a2a"))
         .stdout(predicate::str::contains("--explorer"));
 }
 

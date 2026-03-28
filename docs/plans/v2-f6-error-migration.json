@@ -1,0 +1,97 @@
+{
+  "feature": "v2-f6-error-migration",
+  "description": "Migrate to apcore ModuleError + ErrorCode. Add From<ApexeError> for ModuleError conversion, convenience constructor with trace_id, update Cargo.toml with apcore dependency, and remove anyhow.",
+  "language": "rust",
+  "tasks": [
+    {
+      "id": "F6-T1",
+      "title": "Add apcore dependency and verify ErrorCode availability",
+      "description": "Add apcore as a path dependency in Cargo.toml (path = '../apcore-rust'). Verify that ErrorCode, ModuleError, and builder methods are accessible. Remove anyhow from [dependencies].",
+      "test_first": "Write a compile-only test that imports apcore::{ErrorCode, ModuleError} and constructs a ModuleError::new(ErrorCode::GeneralInternalError, 'test'). Verify it compiles with `cargo test --lib`.",
+      "implementation": "Edit Cargo.toml: add `apcore = { path = \"../apcore-rust\" }` to [dependencies], remove `anyhow = \"1\"`. Update src/main.rs to remove anyhow::Result and handle ModuleError directly with eprintln + process::exit. Update src/cli/mod.rs run() return type from anyhow::Result<()> to Result<(), Box<dyn std::error::Error>> temporarily (will become Result<(), ModuleError> after full From impl).",
+      "acceptance": "`cargo build` succeeds with apcore dependency. `cargo test` passes. No anyhow references remain.",
+      "status": "done",
+      "depends_on": []
+    },
+    {
+      "id": "F6-T2",
+      "title": "From<ApexeError> for ModuleError: ToolNotFound variant",
+      "description": "Implement From conversion for the ToolNotFound variant. Maps to ErrorCode::ModuleNotFound with tool_name in details and ai_guidance.",
+      "test_first": "Write test_tool_not_found_to_module_error: create ApexeError::ToolNotFound { tool_name: 'git' }, convert via ModuleError::from(), assert code == ErrorCode::ModuleNotFound, retryable == None (not retryable by default) or Some(false), ai_guidance contains 'git' and 'not installed', details['tool_name'] == 'git'.",
+      "implementation": "In src/errors.rs, add `use apcore::{ErrorCode, ModuleError};`. Implement `impl From<ApexeError> for ModuleError` starting with the ToolNotFound arm. Use ModuleError::new() builder: .with_details(HashMap from tool_name), .with_ai_guidance(). Set retryable to false via .with_retryable(false).",
+      "acceptance": "Test passes. ToolNotFound converts correctly with all fields populated.",
+      "status": "done",
+      "depends_on": ["F6-T1"]
+    },
+    {
+      "id": "F6-T3",
+      "title": "From<ApexeError> for ModuleError: ScanError and ParseError variants",
+      "description": "Add conversion for ScanError(msg) and ParseError(msg), both mapping to ErrorCode::GeneralInternalError with distinct ai_guidance messages.",
+      "test_first": "Write test_scan_error_to_module_error: ScanError('broken') -> code == GeneralInternalError, ai_guidance contains 'scanning error'. Write test_parse_error_to_module_error: ParseError('unexpected') -> code == GeneralInternalError, ai_guidance contains 'parsing failed'.",
+      "implementation": "Add ScanError and ParseError arms to the From impl match. ScanError: details = {scan_error: msg}. ParseError: details = {parse_error: msg}, ai_guidance mentions non-standard help format.",
+      "acceptance": "Both tests pass with correct error codes and guidance messages.",
+      "status": "done",
+      "depends_on": ["F6-T2"]
+    },
+    {
+      "id": "F6-T4",
+      "title": "From<ApexeError> for ModuleError: ScanTimeout variant",
+      "description": "Add conversion for ScanTimeout { command, timeout } mapping to ErrorCode::ModuleTimeout with retryable = true.",
+      "test_first": "Write test_scan_timeout_to_module_error: ScanTimeout { command: 'git status', timeout: 30 } -> code == ModuleTimeout, retryable == Some(true), details has 'command' and 'timeout_seconds', ai_guidance mentions 'too long'.",
+      "implementation": "Add ScanTimeout arm. Use ModuleError::new(ErrorCode::ModuleTimeout, ...).with_retryable(true).with_details(...).with_ai_guidance(...).",
+      "acceptance": "Test passes. This is the only variant with retryable = true.",
+      "status": "done",
+      "depends_on": ["F6-T2"]
+    },
+    {
+      "id": "F6-T5",
+      "title": "From<ApexeError> for ModuleError: ScanPermission and CommandInjection variants",
+      "description": "ScanPermission maps to ErrorCode::AclDenied (closest to permission denied). CommandInjection maps to ErrorCode::GeneralInvalidInput with prohibited chars in details.",
+      "test_first": "Write test_scan_permission_to_module_error: ScanPermission { command: 'secret' } -> code == AclDenied, ai_guidance mentions 'permission'. Write test_command_injection_to_module_error: CommandInjection { param_name: 'file', chars: [';', '|'] } -> code == GeneralInvalidInput, details has 'param_name' and 'prohibited_chars', ai_guidance mentions removing metacharacters.",
+      "implementation": "Add both arms to From impl. ScanPermission uses AclDenied. CommandInjection uses GeneralInvalidInput with structured details.",
+      "acceptance": "Both tests pass.",
+      "status": "done",
+      "depends_on": ["F6-T2"]
+    },
+    {
+      "id": "F6-T6",
+      "title": "From<ApexeError> for ModuleError: Io, Yaml, Json variants",
+      "description": "Io maps to GeneralInternalError with io_error_kind in details. Yaml and Json both map to GeneralInternalError (no SerializationError in apcore ErrorCode).",
+      "test_first": "Write test_io_error_to_module_error: Io(io::Error::new(NotFound, 'missing')) -> code == GeneralInternalError, details has 'io_error_kind'. Write test_yaml_error_to_module_error: create a YAML parse error -> code == GeneralInternalError, ai_guidance contains 'YAML'. Write test_json_error_to_module_error: create a JSON parse error -> code == GeneralInternalError, ai_guidance contains 'JSON'.",
+      "implementation": "Add Io, Yaml, Json arms. All use GeneralInternalError. Io includes error kind in details. Yaml/Json use Display for message.",
+      "acceptance": "All three tests pass.",
+      "status": "done",
+      "depends_on": ["F6-T2"]
+    },
+    {
+      "id": "F6-T7",
+      "title": "Convenience constructor: into_module_error_with_trace",
+      "description": "Add ApexeError::into_module_error_with_trace(self, trace_id) method that converts and attaches a trace_id.",
+      "test_first": "Write test_into_module_error_with_trace: create any ApexeError, call into_module_error_with_trace('abc-123'), assert trace_id == Some('abc-123') and other fields preserved.",
+      "implementation": "Add pub fn into_module_error_with_trace(self, trace_id: String) -> ModuleError method on ApexeError. Calls Into::<ModuleError>::into(self) then .with_trace_id(trace_id) or sets trace_id directly.",
+      "acceptance": "Test passes. trace_id is set correctly.",
+      "status": "done",
+      "depends_on": ["F6-T6"]
+    },
+    {
+      "id": "F6-T8",
+      "title": "Cross-cutting: all variants have ai_guidance and question mark operator works",
+      "description": "Add integration tests verifying all variants produce ai_guidance and that the ? operator auto-converts ApexeError to ModuleError in function signatures.",
+      "test_first": "Write test_all_variants_have_ai_guidance: construct each of the 9 ApexeError variants, convert via From, assert ai_guidance.is_some() for all. Write test_question_mark_operator_converts: define fn returns_module_error() -> Result<(), ModuleError> that calls a fn returning Result<(), ApexeError> with ?, assert it compiles and converts.",
+      "implementation": "These are pure test additions. No production code changes needed if all previous tasks are correct.",
+      "acceptance": "Both tests pass. Full coverage of the From trait across all 9 variants.",
+      "status": "done",
+      "depends_on": ["F6-T7"]
+    },
+    {
+      "id": "F6-T9",
+      "title": "Update CLI entry point to use ModuleError",
+      "description": "Update main.rs and cli/mod.rs to use ModuleError as the top-level error type instead of anyhow::Result. Display error.message and error.ai_guidance on failure.",
+      "test_first": "Write integration test (assert_cmd) that triggers an error (e.g., `apexe scan nonexistent-tool-xyz`) and verifies stderr contains both the error message and a suggestion/guidance line.",
+      "implementation": "In cli/mod.rs, change run() return type to Result<(), ModuleError>. Convert any remaining anyhow usage. In main.rs, match on Err(e) and print e.message + e.ai_guidance. Use std::process::exit(1). Remove `use anyhow`.",
+      "acceptance": "`cargo build` succeeds. `apexe scan nonexistent` shows error with guidance. All existing CLI tests pass. No anyhow imports remain anywhere.",
+      "status": "done",
+      "depends_on": ["F6-T8"]
+    }
+  ]
+}

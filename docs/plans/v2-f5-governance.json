@@ -1,0 +1,11 @@
+{
+  "feature": "v2-f5-governance",
+  "description": "Governance wrappers: AclManager (apcore ACL), AuditManager (apcore-cli AuditLogger), SandboxManager (apcore-cli Sandbox).",
+  "language": "rust",
+  "tasks": [
+    {"id": "F5-T1", "title": "Add apcore-cli dependency, create SandboxManager", "status": "done", "depends_on": []},
+    {"id": "F5-T2", "title": "Rewrite AuditManager with apcore-cli AuditLogger", "status": "done", "depends_on": ["F5-T1"]},
+    {"id": "F5-T3", "title": "Add AclManager with apcore ACL", "status": "done", "depends_on": ["F5-T1"]},
+    {"id": "F5-T4", "title": "Tests and quality gates", "status": "done", "depends_on": ["F5-T2", "F5-T3"]}
+  ]
+}

@@ -17,6 +17,7 @@ fn test_config() -> (TempDir, ApexeConfig) {
         default_timeout: 30,
         scan_depth: 2,
         json_output_preference: true,
+        ..ApexeConfig::default()
     };
     (tmp, config)
 }

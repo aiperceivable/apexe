@@ -4,8 +4,8 @@
 |-------|-------|
 | **Project** | apexe -- Outside-In CLI-to-Agent Bridge |
 | **Version** | 0.1.0 |
-| **Date** | 2026-03-21 |
-| **Status** | DRAFT |
+| **Date** | 2026-03-28 |
+| **Status** | SUPERSEDED by [v2-overview.md](v2-overview.md) |
 
 ---
 

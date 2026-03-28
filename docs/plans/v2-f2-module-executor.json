@@ -1,0 +1,28 @@
+{
+  "feature": "v2-f2-module-executor",
+  "description": "Implement apcore Module trait for CLI subprocess execution. CliModule wraps ScannedModule with async subprocess execution via tokio spawn_blocking.",
+  "language": "rust",
+  "tasks": [
+    {
+      "id": "F2-T1",
+      "title": "Create module skeleton and executor functions",
+      "description": "Create src/module/ with mod.rs, executor.rs (build_arguments, validate_no_injection, execute_subprocess), cli_module.rs.",
+      "status": "done",
+      "depends_on": []
+    },
+    {
+      "id": "F2-T2",
+      "title": "Implement CliModule with Module trait",
+      "description": "Implement CliModule::new, from_scanned, and the Module trait (execute, input_schema, output_schema, description).",
+      "status": "done",
+      "depends_on": ["F2-T1"]
+    },
+    {
+      "id": "F2-T3",
+      "title": "Tests and quality gates",
+      "description": "Write ~20 tests covering arg building, injection prevention, subprocess execution, and CliModule trait methods.",
+      "status": "done",
+      "depends_on": ["F2-T2"]
+    }
+  ]
+}

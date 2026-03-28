@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use apcore::Config as CoreConfig;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -16,6 +17,10 @@ pub struct ApexeConfig {
     pub default_timeout: u64,
     pub scan_depth: u32,
     pub json_output_preference: bool,
+
+    /// apcore core configuration for ecosystem integration.
+    #[serde(skip)]
+    pub core_config: Option<CoreConfig>,
 }
 
 impl Default for ApexeConfig {
@@ -31,11 +36,17 @@ impl Default for ApexeConfig {
             default_timeout: 30,
             scan_depth: 2,
             json_output_preference: true,
+            core_config: None,
         }
     }
 }
 
 impl ApexeConfig {
+    /// Get the apcore CoreConfig, creating a default if not loaded.
+    pub fn core_config(&self) -> CoreConfig {
+        self.core_config.clone().unwrap_or_default()
+    }
+
     /// Create all required directories if they do not exist.
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.modules_dir)?;
@@ -91,6 +102,12 @@ pub fn load_config(
             Err(_) => warn!("Invalid APEXE_TIMEOUT value: {val}, using default"),
         }
     }
+    if let Ok(val) = std::env::var("APEXE_SCAN_DEPTH") {
+        match val.parse::<u32>() {
+            Ok(d) if (1..=5).contains(&d) => config.scan_depth = d,
+            _ => warn!("Invalid APEXE_SCAN_DEPTH value, using default"),
+        }
+    }
 
     // Apply CLI overrides
     if let Some(overrides) = cli_overrides {
@@ -102,8 +119,33 @@ pub fn load_config(
         }
         if let Some(val) = overrides.get("scan_depth") {
             if let Ok(d) = val.parse::<u32>() {
-                config.scan_depth = d;
+                if (1..=5).contains(&d) {
+                    config.scan_depth = d;
+                } else {
+                    warn!("Invalid scan_depth override: {d}, must be 1-5");
+                }
             }
+        }
+        if let Some(val) = overrides.get("timeout") {
+            if let Ok(t) = val.parse::<u64>() {
+                if t > 0 {
+                    config.default_timeout = t;
+                } else {
+                    warn!("Invalid timeout override: {t}, must be > 0");
+                }
+            }
+        }
+    }
+
+    // Load apcore CoreConfig (optional)
+    let core_config_path = config.config_dir.join("apcore.yaml");
+    if core_config_path.exists() {
+        match CoreConfig::load(&core_config_path) {
+            Ok(cc) => config.core_config = Some(cc),
+            Err(e) => warn!(
+                path = %core_config_path.display(),
+                "Failed to load apcore config: {e}"
+            ),
         }
     }
 
@@ -172,6 +214,7 @@ mod tests {
             default_timeout: 60,
             scan_depth: 3,
             json_output_preference: false,
+            ..ApexeConfig::default()
         };
         let yaml = serde_yaml::to_string(&default).unwrap();
         std::fs::write(&config_path, &yaml).unwrap();
@@ -312,6 +355,58 @@ mod tests {
     }
 
     #[test]
+    fn test_env_var_scan_depth_override() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("nonexistent.yaml");
+
+        unsafe { std::env::set_var("APEXE_SCAN_DEPTH", "3") };
+        let config = load_config(Some(config_path.as_path()), None).unwrap();
+        unsafe { std::env::remove_var("APEXE_SCAN_DEPTH") };
+
+        assert_eq!(config.scan_depth, 3);
+    }
+
+    #[test]
+    fn test_env_var_scan_depth_invalid_range() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("nonexistent.yaml");
+
+        unsafe { std::env::set_var("APEXE_SCAN_DEPTH", "10") };
+        let config = load_config(Some(config_path.as_path()), None).unwrap();
+        unsafe { std::env::remove_var("APEXE_SCAN_DEPTH") };
+
+        assert_eq!(config.scan_depth, 2); // default
+    }
+
+    #[test]
+    fn test_cli_timeout_override() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("nonexistent.yaml");
+
+        let mut overrides = HashMap::new();
+        overrides.insert("timeout".to_string(), "60".to_string());
+
+        let config = load_config(Some(config_path.as_path()), Some(&overrides)).unwrap();
+        assert_eq!(config.default_timeout, 60);
+    }
+
+    #[test]
+    fn test_core_config_none_when_file_missing() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("nonexistent.yaml");
+        let config = load_config(Some(config_path.as_path()), None).unwrap();
+        assert!(config.core_config.is_none());
+    }
+
+    #[test]
+    fn test_core_config_accessor_returns_default() {
+        let config = ApexeConfig::default();
+        let core = config.core_config();
+        // CoreConfig::default() should have reasonable defaults
+        assert!(core.max_call_depth > 0);
+    }
+
+    #[test]
     fn test_ensure_dirs_idempotent() {
         let tmp = TempDir::new().unwrap();
         let config = ApexeConfig {
@@ -328,5 +423,41 @@ mod tests {
         assert!(config.modules_dir.exists());
         assert!(config.cache_dir.exists());
         assert!(config.config_dir.exists());
+    }
+
+    #[test]
+    fn test_cli_scan_depth_override_invalid_range_ignored() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("nonexistent.yaml");
+
+        let mut overrides = HashMap::new();
+        overrides.insert("scan_depth".to_string(), "10".to_string());
+
+        let config = load_config(Some(config_path.as_path()), Some(&overrides)).unwrap();
+        assert_eq!(config.scan_depth, 2); // default, override rejected
+    }
+
+    #[test]
+    fn test_cli_scan_depth_override_zero_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("nonexistent.yaml");
+
+        let mut overrides = HashMap::new();
+        overrides.insert("scan_depth".to_string(), "0".to_string());
+
+        let config = load_config(Some(config_path.as_path()), Some(&overrides)).unwrap();
+        assert_eq!(config.scan_depth, 2); // default
+    }
+
+    #[test]
+    fn test_cli_timeout_override_zero_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("nonexistent.yaml");
+
+        let mut overrides = HashMap::new();
+        overrides.insert("timeout".to_string(), "0".to_string());
+
+        let config = load_config(Some(config_path.as_path()), Some(&overrides)).unwrap();
+        assert_eq!(config.default_timeout, 30); // default, override rejected
     }
 }

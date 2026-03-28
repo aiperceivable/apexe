@@ -1,219 +1,120 @@
 use std::path::Path;
 
-use serde_json::{json, Value as JsonValue};
-use tracing::{info, warn};
+use apcore::{ACLRule, ErrorCode, ModuleError, ACL};
+use apcore_toolkit::ScannedModule;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 
-/// Generate default ACL configuration from annotated bindings.
-///
-/// Categorizes bindings into readonly, destructive, and write groups,
-/// producing rules for each non-empty group.
-pub fn generate_acl(
-    bindings: &[serde_json::Map<String, JsonValue>],
-    default_effect: &str,
-) -> serde_json::Map<String, JsonValue> {
-    let mut rules: Vec<JsonValue> = Vec::new();
+/// Serializable representation of an ACL config file (rules + default_effect).
+#[derive(Debug, Serialize, Deserialize)]
+struct AclConfig {
+    rules: Vec<ACLRule>,
+    default_effect: String,
+}
 
-    let readonly_ids: Vec<&str> = bindings
-        .iter()
-        .filter(|b| {
-            b.get("annotations")
-                .and_then(|a| a.get("readonly"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
+/// Manages access control for CLI modules using apcore's ACL system.
+pub struct AclManager {
+    acl: ACL,
+    /// Cached default_effect so we can serialize without needing an accessor on ACL.
+    default_effect: String,
+}
+
+impl AclManager {
+    /// Load ACL from a YAML config file.
+    #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+    pub fn from_config(config_path: &Path) -> Result<Self, ModuleError> {
+        let acl = ACL::load(&config_path.to_string_lossy()).map_err(|e| {
+            ModuleError::new(
+                ErrorCode::GeneralInternalError,
+                format!("Failed to load ACL: {e}"),
+            )
+        })?;
+        // Re-read the file to extract default_effect since ACL has no public accessor.
+        let default_effect = Self::read_default_effect(config_path);
+        Ok(Self {
+            acl,
+            default_effect,
         })
-        .filter_map(|b| b.get("module_id")?.as_str())
-        .collect();
-
-    if !readonly_ids.is_empty() {
-        rules.push(json!({
-            "callers": ["@external", "*"],
-            "targets": readonly_ids,
-            "effect": "allow",
-            "description": "Auto-allow readonly CLI commands",
-        }));
     }
 
-    let destructive_ids: Vec<&str> = bindings
-        .iter()
-        .filter(|b| {
-            b.get("annotations")
-                .and_then(|a| a.get("destructive"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-        })
-        .filter_map(|b| b.get("module_id")?.as_str())
-        .collect();
+    /// Generate default ACL from scanned modules based on annotations.
+    pub fn generate_default(modules: &[ScannedModule]) -> Self {
+        let mut rules = Vec::new();
 
-    if !destructive_ids.is_empty() {
-        rules.push(json!({
-            "callers": ["@external", "*"],
-            "targets": destructive_ids,
-            "effect": "allow",
-            "description": "Destructive CLI commands (requires_approval enforced at module level)",
-        }));
-    }
+        // Readonly modules -> allow
+        let readonly_ids: Vec<String> = modules
+            .iter()
+            .filter(|m| m.annotations.as_ref().is_some_and(|a| a.readonly))
+            .map(|m| m.module_id.clone())
+            .collect();
+        if !readonly_ids.is_empty() {
+            rules.push(ACLRule {
+                callers: vec!["*".to_string()],
+                targets: readonly_ids,
+                effect: "allow".to_string(),
+                description: Some("Auto-allow readonly CLI commands".to_string()),
+                conditions: None,
+            });
+        }
 
-    let write_ids: Vec<&str> = bindings
-        .iter()
-        .filter(|b| {
-            let annotations = b.get("annotations");
-            let is_readonly = annotations
-                .and_then(|a| a.get("readonly"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let is_destructive = annotations
-                .and_then(|a| a.get("destructive"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            !is_readonly && !is_destructive
-        })
-        .filter_map(|b| b.get("module_id")?.as_str())
-        .collect();
+        // Destructive modules -> deny with require_approval
+        let destructive_ids: Vec<String> = modules
+            .iter()
+            .filter(|m| m.annotations.as_ref().is_some_and(|a| a.destructive))
+            .map(|m| m.module_id.clone())
+            .collect();
+        if !destructive_ids.is_empty() {
+            rules.push(ACLRule {
+                callers: vec!["*".to_string()],
+                targets: destructive_ids,
+                effect: "deny".to_string(),
+                description: Some("Block destructive CLI commands by default".to_string()),
+                conditions: Some(json!({"require_approval": true})),
+            });
+        }
 
-    if !write_ids.is_empty() {
-        rules.push(json!({
-            "callers": ["@external", "*"],
-            "targets": write_ids,
-            "effect": "allow",
-            "description": "Non-destructive write CLI commands",
-        }));
-    }
-
-    let mut acl = serde_json::Map::new();
-    acl.insert("$schema".to_string(), json!("https://apcore.dev/acl/v1"));
-    acl.insert("version".to_string(), json!("1.0.0"));
-    acl.insert("rules".to_string(), JsonValue::Array(rules));
-    acl.insert("default_effect".to_string(), json!(default_effect));
-    acl.insert(
-        "audit".to_string(),
-        json!({
-            "enabled": true,
-            "log_level": "info",
-            "include_denied": true,
-        }),
-    );
-    acl
-}
-
-/// Write ACL configuration to a YAML file.
-///
-/// Non-fatal: logs warnings on failure but does not return errors.
-pub fn write_acl(acl_config: &serde_json::Map<String, JsonValue>, output_path: &Path) {
-    if let Some(parent) = output_path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            warn!(path = %output_path.display(), "Failed to create ACL directory: {e}");
-            return;
+        let acl = ACL::new(rules, "deny");
+        Self {
+            acl,
+            default_effect: "deny".to_string(),
         }
     }
 
-    let yaml_value = JsonValue::Object(acl_config.clone());
-    let yaml_str = match serde_yaml::to_string(&yaml_value) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!("Failed to serialize ACL to YAML: {e}");
-            return;
-        }
-    };
-
-    let content = format!("# Auto-generated by apexe. Edit to customize.\n{yaml_str}");
-    match std::fs::write(output_path, content) {
-        Ok(()) => info!(path = %output_path.display(), "ACL written"),
-        Err(e) => warn!(path = %output_path.display(), "Failed to write ACL: {e}"),
-    }
-}
-
-/// Load ACL configuration from a YAML file.
-///
-/// Returns None if the file does not exist.
-pub fn load_acl(path: &Path) -> Option<serde_json::Map<String, JsonValue>> {
-    if !path.exists() {
-        return None;
+    /// Write ACL to a YAML file.
+    #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+    pub fn write_config(&self, path: &Path) -> Result<(), ModuleError> {
+        let config = AclConfig {
+            rules: self.acl.rules().to_vec(),
+            default_effect: self.default_effect.clone(),
+        };
+        let yaml = serde_yaml::to_string(&config).map_err(|e| {
+            ModuleError::new(
+                ErrorCode::GeneralInternalError,
+                format!("Failed to serialize ACL: {e}"),
+            )
+        })?;
+        std::fs::write(path, yaml).map_err(|e| {
+            ModuleError::new(
+                ErrorCode::GeneralInternalError,
+                format!("Failed to write ACL file: {e}"),
+            )
+        })?;
+        Ok(())
     }
 
-    let contents = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(path = %path.display(), "Failed to read ACL file: {e}");
-            return None;
-        }
-    };
-
-    match serde_yaml::from_str::<JsonValue>(&contents) {
-        Ok(JsonValue::Object(map)) => Some(map),
-        Ok(_) => {
-            warn!(path = %path.display(), "ACL file is not a YAML mapping");
-            None
-        }
-        Err(e) => {
-            warn!(path = %path.display(), "Failed to parse ACL YAML: {e}");
-            None
-        }
-    }
-}
-
-/// Check whether a caller has access to a target module based on ACL rules.
-///
-/// Supports wildcard patterns: `*` matches everything, `cli.*` matches prefix.
-pub fn check_access(acl: &serde_json::Map<String, JsonValue>, caller: &str, target: &str) -> bool {
-    let default_effect = acl
-        .get("default_effect")
-        .and_then(|v| v.as_str())
-        .unwrap_or("deny");
-
-    let rules = match acl.get("rules").and_then(|v| v.as_array()) {
-        Some(r) => r,
-        None => return default_effect == "allow",
-    };
-
-    for rule in rules {
-        let effect = rule
-            .get("effect")
-            .and_then(|v| v.as_str())
-            .unwrap_or("deny");
-
-        let callers_match = rule
-            .get("callers")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter().any(|c| {
-                    let pattern = c.as_str().unwrap_or("");
-                    pattern_matches(pattern, caller)
-                })
-            })
-            .unwrap_or(false);
-
-        let targets_match = rule
-            .get("targets")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter().any(|t| {
-                    let pattern = t.as_str().unwrap_or("");
-                    pattern_matches(pattern, target)
-                })
-            })
-            .unwrap_or(false);
-
-        if callers_match && targets_match {
-            return effect == "allow";
-        }
+    /// Consume the manager and return the inner ACL.
+    pub fn into_inner(self) -> ACL {
+        self.acl
     }
 
-    default_effect == "allow"
-}
-
-/// Match a pattern against a value with wildcard support.
-///
-/// - `*` matches everything
-/// - `cli.*` matches any string starting with `cli.`
-/// - Exact match otherwise
-fn pattern_matches(pattern: &str, value: &str) -> bool {
-    if pattern == "*" {
-        return true;
+    /// Read `default_effect` from a YAML file (best-effort, falls back to "deny").
+    fn read_default_effect(path: &Path) -> String {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_yaml::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("default_effect")?.as_str().map(String::from))
+            .unwrap_or_else(|| "deny".to_string())
     }
-    if let Some(prefix) = pattern.strip_suffix('*') {
-        return value.starts_with(prefix);
-    }
-    pattern == value
 }
 
 #[cfg(test)]
@@ -221,174 +122,80 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn make_binding_map(
-        module_id: &str,
-        readonly: bool,
-        destructive: bool,
-    ) -> serde_json::Map<String, JsonValue> {
-        let mut m = serde_json::Map::new();
-        m.insert("module_id".to_string(), json!(module_id));
-        m.insert(
-            "annotations".to_string(),
-            json!({
-                "readonly": readonly,
-                "destructive": destructive,
-            }),
+    fn make_module_with_annotations(id: &str, readonly: bool, destructive: bool) -> ScannedModule {
+        let mut module = ScannedModule::new(
+            id.to_string(),
+            format!("Test {id}"),
+            json!({"type": "object"}),
+            json!({"type": "object"}),
+            vec!["cli".to_string()],
+            format!("exec:///usr/bin/test {id}"),
         );
-        m
+        module.annotations = Some(apcore::module::ModuleAnnotations {
+            readonly,
+            destructive,
+            requires_approval: destructive,
+            ..Default::default()
+        });
+        module
     }
 
-    // T6: ACL generation
     #[test]
-    fn test_generate_acl_mixed_bindings() {
-        let bindings = vec![
-            make_binding_map("cli.git.status", true, false),
-            make_binding_map("cli.git.log", true, false),
-            make_binding_map("cli.git.clean", false, true),
-            make_binding_map("cli.git.commit", false, false),
-            make_binding_map("cli.git.push", false, false),
+    fn test_acl_generate_default_readonly() {
+        let modules = vec![
+            make_module_with_annotations("cli.git.status", true, false),
+            make_module_with_annotations("cli.git.log", true, false),
         ];
-
-        let acl = generate_acl(&bindings, "deny");
-
-        let rules = acl["rules"].as_array().unwrap();
-        assert_eq!(rules.len(), 3);
-        assert_eq!(acl["default_effect"], "deny");
-        assert_eq!(acl["$schema"], "https://apcore.dev/acl/v1");
-        assert_eq!(acl["version"], "1.0.0");
-    }
-
-    #[test]
-    fn test_generate_acl_empty_bindings() {
-        let acl = generate_acl(&[], "deny");
-        let rules = acl["rules"].as_array().unwrap();
-        assert!(rules.is_empty());
-    }
-
-    #[test]
-    fn test_generate_acl_only_readonly() {
-        let bindings = vec![
-            make_binding_map("cli.git.status", true, false),
-            make_binding_map("cli.git.log", true, false),
-        ];
-
-        let acl = generate_acl(&bindings, "deny");
-        let rules = acl["rules"].as_array().unwrap();
+        let mgr = AclManager::generate_default(&modules);
+        let rules = mgr.acl.rules();
         assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0]["description"], "Auto-allow readonly CLI commands");
+        assert_eq!(rules[0].effect, "allow");
+        assert_eq!(rules[0].targets.len(), 2);
     }
 
     #[test]
-    fn test_generate_acl_default_effect_allow() {
-        let acl = generate_acl(&[], "allow");
-        assert_eq!(acl["default_effect"], "allow");
+    fn test_acl_generate_default_destructive() {
+        let modules = vec![make_module_with_annotations("cli.git.clean", false, true)];
+        let mgr = AclManager::generate_default(&modules);
+        let rules = mgr.acl.rules();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].effect, "deny");
+        assert!(rules[0].conditions.is_some());
     }
 
     #[test]
-    fn test_generate_acl_audit_block() {
-        let acl = generate_acl(&[], "deny");
-        assert!(acl["audit"]["enabled"].as_bool().unwrap());
-    }
-
-    // T7: ACL YAML writer
-    #[test]
-    fn test_write_acl_creates_file() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("acl.yaml");
-        let acl = generate_acl(&[], "deny");
-
-        write_acl(&acl, &path);
-
-        assert!(path.exists());
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.starts_with("# Auto-generated by apexe"));
-    }
-
-    #[test]
-    fn test_write_acl_creates_parent_dirs() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("subdir").join("acl.yaml");
-        let acl = generate_acl(&[], "deny");
-
-        write_acl(&acl, &path);
-
-        assert!(path.exists());
-    }
-
-    #[test]
-    fn test_write_acl_roundtrip() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("acl.yaml");
-
-        let bindings = vec![
-            make_binding_map("cli.git.status", true, false),
-            make_binding_map("cli.git.clean", false, true),
+    fn test_acl_generate_default_mixed() {
+        let modules = vec![
+            make_module_with_annotations("cli.git.status", true, false),
+            make_module_with_annotations("cli.git.clean", false, true),
         ];
-        let acl = generate_acl(&bindings, "deny");
-
-        write_acl(&acl, &path);
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        let parsed: JsonValue = serde_yaml::from_str(&content).unwrap();
-        let rules = parsed["rules"].as_array().unwrap();
+        let mgr = AclManager::generate_default(&modules);
+        let rules = mgr.acl.rules();
         assert_eq!(rules.len(), 2);
     }
 
-    // T8: ACL loader and check_access
     #[test]
-    fn test_load_acl_existing_file() {
+    fn test_acl_generate_default_empty() {
+        let mgr = AclManager::generate_default(&[]);
+        let rules = mgr.acl.rules();
+        assert!(rules.is_empty());
+        assert_eq!(mgr.default_effect, "deny");
+    }
+
+    #[test]
+    fn test_acl_write_and_load() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("acl.yaml");
+        let path = tmp.path().join("acl_manager.yaml");
 
-        let acl = generate_acl(&[], "deny");
-        write_acl(&acl, &path);
+        let modules = vec![
+            make_module_with_annotations("cli.git.status", true, false),
+            make_module_with_annotations("cli.git.clean", false, true),
+        ];
+        let mgr = AclManager::generate_default(&modules);
+        mgr.write_config(&path).unwrap();
 
-        let loaded = load_acl(&path);
-        assert!(loaded.is_some());
-    }
-
-    #[test]
-    fn test_load_acl_missing_file() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("nonexistent.yaml");
-        assert!(load_acl(&path).is_none());
-    }
-
-    #[test]
-    fn test_check_access_wildcard_caller() {
-        let bindings = vec![make_binding_map("cli.git.status", true, false)];
-        let acl = generate_acl(&bindings, "deny");
-
-        assert!(check_access(&acl, "@external", "cli.git.status"));
-    }
-
-    #[test]
-    fn test_check_access_default_deny() {
-        let acl = generate_acl(&[], "deny");
-        assert!(!check_access(&acl, "@external", "cli.git.status"));
-    }
-
-    #[test]
-    fn test_check_access_default_allow() {
-        let acl = generate_acl(&[], "allow");
-        assert!(check_access(&acl, "@external", "cli.git.status"));
-    }
-
-    #[test]
-    fn test_pattern_matches_exact() {
-        assert!(pattern_matches("cli.git.status", "cli.git.status"));
-        assert!(!pattern_matches("cli.git.status", "cli.git.log"));
-    }
-
-    #[test]
-    fn test_pattern_matches_star() {
-        assert!(pattern_matches("*", "anything"));
-    }
-
-    #[test]
-    fn test_pattern_matches_prefix_wildcard() {
-        assert!(pattern_matches("cli.*", "cli.git.status"));
-        assert!(pattern_matches("cli.git.*", "cli.git.status"));
-        assert!(!pattern_matches("cli.docker.*", "cli.git.status"));
+        let loaded = AclManager::from_config(&path).unwrap();
+        assert_eq!(loaded.acl.rules().len(), 2);
+        assert_eq!(loaded.default_effect, "deny");
     }
 }

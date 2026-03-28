@@ -1,0 +1,28 @@
+{
+  "feature": "v2-f3-binding-output",
+  "description": "Replace custom binding output with apcore-toolkit YAMLWriter. Create src/output/ with YAML writer and binding file loader.",
+  "language": "rust",
+  "tasks": [
+    {
+      "id": "F3-T1",
+      "title": "Create output module with YamlOutput",
+      "description": "Create src/output/ with yaml.rs wrapping apcore-toolkit YAMLWriter.",
+      "status": "done",
+      "depends_on": []
+    },
+    {
+      "id": "F3-T2",
+      "title": "Create loader for binding files",
+      "description": "Create src/output/loader.rs to read .binding.yaml files back as Vec<ScannedModule>.",
+      "status": "done",
+      "depends_on": ["F3-T1"]
+    },
+    {
+      "id": "F3-T3",
+      "title": "Tests and quality gates",
+      "description": "Write ~11 tests covering write, dry_run, roundtrip, loader edge cases.",
+      "status": "done",
+      "depends_on": ["F3-T2"]
+    }
+  ]
+}
