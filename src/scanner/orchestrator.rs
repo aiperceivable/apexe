@@ -310,7 +310,8 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "echo");
         assert!(!tools[0].binary_path.is_empty());
-        assert_eq!(tools[0].scan_tier, 1);
+        // scan_tier >= 1; may be 2 if man page is available on this system
+        assert!(tools[0].scan_tier >= 1);
     }
 
     // T39: Cache integration
