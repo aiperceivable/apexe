@@ -16,7 +16,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Pin CI to stable. Add `beta` / `nightly` later if desired.
         rust: ["stable"]
 
     steps:

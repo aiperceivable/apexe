@@ -9,10 +9,10 @@ readme = "README.md"
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
-apcore = { path = "../apcore-rust" }
-apcore-cli = { path = "../apcore-cli-rust" }
-apcore-mcp = { path = "../apcore-mcp-rust" }
-apcore-toolkit = { path = "../apcore-toolkit-rust" }
+apcore = "0.14"
+apcore-cli = "0.3"
+apcore-mcp = "0.11"
+apcore-toolkit = "0.4"
 clap = { version = "4", features = ["derive"] }
 dirs = "5"
 nom = "7"
@@ -34,12 +34,6 @@ rstest = "0.23"
 tempfile = "3"
 tokio-test = "0.4"
 
-
 [[bin]]
 name = "apexe"
 path = "src/main.rs"
-
-[patch.crates-io]
-apcore = { path = "../apcore-rust" }
-apcore-cli = { path = "../apcore-cli-rust" }
-apcore-mcp = { path = "../apcore-mcp-rust" }

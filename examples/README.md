@@ -217,6 +217,108 @@ apexe serve --transport http --port 8000 --explorer
 # Browse tools, view schemas, test invocations
 ```
 
+### Try it: Call tools via MCP (curl examples)
+
+Start the server in one terminal, then call tools from another:
+
+```bash
+# Terminal 1: start server
+apexe scan ls curl grep find
+apexe serve --transport http --port 8000 --explorer
+```
+
+```bash
+# Terminal 2: MCP protocol — initialize handshake
+curl -s -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2024-11-05",
+      "capabilities": {},
+      "clientInfo": {"name": "curl-test", "version": "1.0"}
+    }
+  }' | python3 -m json.tool
+```
+
+```bash
+# List all available tools
+curl -s -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/list",
+    "params": {}
+  }' | python3 -m json.tool
+```
+
+```bash
+# Execute: list files in current directory (cli.ls)
+curl -s -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+      "name": "cli.ls",
+      "arguments": {}
+    }
+  }' | python3 -m json.tool
+```
+
+```bash
+# Execute: search for "TODO" in .rs files (cli.grep)
+curl -s -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "tools/call",
+    "params": {
+      "name": "cli.grep",
+      "arguments": {}
+    }
+  }' | python3 -m json.tool
+```
+
+```bash
+# Execute via Explorer UI shortcut (simpler format)
+curl -s -X POST http://localhost:8000/explorer/tools/cli.ls/call \
+  -H "Content-Type: application/json" \
+  -d '{}' | python3 -m json.tool
+```
+
+```bash
+# Execute: find files by name pattern (cli.find)
+curl -s -X POST http://localhost:8000/explorer/tools/cli.find/call \
+  -H "Content-Type: application/json" \
+  -d '{}' | python3 -m json.tool
+```
+
+**Expected response** (cli.ls example):
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"stdout\":\"Cargo.toml\\nREADME.md\\nsrc\\ntests\\n...\",\"stderr\":\"\",\"exit_code\":0,\"trace_id\":\"abc-123\",\"duration_ms\":5}"
+    }
+  ]
+}
+```
+
+**If you get `AclDenied`**: you're running with `--acl`. Remove it or start without ACL:
+
+```bash
+apexe serve --transport http --port 8000 --explorer
+# No --acl flag = no access control = all tools allowed
+```
+
 ### Claude Desktop integration
 
 ```bash

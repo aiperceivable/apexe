@@ -103,7 +103,19 @@ impl ScanOrchestrator {
         }
 
         // Parse help text (Tier 1)
-        let parsed = self.pipeline.parse(&help_text, tool_name, None);
+        let mut parsed = self.pipeline.parse(&help_text, tool_name, None);
+
+        // If few flags found, try expanded help variants (e.g., `curl --help all`)
+        if parsed.flags.len() < 3 {
+            if let Ok(expanded) = self.try_expanded_help(tool_name) {
+                if !expanded.trim().is_empty() {
+                    let expanded_parsed = self.pipeline.parse(&expanded, tool_name, None);
+                    if expanded_parsed.flags.len() > parsed.flags.len() {
+                        parsed = expanded_parsed;
+                    }
+                }
+            }
+        }
 
         // Discover subcommands
         let discovery = SubcommandDiscovery::new(&self.pipeline, depth);
@@ -193,6 +205,31 @@ impl ScanOrchestrator {
         } else {
             Ok(stdout)
         }
+    }
+
+    /// Try expanded help variants: `--help all`, `-h`, `help`.
+    fn try_expanded_help(&self, tool_name: &str) -> anyhow::Result<String> {
+        let variants = [vec!["--help", "all"], vec!["-h"]];
+        for args in &variants {
+            let output = std::process::Command::new(tool_name)
+                .args(args)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output();
+            if let Ok(out) = output {
+                let text = String::from_utf8_lossy(&out.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                let result = if text.len() > stderr.len() {
+                    text
+                } else {
+                    stderr
+                };
+                if result.len() > 100 {
+                    return Ok(result);
+                }
+            }
+        }
+        Ok(String::new())
     }
 
     fn enrich_with_man_page(&self, tool: &mut ScannedCLITool, tool_name: &str) {

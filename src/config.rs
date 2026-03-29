@@ -156,7 +156,13 @@ pub fn load_config(
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    /// Global lock for tests that modify environment variables.
+    /// Prevents parallel test execution from causing race conditions
+    /// on shared process-global env vars.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_default_modules_dir_ends_with_apexe_modules() {
@@ -194,6 +200,7 @@ mod tests {
 
     #[test]
     fn test_load_config_no_file_returns_defaults() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("nonexistent.yaml");
         let config = load_config(Some(config_path.as_path()), None).unwrap();
@@ -203,6 +210,7 @@ mod tests {
 
     #[test]
     fn test_load_config_valid_yaml() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.yaml");
         let default = ApexeConfig {
@@ -228,6 +236,7 @@ mod tests {
 
     #[test]
     fn test_load_config_malformed_yaml_returns_defaults() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.yaml");
         std::fs::write(&config_path, "this is not: [valid: yaml: config").unwrap();
@@ -240,10 +249,10 @@ mod tests {
 
     #[test]
     fn test_env_var_override_modules_dir() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("nonexistent.yaml");
 
-        // Use a unique env var approach: set, load, unset
         let unique_dir = "/tmp/apexe_test_modules_dir_unique";
         unsafe { std::env::set_var("APEXE_MODULES_DIR", unique_dir) };
         let config = load_config(Some(config_path.as_path()), None).unwrap();
@@ -254,6 +263,7 @@ mod tests {
 
     #[test]
     fn test_env_var_override_cache_dir() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("nonexistent.yaml");
 
@@ -267,6 +277,7 @@ mod tests {
 
     #[test]
     fn test_env_var_override_log_level() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("nonexistent.yaml");
 
@@ -279,6 +290,7 @@ mod tests {
 
     #[test]
     fn test_env_var_override_timeout() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("nonexistent.yaml");
 
@@ -291,6 +303,7 @@ mod tests {
 
     #[test]
     fn test_env_var_invalid_timeout_falls_back() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("nonexistent.yaml");
 
@@ -303,6 +316,7 @@ mod tests {
 
     #[test]
     fn test_cli_overrides_take_priority() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("nonexistent.yaml");
 
@@ -319,6 +333,7 @@ mod tests {
 
     #[test]
     fn test_cli_overrides_beat_env_vars() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("nonexistent.yaml");
 
@@ -356,6 +371,7 @@ mod tests {
 
     #[test]
     fn test_env_var_scan_depth_override() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("nonexistent.yaml");
 
@@ -368,6 +384,7 @@ mod tests {
 
     #[test]
     fn test_env_var_scan_depth_invalid_range() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("nonexistent.yaml");
 
@@ -392,6 +409,7 @@ mod tests {
 
     #[test]
     fn test_core_config_none_when_file_missing() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("nonexistent.yaml");
         let config = load_config(Some(config_path.as_path()), None).unwrap();

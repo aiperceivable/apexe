@@ -30,7 +30,7 @@ impl CliParser for GnuHelpParser {
             return false;
         }
         let has_usage = help_text.contains("Usage:") || help_text.contains("usage:");
-        let has_gnu_opts = Regex::new(r"(?m)^\s+-\w,\s+--\w")
+        let has_gnu_opts = Regex::new(r"(?m)^\s{1,}-\w,?\s+--\w")
             .map(|re| re.is_match(help_text))
             .unwrap_or(false);
         let not_cobra = !help_text.contains("Available Commands:");
@@ -85,11 +85,14 @@ pub fn extract_flags(help_text: &str) -> Vec<ScannedFlag> {
     //   --all               Stage all
     //   -v                  Verbose
     let flag_re = Regex::new(
-        r"(?m)^\s{2,}(-([a-zA-Z0-9]),?\s+)?(--([a-z][\w-]*))((?:[=\s])([A-Z_]+|<[^>]+>))?\s{2,}(.+)"
+        r"(?m)^\s{1,}(-([a-zA-Z0-9]),?\s+)?(--([a-z][\w-]*))((?:[=\s])([A-Z_]+|<[^>]+>))?\s{2,}(.+)"
     ).unwrap();
 
-    // Also match short-only flags: "  -v  Verbose"
-    let short_only_re = Regex::new(r"(?m)^\s{2,}-([a-zA-Z0-9])(?:\s([A-Z_]+))?\s{2,}(.+)").unwrap();
+    // Also match short-only flags: " -v  Verbose"
+    let short_only_re = Regex::new(
+        r"(?m)^\s{1,}-([a-zA-Z0-9])(?:,?\s+--[\w-]+)?(?:\s([A-Z_]+|<[^>]+>))?\s{2,}(.+)",
+    )
+    .unwrap();
 
     let default_re = Regex::new(r"\[default:\s*([^\]]+)\]").unwrap();
     let enum_re = Regex::new(r"\{([^}]+)\}").unwrap();
@@ -808,5 +811,26 @@ Examples:
         let flags: Vec<ScannedFlag> = vec![];
         let info = detect_structured_output(&flags, "Use --json for JSON output");
         assert!(info.supported);
+    }
+
+    #[test]
+    fn test_extract_flags_curl_1space_indent() {
+        let help = r#"Usage: curl [options...] <url>
+ -d, --data <data>           HTTP POST data
+ -f, --fail                  Fail fast with no output on HTTP errors
+ -o, --output <file>         Write to file instead of stdout
+ -v, --verbose               Make the operation more talkative
+"#;
+        let flags = extract_flags(help);
+        assert!(
+            flags.len() >= 4,
+            "Expected >= 4 flags from curl-style help, got {}",
+            flags.len()
+        );
+        let names: Vec<String> = flags.iter().filter_map(|f| f.long_name.clone()).collect();
+        assert!(names.contains(&"--data".to_string()));
+        assert!(names.contains(&"--fail".to_string()));
+        assert!(names.contains(&"--output".to_string()));
+        assert!(names.contains(&"--verbose".to_string()));
     }
 }
