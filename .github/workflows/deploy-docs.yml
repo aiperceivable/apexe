@@ -8,6 +8,8 @@ on:
       - "docs/**"
       - "mkdocs.yml"
       - "README.md"
+      - "CHANGELOG.md"
+      - "examples/**"
       - "apexe-logo.svg"
       - ".github/workflows/deploy-docs.yml"
 
@@ -37,6 +39,12 @@ jobs:
           # Copy README as index page
           cp README.md docs/index.md
 
+          # Copy CHANGELOG into docs/
+          cp CHANGELOG.md docs/changelog.md
+
+          # Copy examples README into docs/
+          cp examples/README.md docs/examples.md
+
           # Copy logo into docs assets
           mkdir -p docs/assets
           cp apexe-logo.svg docs/assets/
@@ -45,8 +53,17 @@ jobs:
           sed -i 's|\./docs/|./|g' docs/index.md
           sed -i 's|(docs/|(|g' docs/index.md
 
-          # Fix logo reference in index.md
+          # Fix logo reference in index.md (both local and GitHub raw URL)
           sed -i 's|\./apexe-logo\.svg|./assets/apexe-logo.svg|g' docs/index.md
+          sed -i 's|https://raw.githubusercontent.com/aiperceivable/apexe/main/apexe-logo.svg|./assets/apexe-logo.svg|g' docs/index.md
+
+          # Fix examples link in index.md
+          sed -i 's|(examples/README.md)|(examples.md)|g' docs/index.md
+          sed -i 's|(examples/basic/)|(https://github.com/aiperceivable/apexe/tree/main/examples/basic)|g' docs/index.md
+          sed -i 's|(examples/programmatic.rs)|(https://github.com/aiperceivable/apexe/blob/main/examples/programmatic.rs)|g' docs/index.md
+
+          # Fix CHANGELOG link in index.md
+          sed -i 's|(CHANGELOG.md)|(changelog.md)|g' docs/index.md
 
       - run: mkdocs build
 

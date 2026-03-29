@@ -1,6 +1,6 @@
 [package]
 name = "apexe"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Outside-In CLI-to-Agent Bridge"
 license = "Apache-2.0"
@@ -10,7 +10,7 @@ readme = "README.md"
 anyhow = "1"
 async-trait = "0.1"
 apcore = "0.14"
-apcore-cli = "0.3"
+apcore-cli = "0.4"
 apcore-mcp = "0.11"
 apcore-toolkit = "0.4"
 clap = { version = "4", features = ["derive"] }

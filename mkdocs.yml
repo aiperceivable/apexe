@@ -1,5 +1,5 @@
 site_name: apexe
-site_description: Outside-In CLI-to-Agent Bridge — automatically wraps CLI tools into governed apcore modules, served via MCP/A2A.
+site_description: Outside-In CLI-to-Agent Bridge — automatically wraps CLI tools into governed apcore modules, served via MCP.
 site_url: https://aiperceivable.github.io/apexe/
 
 repo_name: aiperceivable/apexe
@@ -46,13 +46,19 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Quick Start: quickstart.md
   - User Manual: user-manual.md
-  - Technical Design: tech-design.md
-  - Feature Manifest: FEATURE_MANIFEST.md
+  - Changelog: changelog.md
+  - Architecture:
+      - Technical Design: apcore-integration/tech-design.md
+      - Feature Manifest: FEATURE_MANIFEST.md
   - Feature Specs:
-      - Overview: features/overview.md
-      - F1 - Project Skeleton: features/f1-project-skeleton.md
-      - F2 - CLI Scanner Engine: features/f2-cli-scanner-engine.md
-      - F3 - Binding Generator: features/f3-binding-generator.md
-      - F4 - Serve Integration: features/f4-serve-integration.md
-      - F5 - Governance Defaults: features/f5-governance-defaults.md
+      - Overview: features/v2-overview.md
+      - F1 - Scanner Adapter: features/v2-f1-scanner-adapter.md
+      - F2 - Module Executor: features/v2-f2-module-executor.md
+      - F3 - Binding Output: features/v2-f3-binding-output.md
+      - F4 - MCP Server: features/v2-f4-mcp-server.md
+      - F5 - Governance: features/v2-f5-governance.md
+      - F6 - Error Migration: features/v2-f6-error-migration.md
+      - F7 - Config Integration: features/v2-f7-config-integration.md
+  - Examples: examples.md

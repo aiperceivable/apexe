@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./apexe-logo.svg" alt="apexe logo" width="200"/>
+  <img src="https://raw.githubusercontent.com/aiperceivable/apexe/main/apexe-logo.svg" alt="apexe logo" width="200"/>
 </div>
 
 # apexe

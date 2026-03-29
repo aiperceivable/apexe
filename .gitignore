@@ -20,3 +20,10 @@ Thumbs.db
 
 # Example output
 examples/basic/output/
+
+# MkDocs build output + generated docs (created by deploy-docs workflow)
+site/
+docs/index.md
+docs/changelog.md
+docs/examples.md
+docs/assets/

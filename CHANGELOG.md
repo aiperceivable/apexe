@@ -6,6 +6,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
+## [0.2.0] - 2026-03-29
+
+### Added
+- **6 new `apexe serve` flags** — `--tags`, `--prefix`, `--acl`, `--enable-approval`, `--no-logging`, `--skip-validation` for full McpServerBuilder control from CLI.
+- **Expanded help fallback** — Scanner tries `--help all` and `-h` when `--help` yields few flags. Fixes curl (0 → 12 flags on macOS).
+- **GNU regex relaxation** — Flag regex now matches 1-space indent (`\s{1,}`) for curl-style help format.
+- **`apexe --man`** — Generates complete roff man page via `apcore_cli::build_program_man_page()`, including commands, flags, exit codes, and docs URL.
+- **Documentation URL** — `set_docs_url()` sets `https://github.com/aiperceivable/apexe` in help/man output.
+- **Explorer `allow_execute`** — `serve_with_options()` enables tool execution from Explorer UI.
+- **Env var test stability** — Global `ENV_LOCK` Mutex prevents parallel test race conditions on environment variables.
+
+### Changed
+- **Dependencies switched to crates.io** — `apcore = "0.14"`, `apcore-cli = "0.4"`, `apcore-mcp = "0.11"`, `apcore-toolkit = "0.4"`. Zero path dependencies.
+- **ACL opt-in only** — `--acl <path>` required to enable access control. Without it, all tools are allowed (fixes Explorer `AclDenied` issue).
+- **`require_auth` removed** — Was silently ineffective without JWT authenticator. Removed to prevent false security assumptions.
+- **Config override validation** — CLI `scan_depth` (1-5) and `timeout` (>0) overrides now range-checked with warning on rejection.
+
+### Fixed
+- **Explorer UI empty response** — Fixed by using `serve_with_options()` with `ExplorerOptions { explorer: true, allow_execute: true }` instead of `serve()`.
+- **clippy `result_large_err`** — Suppressed on `execute_subprocess` (Rust 1.94 stricter closure checking).
+- **Flaky env var tests** — Eliminated race condition with `ENV_LOCK` mutex.
+
+---
+
 ## [0.1.0] - 2026-03-28
 
 First release with full apcore ecosystem integration.
