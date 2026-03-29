@@ -52,7 +52,7 @@ Open `http://127.0.0.1:8000` in a browser to explore available tools.
 ## Scan more tools
 
 ```bash
-apexe scan curl grep find lsof
+apexe scan ls curl jq
 ```
 
 ## See what you have

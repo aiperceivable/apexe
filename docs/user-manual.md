@@ -91,7 +91,7 @@ apexe scan <TOOLS>... [OPTIONS]
 
 ```bash
 apexe scan git                         # basic scan
-apexe scan git curl grep lsof          # multiple tools
+apexe scan ls jq curl                  # multiple tools
 apexe scan git --depth 3               # deeper subcommand discovery
 apexe scan git --no-cache              # force re-scan
 apexe scan git --format json           # JSON output

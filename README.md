@@ -11,7 +11,7 @@ Outside-In CLI-to-Agent Bridge — automatically wraps existing CLI tools into g
 
 ## What is apexe?
 
-`apexe` scans any CLI tool on your system (e.g., `git`, `curl`, `grep`, `find`, `lsof`), deterministically extracts its command structure, flags, and arguments — then exposes them as governed MCP tools that AI agents can invoke safely.
+`apexe` scans any CLI tool on your system (e.g., `git`, `curl`, `ls`, `jq`), deterministically extracts its command structure, flags, and arguments — then exposes them as governed MCP tools that AI agents can invoke safely.
 
 **No LLM required for scanning. No changes to the CLI tools. Zero-config governance.**
 
@@ -87,7 +87,7 @@ apexe serve --show-config cursor
 Scan CLI tools and generate binding files + ACL rules.
 
 ```bash
-apexe scan git curl grep lsof           # Scan multiple tools
+apexe scan ls jq curl                   # Scan multiple tools
 apexe scan git --depth 3               # 3 levels of subcommands (default: 2, max: 5)
 apexe scan git --no-cache              # Force re-scan
 apexe scan git --format json           # Output as JSON (also: yaml, table)

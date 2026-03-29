@@ -204,7 +204,7 @@ server.serve()?; // blocking — starts the server
 ### Scan multiple tools at once
 
 ```bash
-apexe scan git curl grep find lsof --depth 3
+apexe scan ls jq curl --no-cache
 apexe list
 # Shows all modules from all tools
 ```
@@ -214,16 +214,56 @@ apexe list
 ```bash
 apexe serve --transport http --port 8000 --explorer
 # Open http://127.0.0.1:8000/explorer in your browser
-# Browse tools, view schemas, test invocations
 ```
 
-### Try it: Call tools via MCP (curl examples)
+### Try it: Explorer UI step-by-step
+
+1. **Scan ls, jq, and curl**:
+
+```bash
+apexe scan ls jq curl --no-cache
+apexe serve --transport http --port 8000 --explorer
+```
+
+2. **Open** http://127.0.0.1:8000/explorer in your browser
+
+3. **Click `cli.ls`** → type `{}` → click **Call**. Instant file listing:
+
+```json
+{}
+```
+
+**Response:**
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"stdout\":\"Cargo.toml\\nREADME.md\\nsrc\\n...\",\"stderr\":\"\",\"exit_code\":0}"
+    }
+  ]
+}
+```
+
+4. **Click `cli.jq`** → 22 form fields! Try:
+
+```json
+{"compact_output": true, "raw_output": true}
+```
+
+5. **Click `cli.curl`** → 12 form fields. Try:
+
+```json
+{"verbose": true, "silent": true}
+```
+
+### Try it: Call tools via MCP API (full control)
 
 Start the server in one terminal, then call tools from another:
 
 ```bash
 # Terminal 1: start server
-apexe scan ls curl grep find
+apexe scan ls jq curl --no-cache
 apexe serve --transport http --port 8000 --explorer
 ```
 

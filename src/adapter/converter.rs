@@ -72,7 +72,13 @@ impl CliToolConverter {
             help_format_to_tag(command_opt.map_or(HelpFormat::Unknown, |c| c.help_format));
 
         let tags = self.build_tags(tool, command_opt, help_format_name);
-        let target = format!("exec://{} {}", tool.binary_path, full_command);
+        // For root-only tools (no subcommands), target is just the binary path.
+        // For subcommands, include the command path (e.g., "exec:///usr/bin/git commit").
+        let target = if path.is_empty() {
+            format!("exec://{}", tool.binary_path)
+        } else {
+            format!("exec://{} {}", tool.binary_path, full_command)
+        };
         let version = tool
             .version
             .clone()
@@ -488,6 +494,8 @@ mod tests {
 
         assert_eq!(modules.len(), 1);
         assert_eq!(modules[0].module_id, "cli.ffmpeg");
+        // Root-only target should NOT repeat the tool name as an argument
+        assert_eq!(modules[0].target, "exec:///usr/bin/ffmpeg");
     }
 
     #[test]
