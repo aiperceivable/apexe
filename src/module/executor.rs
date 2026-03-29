@@ -85,6 +85,7 @@ pub struct SubprocessOutput {
 ///
 /// Runs the given binary with args directly (no shell), optionally appending
 /// json_flag parts. Returns stdout, stderr, and exit code.
+#[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
 pub async fn execute_subprocess(
     binary_path: &str,
     args: &[String],
