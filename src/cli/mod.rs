@@ -3,7 +3,7 @@ mod config_gen;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::config::{load_config, ApexeConfig};
 
@@ -94,9 +94,12 @@ impl ScanArgs {
         let converter = crate::adapter::CliToolConverter::new();
         let modules = converter.convert_all(&results);
 
-        self.write_bindings(&modules, &output_dir);
-        self.write_acl(&modules, config);
-        self.write_skills(&modules);
+        // These are the command's deliverables. A failed write must surface as
+        // a non-zero exit, not a swallowed warning — otherwise `apexe scan`
+        // reports success with no bindings (or, worse, no ACL policy) written.
+        self.write_bindings(&modules, &output_dir)?;
+        self.write_acl(&modules, config)?;
+        self.write_skills(&modules)?;
         self.print_results(&results)?;
 
         Ok(())
@@ -106,40 +109,43 @@ impl ScanArgs {
         &self,
         modules: &[apcore_toolkit::ScannedModule],
         output_dir: &std::path::Path,
-    ) {
+    ) -> anyhow::Result<()> {
         let yaml_output = crate::output::YamlOutput::new();
-        match yaml_output.write(modules, output_dir, false) {
-            Ok(write_results) => {
-                for wr in &write_results {
-                    if let Some(ref path) = wr.path {
-                        info!(path, "Generated binding");
-                    }
-                }
+        let write_results = yaml_output
+            .write(modules, output_dir, false)
+            .map_err(|e| anyhow::anyhow!("Failed to write binding files: {e}"))?;
+        for wr in &write_results {
+            if let Some(ref path) = wr.path {
+                info!(path, "Generated binding");
             }
-            Err(e) => warn!(error = %e, "Failed to write binding files"),
         }
+        Ok(())
     }
 
-    fn write_acl(&self, modules: &[apcore_toolkit::ScannedModule], config: &ApexeConfig) {
+    fn write_acl(
+        &self,
+        modules: &[apcore_toolkit::ScannedModule],
+        config: &ApexeConfig,
+    ) -> anyhow::Result<()> {
         let acl_manager = crate::governance::AclManager::generate_default(modules);
         let acl_path = config.config_dir.join("acl.yaml");
-        if let Err(e) = acl_manager.write_config(&acl_path) {
-            warn!(error = %e, "Failed to write ACL");
-        }
+        acl_manager
+            .write_config(&acl_path)
+            .map_err(|e| anyhow::anyhow!("Failed to write ACL: {e}"))?;
+        Ok(())
     }
 
-    fn write_skills(&self, modules: &[apcore_toolkit::ScannedModule]) {
+    fn write_skills(&self, modules: &[apcore_toolkit::ScannedModule]) -> anyhow::Result<()> {
         let Some(ref skills_dir) = self.skills_dir else {
-            return;
+            return Ok(());
         };
-        match crate::output::SkillOutput::new().write(modules, skills_dir) {
-            Ok(paths) => {
-                for path in &paths {
-                    info!(path = %path.display(), "Generated skill");
-                }
-            }
-            Err(e) => warn!(error = %e, "Failed to write skill files"),
+        let paths = crate::output::SkillOutput::new()
+            .write(modules, skills_dir)
+            .map_err(|e| anyhow::anyhow!("Failed to write skill files: {e}"))?;
+        for path in &paths {
+            info!(path = %path.display(), "Generated skill");
         }
+        Ok(())
     }
 
     fn print_results(&self, results: &[crate::models::ScannedCLITool]) -> anyhow::Result<()> {
@@ -433,13 +439,13 @@ impl ListArgs {
         &self,
         dir: &std::path::Path,
     ) -> anyhow::Result<Vec<apcore_toolkit::ScannedModule>> {
+        // An absent directory legitimately means "no modules yet". A load
+        // FAILURE (e.g. a corrupt .binding.yaml) must surface, not be masked as
+        // an empty list that misleadingly prints "No modules found".
         if !dir.exists() {
             return Ok(vec![]);
         }
-        match crate::output::load_modules_from_dir(dir) {
-            Ok(m) => Ok(m),
-            Err(_) => Ok(vec![]),
-        }
+        crate::output::load_modules_from_dir(dir).map_err(|e| anyhow::anyhow!(e))
     }
 
     fn print_modules(&self, modules: &[apcore_toolkit::ScannedModule]) -> anyhow::Result<()> {
@@ -926,6 +932,60 @@ mod tests {
         assert!(
             err_msg.contains("not found on PATH"),
             "Expected 'not found on PATH' in error, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_scan_write_bindings_surfaces_write_failure() {
+        // A binding-write failure must return Err (non-zero exit), not warn-and-continue.
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Use an output path whose parent component is a file, so create_dir_all fails.
+        let file_path = tmp.path().join("iamafile");
+        std::fs::write(&file_path, "x").unwrap();
+        let bad_output = file_path.join("nested");
+
+        let args = ScanArgs {
+            tools: vec!["echo".to_string()],
+            output_dir: None,
+            depth: 2,
+            no_cache: false,
+            format: "table".to_string(),
+            skills_dir: None,
+        };
+        let modules = vec![apcore_toolkit::ScannedModule::new(
+            "cli.echo".to_string(),
+            "Echo".to_string(),
+            serde_json::json!({"type": "object"}),
+            serde_json::json!({"type": "object"}),
+            vec!["cli".to_string()],
+            "exec:///bin/echo".to_string(),
+        )];
+
+        let result = args.write_bindings(&modules, &bad_output);
+        assert!(
+            result.is_err(),
+            "write_bindings must surface a write failure, not swallow it"
+        );
+    }
+
+    #[test]
+    fn test_list_load_modules_surfaces_corrupt_binding() {
+        // A corrupt binding file must surface as an error, not a misleading empty list.
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("bad.binding.yaml"),
+            "not: valid: binding: [[[",
+        )
+        .unwrap();
+
+        let args = ListArgs {
+            format: "table".to_string(),
+            modules_dir: Some(tmp.path().to_path_buf()),
+        };
+        let result = args.load_modules(tmp.path());
+        assert!(
+            result.is_err(),
+            "corrupt binding must surface, not collapse to an empty module list"
         );
     }
 }
