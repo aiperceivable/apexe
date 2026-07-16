@@ -146,28 +146,41 @@ impl Module for CliModule {
     /// It only surfaces the exact command line that would run, so a caller
     /// deciding whether to approve a destructive call can at least see what
     /// they're approving before it executes. Readonly/non-destructive
-    /// modules return `None` (no prediction needed).
+    /// modules return `None` (preview isn't applicable at all).
+    ///
+    /// A destructive module with unparseable inputs still returns
+    /// `Some(PreviewResult)`, with a summary describing *why* no command
+    /// line could be resolved — the apcore `Module::preview` signature only
+    /// allows `Option`, so `None` is the sole "not applicable" signal;
+    /// collapsing "not destructive" and "destructive but invalid input"
+    /// into the same `None` would hide a validation failure a caller needs
+    /// to see before approving.
     fn preview(&self, inputs: &Value, _ctx: Option<&Context<Value>>) -> Option<PreviewResult> {
         if !self.annotations.destructive {
             return None;
         }
-        let kwargs = inputs.as_object()?;
-        let user_args = executor::build_arguments(kwargs).ok()?;
-
-        let mut full_command = vec![self.binary_path.clone()];
-        full_command.extend(self.command_parts.clone());
-        full_command.extend(user_args);
 
         // Change/PreviewResult are #[non_exhaustive]; build via Default and
         // assign fields rather than a struct literal.
         let mut change = Change::default();
         change.action = "execute".to_string();
         change.target = self.binary_path.clone();
-        change.summary = format!(
-            "This will run: {}. Destructive command — apexe cannot statically predict \
-             the exact effects of an arbitrary CLI tool.",
-            full_command.join(" ")
-        );
+        change.summary = match inputs.as_object() {
+            None => "Cannot preview: input must be a JSON object.".to_string(),
+            Some(kwargs) => match executor::build_arguments(kwargs) {
+                Err(e) => format!("Cannot preview: invalid arguments ({}).", e.message),
+                Ok(user_args) => {
+                    let mut full_command = vec![self.binary_path.clone()];
+                    full_command.extend(self.command_parts.clone());
+                    full_command.extend(user_args);
+                    format!(
+                        "This will run: {}. Destructive command — apexe cannot statically \
+                         predict the exact effects of an arbitrary CLI tool.",
+                        full_command.join(" ")
+                    )
+                }
+            },
+        };
 
         let mut preview = PreviewResult::default();
         preview.changes = vec![change];
@@ -480,5 +493,50 @@ mod tests {
         assert_eq!(change.target, "echo");
         assert!(change.summary.contains("echo -rf"));
         assert!(change.summary.contains("--path"));
+    }
+
+    #[test]
+    fn test_cli_module_preview_surfaces_non_object_input() {
+        // Regression for the WARNING finding: preview() used to collapse
+        // "not destructive" and "destructive but invalid input" into the
+        // same `None`, so a caller couldn't tell a validation failure from
+        // "no preview available". A destructive module must still return
+        // Some(..) with an explanatory summary when the input isn't even a
+        // JSON object.
+        let module = make_echo_module_with_annotations(
+            vec!["-rf".to_string()],
+            None,
+            ModuleAnnotations {
+                destructive: true,
+                requires_approval: true,
+                ..Default::default()
+            },
+        );
+
+        let preview = module
+            .preview(&json!("not an object"), None)
+            .expect("destructive modules must surface a preview even on invalid input");
+        assert!(preview.changes[0].summary.contains("must be a JSON object"));
+    }
+
+    #[test]
+    fn test_cli_module_preview_surfaces_argument_validation_failure() {
+        // Same as above, but for the build_arguments() failure path (e.g. a
+        // shell-injection character in a parameter value).
+        let module = make_echo_module_with_annotations(
+            vec!["-rf".to_string()],
+            None,
+            ModuleAnnotations {
+                destructive: true,
+                requires_approval: true,
+                ..Default::default()
+            },
+        );
+
+        let preview = module
+            .preview(&json!({"msg": "hi; rm -rf /"}), None)
+            .expect("destructive modules must surface a preview even on invalid arguments");
+        assert!(preview.changes[0].summary.contains("Cannot preview"));
+        assert!(preview.changes[0].summary.contains("invalid arguments"));
     }
 }
