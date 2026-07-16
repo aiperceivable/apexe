@@ -3,7 +3,6 @@ use std::path::Path;
 use apcore::{ACLRule, ErrorCode, ModuleError, ACL};
 use apcore_toolkit::ScannedModule;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 /// Serializable representation of an ACL config file (rules + default_effect).
 #[derive(Debug, Serialize, Deserialize)]
@@ -57,7 +56,15 @@ impl AclManager {
             });
         }
 
-        // Destructive modules -> deny with require_approval
+        // Destructive modules -> unconditional deny. `require_approval` is not
+        // a registered apcore ACL condition key (only `identity_types`,
+        // `roles`, `max_call_depth`, `$or`, `$not` are); a rule with an
+        // unregistered condition key can never match (apcore treats an
+        // unknown condition as unsatisfied), so it must not be used here —
+        // it would silently fall through to whatever rule/default_effect
+        // follows instead of denying. Actual approval-gating for destructive
+        // commands happens via the Executor's ApprovalHandler
+        // (see `crate::module::build_executor`), not the ACL layer.
         let destructive_ids: Vec<String> = modules
             .iter()
             .filter(|m| m.annotations.as_ref().is_some_and(|a| a.destructive))
@@ -69,7 +76,7 @@ impl AclManager {
                 targets: destructive_ids,
                 effect: "deny".to_string(),
                 description: Some("Block destructive CLI commands by default".to_string()),
-                conditions: Some(json!({"require_approval": true})),
+                conditions: None,
             });
         }
 
@@ -160,7 +167,39 @@ mod tests {
         let rules = mgr.acl.rules();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].effect, "deny");
-        assert!(rules[0].conditions.is_some());
+        // Must be an unconditional deny: apcore only registers `identity_types`,
+        // `roles`, `max_call_depth`, `$or`, `$not` as condition keys, so any
+        // other key (e.g. `require_approval`) can never match and would let
+        // the rule silently fall through instead of denying.
+        assert!(rules[0].conditions.is_none());
+    }
+
+    #[test]
+    fn test_acl_generate_default_destructive_rule_denies_on_its_own() {
+        // Regression for the CRITICAL finding: the destructive-deny rule
+        // previously carried `conditions: Some({"require_approval": true})`,
+        // a condition key apcore never registers. An unregistered condition
+        // key can never be satisfied, so the rule could never match — it
+        // relied entirely on `default_effect: "deny"` for protection. Prove
+        // the rule denies on its own merits by appending a more permissive
+        // rule after it (lower priority) and confirming the deny still wins,
+        // which only happens if the deny rule actually matches.
+        let modules = vec![make_module_with_annotations("cli.git.clean", false, true)];
+        let mgr = AclManager::generate_default(&modules);
+        let mut rules = mgr.acl.rules().to_vec();
+        rules.push(ACLRule {
+            callers: vec!["*".to_string()],
+            targets: vec!["cli.git.clean".to_string()],
+            effect: "allow".to_string(),
+            description: None,
+            conditions: None,
+        });
+        let acl = ACL::new(rules, "allow", None);
+        assert!(
+            !acl.check(None, "cli.git.clean", None),
+            "destructive command must be denied by its own ACL rule, not merely \
+             by a coincidental default_effect"
+        );
     }
 
     #[test]
