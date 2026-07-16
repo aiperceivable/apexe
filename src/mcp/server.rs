@@ -232,6 +232,9 @@ impl McpServerBuilder {
             );
         }
 
+        let effective_approval_store =
+            Self::effective_approval_store(self.enable_approval, &self.approval_store);
+
         let mut builder = APCoreMCP::builder()
             .backend(BackendSource::Executor(executor))
             .name(&self.name)
@@ -250,7 +253,13 @@ impl McpServerBuilder {
         if let Some(ref prefix) = self.prefix {
             builder = builder.prefix(prefix);
         }
-        if let Some(store) = self.approval_store {
+        // Only wire the store into APCoreMCP (which registers the
+        // `__apcore_approval_check` meta-tool) when approval is actually
+        // enabled on the Executor side (see `build_executor` in
+        // `crate::module::registry`) — otherwise the meta-tool would be
+        // exposed to MCP clients while the Executor never gates any call on
+        // approval, so nothing would ever create a pending approval to check.
+        if let Some(store) = effective_approval_store {
             builder = builder.approval_store(store);
         }
 
@@ -260,6 +269,21 @@ impl McpServerBuilder {
                 format!("Failed to build MCP server: {e}"),
             )
         })
+    }
+
+    /// Whether `approval_store` should actually be threaded into
+    /// `APCoreMCP` — kept in sync with `build_executor`'s own
+    /// `opts.enable_approval` gate so the MCP-side and Executor-side
+    /// approval wiring can never disagree about whether approval is on.
+    fn effective_approval_store(
+        enable_approval: bool,
+        approval_store: &Option<Arc<dyn ApprovalStore>>,
+    ) -> Option<Arc<dyn ApprovalStore>> {
+        if enable_approval {
+            approval_store.clone()
+        } else {
+            None
+        }
     }
 }
 
@@ -448,6 +472,39 @@ mod tests {
             .enable_logging(true)
             .enable_approval(true)
             .build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_effective_approval_store_requires_enable_approval() {
+        // Regression for the WARNING finding: approval_store used to be
+        // threaded into APCoreMCP unconditionally, while build_executor only
+        // wires an ApprovalHandler into the Executor when enable_approval is
+        // true. That asymmetry would advertise the __apcore_approval_check
+        // meta-tool to MCP clients while the Executor never actually gates
+        // any call on approval -- nothing would ever create a pending
+        // approval for the meta-tool to check.
+        use apcore_mcp::InMemoryApprovalStore;
+        let store: Arc<dyn ApprovalStore> = Arc::new(InMemoryApprovalStore::new());
+
+        assert!(
+            McpServerBuilder::effective_approval_store(false, &Some(store.clone())).is_none(),
+            "approval_store must be dropped when enable_approval is false"
+        );
+        assert!(
+            McpServerBuilder::effective_approval_store(true, &Some(store.clone())).is_some(),
+            "approval_store must be kept when enable_approval is true"
+        );
+        assert!(McpServerBuilder::effective_approval_store(true, &None).is_none());
+    }
+
+    #[test]
+    fn test_mcp_server_builder_approval_store_without_enable_approval_still_builds() {
+        use apcore_mcp::InMemoryApprovalStore;
+        let store: Arc<dyn ApprovalStore> = Arc::new(InMemoryApprovalStore::new());
+        // enable_approval left at its default (false) — the store must be
+        // silently ignored rather than producing an inconsistent server.
+        let result = McpServerBuilder::new().approval_store(store).build();
         assert!(result.is_ok());
     }
 
