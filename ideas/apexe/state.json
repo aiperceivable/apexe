@@ -1,0 +1,16 @@
+{
+  "idea": "apexe",
+  "status": "parked",
+  "created": "2026-06-04",
+  "updated": "2026-06-04",
+  "session_count": 1,
+  "draft_version": 1,
+  "validation": {
+    "problem_evidence": "moderate-weak (right problem, wrong altitude — solved by bash tools + control-plane governance)",
+    "demand_evidence": "none (sole maintainer does not use it; no inbound; no named adopters)",
+    "competitive_analysis": true,
+    "not_build_analysis": "low impact — CLI->MCP commoditized (~8 tools incl. avelino/mcp); governance owned by control-plane layers (AGT, Cerbos, MS/AWS/Strata/Palo Alto)",
+    "validated": false
+  },
+  "verdict": "NOT VALIDATED as standalone product. Residual value = apcore Outside-In demo only, framed around multi-surface fan-out + governance (not CLI->MCP). Flip condition: inbound demand for batch governed exposure of internal/private CLIs."
+}
