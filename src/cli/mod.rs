@@ -13,9 +13,10 @@ use crate::config::{load_config, ApexeConfig};
 #[derive(Debug, Parser)]
 #[command(name = "apexe", version, about, long_about = None)]
 pub struct Cli {
-    /// Log level (trace, debug, info, warn, error)
-    #[arg(long, global = true, default_value = "info")]
-    pub log_level: String,
+    /// Log level (trace, debug, info, warn, error). When omitted, the level
+    /// resolves from RUST_LOG, then APEXE_LOG_LEVEL / config.yaml, then "info".
+    #[arg(long, global = true)]
+    pub log_level: Option<String>,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -36,6 +37,15 @@ pub enum Commands {
 }
 
 impl Cli {
+    /// Resolve the log-level fallback used when `RUST_LOG` is unset: an explicit
+    /// `--log-level` wins, otherwise the resolved `config_level` (which already
+    /// folds in `APEXE_LOG_LEVEL` and `config.yaml`).
+    pub fn effective_log_level(&self, config_level: &str) -> String {
+        self.log_level
+            .clone()
+            .unwrap_or_else(|| config_level.to_string())
+    }
+
     pub fn run(self) -> anyhow::Result<()> {
         let config = load_config(None, None)?;
         config.ensure_dirs()?;
@@ -536,13 +546,17 @@ mod tests {
     #[test]
     fn test_parse_log_level_flag() {
         let cli = Cli::try_parse_from(["apexe", "--log-level", "debug", "scan", "git"]).unwrap();
-        assert_eq!(cli.log_level, "debug");
+        assert_eq!(cli.log_level.as_deref(), Some("debug"));
+        // Explicit flag wins over the config-resolved level.
+        assert_eq!(cli.effective_log_level("warn"), "debug");
     }
 
     #[test]
     fn test_parse_default_log_level() {
         let cli = Cli::try_parse_from(["apexe", "scan", "git"]).unwrap();
-        assert_eq!(cli.log_level, "info");
+        assert_eq!(cli.log_level, None);
+        // With no flag, the resolved config level is used (not a hardcoded "info").
+        assert_eq!(cli.effective_log_level("debug"), "debug");
     }
 
     // ScanArgs validation tests

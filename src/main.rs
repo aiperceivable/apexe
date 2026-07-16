@@ -26,9 +26,16 @@ fn main() {
 
     let cli = Cli::parse();
 
+    // Resolve config up front so APEXE_LOG_LEVEL / config.yaml can drive logging.
+    // Precedence: RUST_LOG > --log-level (explicit) > config.log_level > "info".
+    let config_level = apexe::config::load_config(None, None)
+        .map(|c| c.log_level)
+        .unwrap_or_else(|_| "info".to_string());
+    let fallback_level = cli.effective_log_level(&config_level);
+
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cli.log_level)),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&fallback_level)),
         )
         .init();
 
