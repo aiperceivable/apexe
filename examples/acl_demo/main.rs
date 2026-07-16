@@ -99,7 +99,11 @@ fn ctx_with_roles(roles: Vec<String>) -> Context<serde_json::Value> {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().with_env_filter("error").init();
+    // Honor RUST_LOG (as the README documents), falling back to "error"
+    // when it isn't set rather than hardcoding the filter to that literal.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let modules_dir = TempDir::new().expect("failed to create temp modules dir");
     let executor = build_demo_executor(modules_dir.path());
