@@ -192,7 +192,16 @@ pub fn build_output_schema(command: &ScannedCommand) -> JsonValue {
         "required": ["stdout", "stderr", "exit_code"],
     });
 
-    if command.structured_output.supported {
+    // Spec §3.4: json_output is only meaningful when the structured format is
+    // actually JSON. A tool that emits structured CSV/XML/table output must not
+    // advertise a `json_output` object (the executor only parses JSON stdout).
+    let is_json = command.structured_output.supported
+        && command
+            .structured_output
+            .format
+            .as_deref()
+            .is_some_and(|f| f.eq_ignore_ascii_case("json"));
+    if is_json {
         schema["properties"]["json_output"] = json!({
             "type": "object",
             "description": "Parsed JSON output (when structured output is available)",
@@ -418,6 +427,22 @@ mod tests {
         let schema = build_output_schema(&cmd);
 
         assert_eq!(schema["properties"]["json_output"]["type"], "object");
+        assert_eq!(schema["properties"]["stdout"]["type"], "string");
+    }
+
+    #[test]
+    fn test_schema_output_structured_non_json_has_no_json_output() {
+        // Spec §3.4: a tool with structured but non-JSON output (e.g. csv) must
+        // NOT advertise a json_output property.
+        let mut cmd = make_command(vec![], vec![]);
+        cmd.structured_output = StructuredOutputInfo {
+            supported: true,
+            flag: Some("--format".to_string()),
+            format: Some("csv".to_string()),
+        };
+        let schema = build_output_schema(&cmd);
+
+        assert!(schema["properties"]["json_output"].is_null());
         assert_eq!(schema["properties"]["stdout"]["type"], "string");
     }
 
