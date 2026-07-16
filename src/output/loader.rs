@@ -1,84 +1,28 @@
 use std::path::Path;
 
 use apcore::{ErrorCode, ModuleError};
-use apcore_toolkit::ScannedModule;
+use apcore_toolkit::{BindingLoadError, BindingLoader, ScannedModule};
 
 /// Load `ScannedModule`s from `.binding.yaml` files in a directory.
 ///
-/// Each binding file is expected to contain a YAML document with a top-level
-/// `bindings` array, matching the format produced by `YAMLWriter`.
+/// Delegates to apcore-toolkit's [`BindingLoader`] (non-recursive, strict
+/// mode — `module_id`, `description`, `input_schema`, `output_schema`,
+/// `tags`, and `target` are all required, matching what `YAMLWriter` always
+/// emits), which additionally enforces a 16 MiB per-file cap and a 10,000
+/// file per-directory cap that the previous hand-rolled parser did not.
 // ModuleError is the crate-wide domain error; boxing it would diverge from the
 // rest of the apexe/apcore API surface.
 #[allow(clippy::result_large_err)]
 pub fn load_modules_from_dir(dir: &Path) -> Result<Vec<ScannedModule>, ModuleError> {
-    if !dir.exists() {
-        return Err(ModuleError::new(
-            ErrorCode::GeneralInternalError,
-            format!("Modules directory not found: {}", dir.display()),
-        ));
-    }
-
-    let mut modules = Vec::new();
-
-    let entries = std::fs::read_dir(dir).map_err(|e| {
-        ModuleError::new(
-            ErrorCode::GeneralInternalError,
-            format!("Failed to read directory: {e}"),
-        )
-    })?;
-
-    for entry in entries {
-        let entry = entry.map_err(|e| {
-            ModuleError::new(
+    BindingLoader::new()
+        .load(dir, /* strict */ true, /* recursive */ false)
+        .map_err(|e| match e {
+            BindingLoadError::PathNotFound { path } => ModuleError::new(
                 ErrorCode::GeneralInternalError,
-                format!("Failed to read entry: {e}"),
-            )
-        })?;
-        let path = entry.path();
-
-        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if !filename.ends_with(".binding.yaml") {
-            continue;
-        }
-
-        let contents = std::fs::read_to_string(&path).map_err(|e| {
-            ModuleError::new(
-                ErrorCode::GeneralInternalError,
-                format!("Failed to read {}: {e}", path.display()),
-            )
-        })?;
-
-        // YAMLWriter produces files with a top-level `bindings` array.
-        // Try that format first, then fall back to a single ScannedModule.
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&contents).map_err(|e| {
-            ModuleError::new(
-                ErrorCode::GeneralInternalError,
-                format!("Failed to parse YAML in {}: {e}", path.display()),
-            )
-        })?;
-
-        if let Some(bindings_val) = parsed.get("bindings") {
-            let binding_modules: Vec<ScannedModule> = serde_yaml::from_value(bindings_val.clone())
-                .map_err(|e| {
-                    ModuleError::new(
-                        ErrorCode::GeneralInternalError,
-                        format!("Failed to deserialize bindings in {}: {e}", path.display()),
-                    )
-                })?;
-            modules.extend(binding_modules);
-        } else {
-            // Fall back: try as a single ScannedModule
-            let module: ScannedModule = serde_yaml::from_value(parsed).map_err(|e| {
-                ModuleError::new(
-                    ErrorCode::GeneralInternalError,
-                    format!("Failed to parse {}: {e}", path.display()),
-                )
-            })?;
-            modules.push(module);
-        }
-    }
-
-    Ok(modules)
+                format!("Modules directory not found: {path}"),
+            ),
+            other => ModuleError::new(ErrorCode::GeneralInternalError, other.to_string()),
+        })
 }
 
 #[cfg(test)]
@@ -172,5 +116,19 @@ mod tests {
             assert_eq!(loaded_module.target, orig.target);
             assert_eq!(loaded_module.tags, orig.tags);
         }
+    }
+
+    #[test]
+    fn test_loader_rejects_incomplete_binding_in_strict_mode() {
+        let dir = TempDir::new().unwrap();
+        // Missing input_schema/output_schema/target - not a valid binding.
+        std::fs::write(
+            dir.path().join("broken.binding.yaml"),
+            "bindings:\n  - module_id: cli.broken\n    description: incomplete\n",
+        )
+        .unwrap();
+
+        let result = load_modules_from_dir(dir.path());
+        assert!(result.is_err(), "incomplete binding should be rejected");
     }
 }

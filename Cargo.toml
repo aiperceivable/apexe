@@ -1,6 +1,6 @@
 [package]
 name = "apexe"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Outside-In CLI-to-Agent Bridge"
 license = "Apache-2.0"
@@ -15,10 +15,11 @@ categories = ["command-line-utilities", "development-tools"]
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
-apcore = "0.14"
-apcore-cli = "0.4"
-apcore-mcp = "0.11"
-apcore-toolkit = "0.4"
+apcore = "0.26"
+apcore-a2a = "0.4"
+apcore-cli = "0.10"
+apcore-mcp = "0.17"
+apcore-toolkit = { version = "0.10", default-features = false }
 clap = { version = "4", features = ["derive"] }
 dirs = "5"
 nom = "7"
@@ -43,3 +44,7 @@ tokio-test = "0.4"
 [[bin]]
 name = "apexe"
 path = "src/main.rs"
+
+[[example]]
+name = "acl_demo"
+path = "examples/acl_demo/main.rs"

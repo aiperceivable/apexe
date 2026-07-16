@@ -1,19 +1,16 @@
 use std::sync::Arc;
 
-use apcore::middleware::logging::LoggingMiddleware;
-use apcore::registry::registry::ModuleDescriptor;
-use apcore::{Config, ErrorCode, Executor, ModuleError, Registry};
-use apcore_mcp::{APCoreMCP, BackendSource, ElicitationApprovalHandler};
-use apcore_toolkit::ScannedModule;
+use apcore::{ErrorCode, Executor, ModuleError};
+use apcore_mcp::{APCoreMCP, ApprovalStore, BackendSource};
 use serde_json::Value;
 
-use crate::module::CliModule;
-use crate::output::load_modules_from_dir;
+use crate::module::{build_executor, ExecutorOptions};
 
 /// Builder for creating an MCP server from apexe's scanned CLI modules.
 ///
-/// Loads `.binding.yaml` files from a modules directory, wraps each as a
-/// [`CliModule`], registers them into an apcore [`Registry`], and hands the
+/// Loads `.binding.yaml` files from a modules directory via
+/// [`build_executor`](crate::module::build_executor), which wraps each as a
+/// `CliModule`, registers them into an apcore `Registry`, and hands the
 /// resulting [`Executor`] to apcore-mcp's [`APCoreMCP`] server.
 pub struct McpServerBuilder {
     name: String,
@@ -34,6 +31,19 @@ pub struct McpServerBuilder {
     enable_logging: bool,
     /// Enable ElicitationApprovalHandler for destructive command approval.
     enable_approval: bool,
+    /// Enable CircuitBreakerMiddleware (short-circuit a hanging/broken tool).
+    enable_circuit_breaker: bool,
+    /// Enable RetryMiddleware (retries only ever fire on idempotent timeouts).
+    enable_retry: bool,
+    /// Enable the `/metrics` (Prometheus) and `/usage` (JSON) observability
+    /// endpoints. Only takes effect for HTTP/SSE transports; ignored (with a
+    /// warning) for stdio, which has no HTTP surface to serve them on.
+    enable_metrics: bool,
+    /// Optional pluggable approval store (library-only, no CLI flag). See
+    /// [`ExecutorOptions::approval_store`](crate::module::ExecutorOptions::approval_store).
+    /// When set, also registers apcore-mcp's `__apcore_approval_check`
+    /// meta-tool so an MCP client can poll a pending approval's status.
+    approval_store: Option<Arc<dyn ApprovalStore>>,
 }
 
 impl McpServerBuilder {
@@ -53,6 +63,10 @@ impl McpServerBuilder {
             acl_path: None,
             enable_logging: true,
             enable_approval: false,
+            enable_circuit_breaker: true,
+            enable_retry: true,
+            enable_metrics: false,
+            approval_store: None,
         }
     }
 
@@ -135,6 +149,35 @@ impl McpServerBuilder {
         self
     }
 
+    /// Enable or disable CircuitBreakerMiddleware (default: enabled).
+    pub fn enable_circuit_breaker(mut self, enabled: bool) -> Self {
+        self.enable_circuit_breaker = enabled;
+        self
+    }
+
+    /// Enable or disable RetryMiddleware (default: enabled).
+    pub fn enable_retry(mut self, enabled: bool) -> Self {
+        self.enable_retry = enabled;
+        self
+    }
+
+    /// Enable the `/metrics` + `/usage` observability endpoints (default:
+    /// disabled — this exposes internal call statistics over HTTP, so it's
+    /// opt-in rather than on by default).
+    pub fn enable_metrics(mut self, enabled: bool) -> Self {
+        self.enable_metrics = enabled;
+        self
+    }
+
+    /// Set a pluggable approval store, switching approvals to the
+    /// non-blocking `StorageBackedApprovalHandler` and registering the
+    /// `__apcore_approval_check` meta-tool. Library-only; see
+    /// [`ExecutorOptions::approval_store`](crate::module::ExecutorOptions::approval_store).
+    pub fn approval_store(mut self, store: Arc<dyn ApprovalStore>) -> Self {
+        self.approval_store = Some(store);
+        self
+    }
+
     /// Load modules from binding files, register them, and build the MCP server.
     ///
     /// Returns the configured [`APCoreMCP`] instance ready to call `serve()`.
@@ -142,64 +185,23 @@ impl McpServerBuilder {
     // the rest of the apexe/apcore API surface.
     #[allow(clippy::result_large_err)]
     pub fn build(self) -> Result<APCoreMCP, ModuleError> {
-        let modules = self.load_scanned_modules()?;
-
-        let mut registry = Registry::new();
-        self.register_modules(&modules, &mut registry);
-        tracing::info!(count = registry.count(), "Registered CLI modules");
-
-        let config = Config::default();
-        let executor = Executor::new(registry, config);
-        let executor = self.configure_executor(executor);
-
+        let executor = build_executor(&self.executor_options())?;
         let transport = self.resolve_transport()?;
-
         self.build_mcp_server(executor, transport)
     }
 
-    /// Load ScannedModules from the configured modules directory.
-    #[allow(clippy::result_large_err)]
-    fn load_scanned_modules(&self) -> Result<Vec<ScannedModule>, ModuleError> {
-        if let Some(ref dir) = self.modules_dir {
-            if dir.is_dir() {
-                load_modules_from_dir(dir)
-            } else {
-                tracing::warn!(
-                    dir = %dir.display(),
-                    "Modules directory not found, starting with zero tools"
-                );
-                Ok(vec![])
-            }
-        } else {
-            Ok(vec![])
+    /// Options shared with the A2A builder for assembling a governed `Executor`.
+    fn executor_options(&self) -> ExecutorOptions<'_> {
+        ExecutorOptions {
+            modules_dir: self.modules_dir.as_deref(),
+            timeout_ms: self.timeout_ms,
+            acl_path: self.acl_path.as_deref(),
+            enable_logging: self.enable_logging,
+            enable_approval: self.enable_approval,
+            enable_circuit_breaker: self.enable_circuit_breaker,
+            enable_retry: self.enable_retry,
+            approval_store: self.approval_store.clone(),
         }
-    }
-
-    /// Apply middleware, ACL, and approval handler to the executor.
-    fn configure_executor(&self, mut executor: Executor) -> Executor {
-        if self.enable_logging {
-            let logging = LoggingMiddleware::with_defaults();
-            if let Err(e) = executor.use_middleware(Box::new(logging)) {
-                tracing::warn!(error = %e, "Failed to add LoggingMiddleware");
-            }
-        }
-
-        if let Some(ref acl_path) = self.acl_path {
-            if acl_path.exists() {
-                match crate::governance::AclManager::from_config(acl_path) {
-                    Ok(acl_mgr) => executor.set_acl(acl_mgr.into_inner()),
-                    Err(e) => tracing::warn!(error = %e, "Failed to load ACL"),
-                }
-            }
-        }
-
-        if self.enable_approval {
-            let handler = ElicitationApprovalHandler::new(None);
-            executor.set_approval_handler(Box::new(handler));
-            tracing::info!("ElicitationApprovalHandler enabled for destructive commands");
-        }
-
-        executor
     }
 
     /// Map the user-facing transport name to the apcore-mcp transport string.
@@ -220,16 +222,24 @@ impl McpServerBuilder {
     #[allow(clippy::result_large_err)]
     fn build_mcp_server(
         self,
-        executor: Executor,
+        executor: Arc<Executor>,
         transport: &str,
     ) -> Result<APCoreMCP, ModuleError> {
+        if self.enable_metrics && transport == "stdio" {
+            tracing::warn!(
+                "--metrics has no effect on stdio transport (no HTTP surface to serve \
+                 /metrics or /usage on)"
+            );
+        }
+
         let mut builder = APCoreMCP::builder()
-            .backend(BackendSource::Executor(Arc::new(executor)))
+            .backend(BackendSource::Executor(executor))
             .name(&self.name)
             .transport(transport)
             .host(&self.host)
             .port(self.port)
-            .validate_inputs(self.validate_inputs);
+            .validate_inputs(self.validate_inputs)
+            .observability(self.enable_metrics && transport != "stdio");
 
         if self.explorer {
             builder = builder.include_explorer(true);
@@ -239,6 +249,9 @@ impl McpServerBuilder {
         }
         if let Some(ref prefix) = self.prefix {
             builder = builder.prefix(prefix);
+        }
+        if let Some(store) = self.approval_store {
+            builder = builder.approval_store(store);
         }
 
         builder.build().map_err(|e| {
@@ -251,51 +264,13 @@ impl McpServerBuilder {
 }
 
 impl McpServerBuilder {
-    /// Register ScannedModules into a Registry as CliModules.
-    fn register_modules(&self, modules: &[ScannedModule], registry: &mut Registry) {
-        for scanned in modules {
-            match CliModule::from_scanned(scanned, self.timeout_ms) {
-                Ok(cli_module) => {
-                    let module_id = scanned.module_id.clone();
-                    let annotations = scanned.annotations.clone().unwrap_or_default();
-                    let descriptor = ModuleDescriptor {
-                        name: module_id.clone(),
-                        enabled: true,
-                        tags: scanned.tags.clone(),
-                        dependencies: vec![],
-                        annotations,
-                        input_schema: scanned.input_schema.clone(),
-                        output_schema: scanned.output_schema.clone(),
-                    };
-                    if let Err(e) = registry.register(&module_id, Box::new(cli_module), descriptor)
-                    {
-                        tracing::warn!(module_id, error = %e, "Failed to register module");
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        module_id = scanned.module_id,
-                        error = %e,
-                        "Failed to create CliModule"
-                    );
-                }
-            }
-        }
-    }
-
     /// Export registered tools as OpenAI-compatible function calling definitions.
     ///
     /// Loads modules, registers them, and converts to OpenAI format without
     /// starting a server.
     #[allow(clippy::result_large_err)]
     pub fn export_openai_tools(self) -> Result<Vec<Value>, ModuleError> {
-        let modules = self.load_scanned_modules()?;
-
-        let mut registry = Registry::new();
-        self.register_modules(&modules, &mut registry);
-
-        let config = Config::default();
-        let executor = Executor::new(registry, config);
+        let executor = build_executor(&self.executor_options())?;
 
         let openai_config = apcore_mcp::OpenAIToolsConfig {
             embed_annotations: true,
@@ -304,13 +279,12 @@ impl McpServerBuilder {
             prefix: self.prefix.clone(),
         };
 
-        apcore_mcp::to_openai_tools(BackendSource::Executor(Arc::new(executor)), openai_config)
-            .map_err(|e| {
-                ModuleError::new(
-                    ErrorCode::GeneralInternalError,
-                    format!("Failed to export OpenAI tools: {e}"),
-                )
-            })
+        apcore_mcp::to_openai_tools(BackendSource::Executor(executor), openai_config).map_err(|e| {
+            ModuleError::new(
+                ErrorCode::GeneralInternalError,
+                format!("Failed to export OpenAI tools: {e}"),
+            )
+        })
     }
 }
 
@@ -452,6 +426,20 @@ mod tests {
     fn test_mcp_server_builder_approval_default_disabled() {
         let builder = McpServerBuilder::new();
         assert!(!builder.enable_approval);
+    }
+
+    #[test]
+    fn test_mcp_server_builder_metrics_default_disabled() {
+        let builder = McpServerBuilder::new();
+        assert!(!builder.enable_metrics);
+    }
+
+    #[test]
+    fn test_mcp_server_builder_metrics_ignored_on_stdio() {
+        // Should still build successfully; observability is silently
+        // skipped for stdio (with a warning), not an error.
+        let result = McpServerBuilder::new().enable_metrics(true).build();
+        assert!(result.is_ok());
     }
 
     #[test]

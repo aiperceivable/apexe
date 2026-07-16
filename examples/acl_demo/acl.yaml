@@ -1,0 +1,29 @@
+# Access-control rules for the apexe ACL demo.
+#
+# Loaded via `apexe::module::ExecutorOptions::acl_path` (the same mechanism
+# `apexe serve --acl` / `apexe a2a --acl` use) and enforced by the apcore
+# Executor on every module call. Rules are evaluated first-match-wins; a call
+# that matches no rule falls through to `default_effect`.
+#
+# The `roles` condition matches the roles carried by the calling `Context`'s
+# `Identity` -- in this demo that's whatever `Identity::new(...)` the example
+# constructs directly; a served MCP/A2A transport would need to populate
+# `Identity.roles` itself (e.g. from a JWT claim) for this to apply over the
+# wire, which apexe does not yet wire up. See README.md.
+default_effect: deny
+
+rules:
+  - description: Admins may call any module
+    callers: ["*"]
+    targets: ["*"]
+    effect: allow
+    conditions:
+      roles: ["admin"]
+
+  - description: Anyone (including anonymous) may read the order list
+    callers: ["*"]
+    targets: ["orders.list"]
+    effect: allow
+
+  # Everything else (e.g. orders.delete for a non-admin) falls through to
+  # default_effect: deny -> the Executor raises an ACLDenied error.

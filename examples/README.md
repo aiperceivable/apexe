@@ -8,6 +8,7 @@
 |---------|------|-------------------|-----|
 | [basic](basic/) | Shell script | Scan a tool, inspect results, start MCP server | `./examples/basic/run.sh` |
 | [programmatic](programmatic.rs) | Rust code | Use apexe as a library: scan → convert → export → serve | `cargo run --example programmatic` |
+| [acl_demo](acl_demo/) | Rust code | Enforce role-based ACL rules on `CliModule` calls via `Executor` | `cargo run --example acl_demo` |
 
 ## Prerequisites
 

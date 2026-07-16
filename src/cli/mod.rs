@@ -27,6 +27,8 @@ pub enum Commands {
     Scan(ScanArgs),
     /// Start MCP server for scanned CLI tools.
     Serve(ServeArgs),
+    /// Start A2A agent server for scanned CLI tools.
+    A2a(A2aArgs),
     /// List previously scanned CLI tools and their modules.
     List(ListArgs),
     /// Show or initialize apexe configuration.
@@ -41,6 +43,7 @@ impl Cli {
         match self.command {
             Commands::Scan(args) => args.execute(&config),
             Commands::Serve(args) => args.execute(&config),
+            Commands::A2a(args) => args.execute(&config),
             Commands::List(args) => args.execute(&config),
             Commands::Config(args) => args.execute(&config),
         }
@@ -71,6 +74,11 @@ pub struct ScanArgs {
     /// Output format for scan results
     #[arg(long, default_value = "table", value_parser = ["json", "yaml", "table"])]
     pub format: String,
+
+    /// Also write a Claude Skill (`SKILL.md`) per module under
+    /// `<DIR>/.claude/skills/<module_id>/SKILL.md`
+    #[arg(long)]
+    pub skills_dir: Option<PathBuf>,
 }
 
 impl ScanArgs {
@@ -88,6 +96,7 @@ impl ScanArgs {
 
         self.write_bindings(&modules, &output_dir);
         self.write_acl(&modules, config);
+        self.write_skills(&modules);
         self.print_results(&results)?;
 
         Ok(())
@@ -116,6 +125,20 @@ impl ScanArgs {
         let acl_path = config.config_dir.join("acl.yaml");
         if let Err(e) = acl_manager.write_config(&acl_path) {
             warn!(error = %e, "Failed to write ACL");
+        }
+    }
+
+    fn write_skills(&self, modules: &[apcore_toolkit::ScannedModule]) {
+        let Some(ref skills_dir) = self.skills_dir else {
+            return;
+        };
+        match crate::output::SkillOutput::new().write(modules, skills_dir) {
+            Ok(paths) => {
+                for path in &paths {
+                    info!(path = %path.display(), "Generated skill");
+                }
+            }
+            Err(e) => warn!(error = %e, "Failed to write skill files"),
         }
     }
 
@@ -205,6 +228,19 @@ pub struct ServeArgs {
     #[arg(long)]
     pub no_logging: bool,
 
+    /// Disable circuit breaker (short-circuits a hanging/broken tool)
+    #[arg(long)]
+    pub no_circuit_breaker: bool,
+
+    /// Disable retry (only ever retries idempotent commands after a timeout)
+    #[arg(long)]
+    pub no_retry: bool,
+
+    /// Enable /metrics (Prometheus) and /usage observability endpoints
+    /// (HTTP/SSE transports only)
+    #[arg(long)]
+    pub metrics: bool,
+
     /// Skip input validation against tool schemas
     #[arg(long)]
     pub skip_validation: bool,
@@ -248,6 +284,9 @@ impl ServeArgs {
             .timeout_ms(config.default_timeout * 1000)
             .enable_logging(!self.no_logging)
             .enable_approval(self.enable_approval)
+            .enable_circuit_breaker(!self.no_circuit_breaker)
+            .enable_retry(!self.no_retry)
+            .enable_metrics(self.metrics)
             .validate_inputs(!self.skip_validation);
 
         // Only load ACL when explicitly specified via --acl flag.
@@ -276,6 +315,91 @@ impl ServeArgs {
             },
             ..Default::default()
         }
+    }
+}
+
+/// Start A2A agent server for scanned CLI tools.
+#[derive(Debug, clap::Args)]
+pub struct A2aArgs {
+    /// Base URL to bind the A2A server to
+    #[arg(long, default_value = "http://127.0.0.1:8000")]
+    pub url: String,
+
+    /// Directory containing binding files
+    #[arg(long)]
+    pub modules_dir: Option<PathBuf>,
+
+    /// A2A agent name
+    #[arg(long, default_value = "apexe")]
+    pub name: String,
+
+    /// Enable browser-based Explorer UI
+    #[arg(long)]
+    pub explorer: bool,
+
+    /// Path to ACL policy YAML file
+    #[arg(long)]
+    pub acl: Option<PathBuf>,
+
+    /// Enable approval handler for destructive commands
+    #[arg(long)]
+    pub enable_approval: bool,
+
+    /// Disable structured logging middleware
+    #[arg(long)]
+    pub no_logging: bool,
+
+    /// Disable circuit breaker (short-circuits a hanging/broken tool)
+    #[arg(long)]
+    pub no_circuit_breaker: bool,
+
+    /// Disable retry (only ever retries idempotent commands after a timeout)
+    #[arg(long)]
+    pub no_retry: bool,
+
+    /// Per-task execution timeout in seconds
+    #[arg(long, default_value = "300")]
+    pub execution_timeout: u64,
+
+    /// Allowed CORS origin (repeatable)
+    #[arg(long)]
+    pub cors_origin: Vec<String>,
+}
+
+impl A2aArgs {
+    pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
+        let server = self.build_server(config);
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime
+            .block_on(server.serve())
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    fn build_server(&self, config: &ApexeConfig) -> crate::a2a::A2aServerBuilder {
+        let modules_dir = self
+            .modules_dir
+            .clone()
+            .unwrap_or_else(|| config.modules_dir.clone());
+        let mut builder = crate::a2a::A2aServerBuilder::new()
+            .name(&self.name)
+            .url(&self.url)
+            .explorer(self.explorer)
+            .modules_dir(modules_dir)
+            .timeout_ms(config.default_timeout * 1000)
+            .enable_logging(!self.no_logging)
+            .enable_approval(self.enable_approval)
+            .enable_circuit_breaker(!self.no_circuit_breaker)
+            .enable_retry(!self.no_retry)
+            .execution_timeout(self.execution_timeout)
+            .cors_origins(self.cors_origin.clone());
+
+        // Only load ACL when explicitly specified via --acl flag.
+        // Without --acl, the server runs without access control (all tools allowed).
+        if let Some(ref acl_path) = self.acl {
+            builder = builder.acl_path(acl_path);
+        }
+
+        builder
     }
 }
 
@@ -480,6 +604,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_scan_skills_dir_default_none() {
+        let cli = Cli::try_parse_from(["apexe", "scan", "git"]).unwrap();
+        if let Commands::Scan(args) = cli.command {
+            assert!(args.skills_dir.is_none());
+        }
+    }
+
+    #[test]
+    fn test_scan_skills_dir_flag() {
+        let cli =
+            Cli::try_parse_from(["apexe", "scan", "git", "--skills-dir", "/tmp/skills"]).unwrap();
+        if let Commands::Scan(args) = cli.command {
+            assert_eq!(args.skills_dir, Some(PathBuf::from("/tmp/skills")));
+        }
+    }
+
     // ServeArgs validation tests
     #[test]
     fn test_serve_defaults() {
@@ -523,6 +664,104 @@ mod tests {
             assert_eq!(args.host, "0.0.0.0");
             assert_eq!(args.port, 9000);
             assert!(args.explorer);
+        }
+    }
+
+    #[test]
+    fn test_serve_resilience_flags_default_enabled() {
+        let cli = Cli::try_parse_from(["apexe", "serve"]).unwrap();
+        if let Commands::Serve(args) = cli.command {
+            assert!(!args.no_circuit_breaker);
+            assert!(!args.no_retry);
+        } else {
+            panic!("expected Commands::Serve");
+        }
+    }
+
+    #[test]
+    fn test_serve_metrics_default_disabled() {
+        let cli = Cli::try_parse_from(["apexe", "serve"]).unwrap();
+        if let Commands::Serve(args) = cli.command {
+            assert!(!args.metrics);
+        } else {
+            panic!("expected Commands::Serve");
+        }
+    }
+
+    #[test]
+    fn test_serve_metrics_flag() {
+        let cli = Cli::try_parse_from(["apexe", "serve", "--metrics"]).unwrap();
+        if let Commands::Serve(args) = cli.command {
+            assert!(args.metrics);
+        } else {
+            panic!("expected Commands::Serve");
+        }
+    }
+
+    #[test]
+    fn test_serve_resilience_flags_can_be_disabled() {
+        let cli =
+            Cli::try_parse_from(["apexe", "serve", "--no-circuit-breaker", "--no-retry"]).unwrap();
+        if let Commands::Serve(args) = cli.command {
+            assert!(args.no_circuit_breaker);
+            assert!(args.no_retry);
+        } else {
+            panic!("expected Commands::Serve");
+        }
+    }
+
+    // A2aArgs validation tests
+    #[test]
+    fn test_a2a_defaults() {
+        let cli = Cli::try_parse_from(["apexe", "a2a"]).unwrap();
+        if let Commands::A2a(args) = cli.command {
+            assert_eq!(args.url, "http://127.0.0.1:8000");
+            assert_eq!(args.execution_timeout, 300);
+            assert!(!args.explorer);
+            assert!(args.cors_origin.is_empty());
+        } else {
+            panic!("expected Commands::A2a");
+        }
+    }
+
+    #[test]
+    fn test_a2a_with_flags() {
+        let cli = Cli::try_parse_from([
+            "apexe",
+            "a2a",
+            "--url",
+            "http://0.0.0.0:9090",
+            "--explorer",
+            "--execution-timeout",
+            "600",
+            "--cors-origin",
+            "https://example.com",
+            "--cors-origin",
+            "https://foo.example.com",
+        ])
+        .unwrap();
+        if let Commands::A2a(args) = cli.command {
+            assert_eq!(args.url, "http://0.0.0.0:9090");
+            assert!(args.explorer);
+            assert_eq!(args.execution_timeout, 600);
+            assert_eq!(
+                args.cors_origin,
+                vec!["https://example.com", "https://foo.example.com"]
+            );
+        } else {
+            panic!("expected Commands::A2a");
+        }
+    }
+
+    #[test]
+    fn test_a2a_resilience_flags_can_be_disabled() {
+        let cli =
+            Cli::try_parse_from(["apexe", "a2a", "--no-circuit-breaker", "--no-retry"]).unwrap();
+        if let Commands::A2a(args) = cli.command {
+            assert!(args.no_circuit_breaker);
+            assert!(args.no_retry);
+        } else {
+            panic!("expected Commands::A2a");
         }
     }
 
@@ -679,6 +918,7 @@ mod tests {
             depth: 2,
             no_cache: false,
             format: "table".to_string(),
+            skills_dir: None,
         };
         let result = args.execute(&config);
         assert!(result.is_err());

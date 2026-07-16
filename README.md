@@ -19,18 +19,20 @@ Outside-In CLI-to-Agent Bridge — automatically wraps existing CLI tools into g
 
 - **Scan** — Three-tier deterministic engine (--help → man pages → shell completions) with 4 built-in parsers (GNU, Click, Cobra, Clap)
 - **Schema** — Generates JSON Schema with type mapping, format hints (`path`, `uri`), defaults, enums, and required fields
-- **Serve** — MCP server via [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) (stdio / streamable-http / SSE) with JWT auth and Explorer UI
-- **Govern** — Behavioral annotations (readonly/destructive/idempotent), flag boosting (`--force` → requires_approval), default-deny ACL, audit logging
+- **Serve** — MCP server via [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) (stdio / streamable-http / SSE) with JWT auth and Explorer UI, plus an A2A agent server via [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust)
+- **Govern** — Behavioral annotations (readonly/destructive/idempotent), flag boosting (`--force` → requires_approval), default-deny ACL, audit logging, `Module::preview()` dry-run for destructive commands
+- **Stay stable** — captured output capped at 64 MiB, timed-out subprocesses actually killed (`kill_on_drop`), circuit breaker + retry middleware on by default, optional `/metrics` + `/usage`
 - **AI Guidance** — Every error includes `ai_guidance` to help agents self-correct; non-zero exit codes return stderr context
 
 ### Built on the apcore ecosystem
 
 | Crate | Role |
 |-------|------|
-| [apcore](https://github.com/aiperceivable/apcore-rust) 0.14 | Module trait, Registry, ACL, ModuleError, Context |
-| [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit-rust) 0.4 | ScannedModule, YAMLWriter, DisplayResolver |
-| [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) 0.11 | MCP server with middleware, auth, Explorer UI |
-| [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) 0.3 | AuditLogger, Sandbox |
+| [apcore](https://github.com/aiperceivable/apcore-rust) 0.26 | Module trait, Registry, ACL, ModuleError, Context |
+| [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit-rust) 0.10 | ScannedModule, YAMLWriter, DisplayResolver |
+| [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) 0.17 | MCP server with middleware, auth, Explorer UI |
+| [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust) 0.4 | A2A agent server sharing the same governed `Executor` |
+| [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) 0.10 | AuditLogger |
 
 ---
 
@@ -92,6 +94,7 @@ apexe scan git --depth 3               # 3 levels of subcommands (default: 2, ma
 apexe scan git --no-cache              # Force re-scan
 apexe scan git --format json           # Output as JSON (also: yaml, table)
 apexe scan git --output-dir ./out      # Custom output directory
+apexe scan git --skills-dir ./out      # Also write .claude/skills/<id>/SKILL.md per module
 ```
 
 ### `apexe serve`
@@ -105,6 +108,19 @@ apexe serve --transport http --port 8000 --explorer  # HTTP + browser UI
 apexe serve --transport sse --port 8000              # Server-Sent Events
 apexe serve --show-config claude-desktop             # Print integration config
 apexe serve --name my-tools                          # Custom server name
+apexe serve --transport http --metrics                # + /metrics (Prometheus) and /usage
+apexe serve --no-circuit-breaker --no-retry           # Disable resilience middleware
+```
+
+### `apexe a2a`
+
+Start an A2A agent server for scanned tools. Shares governance (ACL, logging, approval) with `apexe serve` via the same `Executor`.
+
+```bash
+apexe a2a                                            # http://127.0.0.1:8000 (default)
+apexe a2a --url http://0.0.0.0:9000 --explorer       # Custom bind address + browser UI
+apexe a2a --acl ~/.apexe/acl.yaml --enable-approval  # Governed, approval-gated
+apexe a2a --cors-origin https://example.com          # Allow a browser origin
 ```
 
 ### `apexe list`
@@ -216,6 +232,7 @@ See [examples/README.md](examples/README.md) for full details.
 |---------|-------------|-----|
 | [basic](examples/basic/) | Shell script: scan → list → serve | `./examples/basic/run.sh` |
 | [programmatic](examples/programmatic.rs) | Rust library: scan → convert → export OpenAI tools → build MCP server | `cargo run --example programmatic` |
+| [acl_demo](examples/acl_demo/) | Rust library: role-based ACL rules on `CliModule` calls via `Executor` | `cargo run --example acl_demo` |
 
 ---
 

@@ -12,10 +12,12 @@
 //! - [`scanner`] — `ScanOrchestrator`: 3-tier CLI scanner engine
 //! - [`output`] — `YamlOutput` + `load_modules_from_dir`
 //! - [`mcp`] — `McpServerBuilder`: build and start MCP servers
+//! - [`a2a`] — `A2aServerBuilder`: build and start A2A agent servers
 //! - [`module`] — `CliModule`: apcore Module trait for CLI execution
-//! - [`governance`] — `AclManager`, `AuditManager`, `SandboxManager`
+//! - [`governance`] — `AclManager`, `AuditManager`
 //! - [`models`] — Scanner data types (ScannedCLITool, ScannedCommand, etc.)
 
+pub mod a2a;
 pub mod adapter;
 pub mod cli;
 pub mod config;

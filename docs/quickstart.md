@@ -42,6 +42,16 @@ apexe serve --transport http --port 8000 --explorer
 
 Open `http://127.0.0.1:8000` in a browser to explore available tools.
 
+## A2A Agent Server
+
+Serve the same scanned tools as an A2A agent instead of (or alongside) MCP:
+
+```bash
+apexe a2a
+```
+
+`apexe a2a` shares governance (ACL, logging, approval) with `apexe serve` — see [User Manual §10](user-manual.md#10-mcp-server) and §11 for details.
+
 ## What happened?
 
 1. `apexe scan git` ran git's `--help`, parsed man pages, and checked shell completions.
@@ -73,6 +83,12 @@ apexe serve --transport http --port 8000
 
 # SSE transport
 apexe serve --transport sse --port 8000
+
+# Also generate Claude Skills (.claude/skills/<id>/SKILL.md) per module
+apexe scan git --skills-dir ./out
+
+# Observability: /metrics (Prometheus) + /usage (HTTP/SSE only)
+apexe serve --transport http --metrics
 
 # Initialize a config file for customization
 apexe config --init

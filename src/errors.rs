@@ -95,7 +95,7 @@ impl From<ApexeError> for ModuleError {
             ApexeError::ScanPermission { ref command } => {
                 let mut details = HashMap::new();
                 details.insert("command".to_string(), serde_json::json!(command));
-                ModuleError::new(ErrorCode::AclDenied, err.to_string())
+                ModuleError::new(ErrorCode::ACLDenied, err.to_string())
                     .with_details(details)
                     .with_retryable(false)
                     .with_ai_guidance(
@@ -306,7 +306,7 @@ mod tests {
             command: "secret".into(),
         }
         .into();
-        assert_eq!(err.code, ErrorCode::AclDenied);
+        assert_eq!(err.code, ErrorCode::ACLDenied);
         assert!(err.ai_guidance.as_ref().unwrap().contains("ermission"));
     }
 

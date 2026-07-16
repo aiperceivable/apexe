@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use apcore::module::ModuleAnnotations;
 
 use crate::models::ScannedCommand;
@@ -87,6 +89,8 @@ pub fn infer(command: &ScannedCommand) -> ModuleAnnotations {
         cache_key_fields: None,
         paginated: false,
         pagination_style: "cursor".to_string(),
+        discoverable: true,
+        extra: HashMap::new(),
     }
 }
 

@@ -73,7 +73,7 @@ impl AclManager {
             });
         }
 
-        let acl = ACL::new(rules, "deny");
+        let acl = ACL::new(rules, "deny", None);
         Self {
             acl,
             default_effect: "deny".to_string(),

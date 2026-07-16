@@ -421,7 +421,7 @@ mod tests {
         let config = ApexeConfig::default();
         let core = config.core_config();
         // CoreConfig::default() should have reasonable defaults
-        assert!(core.max_call_depth > 0);
+        assert!(core.executor.max_call_depth > 0);
     }
 
     #[test]

@@ -6,6 +6,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
+## [0.3.0] - 2026-07-16
+
+### Added
+- **`apexe a2a`** — New subcommand exposing scanned CLI modules as an A2A agent via `apcore-a2a`, sharing governance (ACL, logging, approval) with `apexe serve` through a common `build_executor()`.
+- **Live module annotations** — `CliModule` now implements `Module::annotations()`, so apcore's approval gate reads `requires_approval`/`destructive` from the resolved module instance instead of silently defaulting.
+- **Display/alias metadata now reaches the registry** — `ModuleDescriptor.metadata` and `.display` are populated from the scanned binding, activating the MCP/A2A tool-alias resolution (`metadata["display"]["mcp"|"a2a"]["alias"]`) that `DisplayResolver` already computed but was previously discarded at registration.
+- **`examples/acl_demo`** — New example (aligned with `axum-apcore/examples/acl_demo`) demonstrating role-based ACL rules (`orders.delete` admin-only, `orders.list` public) enforced on `CliModule` calls via `Executor`.
+- **Subprocess hardening** — `execute_subprocess` now caps captured stdout/stderr at 64 MiB (`stdout_truncated`/`stderr_truncated` surfaced in the result) and switched from `std::process::Command` + `spawn_blocking` to `tokio::process::Command` with `kill_on_drop(true)`, so a timed-out subprocess is actually killed instead of leaking as an orphan.
+- **`Module::preview()`** — `CliModule` implements apcore's dry-run preview hook for destructive commands, surfacing the exact resolved command line (not a simulated before/after) via apcore-mcp's `__apcore_module_preview` meta-tool.
+- **Resilience middleware** — `CircuitBreakerMiddleware` and `RetryMiddleware` are wired into `build_executor` (on by default; `apexe serve`/`apexe a2a --no-circuit-breaker`/`--no-retry` to disable). Retry only ever fires on a timeout for a module annotated `idempotent`, so it can't cause a destructive command to run twice.
+- **`SkillOutput` + `apexe scan --skills-dir <DIR>`** — writes a Claude Skill (`SKILL.md`) per module via apcore-toolkit's `ModuleStyle::Skill` formatter, directly usable by Claude Code.
+- **`apexe serve --metrics`** — opt-in `/metrics` (Prometheus) and `/usage` (JSON) observability endpoints via `APCoreMCPBuilder::observability`. HTTP/SSE transports only; a no-op warning on stdio.
+- **Pluggable approval store** — `ExecutorOptions`/`McpServerBuilder`/`A2aServerBuilder` accept an optional `Arc<dyn ApprovalStore>`, switching a `requires_approval` module's approval flow from the blocking `ElicitationApprovalHandler` to the non-blocking `StorageBackedApprovalHandler`. Library-only (no CLI flag — `InMemoryApprovalStore` isn't shared across process invocations); bring your own persistent store to use it.
+
+### Changed
+- **Upgraded apcore ecosystem** — `apcore = "0.26"`, `apcore-cli = "0.10"`, `apcore-mcp = "0.17"`, `apcore-toolkit = "0.10"` (`default-features = false`), plus new `apcore-a2a = "0.4"`.
+- **`ModuleDescriptor` construction rewritten** — matches the reshaped struct (`module_id`, `description`, `version`, `documentation`, `annotations: Option<...>`, etc.) shared by the new MCP and A2A builders via `crate::module::registry::build_executor`.
+- **`output/loader.rs`** — `load_modules_from_dir` now delegates to apcore-toolkit's `BindingLoader` (strict mode) instead of a hand-rolled parser, picking up a 16 MiB per-file cap and a 10,000-file per-directory cap for free. Drops the undocumented bare-single-`ScannedModule`-without-a-`bindings`-key fallback, which `YamlOutput` never produced anyway.
+- **Timeout retryability moved from `execute_subprocess` to `CliModule::execute`** — a killed subprocess may have partially applied a non-idempotent side effect, so only `CliModule` (which knows the module's `idempotent` annotation) decides whether a timeout is safe to retry.
+
+### Removed
+- **`SandboxManager` / `governance::sandbox`** — deleted. `apcore-cli::Sandbox` requires the host binary to re-exec itself with an `--internal-sandbox-runner` subcommand and rediscover modules from `APCORE_EXTENSIONS_ROOT`; apexe's runtime-scanned `CliModule`s don't fit that model, and `SandboxManager` was never actually wired into any execution path. The resource-limiting behavior it was meant to provide (output caps, timeout enforcement) is now implemented directly in `execute_subprocess` — see "Subprocess hardening" above.
+
+### Fixed
+- **`ErrorCode::AclDenied` → `ACLDenied`** rename tracked.
+- **`ACL::new`** now takes an explicit audit-logger argument (`None` for apexe).
+
+---
+
 ## [0.2.0] - 2026-03-29
 
 ### Added

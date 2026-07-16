@@ -2,8 +2,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 0.1.0 |
-| **Date** | 2026-03-28 |
+| **Version** | 0.2.0 (unreleased) |
+| **Date** | 2026-07-16 |
 | **Platform** | macOS / Linux |
 
 ---
@@ -20,11 +20,12 @@
 8. [Behavioral Annotations](#8-behavioral-annotations)
 9. [Governance](#9-governance)
 10. [MCP Server](#10-mcp-server)
-11. [Integrating with AI Agents](#11-integrating-with-ai-agents)
-12. [Error Handling & AI Guidance](#12-error-handling--ai-guidance)
-13. [File Locations](#13-file-locations)
-14. [Logging & Debugging](#14-logging--debugging)
-15. [Troubleshooting](#15-troubleshooting)
+11. [A2A Server](#11-a2a-server)
+12. [Integrating with AI Agents](#12-integrating-with-ai-agents)
+13. [Error Handling & AI Guidance](#13-error-handling--ai-guidance)
+14. [File Locations](#14-file-locations)
+15. [Logging & Debugging](#15-logging--debugging)
+16. [Troubleshooting](#16-troubleshooting)
 
 ---
 
@@ -36,7 +37,7 @@
 2. **Govern** — Classify commands as readonly/destructive, generate ACL rules, enable audit logging.
 3. **Serve** — Expose tools via MCP (stdio for Claude Desktop/Cursor, HTTP for remote agents).
 
-apexe is built on the [apcore](https://github.com/aiperceivable/apcore-rust) ecosystem: apcore (core types), apcore-toolkit (output), apcore-mcp (server), apcore-cli (audit/sandbox).
+apexe is built on the [apcore](https://github.com/aiperceivable/apcore-rust) ecosystem: apcore (core types), apcore-toolkit (output), apcore-mcp (MCP server), apcore-a2a (A2A agent server), apcore-cli (audit logging).
 
 ---
 
@@ -88,6 +89,7 @@ apexe scan <TOOLS>... [OPTIONS]
 | `--depth <N>` | `2` | Subcommand recursion depth (1-5). `git remote add` = depth 2 |
 | `--no-cache` | off | Force fresh scan, bypass cache |
 | `--format <FMT>` | `table` | Output format: `json`, `yaml`, or `table` |
+| `--skills-dir <DIR>` | - | Also write a Claude Skill (`SKILL.md`) per module under `<DIR>/.claude/skills/<module_id>/` |
 
 ```bash
 apexe scan git                         # basic scan
@@ -95,6 +97,7 @@ apexe scan ls jq curl                  # multiple tools
 apexe scan git --depth 3               # deeper subcommand discovery
 apexe scan git --no-cache              # force re-scan
 apexe scan git --format json           # JSON output
+apexe scan git --skills-dir ./out      # also write .claude/skills/cli.git.*/SKILL.md
 ```
 
 ### 4.2 `apexe serve`
@@ -114,15 +117,48 @@ apexe serve [OPTIONS]
 | `--modules-dir <DIR>` | `~/.apexe/modules/` | Directory containing binding files |
 | `--name <NAME>` | `apexe` | MCP server name |
 | `--show-config <TARGET>` | - | Print config snippet: `claude-desktop` or `cursor` |
+| `--no-circuit-breaker` | off | Disable CircuitBreakerMiddleware (on by default) |
+| `--no-retry` | off | Disable RetryMiddleware (on by default; only ever retries idempotent timeouts) |
+| `--metrics` | off | Enable `/metrics` (Prometheus) + `/usage` (JSON) — HTTP/SSE only |
 
 ```bash
 apexe serve                                        # stdio (Claude Desktop/Cursor)
 apexe serve --transport http --port 8000            # HTTP server
 apexe serve --transport http --explorer             # HTTP + browser UI
 apexe serve --show-config claude-desktop            # print integration config
+apexe serve --transport http --metrics               # + /metrics and /usage
+apexe serve --no-circuit-breaker --no-retry           # disable resilience middleware
 ```
 
-### 4.3 `apexe list`
+### 4.3 `apexe a2a`
+
+Starts an A2A agent server exposing scanned tools, sharing governance (ACL, logging, approval) with `apexe serve` via the same `Executor`.
+
+```
+apexe a2a [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--url <URL>` | `http://127.0.0.1:8000` | Base URL to bind the A2A server to |
+| `--modules-dir <DIR>` | `~/.apexe/modules/` | Directory containing binding files |
+| `--name <NAME>` | `apexe` | A2A agent name |
+| `--explorer` | off | Enable browser-based Explorer UI |
+| `--acl <PATH>` | - | Path to ACL policy YAML file |
+| `--enable-approval` | off | Require approval for destructive commands |
+| `--no-logging` | off | Disable structured logging middleware |
+| `--no-circuit-breaker` | off | Disable CircuitBreakerMiddleware (on by default) |
+| `--no-retry` | off | Disable RetryMiddleware (on by default; only ever retries idempotent timeouts) |
+| `--execution-timeout <SECS>` | `300` | Per-task execution timeout in seconds |
+| `--cors-origin <ORIGIN>` | - | Allowed CORS origin (repeatable) |
+
+```bash
+apexe a2a                                            # http://127.0.0.1:8000
+apexe a2a --url http://0.0.0.0:9000 --explorer       # custom bind address + browser UI
+apexe a2a --acl ~/.apexe/acl.yaml --enable-approval  # governed, approval-gated
+```
+
+### 4.4 `apexe list`
 
 Lists all registered modules from binding files.
 
@@ -135,7 +171,7 @@ apexe list [OPTIONS]
 | `--format <FMT>` | `table` | Output format: `table` or `json` |
 | `--modules-dir <DIR>` | `~/.apexe/modules/` | Directory to read binding files from |
 
-### 4.4 `apexe config`
+### 4.5 `apexe config`
 
 Shows or initializes apexe configuration.
 
@@ -358,9 +394,29 @@ Every tool invocation via `apexe serve` is logged to `~/.apexe/audit.jsonl`:
 - **Privacy**: Inputs are SHA-256 hashed with a random salt. Raw input values are never logged.
 - **Resilience**: Audit logging never causes execution failures. Write errors are silently logged via tracing.
 
-### 9.3 Sandbox (Optional)
+### 9.3 Subprocess Hardening
 
-The `SandboxManager` wraps `apcore-cli`'s subprocess isolation with environment variable whitelisting and timeout enforcement. Available programmatically via the library API.
+Every `CliModule` call runs through `execute_subprocess` (`src/module/executor.rs`), which enforces two resource limits directly (not via `apcore-cli`'s `Sandbox` — that type expects the host binary to re-exec itself with an `--internal-sandbox-runner` subcommand and rediscover modules from `APCORE_EXTENSIONS_ROOT`, a model apexe's runtime-scanned CLI modules don't fit):
+
+- **Output cap**: stdout/stderr are each capped at 64 MiB (`executor::DEFAULT_MAX_OUTPUT_BYTES`). A command that exceeds it gets `stdout_truncated`/`stderr_truncated: true` in the result instead of exhausting memory.
+- **Timeout kills the process**: the child is spawned with `kill_on_drop(true)`; when `--timeout`/`default_timeout` elapses, the subprocess is actually terminated rather than left running as an orphan.
+
+### 9.4 Preview (Dry-Run Prediction)
+
+Destructive modules (`annotations.destructive == true`) implement apcore's `Module::preview()` hook. It does not attempt to predict the actual side effects of an arbitrary CLI binary (`apexe` has no way to know what `git push --force` will do to a remote) — it only surfaces the exact resolved command line, so an approver can see what they're about to allow. Readonly/non-destructive modules return no preview (nothing to predict). Reachable via apcore-mcp's `__apcore_module_preview` meta-tool.
+
+### 9.5 Resilience Middleware
+
+`build_executor` wires two middleware on by default (`--no-circuit-breaker`/`--no-retry` to disable, on both `apexe serve` and `apexe a2a`):
+
+- **`CircuitBreakerMiddleware`** — short-circuits calls to a `(module_id, caller)` pair after repeated failures (default: ≥5 samples, ≥50% error rate), instead of letting every caller keep hammering a hanging or broken CLI tool. Auto-recovers after a cooldown window via a single probe call.
+- **`RetryMiddleware`** — retries a call after a transient failure, but *only* when the error is explicitly marked `retryable`. `CliModule` marks a timeout `retryable` **only when the module is annotated `idempotent`** (§8) — a killed non-idempotent command (e.g. `rm -rf` timing out mid-delete) is never auto-retried, since it may have partially applied its side effect.
+
+### 9.6 Pluggable Approval Store (Library Only)
+
+By default, `--enable-approval` uses apcore-mcp's `ElicitationApprovalHandler`: a call to a `requires_approval` module blocks until the connected MCP client's user responds to an elicitation prompt. For approval flows where the approver isn't in the MCP session (e.g. a Slack bot), `apexe`'s `ExecutorOptions`/`McpServerBuilder`/`A2aServerBuilder` accept an `Arc<dyn apcore_mcp::ApprovalStore>` — when set, approvals become non-blocking (`StorageBackedApprovalHandler`): the call returns an `ApprovalPending` error immediately, and a separate mechanism you build resolves the decision later via `ApprovalStore::resolve`.
+
+There is no CLI flag for this — `apcore-mcp`'s `InMemoryApprovalStore` is documented as unsuitable for production (state isn't shared across process invocations, so a hypothetical `apexe approval resolve` command couldn't reach a running server's store anyway). Embed apexe as a library and supply your own persistent store (Redis, a database, etc.) to use this for real.
 
 ---
 
@@ -379,7 +435,18 @@ The `SandboxManager` wraps `apcore-cli`'s subprocess isolation with environment 
 | Middleware | Status | Effect |
 |-----------|--------|--------|
 | **LoggingMiddleware** | Enabled by default | Structured logging of inputs/outputs with sensitive field redaction |
-| **ElicitationApprovalHandler** | Opt-in (programmatic) | Sends approval request to MCP client for destructive commands |
+| **CircuitBreakerMiddleware** | Enabled by default (`--no-circuit-breaker`) | Short-circuits a hanging/broken tool — see §9.5 |
+| **RetryMiddleware** | Enabled by default (`--no-retry`) | Retries idempotent timeouts only — see §9.5 |
+| **ElicitationApprovalHandler** | Opt-in (`--enable-approval`) | Sends approval request to MCP client for destructive commands |
+
+### Observability
+
+`apexe serve --transport http --metrics` enables two endpoints (HTTP/SSE only, ignored on stdio):
+
+| Endpoint | Format | Content |
+|----------|--------|---------|
+| `/metrics` | Prometheus text | `apcore_module_calls_total`, `apcore_module_duration_seconds` histogram, per `module_id` |
+| `/usage` | JSON | Per-module call count, error count, average latency, unique callers, trend |
 
 ### Tool Filtering
 
@@ -414,7 +481,51 @@ let tools = McpServerBuilder::new()
 
 ---
 
-## 11. Integrating with AI Agents
+## 11. A2A Server
+
+`apexe a2a` exposes the same scanned modules as an A2A agent via
+[apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust), instead of
+(or alongside) MCP. It shares governance with `apexe serve` — both build
+their `Executor` through the same `apexe::module::build_executor()`, so an
+`--acl` policy, the logging middleware, and `--enable-approval` behave
+identically regardless of which transport a caller uses.
+
+```bash
+apexe a2a                                            # http://127.0.0.1:8000
+apexe a2a --url http://0.0.0.0:9000 --explorer       # custom bind address + browser UI
+apexe a2a --acl ~/.apexe/acl.yaml --enable-approval  # governed, approval-gated
+```
+
+### Endpoints
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /.well-known/agent-card.json` | A2A Agent Card (skills derived from registered modules) |
+| `GET /health` | Liveness check |
+| `GET /explorer` | Browser-based Explorer UI (with `--explorer`) |
+
+### Skill aliasing
+
+Like MCP, A2A reads the `display` overlay `apexe scan` computes
+(`metadata["display"]["a2a"]["alias"]`) to name each skill; see
+[Display Names](#display-names) below.
+
+### Current limitation: no per-caller identity over the wire
+
+apcore's ACL engine evaluates whatever roles a caller's `Context::identity`
+carries, but `apexe a2a` (and `apexe serve`) do not yet populate
+`Identity.roles` from a JWT claim or request header — every call served
+today runs as a single implicit anonymous caller. Role-gated ACL rules
+(`conditions: {roles: [...]}`) are therefore not yet reachable over MCP/A2A;
+`--acl` is most useful today for apexe's readonly-allow / destructive-deny
+default policy (§9.1) and the `--enable-approval` human-in-the-loop gate.
+See [`examples/acl_demo`](../examples/acl_demo/) for a library-level
+demonstration of the same role-based ACL contract, driven directly against
+the `Executor`.
+
+---
+
+## 12. Integrating with AI Agents
 
 ### Claude Desktop
 
@@ -459,7 +570,7 @@ Aliases are auto-sanitized for MCP compatibility (dots replaced with underscores
 
 ---
 
-## 12. Error Handling & AI Guidance
+## 13. Error Handling & AI Guidance
 
 Every error includes `ai_guidance` to help AI agents self-correct:
 
@@ -478,7 +589,7 @@ Additionally, each execution response includes:
 
 ---
 
-## 13. File Locations
+## 14. File Locations
 
 | Path | Purpose | Created by |
 |------|---------|------------|
@@ -493,7 +604,7 @@ All directories are created automatically on first use.
 
 ---
 
-## 14. Logging & Debugging
+## 15. Logging & Debugging
 
 apexe uses structured logging via the `tracing` crate.
 
@@ -518,7 +629,7 @@ RUST_LOG=debug apexe scan git
 
 ---
 
-## 15. Troubleshooting
+## 16. Troubleshooting
 
 ### "Tool not found" during scan
 
@@ -558,7 +669,7 @@ rm -rf ~/.apexe/cache/
 
 ### Known Limitations
 
-- **A2A protocol**: Not yet implemented. Architecture supports future addition (~150 LOC).
+- **A2A per-caller identity**: `apexe a2a` (and `apexe serve`) do not yet populate `Identity.roles` from a JWT/header, so role-gated ACL rules are unreachable over the wire — see [§11](#11-a2a-server).
 - **Windows**: Not supported.
 - **Interactive CLI tools**: Tools requiring stdin input (e.g., `ssh`, `vim`) cannot be wrapped.
 - **Streaming output**: CLI subprocess output is collected in full, then returned. No real-time streaming.

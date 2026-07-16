@@ -1,5 +1,5 @@
 use apcore::module::ModuleAnnotations;
-use apcore::{Context, ErrorCode, Module, ModuleError};
+use apcore::{Change, Context, ErrorCode, Module, ModuleError, PreviewResult};
 use apcore_toolkit::ScannedModule;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -17,6 +17,9 @@ pub struct CliModuleConfig {
     pub command_parts: Vec<String>,
     pub json_flag: Option<String>,
     pub timeout_ms: u64,
+    /// Cap on captured stdout/stderr bytes; see
+    /// [`executor::DEFAULT_MAX_OUTPUT_BYTES`].
+    pub max_output_bytes: usize,
 }
 
 /// A CLI subprocess module implementing the apcore `Module` trait.
@@ -30,12 +33,12 @@ pub struct CliModule {
     description: String,
     input_schema: Value,
     output_schema: Value,
-    #[allow(dead_code)] // Reserved for runtime ACL checks and middleware annotation routing
     annotations: ModuleAnnotations,
     binary_path: String,
     command_parts: Vec<String>,
     json_flag: Option<String>,
     timeout_ms: u64,
+    max_output_bytes: usize,
 }
 
 impl CliModule {
@@ -50,6 +53,7 @@ impl CliModule {
             command_parts: config.command_parts,
             json_flag: config.json_flag,
             timeout_ms: config.timeout_ms,
+            max_output_bytes: config.max_output_bytes,
         }
     }
 
@@ -103,6 +107,7 @@ impl CliModule {
             command_parts,
             json_flag,
             timeout_ms,
+            max_output_bytes: executor::DEFAULT_MAX_OUTPUT_BYTES,
         }))
     }
 
@@ -125,6 +130,50 @@ impl Module for CliModule {
         &self.description
     }
 
+    /// Live annotations, sourced directly from the scanned binding.
+    ///
+    /// apcore's `BuiltinApprovalGate` reads annotations from the resolved
+    /// module instance (not the registry descriptor) when deciding whether
+    /// a call requires approval, so this must mirror what was registered.
+    fn annotations(&self) -> ModuleAnnotations {
+        self.annotations.clone()
+    }
+
+    /// Best-effort preview for destructive commands.
+    ///
+    /// apexe cannot statically analyze the side effects of an arbitrary CLI
+    /// binary, so this does not attempt to predict `before`/`after` state.
+    /// It only surfaces the exact command line that would run, so a caller
+    /// deciding whether to approve a destructive call can at least see what
+    /// they're approving before it executes. Readonly/non-destructive
+    /// modules return `None` (no prediction needed).
+    fn preview(&self, inputs: &Value, _ctx: Option<&Context<Value>>) -> Option<PreviewResult> {
+        if !self.annotations.destructive {
+            return None;
+        }
+        let kwargs = inputs.as_object()?;
+        let user_args = executor::build_arguments(kwargs).ok()?;
+
+        let mut full_command = vec![self.binary_path.clone()];
+        full_command.extend(self.command_parts.clone());
+        full_command.extend(user_args);
+
+        // Change/PreviewResult are #[non_exhaustive]; build via Default and
+        // assign fields rather than a struct literal.
+        let mut change = Change::default();
+        change.action = "execute".to_string();
+        change.target = self.binary_path.clone();
+        change.summary = format!(
+            "This will run: {}. Destructive command — apexe cannot statically predict \
+             the exact effects of an arbitrary CLI tool.",
+            full_command.join(" ")
+        );
+
+        let mut preview = PreviewResult::default();
+        preview.changes = vec![change];
+        Some(preview)
+    }
+
     async fn execute(&self, inputs: Value, ctx: &Context<Value>) -> Result<Value, ModuleError> {
         let kwargs = inputs.as_object().ok_or_else(|| {
             ModuleError::new(
@@ -136,7 +185,7 @@ impl Module for CliModule {
         tracing::info!(
             module_id = %self.module_id,
             trace_id = %ctx.trace_id,
-            caller = ctx.identity.as_ref().map_or("anonymous", |i| i.id.as_str()),
+            caller = ctx.identity.as_ref().map_or("anonymous", |i| i.id()),
             "Executing CLI module"
         );
 
@@ -151,8 +200,20 @@ impl Module for CliModule {
             &args,
             self.json_flag.as_deref(),
             self.timeout_ms,
+            self.max_output_bytes,
         )
-        .await?;
+        .await
+        .map_err(|e| {
+            // Only mark a timeout retryable when the module is annotated
+            // idempotent: a killed non-idempotent command (e.g. `rm -rf`)
+            // may have partially applied its side effect, so blindly
+            // retrying it (e.g. via RetryMiddleware) would be unsafe.
+            if e.code == ErrorCode::ModuleTimeout {
+                e.with_retryable(self.annotations.idempotent)
+            } else {
+                e
+            }
+        })?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -160,6 +221,12 @@ impl Module for CliModule {
         result.insert("stdout".into(), Value::String(output.stdout.clone()));
         result.insert("stderr".into(), Value::String(output.stderr.clone()));
         result.insert("exit_code".into(), Value::Number(output.exit_code.into()));
+        if output.stdout_truncated {
+            result.insert("stdout_truncated".into(), Value::Bool(true));
+        }
+        if output.stderr_truncated {
+            result.insert("stderr_truncated".into(), Value::Bool(true));
+        }
 
         if self.json_flag.is_some() && !output.stdout.trim().is_empty() {
             if let Ok(parsed) = serde_json::from_str::<Value>(&output.stdout) {
@@ -211,16 +278,25 @@ mod tests {
     }
 
     fn make_echo_module(command_parts: Vec<String>, json_flag: Option<String>) -> CliModule {
+        make_echo_module_with_annotations(command_parts, json_flag, ModuleAnnotations::default())
+    }
+
+    fn make_echo_module_with_annotations(
+        command_parts: Vec<String>,
+        json_flag: Option<String>,
+        annotations: ModuleAnnotations,
+    ) -> CliModule {
         CliModule::new(CliModuleConfig {
             module_id: "test.echo".to_string(),
             description: "Echo test".to_string(),
             input_schema: json!({"type": "object"}),
             output_schema: json!({"type": "object"}),
-            annotations: ModuleAnnotations::default(),
+            annotations,
             binary_path: "echo".to_string(),
             command_parts,
             json_flag,
             timeout_ms: 5000,
+            max_output_bytes: executor::DEFAULT_MAX_OUTPUT_BYTES,
         })
     }
 
@@ -286,6 +362,31 @@ mod tests {
         assert_eq!(module.description(), "Test echo command");
     }
 
+    #[test]
+    fn test_cli_module_annotations_mirrors_scanned() {
+        let mut scanned = make_scanned_module("exec:///usr/bin/rm");
+        scanned.annotations = Some(ModuleAnnotations {
+            destructive: true,
+            requires_approval: true,
+            ..Default::default()
+        });
+        let module = CliModule::from_scanned(&scanned, 5000).unwrap();
+
+        let annotations = module.annotations();
+        assert!(annotations.destructive);
+        assert!(annotations.requires_approval);
+    }
+
+    #[test]
+    fn test_cli_module_annotations_default_when_unset() {
+        let scanned = make_scanned_module("exec:///usr/bin/echo");
+        let module = CliModule::from_scanned(&scanned, 5000).unwrap();
+
+        let annotations = module.annotations();
+        assert!(!annotations.destructive);
+        assert!(!annotations.requires_approval);
+    }
+
     #[tokio::test]
     async fn test_cli_module_execute_echo() {
         let module = make_echo_module(vec!["hello".to_string()], None);
@@ -305,5 +406,79 @@ mod tests {
         let result = module.execute(json!({"all": true}), &ctx).await.unwrap();
         let stdout = result["stdout"].as_str().unwrap();
         assert!(stdout.contains("--all"));
+    }
+
+    #[tokio::test]
+    async fn test_cli_module_timeout_retryable_only_when_idempotent() {
+        let idempotent = CliModule::new(CliModuleConfig {
+            module_id: "test.sleep".to_string(),
+            description: "Sleep test".to_string(),
+            input_schema: json!({"type": "object"}),
+            output_schema: json!({"type": "object"}),
+            annotations: ModuleAnnotations {
+                idempotent: true,
+                ..Default::default()
+            },
+            binary_path: "sleep".to_string(),
+            command_parts: vec!["1".to_string()],
+            json_flag: None,
+            timeout_ms: 10,
+            max_output_bytes: executor::DEFAULT_MAX_OUTPUT_BYTES,
+        });
+        let err = idempotent
+            .execute(json!({}), &Context::anonymous())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ModuleTimeout);
+        assert_eq!(err.retryable, Some(true));
+
+        let non_idempotent = CliModule::new(CliModuleConfig {
+            module_id: "test.sleep".to_string(),
+            description: "Sleep test".to_string(),
+            input_schema: json!({"type": "object"}),
+            output_schema: json!({"type": "object"}),
+            annotations: ModuleAnnotations::default(), // idempotent: false
+            binary_path: "sleep".to_string(),
+            command_parts: vec!["1".to_string()],
+            json_flag: None,
+            timeout_ms: 10,
+            max_output_bytes: executor::DEFAULT_MAX_OUTPUT_BYTES,
+        });
+        let err = non_idempotent
+            .execute(json!({}), &Context::anonymous())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ModuleTimeout);
+        assert_eq!(err.retryable, Some(false));
+    }
+
+    #[test]
+    fn test_cli_module_preview_none_for_non_destructive() {
+        let module = make_echo_module(vec!["hello".to_string()], None);
+        assert!(module.preview(&json!({}), None).is_none());
+    }
+
+    #[test]
+    fn test_cli_module_preview_describes_destructive_command() {
+        let module = make_echo_module_with_annotations(
+            vec!["-rf".to_string()],
+            None,
+            ModuleAnnotations {
+                destructive: true,
+                requires_approval: true,
+                ..Default::default()
+            },
+        );
+
+        let preview = module
+            .preview(&json!({"path": "/tmp/x"}), None)
+            .expect("destructive modules should return a preview");
+
+        assert_eq!(preview.changes.len(), 1);
+        let change = &preview.changes[0];
+        assert_eq!(change.action, "execute");
+        assert_eq!(change.target, "echo");
+        assert!(change.summary.contains("echo -rf"));
+        assert!(change.summary.contains("--path"));
     }
 }
