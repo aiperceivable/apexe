@@ -55,10 +55,18 @@ impl ParserPipeline {
             }
         }
 
+        // Normalize line endings once here so every parser sees `\n`. The
+        // parsers rely on `(?m)^...$`-anchored regexes and byte-offset section
+        // slicing, both of which misbehave on CRLF (`\r\n`) help text (e.g. a
+        // Windows build's `--help`): `$` won't match a header line that ends in
+        // `\r`, and offset math undercounts. Fixing it at the boundary lets all
+        // parsers stay `\n`-only.
+        let normalized = normalize_line_endings(help_text);
+
         // Try parsers in priority order
         for parser in &self.parsers {
-            if parser.can_parse(help_text, tool_name) {
-                match parser.parse(help_text, tool_name) {
+            if parser.can_parse(&normalized, tool_name) {
+                match parser.parse(&normalized, tool_name) {
                     Ok(result) => {
                         info!(parser = parser.name(), "Parsed help text");
                         return result;
@@ -73,7 +81,7 @@ impl ParserPipeline {
         // Fallback
         warn!(tool = tool_name, "No parser matched, using raw help text");
         ParsedHelp {
-            description: help_text.chars().take(500).collect(),
+            description: normalized.chars().take(500).collect(),
             ..Default::default()
         }
     }
@@ -81,6 +89,18 @@ impl ParserPipeline {
     /// Return the number of registered parsers.
     pub fn parser_count(&self) -> usize {
         self.parsers.len()
+    }
+}
+
+/// Normalize CRLF (`\r\n`) and lone CR (`\r`) line endings to `\n`.
+///
+/// Returns the input unchanged (borrowed) when it contains no carriage return,
+/// so the common Unix case allocates nothing.
+fn normalize_line_endings(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('\r') {
+        std::borrow::Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(text)
     }
 }
 
@@ -172,6 +192,31 @@ mod tests {
             "A tool\n\nAvailable Commands:\n  sub1  First\n\nFlags:\n  --verbose  Be verbose\n";
         let result = pipeline.parse(cobra_help, "tool", None);
         assert!(result.subcommand_names.contains(&"sub1".to_string()));
+    }
+
+    #[test]
+    fn test_pipeline_normalizes_crlf_help() {
+        // Regression: CRLF help must parse identically to LF. Parser section
+        // regexes (`^Flags:$`) and byte-offset slicing break on `\r\n`; the
+        // pipeline normalizes line endings so every parser sees `\n`.
+        let pipeline = ParserPipeline::new(None);
+        let lf = "A tool\n\nAvailable Commands:\n  sub1  First\n\nFlags:\n  --alpha  Alpha\n  --bravo  Bravo\n";
+        let crlf = lf.replace('\n', "\r\n");
+
+        let lf_result = pipeline.parse(lf, "tool", None);
+        let crlf_result = pipeline.parse(&crlf, "tool", None);
+
+        let names = |p: &ParsedHelp| {
+            let mut v: Vec<String> = p.flags.iter().filter_map(|f| f.long_name.clone()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(
+            names(&crlf_result),
+            vec!["--alpha".to_string(), "--bravo".to_string()],
+            "CRLF flags not parsed"
+        );
+        assert_eq!(names(&lf_result), names(&crlf_result), "CRLF differs from LF");
     }
 
     #[test]
