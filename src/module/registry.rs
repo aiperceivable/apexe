@@ -11,7 +11,7 @@ use apcore::middleware::circuit_breaker::CircuitBreakerMiddleware;
 use apcore::middleware::logging::LoggingMiddleware;
 use apcore::middleware::retry::{RetryConfig, RetryMiddleware};
 use apcore::registry::registry::ModuleDescriptor;
-use apcore::{ApprovalHandler, Config, Executor, ModuleError, Registry};
+use apcore::{ApprovalHandler, Config, ErrorCode, Executor, ModuleError, Registry};
 use apcore_mcp::{ApprovalStore, ElicitationApprovalHandler, StorageBackedApprovalHandler};
 use apcore_toolkit::ScannedModule;
 
@@ -90,13 +90,24 @@ pub fn build_executor(opts: &ExecutorOptions<'_>) -> Result<Arc<Executor>, Modul
         }
     }
 
+    // ACL is a security control: when the operator explicitly requests it via
+    // `--acl`, a missing file or a load failure must FAIL CLOSED (refuse to
+    // build the server) rather than degrade to an unguarded allow-all executor.
+    // apcore skips ACL enforcement entirely when no ACL is set, so silently
+    // continuing here would serve every tool to every caller.
     if let Some(acl_path) = opts.acl_path {
-        if acl_path.exists() {
-            match crate::governance::AclManager::from_config(acl_path) {
-                Ok(acl_mgr) => executor.set_acl(acl_mgr.into_inner()),
-                Err(e) => tracing::warn!(error = %e, "Failed to load ACL"),
-            }
+        if !acl_path.exists() {
+            return Err(ModuleError::new(
+                ErrorCode::GeneralInvalidInput,
+                format!(
+                    "ACL file not found: {} — refusing to start without the requested access control",
+                    acl_path.display()
+                ),
+            ));
         }
+        let acl_mgr = crate::governance::AclManager::from_config(acl_path)?;
+        executor.set_acl(acl_mgr.into_inner());
+        tracing::info!(acl = %acl_path.display(), "ACL enforcement active");
     }
 
     if opts.enable_approval {
@@ -219,6 +230,36 @@ mod tests {
         let names = executor.middlewares();
         assert!(!names.contains(&"circuit_breaker".to_string()));
         assert!(!names.contains(&"retry".to_string()));
+    }
+
+    #[test]
+    fn test_build_executor_fails_closed_on_missing_acl_file() {
+        // Operator requested --acl but the path does not exist: must refuse to
+        // start rather than serve unguarded (fail closed, not fail open).
+        let mut opts = opts(None);
+        let missing = Path::new("/nonexistent/does-not-exist.acl.yaml");
+        opts.acl_path = Some(missing);
+        let result = build_executor(&opts);
+        assert!(
+            result.is_err(),
+            "build_executor must fail when --acl points to a missing file"
+        );
+    }
+
+    #[test]
+    fn test_build_executor_fails_closed_on_malformed_acl_file() {
+        // Operator requested --acl but the file is unparseable: must propagate
+        // the error rather than build an executor with no ACL.
+        let dir = TempDir::new().unwrap();
+        let acl_path = dir.path().join("acl.yaml");
+        std::fs::write(&acl_path, "this: is: not: valid: acl: [[[").unwrap();
+        let mut opts = opts(None);
+        opts.acl_path = Some(&acl_path);
+        let result = build_executor(&opts);
+        assert!(
+            result.is_err(),
+            "build_executor must fail when --acl file is malformed"
+        );
     }
 
     #[test]
