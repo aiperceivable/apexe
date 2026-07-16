@@ -65,8 +65,10 @@ fn test_a2a_help_shows_expected_flags() {
         .stdout(predicate::str::contains("--url"))
         .stdout(predicate::str::contains("--modules-dir"))
         .stdout(predicate::str::contains("--acl"))
-        .stdout(predicate::str::contains("--enable-approval"))
-        .stdout(predicate::str::contains("--explorer"));
+        .stdout(predicate::str::contains("--explorer"))
+        // A2A has no interactive elicitation, so --enable-approval is not offered
+        // (it is a library-only feature for A2A).
+        .stdout(predicate::str::contains("--enable-approval").not());
 }
 
 #[test]

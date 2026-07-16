@@ -357,10 +357,11 @@ pub struct A2aArgs {
     #[arg(long)]
     pub acl: Option<PathBuf>,
 
-    /// Enable approval handler for destructive commands
-    #[arg(long)]
-    pub enable_approval: bool,
-
+    // Note: no `--enable-approval` flag on `a2a`. Unlike MCP, A2A has no
+    // interactive elicitation transport, and there is no CLI way to supply an
+    // approval store, so `A2aServerBuilder::serve` fails fast on it. Approval on
+    // A2A is a library-only feature (construct the builder with an approval
+    // store directly). See ExecutorOptions::approval_store.
     /// Disable structured logging middleware
     #[arg(long)]
     pub no_logging: bool,
@@ -403,7 +404,6 @@ impl A2aArgs {
             .modules_dir(modules_dir)
             .timeout_ms(config.default_timeout * 1000)
             .enable_logging(!self.no_logging)
-            .enable_approval(self.enable_approval)
             .enable_circuit_breaker(!self.no_circuit_breaker)
             .enable_retry(!self.no_retry)
             .execution_timeout(self.execution_timeout)
@@ -731,6 +731,15 @@ mod tests {
     }
 
     // A2aArgs validation tests
+    #[test]
+    fn test_a2a_rejects_enable_approval_flag() {
+        // A2A has no elicitation and no CLI approval-store path, so
+        // --enable-approval is not a valid a2a flag (it would only ever error
+        // at serve time). It must be rejected at parse.
+        let result = Cli::try_parse_from(["apexe", "a2a", "--enable-approval"]);
+        assert!(result.is_err());
+    }
+
     #[test]
     fn test_a2a_defaults() {
         let cli = Cli::try_parse_from(["apexe", "a2a"]).unwrap();
