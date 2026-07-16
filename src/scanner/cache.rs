@@ -45,10 +45,17 @@ impl ScanCache {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name_str = name.to_string_lossy();
-                if name_str.starts_with(&format!("{tool_name}_"))
-                    && name_str.ends_with(".scan.json")
-                {
-                    let _ = std::fs::remove_file(entry.path());
+                // Keys are "{name}_{version}.scan.json". Compare the exact name
+                // (stem minus the trailing "_{version}"), not a bare prefix —
+                // otherwise invalidate("foo") would also delete a sibling tool
+                // literally named "foo_bar" (foo_bar_2.0.scan.json).
+                let Some(stem) = name_str.strip_suffix(".scan.json") else {
+                    continue;
+                };
+                if let Some((cached_name, _version)) = stem.rsplit_once('_') {
+                    if cached_name == tool_name {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
                 }
             }
         }
@@ -168,5 +175,24 @@ mod tests {
 
         assert!(cache.get("git", Some("2.43.0")).is_none());
         assert!(cache.get("docker", Some("24.0.0")).is_some());
+    }
+
+    #[test]
+    fn test_cache_invalidate_does_not_delete_prefix_sibling() {
+        // invalidate("foo") must not delete a distinct tool named "foo_bar",
+        // whose key "foo_bar_2.0.scan.json" shares the "foo_" prefix.
+        let tmp = TempDir::new().unwrap();
+        let cache = ScanCache::new(tmp.path().to_path_buf());
+
+        cache.put(&make_tool("foo", Some("1.0"))).unwrap();
+        cache.put(&make_tool("foo_bar", Some("2.0"))).unwrap();
+
+        cache.invalidate("foo");
+
+        assert!(cache.get("foo", Some("1.0")).is_none(), "foo not invalidated");
+        assert!(
+            cache.get("foo_bar", Some("2.0")).is_some(),
+            "sibling foo_bar wrongly deleted by invalidate(foo)"
+        );
     }
 }
