@@ -7,7 +7,13 @@ use tracing::warn;
 /// Global apexe configuration.
 ///
 /// Resolution priority: CLI flags > env vars > config file > defaults.
+// `default` makes a field missing from config.yaml fall back to
+// `ApexeConfig::default()` for that field instead of failing to parse the
+// whole file -- required for the field-level merge `load_config` documents
+// (a config.yaml that only sets e.g. `default_timeout` must not force every
+// other field, like `modules_dir`, to also be spelled out).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ApexeConfig {
     pub modules_dir: PathBuf,
     pub cache_dir: PathBuf,
@@ -59,7 +65,9 @@ impl ApexeConfig {
 /// Load configuration with three-tier resolution.
 ///
 /// 1. Start with defaults
-/// 2. If config file exists, parse YAML and override matching fields
+/// 2. If config file exists, parse YAML and merge it over the defaults
+///    field by field (a field the file omits keeps its default -- see
+///    `ApexeConfig`'s `#[serde(default)]`)
 /// 3. Check env vars (APEXE_MODULES_DIR, APEXE_CACHE_DIR, APEXE_LOG_LEVEL,
 ///    APEXE_TIMEOUT) and override matching fields
 /// 4. Apply cli_overrides
@@ -70,23 +78,38 @@ pub fn load_config(
 ) -> anyhow::Result<ApexeConfig> {
     let mut config = ApexeConfig::default();
 
-    // Load from config file
     let file_path = config_path
         .map(PathBuf::from)
         .unwrap_or_else(|| config.config_dir.join("config.yaml"));
+    apply_file_config(&mut config, &file_path)?;
 
-    if file_path.exists() {
-        let contents = std::fs::read_to_string(&file_path)?;
-        match serde_yaml::from_str::<ApexeConfig>(&contents) {
-            Ok(file_config) => config = file_config,
-            Err(e) => warn!(
-                path = %file_path.display(),
-                "Malformed config file, using defaults: {e}"
-            ),
-        }
+    apply_env_overrides(&mut config);
+    apply_cli_overrides(&mut config, cli_overrides);
+    load_core_config(&mut config);
+
+    Ok(config)
+}
+
+/// Merge `file_path`'s YAML over `config`, field by field. A missing or
+/// unreadable file is a no-op; a malformed file warns and leaves `config`
+/// untouched rather than failing the whole load.
+fn apply_file_config(config: &mut ApexeConfig, file_path: &Path) -> anyhow::Result<()> {
+    if !file_path.exists() {
+        return Ok(());
     }
+    let contents = std::fs::read_to_string(file_path)?;
+    match serde_yaml::from_str::<ApexeConfig>(&contents) {
+        Ok(file_config) => *config = file_config,
+        Err(e) => warn!(
+            path = %file_path.display(),
+            "Malformed config file, using defaults: {e}"
+        ),
+    }
+    Ok(())
+}
 
-    // Override from env vars
+/// Override `config` from `APEXE_*` environment variables, when set and valid.
+fn apply_env_overrides(config: &mut ApexeConfig) {
     if let Ok(val) = std::env::var("APEXE_MODULES_DIR") {
         config.modules_dir = PathBuf::from(val);
     }
@@ -108,48 +131,55 @@ pub fn load_config(
             _ => warn!("Invalid APEXE_SCAN_DEPTH value, using default"),
         }
     }
+}
 
-    // Apply CLI overrides
-    if let Some(overrides) = cli_overrides {
-        if let Some(val) = overrides.get("modules_dir") {
-            config.modules_dir = PathBuf::from(val);
-        }
-        if let Some(val) = overrides.get("log_level") {
-            config.log_level = val.clone();
-        }
-        if let Some(val) = overrides.get("scan_depth") {
-            if let Ok(d) = val.parse::<u32>() {
-                if (1..=5).contains(&d) {
-                    config.scan_depth = d;
-                } else {
-                    warn!("Invalid scan_depth override: {d}, must be 1-5");
-                }
-            }
-        }
-        if let Some(val) = overrides.get("timeout") {
-            if let Ok(t) = val.parse::<u64>() {
-                if t > 0 {
-                    config.default_timeout = t;
-                } else {
-                    warn!("Invalid timeout override: {t}, must be > 0");
-                }
+/// Override `config` from range-validated CLI flag overrides, when present.
+fn apply_cli_overrides(
+    config: &mut ApexeConfig,
+    cli_overrides: Option<&std::collections::HashMap<String, String>>,
+) {
+    let Some(overrides) = cli_overrides else {
+        return;
+    };
+    if let Some(val) = overrides.get("modules_dir") {
+        config.modules_dir = PathBuf::from(val);
+    }
+    if let Some(val) = overrides.get("log_level") {
+        config.log_level = val.clone();
+    }
+    if let Some(val) = overrides.get("scan_depth") {
+        if let Ok(d) = val.parse::<u32>() {
+            if (1..=5).contains(&d) {
+                config.scan_depth = d;
+            } else {
+                warn!("Invalid scan_depth override: {d}, must be 1-5");
             }
         }
     }
+    if let Some(val) = overrides.get("timeout") {
+        if let Ok(t) = val.parse::<u64>() {
+            if t > 0 {
+                config.default_timeout = t;
+            } else {
+                warn!("Invalid timeout override: {t}, must be > 0");
+            }
+        }
+    }
+}
 
-    // Load apcore CoreConfig (optional)
+/// Load the optional apcore `CoreConfig` from `<config_dir>/apcore.yaml`.
+fn load_core_config(config: &mut ApexeConfig) {
     let core_config_path = config.config_dir.join("apcore.yaml");
-    if core_config_path.exists() {
-        match CoreConfig::load(&core_config_path) {
-            Ok(cc) => config.core_config = Some(cc),
-            Err(e) => warn!(
-                path = %core_config_path.display(),
-                "Failed to load apcore config: {e}"
-            ),
-        }
+    if !core_config_path.exists() {
+        return;
     }
-
-    Ok(config)
+    match CoreConfig::load(&core_config_path) {
+        Ok(cc) => config.core_config = Some(cc),
+        Err(e) => warn!(
+            path = %core_config_path.display(),
+            "Failed to load apcore config: {e}"
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -232,6 +262,30 @@ mod tests {
         assert_eq!(config.default_timeout, 60);
         assert_eq!(config.scan_depth, 3);
         assert!(!config.json_output_preference);
+    }
+
+    #[test]
+    fn test_load_config_partial_yaml_merges_over_defaults() {
+        // Regression for the WARNING finding: load_config's doc promises a
+        // field-level merge, but ApexeConfig had no #[serde(default)], so a
+        // config.yaml that only sets one field failed to deserialize
+        // (missing required fields) and silently fell back to *pure*
+        // defaults, discarding the one field the user did set.
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.yaml");
+        std::fs::write(&config_path, "default_timeout: 99\n").unwrap();
+
+        let config = load_config(Some(config_path.as_path()), None).unwrap();
+        assert_eq!(
+            config.default_timeout, 99,
+            "the field set in the partial config.yaml must take effect"
+        );
+        assert!(
+            config.modules_dir.ends_with(".apexe/modules"),
+            "a field omitted from the partial config.yaml must keep its default, got: {:?}",
+            config.modules_dir
+        );
     }
 
     #[test]
