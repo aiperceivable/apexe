@@ -55,25 +55,6 @@ pub fn extract_version_from_line(line: &str) -> Option<String> {
         .map(|m| m.as_str().to_string())
 }
 
-/// Detect the help format from help text heuristics.
-pub fn detect_help_format(help_text: &str) -> crate::models::HelpFormat {
-    use crate::models::HelpFormat;
-
-    if help_text.contains("Available Commands:") {
-        return HelpFormat::Cobra;
-    }
-    if help_text.contains("SUBCOMMANDS:") {
-        return HelpFormat::Clap;
-    }
-    if help_text.contains("[OPTIONS]") && help_text.contains("Commands:") {
-        return HelpFormat::Click;
-    }
-    if help_text.contains("Usage:") || help_text.contains("usage:") {
-        return HelpFormat::Gnu;
-    }
-    HelpFormat::Unknown
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,36 +134,5 @@ mod tests {
     #[test]
     fn test_extract_version_empty() {
         assert_eq!(extract_version_from_line(""), None);
-    }
-
-    // T12: detect_help_format
-    #[test]
-    fn test_detect_cobra() {
-        let text = "Some tool\n\nAvailable Commands:\n  sub1  desc\n";
-        assert_eq!(detect_help_format(text), crate::models::HelpFormat::Cobra);
-    }
-
-    #[test]
-    fn test_detect_clap() {
-        let text = "tool 1.0\n\nSUBCOMMANDS:\n  sub1  desc\n";
-        assert_eq!(detect_help_format(text), crate::models::HelpFormat::Clap);
-    }
-
-    #[test]
-    fn test_detect_click() {
-        let text = "Usage: tool [OPTIONS] COMMAND\n\nCommands:\n  run  Run it\n";
-        assert_eq!(detect_help_format(text), crate::models::HelpFormat::Click);
-    }
-
-    #[test]
-    fn test_detect_gnu() {
-        let text = "Usage: tool [OPTION]... FILE\n\nOptions:\n  -v  verbose\n";
-        assert_eq!(detect_help_format(text), crate::models::HelpFormat::Gnu);
-    }
-
-    #[test]
-    fn test_detect_unknown() {
-        let text = "This is just random text with no patterns.";
-        assert_eq!(detect_help_format(text), crate::models::HelpFormat::Unknown);
     }
 }

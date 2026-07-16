@@ -220,6 +220,26 @@ mod tests {
     }
 
     #[test]
+    fn test_pipeline_reports_help_format() {
+        // The matched parser now records its format on ParsedHelp so discovery
+        // can tag each subcommand (was hardcoded to Unknown).
+        use crate::models::HelpFormat;
+        let pipeline = ParserPipeline::new(None);
+
+        let cobra = "A tool\n\nAvailable Commands:\n  sub1  First\n\nFlags:\n  --v  V\n";
+        assert_eq!(
+            pipeline.parse(cobra, "tool", None).help_format,
+            HelpFormat::Cobra
+        );
+
+        // Unmatched text falls back to Unknown.
+        assert_eq!(
+            pipeline.parse("random gibberish", "tool", None).help_format,
+            HelpFormat::Unknown
+        );
+    }
+
+    #[test]
     fn test_pipeline_fallback_on_no_match() {
         let pipeline = ParserPipeline::new(None);
         let result = pipeline.parse("random gibberish text", "tool", None);

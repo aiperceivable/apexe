@@ -15,7 +15,7 @@ pub enum ValueType {
 }
 
 /// Detected help output format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HelpFormat {
     Gnu,
@@ -23,6 +23,7 @@ pub enum HelpFormat {
     Argparse,
     Cobra,
     Clap,
+    #[default]
     Unknown,
 }
 

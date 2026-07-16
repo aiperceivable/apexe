@@ -43,6 +43,7 @@ impl CliParser for CobraHelpParser {
             subcommand_names,
             examples: vec![],
             structured_output,
+            help_format: crate::models::HelpFormat::Cobra,
         })
     }
 }

@@ -53,6 +53,7 @@ impl CliParser for GnuHelpParser {
             subcommand_names,
             examples,
             structured_output,
+            help_format: crate::models::HelpFormat::Gnu,
         })
     }
 }

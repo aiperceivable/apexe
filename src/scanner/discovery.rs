@@ -3,7 +3,7 @@ use std::process::Command;
 use tracing::warn;
 
 use super::pipeline::ParserPipeline;
-use crate::models::{HelpFormat, ScannedCommand};
+use crate::models::ScannedCommand;
 
 /// Recursively discovers and scans subcommands.
 pub struct SubcommandDiscovery<'a> {
@@ -68,7 +68,7 @@ impl<'a> SubcommandDiscovery<'a> {
                 positional_args: parsed.positional_args,
                 subcommands: nested,
                 examples: parsed.examples,
-                help_format: HelpFormat::Unknown,
+                help_format: parsed.help_format,
                 structured_output: parsed.structured_output,
                 raw_help: help_text,
             });

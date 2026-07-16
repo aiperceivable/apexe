@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::models::{ScannedArg, ScannedFlag, StructuredOutputInfo};
+use crate::models::{HelpFormat, ScannedArg, ScannedFlag, StructuredOutputInfo};
 
 /// Result of parsing a single help text block.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -17,6 +17,9 @@ pub struct ParsedHelp {
     pub examples: Vec<String>,
     /// Structured output capability.
     pub structured_output: StructuredOutputInfo,
+    /// Help format the matching parser recognized (defaults to `Unknown`).
+    #[serde(default)]
+    pub help_format: HelpFormat,
 }
 
 /// Trait for CLI help format parser plugins.
@@ -54,6 +57,7 @@ mod tests {
         assert!(!ph.structured_output.supported);
         assert!(ph.structured_output.flag.is_none());
         assert!(ph.structured_output.format.is_none());
+        assert_eq!(ph.help_format, HelpFormat::Unknown);
     }
 
     #[test]
@@ -85,6 +89,7 @@ mod tests {
                 flag: Some("--json".into()),
                 format: Some("json".into()),
             },
+            help_format: HelpFormat::Cobra,
         };
         let json = serde_json::to_string(&ph).unwrap();
         let back: ParsedHelp = serde_json::from_str(&json).unwrap();
@@ -93,6 +98,7 @@ mod tests {
         assert_eq!(back.positional_args.len(), 1);
         assert_eq!(back.subcommand_names, vec!["sub1"]);
         assert!(back.structured_output.supported);
+        assert_eq!(back.help_format, HelpFormat::Cobra);
     }
 
     // T8: CliParser trait - mock implementation
