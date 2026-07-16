@@ -30,7 +30,30 @@ impl SkillOutput {
         output_dir: &Path,
     ) -> Result<Vec<PathBuf>, ModuleError> {
         let mut written = Vec::with_capacity(modules.len());
+        // module_id is not itself a safe path component (see
+        // sanitize_skill_dir_name), so distinct module_ids can sanitize to
+        // the same directory name (e.g. "a/b" and "a_b" both -> "a_b").
+        // Without this check the second module's SKILL.md would silently
+        // overwrite the first's instead of surfacing the naming clash.
+        let mut seen_dirs: std::collections::HashMap<String, &str> =
+            std::collections::HashMap::new();
         for module in modules {
+            let dir_name = sanitize_skill_dir_name(&module.module_id);
+            if let Some(&existing_module_id) = seen_dirs.get(&dir_name) {
+                if existing_module_id != module.module_id {
+                    return Err(ModuleError::new(
+                        ErrorCode::GeneralInvalidInput,
+                        format!(
+                            "Skill directory name collision: modules '{existing_module_id}' \
+                             and '{}' both sanitize to '.claude/skills/{dir_name}'",
+                            module.module_id
+                        ),
+                    ));
+                }
+            } else {
+                seen_dirs.insert(dir_name.clone(), &module.module_id);
+            }
+
             let content = format_module(module, ModuleStyle::Skill, true)
                 .as_str()
                 .map(str::to_string)
@@ -44,10 +67,7 @@ impl SkillOutput {
                     )
                 })?;
 
-            let skill_dir = output_dir
-                .join(".claude")
-                .join("skills")
-                .join(sanitize_skill_dir_name(&module.module_id));
+            let skill_dir = output_dir.join(".claude").join("skills").join(dir_name);
             std::fs::create_dir_all(&skill_dir).map_err(|e| {
                 ModuleError::new(
                     ErrorCode::GeneralInternalError,
@@ -160,6 +180,23 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let paths = SkillOutput::new().write(&[], dir.path()).unwrap();
         assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_skill_output_write_rejects_colliding_module_ids() {
+        // Regression for the WARNING finding: "a/b" and "a_b" both sanitize
+        // to the directory name "a_b". write() must reject the batch
+        // instead of letting the second module's SKILL.md silently
+        // overwrite the first's.
+        let dir = TempDir::new().unwrap();
+        let modules = vec![make_test_module("a/b"), make_test_module("a_b")];
+
+        let err = SkillOutput::new()
+            .write(&modules, dir.path())
+            .expect_err("colliding module_ids must be rejected");
+        assert!(err.message.contains("collision"));
+        assert!(err.message.contains("a/b"));
+        assert!(err.message.contains("a_b"));
     }
 
     #[test]
