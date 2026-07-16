@@ -189,7 +189,10 @@ mod tests {
 
         cache.invalidate("foo");
 
-        assert!(cache.get("foo", Some("1.0")).is_none(), "foo not invalidated");
+        assert!(
+            cache.get("foo", Some("1.0")).is_none(),
+            "foo not invalidated"
+        );
         assert!(
             cache.get("foo_bar", Some("2.0")).is_some(),
             "sibling foo_bar wrongly deleted by invalidate(foo)"

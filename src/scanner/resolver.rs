@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::time::Duration;
 
 use crate::errors::ApexeError;
 use regex::Regex;
@@ -19,7 +19,7 @@ impl ToolResolver {
     /// Resolve a tool name to its binary path and version.
     ///
     /// Returns `Err(ToolNotFound)` if tool is not on PATH.
-    pub fn resolve(&self, tool_name: &str) -> Result<ResolvedTool, ApexeError> {
+    pub fn resolve(&self, tool_name: &str, timeout: Duration) -> Result<ResolvedTool, ApexeError> {
         let binary_path = which::which(tool_name)
             .map_err(|_| ApexeError::ToolNotFound {
                 tool_name: tool_name.to_string(),
@@ -27,7 +27,7 @@ impl ToolResolver {
             .to_string_lossy()
             .to_string();
 
-        let version = self.get_version(&binary_path, tool_name);
+        let version = self.get_version(&binary_path, tool_name, timeout);
 
         Ok(ResolvedTool {
             name: tool_name.to_string(),
@@ -36,9 +36,14 @@ impl ToolResolver {
         })
     }
 
-    /// Extract version from --version output.
-    fn get_version(&self, binary_path: &str, _tool_name: &str) -> Option<String> {
-        let output = Command::new(binary_path).arg("--version").output().ok()?;
+    /// Extract version from --version output (bounded by `timeout`).
+    fn get_version(
+        &self,
+        binary_path: &str,
+        _tool_name: &str,
+        timeout: Duration,
+    ) -> Option<String> {
+        let output = super::exec::run_with_timeout(binary_path, &["--version"], timeout).ok()?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let first_line = stdout.lines().next()?;
@@ -89,7 +94,7 @@ mod tests {
     #[test]
     fn test_resolve_known_tool() {
         let resolver = ToolResolver;
-        let result = resolver.resolve("sh");
+        let result = resolver.resolve("sh", std::time::Duration::from_secs(5));
         assert!(result.is_ok());
         let resolved = result.unwrap();
         assert_eq!(resolved.name, "sh");
@@ -99,7 +104,7 @@ mod tests {
     #[test]
     fn test_resolve_unknown_tool() {
         let resolver = ToolResolver;
-        let result = resolver.resolve("zzz_no_such_tool_xyz");
+        let result = resolver.resolve("zzz_no_such_tool_xyz", std::time::Duration::from_secs(5));
         assert!(result.is_err());
         match result.unwrap_err() {
             ApexeError::ToolNotFound { tool_name } => {

@@ -12,6 +12,7 @@
 pub mod cache;
 pub mod completion;
 pub mod discovery;
+pub mod exec;
 pub mod man_page;
 pub mod orchestrator;
 pub mod parsers;

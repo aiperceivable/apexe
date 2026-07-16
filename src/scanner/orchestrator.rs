@@ -1,4 +1,3 @@
-use std::process::Command;
 use std::time::Duration;
 
 use tracing::{info, warn};
@@ -83,7 +82,9 @@ impl ScanOrchestrator {
         depth: u32,
     ) -> anyhow::Result<ScannedCLITool> {
         // Resolve binary
-        let resolved = self.resolver.resolve(tool_name)?;
+        let resolved = self
+            .resolver
+            .resolve(tool_name, Duration::from_secs(self.config.default_timeout))?;
 
         // Check cache
         if !no_cache {
@@ -118,7 +119,11 @@ impl ScanOrchestrator {
         }
 
         // Discover subcommands
-        let discovery = SubcommandDiscovery::new(&self.pipeline, depth);
+        let discovery = SubcommandDiscovery::new(
+            &self.pipeline,
+            depth,
+            Duration::from_secs(self.config.default_timeout),
+        );
         let subcommands = discovery.discover(
             tool_name,
             &[tool_name.to_string()],
@@ -154,47 +159,21 @@ impl ScanOrchestrator {
 
     fn run_help_with_timeout(&self, tool_name: &str) -> anyhow::Result<String> {
         let timeout = Duration::from_secs(self.config.default_timeout);
-
-        let mut child = match Command::new(tool_name)
-            .arg("--help")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    return Err(crate::errors::ApexeError::ScanPermission {
-                        command: tool_name.to_string(),
-                    }
-                    .into());
+        let output =
+            super::exec::run_with_timeout(tool_name, &["--help"], timeout).map_err(|e| match e
+                .kind()
+            {
+                std::io::ErrorKind::PermissionDenied => crate::errors::ApexeError::ScanPermission {
+                    command: tool_name.to_string(),
                 }
-                return Err(e.into());
-            }
-        };
-
-        // Enforce timeout: poll in a loop with a deadline
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) => {
-                    if std::time::Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Err(crate::errors::ApexeError::ScanTimeout {
-                            command: format!("{tool_name} --help"),
-                            timeout: self.config.default_timeout,
-                        }
-                        .into());
-                    }
-                    std::thread::sleep(Duration::from_millis(50));
+                .into(),
+                std::io::ErrorKind::TimedOut => crate::errors::ApexeError::ScanTimeout {
+                    command: format!("{tool_name} --help"),
+                    timeout: self.config.default_timeout,
                 }
-                Err(e) => return Err(e.into()),
-            }
-        }
-
-        let output = child.wait_with_output()?;
+                .into(),
+                _ => anyhow::Error::from(e),
+            })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -207,16 +186,12 @@ impl ScanOrchestrator {
         }
     }
 
-    /// Try expanded help variants: `--help all`, `-h`, `help`.
+    /// Try expanded help variants: `--help all`, `-h`.
     fn try_expanded_help(&self, tool_name: &str) -> anyhow::Result<String> {
+        let timeout = Duration::from_secs(self.config.default_timeout);
         let variants = [vec!["--help", "all"], vec!["-h"]];
         for args in &variants {
-            let output = std::process::Command::new(tool_name)
-                .args(args)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output();
-            if let Ok(out) = output {
+            if let Ok(out) = super::exec::run_with_timeout(tool_name, args, timeout) {
                 let text = String::from_utf8_lossy(&out.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&out.stderr).to_string();
                 let result = if text.len() > stderr.len() {

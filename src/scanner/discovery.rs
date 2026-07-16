@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::time::Duration;
 
 use tracing::warn;
 
@@ -9,13 +9,16 @@ use crate::models::ScannedCommand;
 pub struct SubcommandDiscovery<'a> {
     pipeline: &'a ParserPipeline,
     max_depth: u32,
+    /// Per-subprocess wall-clock timeout for each `<tool> <sub> --help` probe.
+    timeout: Duration,
 }
 
 impl<'a> SubcommandDiscovery<'a> {
-    pub fn new(pipeline: &'a ParserPipeline, max_depth: u32) -> Self {
+    pub fn new(pipeline: &'a ParserPipeline, max_depth: u32, timeout: Duration) -> Self {
         Self {
             pipeline,
             max_depth,
+            timeout,
         }
     }
 
@@ -84,7 +87,7 @@ impl<'a> SubcommandDiscovery<'a> {
         let mut args: Vec<&str> = full_cmd[1..].iter().map(|s| s.as_str()).collect();
         args.push("--help");
 
-        let output = Command::new(tool_name).args(&args).output().ok()?;
+        let output = super::exec::run_with_timeout(tool_name, &args, self.timeout).ok()?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -112,7 +115,7 @@ mod tests {
     #[test]
     fn test_discovery_max_depth_zero_returns_empty() {
         let pipeline = ParserPipeline::new(None);
-        let discovery = SubcommandDiscovery::new(&pipeline, 0);
+        let discovery = SubcommandDiscovery::new(&pipeline, 0, std::time::Duration::from_secs(5));
         let result = discovery.discover("tool", &["tool".into()], &["sub1".into()], 0);
         assert!(result.is_empty());
     }
@@ -121,7 +124,7 @@ mod tests {
     #[test]
     fn test_discovery_respects_max_depth() {
         let pipeline = ParserPipeline::new(None);
-        let discovery = SubcommandDiscovery::new(&pipeline, 1);
+        let discovery = SubcommandDiscovery::new(&pipeline, 1, std::time::Duration::from_secs(5));
         // At depth 1, should return empty
         let result = discovery.discover("tool", &["tool".into()], &["sub1".into()], 1);
         assert!(result.is_empty());
@@ -132,7 +135,7 @@ mod tests {
     fn test_run_help_captures_stdout() {
         // echo outputs to stdout
         let pipeline = ParserPipeline::new(None);
-        let discovery = SubcommandDiscovery::new(&pipeline, 2);
+        let discovery = SubcommandDiscovery::new(&pipeline, 2, std::time::Duration::from_secs(5));
         // Use a tool that produces stdout on --help
         let result = discovery.run_help("echo", &["echo".into(), "hello".into()]);
         // echo will output "hello --help" to stdout
@@ -142,7 +145,7 @@ mod tests {
     #[test]
     fn test_run_help_nonexistent_tool() {
         let pipeline = ParserPipeline::new(None);
-        let discovery = SubcommandDiscovery::new(&pipeline, 2);
+        let discovery = SubcommandDiscovery::new(&pipeline, 2, std::time::Duration::from_secs(5));
         let result = discovery.run_help("zzz_no_such_tool_xyz", &["zzz_no_such_tool_xyz".into()]);
         assert!(result.is_none());
     }

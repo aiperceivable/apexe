@@ -216,7 +216,11 @@ mod tests {
             vec!["--alpha".to_string(), "--bravo".to_string()],
             "CRLF flags not parsed"
         );
-        assert_eq!(names(&lf_result), names(&crlf_result), "CRLF differs from LF");
+        assert_eq!(
+            names(&lf_result),
+            names(&crlf_result),
+            "CRLF differs from LF"
+        );
     }
 
     #[test]
