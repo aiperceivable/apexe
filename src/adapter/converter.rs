@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use apcore_toolkit::{DisplayResolver, ScannedModule};
+use apcore::module::{ModuleAnnotations, ModuleExample};
+use apcore_toolkit::{deduplicate_ids, DisplayResolver, ScannedModule};
 use serde_json::json;
 use tracing::warn;
 
@@ -11,6 +12,17 @@ use super::{annotations, schema};
 /// Converts ScannedCLITool instances into ScannedModule instances.
 pub struct CliToolConverter {
     namespace: String,
+}
+
+/// Fields extracted from a (real or synthesized) command, used to assemble a module.
+struct CommandFields {
+    description: String,
+    input_schema: serde_json::Value,
+    output_schema: serde_json::Value,
+    annotations: ModuleAnnotations,
+    documentation: Option<String>,
+    full_command: String,
+    examples: Vec<String>,
 }
 
 impl CliToolConverter {
@@ -33,6 +45,9 @@ impl CliToolConverter {
     /// Applies [`DisplayResolver`] to populate `metadata["display"]` on each module.
     pub fn convert(&self, tool: &ScannedCLITool) -> Vec<ScannedModule> {
         let modules = self.build_modules(tool);
+        // Spec §5: disambiguate colliding module_ids after flattening (e.g. a
+        // tool exposing an aliased subcommand twice) before anything keys on them.
+        let modules = deduplicate_ids(modules);
         Self::apply_display_resolver(modules)
     }
 
@@ -65,8 +80,7 @@ impl CliToolConverter {
             format!("{}.{}.{}", self.namespace, tool.name, path.join("."))
         };
 
-        let (description, input_schema, output_schema, ann, documentation, full_command) =
-            Self::extract_command_fields(tool, command_opt);
+        let fields = Self::extract_command_fields(tool, command_opt);
 
         let help_format_name =
             help_format_to_tag(command_opt.map_or(HelpFormat::Unknown, |c| c.help_format));
@@ -77,7 +91,7 @@ impl CliToolConverter {
         let target = if path.is_empty() {
             format!("exec://{}", tool.binary_path)
         } else {
-            format!("exec://{} {}", tool.binary_path, full_command)
+            format!("exec://{} {}", tool.binary_path, fields.full_command)
         };
         let version = tool
             .version
@@ -87,17 +101,30 @@ impl CliToolConverter {
 
         let mut module = ScannedModule::new(
             module_id,
-            description,
-            input_schema,
-            output_schema,
+            fields.description,
+            fields.input_schema,
+            fields.output_schema,
             tags,
             target,
         );
         module.version = version;
-        module.annotations = Some(ann);
-        module.documentation = documentation;
+        module.annotations = Some(fields.annotations);
+        module.documentation = fields.documentation;
         module.metadata = metadata;
         module.warnings = tool.warnings.clone();
+        // Spec §3.3 step 10: carry the command's parsed examples onto the module
+        // so downstream MCP/A2A docs surface them. command.examples is a plain
+        // Vec<String> invocation list; wrap each as a titled ModuleExample.
+        module.examples = fields
+            .examples
+            .into_iter()
+            .map(|ex| {
+                // ModuleExample is #[non_exhaustive]; build via Default + field set.
+                let mut example = ModuleExample::default();
+                example.title = ex;
+                example
+            })
+            .collect();
 
         module
     }
@@ -122,49 +149,52 @@ impl CliToolConverter {
         metadata
     }
 
-    /// Extract description, schemas, annotations, docs, and full_command from a command.
+    /// Extract description, schemas, annotations, docs, examples, and full_command from a command.
     fn extract_command_fields(
         tool: &ScannedCLITool,
         command_opt: Option<&&ScannedCommand>,
-    ) -> (
-        String,
-        serde_json::Value,
-        serde_json::Value,
-        apcore::module::ModuleAnnotations,
-        Option<String>,
-        String,
-    ) {
+    ) -> CommandFields {
         if let Some(command) = command_opt {
-            let desc = if command.description.is_empty() {
+            let description = if command.description.is_empty() {
                 format!("Execute {}", command.full_command)
             } else {
                 command.description.clone()
             };
-            let input = schema::build_input_schema(command, &tool.global_flags);
-            let output = schema::build_output_schema(command);
-            let ann = annotations::infer(command);
-            let doc = if command.raw_help.is_empty() {
+            let documentation = if command.raw_help.is_empty() {
                 None
             } else {
                 Some(command.raw_help.clone())
             };
-            (desc, input, output, ann, doc, command.full_command.clone())
+            CommandFields {
+                description,
+                input_schema: schema::build_input_schema(command, &tool.global_flags),
+                output_schema: schema::build_output_schema(command),
+                annotations: annotations::infer(command),
+                documentation,
+                full_command: command.full_command.clone(),
+                examples: command.examples.clone(),
+            }
         } else {
             let synth = synthesize_root_command(tool);
-            let desc = if synth.description.is_empty() {
+            let description = if synth.description.is_empty() {
                 format!("Execute {}", tool.name)
             } else {
                 synth.description.clone()
             };
-            let input = schema::build_input_schema(&synth, &tool.global_flags);
-            let output = schema::build_output_schema(&synth);
-            let ann = annotations::infer(&synth);
-            let doc = if synth.raw_help.is_empty() {
+            let documentation = if synth.raw_help.is_empty() {
                 None
             } else {
                 Some(synth.raw_help.clone())
             };
-            (desc, input, output, ann, doc, tool.name.clone())
+            CommandFields {
+                description,
+                input_schema: schema::build_input_schema(&synth, &tool.global_flags),
+                output_schema: schema::build_output_schema(&synth),
+                annotations: annotations::infer(&synth),
+                documentation,
+                full_command: tool.name.clone(),
+                examples: synth.examples.clone(),
+            }
         }
     }
 
@@ -335,6 +365,41 @@ mod tests {
 
         assert_eq!(modules.len(), 1);
         assert_eq!(modules[0].module_id, "cli.docker.container.ls");
+    }
+
+    #[test]
+    fn test_converter_propagates_examples() {
+        // Spec §3.3 step 10: command.examples must land on module.examples.
+        let mut cmd = make_command("status", "git status");
+        cmd.examples = vec![
+            "git status -s".to_string(),
+            "git status --short".to_string(),
+        ];
+        let tool = make_tool("git", vec![cmd]);
+        let modules = CliToolConverter::new().convert(&tool);
+
+        assert_eq!(modules.len(), 1);
+        let titles: Vec<&str> = modules[0]
+            .examples
+            .iter()
+            .map(|e| e.title.as_str())
+            .collect();
+        assert_eq!(titles, vec!["git status -s", "git status --short"]);
+    }
+
+    #[test]
+    fn test_converter_deduplicates_colliding_module_ids() {
+        // Spec §5: two leaf commands flattening to the same dotted path must
+        // both survive with disambiguated ids, not silently collide.
+        let cmd1 = make_command("status", "git status");
+        let cmd2 = make_command("status", "git status");
+        let tool = make_tool("git", vec![cmd1, cmd2]);
+        let modules = CliToolConverter::new().convert(&tool);
+
+        assert_eq!(modules.len(), 2);
+        let ids: Vec<&str> = modules.iter().map(|m| m.module_id.as_str()).collect();
+        assert!(ids.contains(&"cli.git.status"));
+        assert!(ids.contains(&"cli.git.status_2"));
     }
 
     #[test]
