@@ -107,26 +107,36 @@ fn truncate_output(bytes: &[u8], max_len: usize) -> (String, bool) {
     (String::from_utf8_lossy(&bytes[..cut]).to_string(), true)
 }
 
+/// Size of the scratch buffer used to pull each chunk out of the pipe in
+/// [`read_up_to`]. Small and fixed, independent of `max_len`.
+const READ_CHUNK_SIZE: usize = 8 * 1024;
+
 /// Read up to `max_len` bytes from `reader`, stopping early at EOF.
 ///
 /// Deliberately does *not* drain the reader to EOF: a runaway process (e.g.
 /// one that never stops writing) would otherwise buffer unboundedly. Once
 /// the cap is hit, the pipe is left unread; the writer sees backpressure and
 /// blocks, which is resolved by the outer timeout killing the child.
+///
+/// Grows the output buffer incrementally as bytes actually arrive instead of
+/// pre-allocating `max_len` upfront — `max_len` is a 64 MiB+ cap per stream,
+/// and eagerly allocating it for every subprocess call (stdout *and*
+/// stderr, times however many calls run concurrently) costs real memory
+/// even when the actual output is a few bytes.
 async fn read_up_to<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut R,
     max_len: usize,
 ) -> std::io::Result<Vec<u8>> {
-    let mut buf = vec![0u8; max_len];
-    let mut filled = 0;
-    while filled < buf.len() {
-        let n = reader.read(&mut buf[filled..]).await?;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; READ_CHUNK_SIZE];
+    while buf.len() < max_len {
+        let to_read = READ_CHUNK_SIZE.min(max_len - buf.len());
+        let n = reader.read(&mut chunk[..to_read]).await?;
         if n == 0 {
             break;
         }
-        filled += n;
+        buf.extend_from_slice(&chunk[..n]);
     }
-    buf.truncate(filled);
     Ok(buf)
 }
 
@@ -392,6 +402,27 @@ mod tests {
         assert!(
             start.elapsed() < std::time::Duration::from_secs(2),
             "execute_subprocess should return promptly once the timeout elapses"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_up_to_does_not_eagerly_allocate_full_cap() {
+        // Regression for the CRITICAL finding: read_up_to used to
+        // `vec![0u8; max_len]` upfront, so a tiny actual output still cost a
+        // full max_len allocation (x2 for stdout+stderr, x concurrency).
+        // A capped-but-small actual output must not grow the buffer anywhere
+        // near the cap.
+        let data = b"tiny output";
+        let mut cursor = std::io::Cursor::new(data.to_vec());
+        let huge_cap = 64 * 1024 * 1024;
+        let result = read_up_to(&mut cursor, huge_cap).await.unwrap();
+        assert_eq!(result, data);
+        assert!(
+            result.capacity() < 1024 * 1024,
+            "capacity {} should stay proportional to the {}-byte output, not the {}-byte cap",
+            result.capacity(),
+            data.len(),
+            huge_cap
         );
     }
 
