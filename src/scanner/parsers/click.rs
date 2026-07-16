@@ -1,7 +1,35 @@
+use std::sync::LazyLock;
+
 use regex::Regex;
 
 use crate::models::{ScannedArg, ScannedFlag, ValueType};
 use crate::scanner::protocol::{CliParser, ParsedHelp};
+
+// Precompiled once (parsers run per subcommand on the recursive scan hot path).
+// INVARIANT: every pattern is a compile-time constant valid regex.
+static FLAG_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?m)^\s{2,}(-([a-zA-Z]),?\s+)?(--([a-z][\w-]*))\s+(?:\s*/\s*--no-[\w-]+\s+)?(TEXT|INTEGER|FLOAT|PATH|FILENAME|DIRECTORY|<[^>]+>)?\s*(.+)",
+    )
+    .expect("valid static regex")
+});
+static TOGGLE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^\s{2,}(--([a-z][\w-]*))\s*/\s*(--no-[\w-]+)\s{2,}(.+)")
+        .expect("valid static regex")
+});
+static DEFAULT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[default:\s*([^\]]+)\]").expect("valid static regex"));
+static ENUM_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[([a-zA-Z0-9_]+(?:\|[a-zA-Z0-9_]+)+)\]").expect("valid static regex")
+});
+static REQUIRED_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[required\]").expect("valid static regex"));
+static ARG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<([a-zA-Z_][\w-]*)>(\.\.\.)?").expect("valid static regex"));
+static COMMANDS_SECTION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?mi)^Commands:").expect("valid static regex"));
+static CMD_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^\s{2,}([a-z][\w-]*)\s+\S").expect("valid static regex"));
 
 /// Parser for Click/argparse-style help output.
 ///
@@ -66,23 +94,12 @@ fn extract_click_flags(help_text: &str) -> Vec<ScannedFlag> {
     // Click format: "  --flag TEXT  Description"
     // Or: "  -f, --flag TEXT  Description"
     // Also: "  --flag / --no-flag  Description" for boolean toggles
-    let flag_re = Regex::new(
-        r"(?m)^\s{2,}(-([a-zA-Z]),?\s+)?(--([a-z][\w-]*))\s+(?:\s*/\s*--no-[\w-]+\s+)?(TEXT|INTEGER|FLOAT|PATH|FILENAME|DIRECTORY|<[^>]+>)?\s*(.+)"
-    ).unwrap();
-
-    // Separate pattern for --flag/--no-flag boolean toggles
-    let toggle_re =
-        Regex::new(r"(?m)^\s{2,}(--([a-z][\w-]*))\s*/\s*(--no-[\w-]+)\s{2,}(.+)").unwrap();
-
-    let default_re = Regex::new(r"\[default:\s*([^\]]+)\]").unwrap();
-    let enum_re = Regex::new(r"\[([a-zA-Z0-9_]+(?:\|[a-zA-Z0-9_]+)+)\]").unwrap();
-    let required_re = Regex::new(r"\[required\]").unwrap();
 
     let mut flags = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Handle toggle flags first
-    for cap in toggle_re.captures_iter(help_text) {
+    for cap in TOGGLE_RE.captures_iter(help_text) {
         let long_name = format!("--{}", &cap[2]);
         if !seen.insert(long_name.clone()) {
             continue;
@@ -101,7 +118,7 @@ fn extract_click_flags(help_text: &str) -> Vec<ScannedFlag> {
         });
     }
 
-    for cap in flag_re.captures_iter(help_text) {
+    for cap in FLAG_RE.captures_iter(help_text) {
         let short_name = cap.get(2).map(|m| format!("-{}", m.as_str()));
         let long_name = Some(format!("--{}", &cap[4]));
         let type_str = cap.get(5).map(|m| m.as_str());
@@ -125,12 +142,12 @@ fn extract_click_flags(help_text: &str) -> Vec<ScannedFlag> {
             _ => ValueType::String,
         };
 
-        let default = default_re
+        let default = DEFAULT_RE
             .captures(&description)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().trim().to_string());
 
-        let enum_values = enum_re
+        let enum_values = ENUM_RE
             .captures(&description)
             .and_then(|c| c.get(1))
             .map(|m| {
@@ -140,7 +157,7 @@ fn extract_click_flags(help_text: &str) -> Vec<ScannedFlag> {
                     .collect::<Vec<_>>()
             });
 
-        let required = required_re.is_match(&description);
+        let required = REQUIRED_RE.is_match(&description);
 
         let actual_type = if enum_values.is_some() {
             ValueType::Enum
@@ -167,13 +184,12 @@ fn extract_click_flags(help_text: &str) -> Vec<ScannedFlag> {
 }
 
 fn extract_click_args(help_text: &str) -> Vec<ScannedArg> {
-    let arg_re = Regex::new(r"<([a-zA-Z_][\w-]*)>(\.\.\.)?").unwrap();
     let mut args = Vec::new();
 
     for line in help_text.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("Usage:") {
-            for cap in arg_re.captures_iter(trimmed) {
+            for cap in ARG_RE.captures_iter(trimmed) {
                 let name = cap[1].to_string();
                 let variadic = cap.get(2).is_some();
                 args.push(ScannedArg {
@@ -191,11 +207,9 @@ fn extract_click_args(help_text: &str) -> Vec<ScannedArg> {
 }
 
 fn extract_click_subcommands(help_text: &str) -> Vec<String> {
-    let section_re = Regex::new(r"(?mi)^Commands:").unwrap();
-    let cmd_re = Regex::new(r"(?m)^\s{2,}([a-z][\w-]*)\s+\S").unwrap();
     let mut names = Vec::new();
 
-    if let Some(section_match) = section_re.find(help_text) {
+    if let Some(section_match) = COMMANDS_SECTION_RE.find(help_text) {
         let after_section = &help_text[section_match.end()..];
         for line in after_section.lines() {
             if line.trim().is_empty() || (!line.starts_with(' ') && !line.is_empty()) {
@@ -204,7 +218,7 @@ fn extract_click_subcommands(help_text: &str) -> Vec<String> {
                 }
                 continue;
             }
-            if let Some(cap) = cmd_re.captures(line) {
+            if let Some(cap) = CMD_RE.captures(line) {
                 names.push(cap[1].to_string());
             }
         }

@@ -1,7 +1,40 @@
+use std::sync::LazyLock;
+
 use regex::Regex;
 
 use crate::models::{ScannedArg, ScannedFlag, StructuredOutputInfo, ValueType};
 use crate::scanner::protocol::{CliParser, ParsedHelp};
+
+// Precompiled once (parsers run per subcommand on the recursive scan hot path).
+// INVARIANT: every pattern is a compile-time constant valid regex.
+static HAS_GNU_OPTS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^\s{1,}-\w,?\s+--\w").expect("valid static regex"));
+static FLAG_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?m)^\s{1,}(-([a-zA-Z0-9]),?\s+)?(--([a-z][\w-]*))((?:[=\s])([A-Z_]+|<[^>]+>))?\s{2,}(.+)",
+    )
+    .expect("valid static regex")
+});
+static SHORT_ONLY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^\s{1,}-([a-zA-Z0-9])(?:,?\s+--[\w-]+)?(?:\s([A-Z_]+|<[^>]+>))?\s{2,}(.+)")
+        .expect("valid static regex")
+});
+static DEFAULT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[default:\s*([^\]]+)\]").expect("valid static regex"));
+static ENUM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\{([^}]+)\}").expect("valid static regex"));
+static ARG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<([a-zA-Z_][\w-]*)>(\.\.\.)?").expect("valid static regex"));
+static SUBCMD_SECTION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?mi)^(commands|subcommands|available commands):").expect("valid static regex")
+});
+static CMD_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^\s{2,}([a-z][\w-]*)\s+\S").expect("valid static regex"));
+static EXAMPLE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?mi)^(examples?|usage examples?):").expect("valid static regex")
+});
+static JSON_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"--json\b").expect("valid static regex"));
 
 /// Parser for GNU-style --help output.
 ///
@@ -25,9 +58,7 @@ impl CliParser for GnuHelpParser {
             return false;
         }
         let has_usage = help_text.contains("Usage:") || help_text.contains("usage:");
-        let has_gnu_opts = Regex::new(r"(?m)^\s{1,}-\w,?\s+--\w")
-            .map(|re| re.is_match(help_text))
-            .unwrap_or(false);
+        let has_gnu_opts = HAS_GNU_OPTS_RE.is_match(help_text);
         let not_cobra = !help_text.contains("Available Commands:");
         let not_clap = !help_text.contains("SUBCOMMANDS:");
         has_usage && (has_gnu_opts || !help_text.contains("Commands:")) && not_cobra && not_clap
@@ -80,24 +111,12 @@ pub fn extract_flags(help_text: &str) -> Vec<ScannedFlag> {
     //   -m, --message MSG   Use the given message
     //   --all               Stage all
     //   -v                  Verbose
-    let flag_re = Regex::new(
-        r"(?m)^\s{1,}(-([a-zA-Z0-9]),?\s+)?(--([a-z][\w-]*))((?:[=\s])([A-Z_]+|<[^>]+>))?\s{2,}(.+)"
-    ).unwrap();
-
-    // Also match short-only flags: " -v  Verbose"
-    let short_only_re = Regex::new(
-        r"(?m)^\s{1,}-([a-zA-Z0-9])(?:,?\s+--[\w-]+)?(?:\s([A-Z_]+|<[^>]+>))?\s{2,}(.+)",
-    )
-    .unwrap();
-
-    let default_re = Regex::new(r"\[default:\s*([^\]]+)\]").unwrap();
-    let enum_re = Regex::new(r"\{([^}]+)\}").unwrap();
 
     let mut flags = Vec::new();
     let mut seen_long: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_short: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for cap in flag_re.captures_iter(help_text) {
+    for cap in FLAG_RE.captures_iter(help_text) {
         let short_name = cap.get(2).map(|m| format!("-{}", m.as_str()));
         let long_name = cap.get(4).map(|m| format!("--{}", m.as_str()));
         let value_name = cap
@@ -117,19 +136,12 @@ pub fn extract_flags(help_text: &str) -> Vec<ScannedFlag> {
             seen_short.insert(sn.clone());
         }
 
-        let flag = build_flag(
-            long_name,
-            short_name,
-            description,
-            value_name,
-            &default_re,
-            &enum_re,
-        );
+        let flag = build_flag(long_name, short_name, description, value_name);
         flags.push(flag);
     }
 
     // Collect short-only flags not already captured
-    for cap in short_only_re.captures_iter(help_text) {
+    for cap in SHORT_ONLY_RE.captures_iter(help_text) {
         let short_char = cap[1].to_string();
         let short_name = format!("-{short_char}");
         if seen_short.contains(&short_name) {
@@ -148,14 +160,7 @@ pub fn extract_flags(help_text: &str) -> Vec<ScannedFlag> {
             .unwrap_or_default();
 
         seen_short.insert(short_name.clone());
-        let flag = build_flag(
-            None,
-            Some(short_name),
-            description,
-            value_name,
-            &default_re,
-            &enum_re,
-        );
+        let flag = build_flag(None, Some(short_name), description, value_name);
         flags.push(flag);
     }
 
@@ -167,8 +172,6 @@ fn build_flag(
     short_name: Option<String>,
     description: String,
     value_name: Option<String>,
-    default_re: &Regex,
-    enum_re: &Regex,
 ) -> ScannedFlag {
     let value_type = match value_name.as_deref() {
         None => ValueType::Boolean,
@@ -179,12 +182,12 @@ fn build_flag(
         _ => ValueType::String,
     };
 
-    let default = default_re
+    let default = DEFAULT_RE
         .captures(&description)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string());
 
-    let enum_values = enum_re
+    let enum_values = ENUM_RE
         .captures(&description)
         .and_then(|c| c.get(1))
         .map(|m| {
@@ -218,13 +221,12 @@ fn build_flag(
 
 /// Extract positional arguments from Usage line.
 pub fn extract_positional_args(help_text: &str) -> Vec<ScannedArg> {
-    let arg_re = Regex::new(r"<([a-zA-Z_][\w-]*)>(\.\.\.)?").unwrap();
     let mut args = Vec::new();
 
     for line in help_text.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("Usage:") || trimmed.starts_with("usage:") {
-            for cap in arg_re.captures_iter(trimmed) {
+            for cap in ARG_RE.captures_iter(trimmed) {
                 let name = cap[1].to_string();
                 let variadic = cap.get(2).is_some();
                 args.push(ScannedArg {
@@ -243,12 +245,9 @@ pub fn extract_positional_args(help_text: &str) -> Vec<ScannedArg> {
 
 /// Extract subcommand names from commands section.
 pub fn extract_subcommands(help_text: &str) -> Vec<String> {
-    let section_re = Regex::new(r"(?mi)^(commands|subcommands|available commands):").unwrap();
-    let cmd_re = Regex::new(r"(?m)^\s{2,}([a-z][\w-]*)\s+\S").unwrap();
-
     let mut names = Vec::new();
 
-    if let Some(section_match) = section_re.find(help_text) {
+    if let Some(section_match) = SUBCMD_SECTION_RE.find(help_text) {
         let after_section = &help_text[section_match.end()..];
         for line in after_section.lines() {
             if line.trim().is_empty() || (!line.starts_with(' ') && !line.is_empty()) {
@@ -257,7 +256,7 @@ pub fn extract_subcommands(help_text: &str) -> Vec<String> {
                 }
                 continue;
             }
-            if let Some(cap) = cmd_re.captures(line) {
+            if let Some(cap) = CMD_RE.captures(line) {
                 names.push(cap[1].to_string());
             }
         }
@@ -268,10 +267,9 @@ pub fn extract_subcommands(help_text: &str) -> Vec<String> {
 
 /// Extract example invocations from help text.
 pub fn extract_examples(help_text: &str) -> Vec<String> {
-    let example_re = Regex::new(r"(?mi)^(examples?|usage examples?):").unwrap();
     let mut examples = Vec::new();
 
-    if let Some(m) = example_re.find(help_text) {
+    if let Some(m) = EXAMPLE_RE.find(help_text) {
         for line in help_text[m.end()..].lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() {
@@ -315,8 +313,7 @@ pub fn detect_structured_output(flags: &[ScannedFlag], help_text: &str) -> Struc
     }
 
     // Regex fallback on help text
-    let json_re = Regex::new(r"--json\b").unwrap();
-    if json_re.is_match(help_text) {
+    if JSON_RE.is_match(help_text) {
         return StructuredOutputInfo {
             supported: true,
             flag: Some("--json".to_string()),

@@ -1,7 +1,27 @@
+use std::sync::LazyLock;
+
 use regex::Regex;
 
 use crate::models::{ScannedArg, ScannedFlag, ValueType};
 use crate::scanner::protocol::{CliParser, ParsedHelp};
+
+// Precompiled once: the scan hot path parses help per subcommand recursively, so
+// recompiling these on every call is wasteful. INVARIANT: every pattern is a
+// compile-time constant valid regex, so `Regex::new` never fails.
+static AVAILABLE_COMMANDS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^Available Commands:").expect("valid static regex"));
+static CMD_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^\s{2,}([a-z][\w-]*)\s+\S").expect("valid static regex"));
+static FLAG_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?m)^\s{2,}(-([a-zA-Z]),?\s+)?(--([a-z][\w-]*))\s+(string|int|uint|float|bool|duration|stringSlice|stringArray)?\s*(.+)",
+    )
+    .expect("valid static regex")
+});
+static DEFAULT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(default\s+([^)]+)\)").expect("valid static regex"));
+static ARG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<([a-zA-Z_][\w-]*)>(\.\.\.)?").expect("valid static regex"));
 
 /// Parser for Go Cobra-style help output.
 ///
@@ -68,11 +88,9 @@ fn extract_cobra_description(help_text: &str) -> String {
 }
 
 fn extract_available_commands(help_text: &str) -> Vec<String> {
-    let section_re = Regex::new(r"(?m)^Available Commands:").unwrap();
-    let cmd_re = Regex::new(r"(?m)^\s{2,}([a-z][\w-]*)\s+\S").unwrap();
     let mut names = Vec::new();
 
-    if let Some(section_match) = section_re.find(help_text) {
+    if let Some(section_match) = AVAILABLE_COMMANDS_RE.find(help_text) {
         let after_section = &help_text[section_match.end()..];
         for line in after_section.lines() {
             if line.trim().is_empty() || (!line.starts_with(' ') && !line.is_empty()) {
@@ -81,7 +99,7 @@ fn extract_available_commands(help_text: &str) -> Vec<String> {
                 }
                 continue;
             }
-            if let Some(cap) = cmd_re.captures(line) {
+            if let Some(cap) = CMD_RE.captures(line) {
                 names.push(cap[1].to_string());
             }
         }
@@ -93,11 +111,9 @@ fn extract_available_commands(help_text: &str) -> Vec<String> {
 fn extract_cobra_flags(help_text: &str, section_header: &str) -> Vec<ScannedFlag> {
     // Cobra format: "  -f, --flag type   Description"
     // Or: "      --flag type   Description"
+    // The section header is caller-supplied ("Flags:" / "Global Flags:"), so
+    // this small anchor regex stays dynamic; the expensive flag regex is shared.
     let section_re = Regex::new(&format!(r"(?m)^{}$", regex::escape(section_header))).unwrap();
-
-    let flag_re = Regex::new(
-        r"(?m)^\s{2,}(-([a-zA-Z]),?\s+)?(--([a-z][\w-]*))\s+(string|int|uint|float|bool|duration|stringSlice|stringArray)?\s*(.+)"
-    ).unwrap();
 
     let mut flags = Vec::new();
 
@@ -127,9 +143,8 @@ fn extract_cobra_flags(help_text: &str, section_header: &str) -> Vec<ScannedFlag
         .unwrap_or(section_text.len());
 
     let section_content = &section_text[..section_end];
-    let default_re = Regex::new(r"\(default\s+([^)]+)\)").unwrap();
 
-    for cap in flag_re.captures_iter(section_content) {
+    for cap in FLAG_RE.captures_iter(section_content) {
         let short_name = cap.get(2).map(|m| format!("-{}", m.as_str()));
         let long_name = Some(format!("--{}", &cap[4]));
         let type_str = cap.get(5).map(|m| m.as_str());
@@ -148,7 +163,7 @@ fn extract_cobra_flags(help_text: &str, section_header: &str) -> Vec<ScannedFlag
             _ => ValueType::String,
         };
 
-        let default = default_re
+        let default = DEFAULT_RE
             .captures(&description)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().trim().trim_matches('"').to_string());
@@ -172,7 +187,6 @@ fn extract_cobra_flags(help_text: &str, section_header: &str) -> Vec<ScannedFlag
 }
 
 fn extract_cobra_args(help_text: &str) -> Vec<ScannedArg> {
-    let arg_re = Regex::new(r"<([a-zA-Z_][\w-]*)>(\.\.\.)?").unwrap();
     let mut args = Vec::new();
 
     for line in help_text.lines() {
@@ -183,7 +197,7 @@ fn extract_cobra_args(help_text: &str) -> Vec<ScannedArg> {
         }
         // Cobra usage lines are often indented: "  tool [command] <arg>"
         if help_text.contains("Usage:") {
-            for cap in arg_re.captures_iter(trimmed) {
+            for cap in ARG_RE.captures_iter(trimmed) {
                 let name = cap[1].to_string();
                 let variadic = cap.get(2).is_some();
                 args.push(ScannedArg {

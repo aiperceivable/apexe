@@ -1,15 +1,26 @@
+use std::sync::LazyLock;
+
 use regex::Regex;
 
 use crate::models::{ScannedFlag, StructuredOutputInfo};
 
-/// Known patterns for JSON output flags.
-const JSON_PATTERNS: &[(&str, &str)] = &[
-    (r"--format\b", "--format json"),
-    (r"--output-format\b", "--output-format json"),
-    (r"-o\s+json\b|--output\s+json\b", "-o json"),
-    (r"--json\b", "--json"),
-    (r"-j\b", "-j"),
-];
+/// Known JSON-output flag patterns, compiled once (the scan hot path calls
+/// `detect` per subcommand; recompiling these every call is wasteful).
+///
+/// INVARIANT: every pattern is a compile-time constant known to be a valid
+/// regex, so `Regex::new` never fails here.
+static JSON_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
+    [
+        (r"--format\b", "--format json"),
+        (r"--output-format\b", "--output-format json"),
+        (r"-o\s+json\b|--output\s+json\b", "-o json"),
+        (r"--json\b", "--json"),
+        (r"-j\b", "-j"),
+    ]
+    .into_iter()
+    .map(|(pattern, flag)| (Regex::new(pattern).expect("valid static regex"), flag))
+    .collect()
+});
 
 /// Detects if a CLI tool supports structured (JSON) output.
 pub struct StructuredOutputDetector;
@@ -49,16 +60,14 @@ impl StructuredOutputDetector {
             }
         }
 
-        // Fall back to regex patterns on raw help text
-        for &(pattern, flag_str) in JSON_PATTERNS {
-            if let Ok(re) = Regex::new(pattern) {
-                if re.is_match(help_text) {
-                    return StructuredOutputInfo {
-                        supported: true,
-                        flag: Some(flag_str.to_string()),
-                        format: Some("json".to_string()),
-                    };
-                }
+        // Fall back to precompiled regex patterns on raw help text
+        for (re, flag_str) in JSON_PATTERNS.iter() {
+            if re.is_match(help_text) {
+                return StructuredOutputInfo {
+                    supported: true,
+                    flag: Some((*flag_str).to_string()),
+                    format: Some("json".to_string()),
+                };
             }
         }
 
