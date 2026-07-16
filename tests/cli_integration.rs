@@ -10,6 +10,7 @@ fn test_help_shows_subcommands() {
         .success()
         .stdout(predicate::str::contains("scan"))
         .stdout(predicate::str::contains("serve"))
+        .stdout(predicate::str::contains("a2a"))
         .stdout(predicate::str::contains("list"))
         .stdout(predicate::str::contains("config"));
 }
@@ -48,6 +49,23 @@ fn test_serve_help_shows_expected_flags() {
         .stdout(predicate::str::contains("--transport"))
         .stdout(predicate::str::contains("--host"))
         .stdout(predicate::str::contains("--port"))
+        .stdout(predicate::str::contains("--explorer"));
+}
+
+#[test]
+fn test_a2a_help_shows_expected_flags() {
+    // Regression for the WARNING finding: `apexe a2a` had no CLI integration
+    // test at all, unlike `apexe serve`. Mirrors
+    // test_serve_help_shows_expected_flags for the a2a subcommand's flags.
+    Command::cargo_bin("apexe")
+        .unwrap()
+        .args(["a2a", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--url"))
+        .stdout(predicate::str::contains("--modules-dir"))
+        .stdout(predicate::str::contains("--acl"))
+        .stdout(predicate::str::contains("--enable-approval"))
         .stdout(predicate::str::contains("--explorer"));
 }
 
