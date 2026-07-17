@@ -237,4 +237,32 @@ mod tests {
         assert_eq!(loaded.acl.rules().len(), 2);
         assert_eq!(loaded.default_effect, "deny");
     }
+
+    #[test]
+    fn test_acl_decision_recorded_via_audit_logger() {
+        // F5: with an audit logger attached, ACL allow/deny decisions are
+        // persisted (so an operator can answer "who was denied which module").
+        use std::sync::Arc;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let audit_path = tmp.path().join("audit.jsonl");
+        let audit = Arc::new(crate::governance::AuditManager::new(&audit_path));
+
+        let modules = vec![make_module_with_annotations("cli.rm", false, true)];
+        let mut acl = AclManager::generate_default(&modules).into_inner();
+        {
+            let audit = audit.clone();
+            acl.set_audit_logger(move |entry| audit.log_acl_decision(entry));
+        }
+
+        // A destructive module is denied for an external caller; audited.
+        let allowed = acl.check(Some("@external"), "cli.rm", None);
+        assert!(!allowed);
+
+        let content = std::fs::read_to_string(&audit_path).unwrap();
+        assert!(
+            content.contains("\"decision\""),
+            "ACL decision not recorded: {content}"
+        );
+        assert!(content.contains("cli.rm"));
+    }
 }

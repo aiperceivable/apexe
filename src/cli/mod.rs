@@ -303,7 +303,8 @@ impl ServeArgs {
             .enable_circuit_breaker(!self.no_circuit_breaker)
             .enable_retry(!self.no_retry)
             .enable_metrics(self.metrics)
-            .validate_inputs(!self.skip_validation);
+            .validate_inputs(!self.skip_validation)
+            .audit_path(config.audit_log.clone());
 
         // Only load ACL when explicitly specified via --acl flag.
         // Without --acl, the server runs without access control (all tools allowed).
@@ -407,7 +408,8 @@ impl A2aArgs {
             .enable_circuit_breaker(!self.no_circuit_breaker)
             .enable_retry(!self.no_retry)
             .execution_timeout(self.execution_timeout)
-            .cors_origins(self.cors_origin.clone());
+            .cors_origins(self.cors_origin.clone())
+            .audit_path(config.audit_log.clone());
 
         // Only load ACL when explicitly specified via --acl flag.
         // Without --acl, the server runs without access control (all tools allowed).

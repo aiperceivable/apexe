@@ -78,6 +78,7 @@ fn build_demo_executor(modules_dir: &Path) -> Arc<Executor> {
         modules_dir: Some(modules_dir),
         timeout_ms: 5_000,
         acl_path: Some(acl_path),
+        audit_path: None,
         enable_logging: false,
         enable_approval: false,
         enable_circuit_breaker: false,

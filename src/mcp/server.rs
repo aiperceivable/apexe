@@ -27,6 +27,8 @@ pub struct McpServerBuilder {
     prefix: Option<String>,
     /// Path to ACL YAML file for access control.
     acl_path: Option<std::path::PathBuf>,
+    /// Path to the JSONL governance audit log (F5 §4.3). None disables auditing.
+    audit_path: Option<std::path::PathBuf>,
     /// Enable LoggingMiddleware for structured execution logging.
     enable_logging: bool,
     /// Enable ElicitationApprovalHandler for destructive command approval.
@@ -61,6 +63,7 @@ impl McpServerBuilder {
             tags: None,
             prefix: None,
             acl_path: None,
+            audit_path: None,
             enable_logging: true,
             enable_approval: false,
             enable_circuit_breaker: true,
@@ -132,6 +135,11 @@ impl McpServerBuilder {
     }
 
     /// Set ACL config file path for access control on the Executor.
+    pub fn audit_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.audit_path = Some(path.into());
+        self
+    }
+
     pub fn acl_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.acl_path = Some(path.into());
         self
@@ -196,6 +204,7 @@ impl McpServerBuilder {
             modules_dir: self.modules_dir.as_deref(),
             timeout_ms: self.timeout_ms,
             acl_path: self.acl_path.as_deref(),
+            audit_path: self.audit_path.as_deref(),
             enable_logging: self.enable_logging,
             enable_approval: self.enable_approval,
             enable_circuit_breaker: self.enable_circuit_breaker,

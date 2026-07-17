@@ -1,4 +1,6 @@
+use apcore::AuditEntry;
 use serde_json::Value as JsonValue;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Manages audit logging using apcore-cli's AuditLogger.
@@ -8,6 +10,15 @@ use std::path::{Path, PathBuf};
 pub struct AuditManager {
     logger: apcore_cli::AuditLogger,
     path: PathBuf,
+}
+
+impl std::fmt::Debug for AuditManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // apcore_cli::AuditLogger is not Debug; expose only the path.
+        f.debug_struct("AuditManager")
+            .field("path", &self.path)
+            .finish()
+    }
 }
 
 impl AuditManager {
@@ -30,6 +41,34 @@ impl AuditManager {
     ) {
         self.logger
             .log_execution(module_id, input, status, exit_code, duration_ms);
+    }
+
+    /// Append an ACL allow/deny decision to the same audit log (JSONL).
+    ///
+    /// apcore's `ACL::set_audit_logger` hands us an [`AuditEntry`] on every
+    /// governance decision; recording it here is what lets an operator answer
+    /// "who was denied which module, and when". Best-effort: a write failure is
+    /// logged and dropped rather than failing the request.
+    pub fn log_acl_decision(&self, entry: &AuditEntry) {
+        let line = match serde_json::to_string(entry) {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to serialize ACL audit entry");
+                return;
+            }
+        };
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        {
+            Ok(mut file) => {
+                if let Err(e) = writeln!(file, "{line}") {
+                    tracing::warn!(error = %e, "Failed to append ACL audit entry");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "Failed to open audit log for ACL entry"),
+        }
     }
 
     /// Return the configured log file path.

@@ -23,6 +23,10 @@ pub struct ExecutorOptions<'a> {
     pub modules_dir: Option<&'a Path>,
     pub timeout_ms: u64,
     pub acl_path: Option<&'a Path>,
+    /// Path to the JSONL governance audit log. When set, module executions and
+    /// ACL allow/deny decisions are appended here (F5 §4.3). `None` disables
+    /// auditing.
+    pub audit_path: Option<&'a Path>,
     pub enable_logging: bool,
     pub enable_approval: bool,
     /// Short-circuit calls to a (module, caller) pair after repeated
@@ -63,8 +67,13 @@ pub struct ExecutorOptions<'a> {
 pub fn build_executor(opts: &ExecutorOptions<'_>) -> Result<Arc<Executor>, ModuleError> {
     let modules = load_scanned_modules(opts.modules_dir)?;
 
+    // Governance audit sink (F5 §4.3): shared across all modules and the ACL.
+    let audit = opts
+        .audit_path
+        .map(|p| Arc::new(crate::governance::AuditManager::new(p)));
+
     let registry = Registry::new();
-    register_modules(&modules, &registry, opts.timeout_ms);
+    register_modules(&modules, &registry, opts.timeout_ms, audit.clone());
     tracing::info!(count = registry.count(), "Registered CLI modules");
 
     let mut executor = Executor::new(registry, Config::default());
@@ -106,7 +115,13 @@ pub fn build_executor(opts: &ExecutorOptions<'_>) -> Result<Arc<Executor>, Modul
             ));
         }
         let acl_mgr = crate::governance::AclManager::from_config(acl_path)?;
-        executor.set_acl(acl_mgr.into_inner());
+        let mut acl = acl_mgr.into_inner();
+        // Record every allow/deny decision to the audit trail (F5).
+        if let Some(ref audit) = audit {
+            let audit = audit.clone();
+            acl.set_audit_logger(move |entry| audit.log_acl_decision(entry));
+        }
+        executor.set_acl(acl);
         tracing::info!(acl = %acl_path.display(), "ACL enforcement active");
     }
 
@@ -149,10 +164,16 @@ fn load_scanned_modules(modules_dir: Option<&Path>) -> Result<Vec<ScannedModule>
 /// `ModuleDescriptor`, so apcore-mcp/apcore-a2a's alias-resolution and
 /// rich-description logic (which reads `descriptor.display` /
 /// `descriptor.metadata["display"]`) actually sees it.
-fn register_modules(modules: &[ScannedModule], registry: &Registry, timeout_ms: u64) {
+fn register_modules(
+    modules: &[ScannedModule],
+    registry: &Registry,
+    timeout_ms: u64,
+    audit: Option<Arc<crate::governance::AuditManager>>,
+) {
     for scanned in modules {
         match CliModule::from_scanned(scanned, timeout_ms) {
             Ok(cli_module) => {
+                let cli_module = cli_module.with_audit(audit.clone());
                 let module_id = scanned.module_id.clone();
                 let annotations = scanned.annotations.clone().unwrap_or_default();
                 let descriptor = ModuleDescriptor {
@@ -199,6 +220,7 @@ mod tests {
             modules_dir,
             timeout_ms: 30_000,
             acl_path: None,
+            audit_path: None,
             enable_logging: true,
             enable_approval: false,
             enable_circuit_breaker: true,

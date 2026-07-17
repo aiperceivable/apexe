@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use apcore::module::ModuleAnnotations;
 use apcore::{Change, Context, ErrorCode, Module, ModuleError, PreviewResult};
 use apcore_toolkit::ScannedModule;
@@ -5,6 +7,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::executor;
+use crate::governance::AuditManager;
 
 /// Configuration for constructing a `CliModule`.
 pub struct CliModuleConfig {
@@ -39,6 +42,8 @@ pub struct CliModule {
     json_flag: Option<String>,
     timeout_ms: u64,
     max_output_bytes: usize,
+    /// Optional execution-audit sink (F5 §4.3). `None` disables audit.
+    audit: Option<Arc<AuditManager>>,
 }
 
 impl CliModule {
@@ -54,7 +59,16 @@ impl CliModule {
             json_flag: config.json_flag,
             timeout_ms: config.timeout_ms,
             max_output_bytes: config.max_output_bytes,
+            audit: None,
         }
+    }
+
+    /// Attach (or clear) the execution-audit sink. Returns `self` for chaining
+    /// at registration time so `CliModuleConfig` and its many call sites stay
+    /// unchanged.
+    pub fn with_audit(mut self, audit: Option<Arc<AuditManager>>) -> Self {
+        self.audit = audit;
+        self
     }
 
     /// Create from a `ScannedModule` by parsing the target field.
@@ -270,6 +284,23 @@ impl Module for CliModule {
             "CLI module execution completed"
         );
 
+        // F5 §4.3: record the execution in the governance audit trail. The
+        // logger hashes the input (no raw values are persisted).
+        if let Some(ref audit) = self.audit {
+            let status = if output.exit_code == 0 {
+                "success"
+            } else {
+                "error"
+            };
+            audit.log_execution(
+                &self.module_id,
+                &inputs,
+                status,
+                output.exit_code,
+                duration_ms,
+            );
+        }
+
         Ok(Value::Object(result))
     }
 }
@@ -448,6 +479,40 @@ mod tests {
             .expect("json_output must be present when json_flag is set and stdout is JSON");
         assert_eq!(json_out["status"], "ok");
         assert_eq!(json_out["count"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_execute_writes_audit_entry() {
+        // F5 §4.3: with an audit sink attached, each execution appends a JSONL
+        // entry (module_id + status), and raw input is not stored (hashed).
+        let tmp = tempfile::TempDir::new().unwrap();
+        let audit_path = tmp.path().join("audit.jsonl");
+        let audit = Arc::new(AuditManager::new(&audit_path));
+        let module = make_echo_module(vec!["hello".to_string()], None).with_audit(Some(audit));
+
+        let ctx = Context::anonymous();
+        module
+            .execute(json!({"secret": "value"}), &ctx)
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&audit_path).unwrap();
+        let entry: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(entry["module_id"], "test.echo");
+        assert_eq!(entry["status"], "success");
+        assert_eq!(entry["exit_code"], 0);
+        // Raw input must NOT be persisted — only a hash.
+        assert!(entry.get("input_hash").is_some());
+        assert!(!content.contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_without_audit_writes_nothing() {
+        // No audit sink -> no file created, execution still succeeds.
+        let module = make_echo_module(vec!["hi".to_string()], None);
+        let ctx = Context::anonymous();
+        let result = module.execute(json!({}), &ctx).await.unwrap();
+        assert_eq!(result["exit_code"], 0);
     }
 
     #[tokio::test]
