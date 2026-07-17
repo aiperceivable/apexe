@@ -85,7 +85,7 @@ F1                        ScannedModule
 F2         Module, Ctx
 F3                        YAMLWriter, Verifier
 F4         Registry       RegistryWriter        APCoreMCP
-F5         ACL, ACLRule                                             AuditLogger, Sandbox
+F5         ACL, ACLRule                                             AuditLogger
 F6         ModuleError
 F7         Config                                                   ConfigResolver
 ```

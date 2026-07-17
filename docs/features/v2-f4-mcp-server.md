@@ -17,7 +17,7 @@
 
 ## 1. Purpose
 
-Replace the custom MCP JSON-RPC server (6 files, ~1,200 LOC) with apcore-mcp's `APCoreMCP` builder. This gains full MCP protocol compliance, streamable-http transport, JWT authentication, Explorer UI, and middleware integration without maintaining a custom implementation.
+Replace the custom MCP JSON-RPC server (6 files, ~1,200 LOC) with apcore-mcp's `APCoreMCP` builder. This gains full MCP protocol compliance, streamable-http transport, Explorer UI, and middleware integration without maintaining a custom implementation. (Transport-level authentication is available via the apcore library API, not a CLI flag in v0.x — servers bind localhost by default; see §4.1.)
 
 ---
 
@@ -94,11 +94,8 @@ impl ServeArgs {
 
         // Step 3: Create governance managers
         let audit = Arc::new(AuditManager::new(&config.audit_log));
-        let sandbox = if self.sandbox {
-            Some(Arc::new(SandboxManager::new(true, config.default_timeout * 1000)))
-        } else {
-            None
-        };
+        // (No SandboxManager: subprocess isolation is always-on in the executor
+        //  — timeout, output cap, no-shell, env scrubbing. See F5 §5.)
 
         // Step 4: Register modules into apcore Registry
         let registry = Registry::new();
@@ -148,10 +145,10 @@ impl ServeArgs {
             builder = builder.include_explorer(true);
         }
 
-        if self.require_auth {
-            builder = builder.require_auth(true);
-            // JWT authenticator configuration loaded from config
-        }
+        // No `--require-auth` wiring: MCP stdio has no auth concept and HTTP-
+        // transport auth is delegated to the transport layer (configured via
+        // the library API, not a CLI flag in v0.x). Servers bind localhost by
+        // default. See §4.1 note.
 
         let server = builder.build().map_err(|e| ModuleError {
             code: ErrorCode::InternalError,
@@ -203,15 +200,15 @@ pub struct ServeArgs {
     pub name: String,
     #[arg(long)]
     pub show_config: Option<String>,
-
-    // NEW flags
-    /// Enable subprocess sandboxing for CLI execution.
-    #[arg(long)]
-    pub sandbox: bool,
-
-    /// Require JWT authentication for all requests.
-    #[arg(long)]
-    pub require_auth: bool,
+    // Revised: no `--sandbox` or `--require-auth` flags.
+    // - Subprocess isolation is ALWAYS-ON (timeout, output cap, no-shell, env
+    //   scrubbing) in the executor — there is no unsandboxed mode to toggle.
+    //   See F5 §5.
+    // - Authentication is delegated to the transport layer: apcore-a2a exposes
+    //   an `Authenticator` (JWT/Bearer) via the library API, and MCP stdio has
+    //   no auth concept. Servers bind localhost (127.0.0.1) by default, so the
+    //   practical v0.x posture is "bind loopback + file/transport-level auth".
+    //   A first-class `--require-auth` for HTTP transports is roadmap, not v0.x.
 }
 ```
 
@@ -267,14 +264,17 @@ v0.1.x had a basic root endpoint with server metadata. apcore-mcp's Explorer UI 
 | `test_mcp_serve_explorer_http_only` | --explorer with stdio transport | Warning logged, explorer not available |
 | `test_mcp_serve_invalid_transport` | --transport "invalid" | Error before server starts |
 
-### 6.2 CLI Parse Tests (in `src/cli/mod.rs` tests)
+### 6.2 Serve-path Integration Tests (in `tests/mcp_integration.rs`)
+
+The `--sandbox` / `--require-auth` parse tests are dropped (those flags do not
+exist — see §4.1). The serve request path is instead covered end-to-end:
 
 | Test Name | Scenario | Expected |
 |---|---|---|
-| `test_serve_sandbox_flag` | --sandbox | args.sandbox = true |
-| `test_serve_require_auth_flag` | --require-auth | args.require_auth = true |
-| `test_serve_default_no_sandbox` | No flags | args.sandbox = false |
-| `test_serve_default_no_auth` | No flags | args.require_auth = false |
+| `test_mcp_server_builds_and_exposes_scanned_tools` | Build server from bindings | Scanned module exposed as a tool |
+| `test_mcp_tools_call_executes` | tools/call on a scanned module | CLI executes; stdout returned |
+| `test_mcp_tools_call_injection_blocked` | tools/call with a shell metacharacter | Rejected on the request path |
+| `test_mcp_tools_call_unknown_module_errors` | tools/call for an unscanned module | Error, no execution |
 
 ---
 

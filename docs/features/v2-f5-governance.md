@@ -1,4 +1,4 @@
-# F5: Governance -- Replace with apcore ACL + apcore-cli Audit/Sandbox
+# F5: Governance -- apcore ACL + apcore-cli Audit + always-on subprocess isolation
 
 | Field | Value |
 |---|---|
@@ -7,7 +7,7 @@
 | **Priority** | P1 (Security) |
 | **Dependencies** | F2 (Module Executor) |
 | **Depended On By** | F7 (Config Integration) |
-| **New Files** | `src/governance/acl.rs` (rewritten), `src/governance/audit.rs` (rewritten), `src/governance/sandbox.rs` (new), `src/governance/mod.rs` (updated) |
+| **New Files** | `src/governance/acl.rs` (rewritten), `src/governance/audit.rs` (rewritten), `src/governance/mod.rs` (updated). Subprocess isolation lives in `src/module/executor.rs` (always-on), not a separate sandbox module — see §5. |
 | **Deleted Files** | `src/governance/annotations.rs` (moved to F1 adapter) |
 | **Estimated LOC** | ~350 |
 | **Estimated Tests** | ~20 |
@@ -16,7 +16,7 @@
 
 ## 1. Purpose
 
-Replace apexe's custom governance layer (ACL generator, annotation logic, audit logger) with wrappers around apcore ecosystem primitives: `apcore::ACL` for access control, `apcore_cli::AuditLogger` for audit logging, and `apcore_cli::Sandbox` for subprocess isolation. This gains rule conditions, structured JSONL audit format, and timeout-enforced sandboxing.
+Replace apexe's custom governance layer (ACL generator, annotation logic, audit logger) with wrappers around apcore ecosystem primitives: `apcore::ACL` for access control and `apcore_cli::AuditLogger` for audit logging. This gains rule conditions and a structured JSONL audit format. Subprocess isolation (timeout, output cap, no-shell argv, environment scrubbing) is applied unconditionally in the executor — see §5 — rather than via a toggleable sandbox module.
 
 ---
 
@@ -27,11 +27,9 @@ Replace apexe's custom governance layer (ACL generator, annotation logic, audit 
 ```rust
 pub mod acl;
 pub mod audit;
-pub mod sandbox;
 
 pub use acl::AclManager;
 pub use audit::AuditManager;
-pub use sandbox::SandboxManager;
 ```
 
 ---
@@ -232,69 +230,35 @@ if let Some(ref audit) = self.audit {
 
 ---
 
-## 5. SandboxManager
+## 5. Subprocess Isolation (always-on)
 
-### 5.1 Type Definition
+> **Design note (revised):** apexe does **not** expose a toggleable
+> `SandboxManager`. There is no safe "unsandboxed" mode to opt out of, so
+> isolation is applied unconditionally to every wrapped-tool execution in
+> `execute_subprocess` (`src/module/executor.rs`). This supersedes the earlier
+> `SandboxManager` / `--sandbox` design (which only wrapped a timeout that is
+> now always on).
 
-```rust
-// src/governance/sandbox.rs
-use apcore::ModuleError;
-use apcore_cli::Sandbox;
-use serde_json::Value;
+Every subprocess execution applies:
 
-/// Manages subprocess isolation using apcore-cli's Sandbox.
-pub struct SandboxManager {
-    sandbox: Sandbox,
-}
-```
+- **Timeout + kill** — the subprocess runs under a wall-clock deadline and is
+  killed (`kill_on_drop`) if it elapses, so a hung tool cannot stall a request.
+- **Output cap** — stdout/stderr are each bounded (`max_output_bytes`) to guard
+  against OOM from runaway output.
+- **No shell** — arguments are passed as direct argv (no shell interpolation);
+  client-supplied values are additionally rejected if they contain shell
+  metacharacters (see F2 injection guard).
+- **Environment scrubbing** — the child inherits only a base allowlist
+  (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TZ`,
+  `TMPDIR`), never apexe's full environment, so secrets in apexe's env (API
+  tokens, cloud credentials) cannot leak to an agent-invoked tool. File-based
+  credentials under `$HOME` still work.
+- **stdin** is connected to `/dev/null` so a tool waiting on input fails fast.
 
-### 5.2 Public Methods
-
-```rust
-impl SandboxManager {
-    /// Create a new SandboxManager.
-    ///
-    /// - enabled: Whether sandboxing is active (if false, execute() is a pass-through).
-    /// - timeout_ms: Maximum execution time for sandboxed processes.
-    pub fn new(enabled: bool, timeout_ms: u64) -> Self {
-        Self {
-            sandbox: Sandbox::new(enabled, timeout_ms),
-        }
-    }
-
-    /// Execute a module in the sandbox.
-    ///
-    /// If sandboxing is enabled:
-    /// - Subprocess runs in an isolated environment.
-    /// - Timeout is enforced (kills process after timeout_ms).
-    /// - Returns output or ModuleError on timeout/failure.
-    ///
-    /// If sandboxing is disabled:
-    /// - Pass-through to normal subprocess execution.
-    pub fn execute(
-        &self,
-        module_id: &str,
-        input: &Value,
-    ) -> Result<Value, ModuleError>;
-
-    /// Check if sandboxing is enabled.
-    pub fn is_enabled(&self) -> bool;
-}
-```
-
-### 5.3 Integration with CliModule
-
-The `SandboxManager` is called in `CliModule::execute()` as an alternative execution path:
-
-```rust
-// Inside CliModule::execute()
-let result = if let Some(ref sandbox) = self.sandbox {
-    sandbox.execute(&self.module_id, &input)?
-} else {
-    let args = build_arguments(&input_map)?;
-    execute_subprocess(&self.binary_path, &args, self.json_flag.as_deref(), None, self.timeout_ms).await?
-};
-```
+**Not provided (roadmap):** OS-level sandboxing (seccomp/landlock filters,
+namespaces, cgroup resource limits) and per-tool credential-env passthrough (an
+opt-in allowlist extension). v0.x relies on the governance stack (ACL +
+approval + preview/dry-run) plus the process hygiene above.
 
 ---
 
@@ -325,15 +289,18 @@ let result = if let Some(ref sandbox) = self.sandbox {
 | `test_audit_log_large_output_truncated` | Output > 10KB | Truncated in log entry |
 | `test_audit_log_path_returns_path` | Create manager | Returns configured path |
 
-### 6.3 SandboxManager Tests
+### 6.3 Subprocess Isolation Tests (always-on)
+
+Isolation is verified where it lives — in the executor
+(`src/module/executor.rs`), not a sandbox module.
 
 | Test Name | Scenario | Expected |
 |---|---|---|
-| `test_sandbox_enabled_timeout` | Enabled, command exceeds timeout | Err with Timeout |
-| `test_sandbox_disabled_passthrough` | Disabled, normal command | Ok with output |
-| `test_sandbox_is_enabled_true` | Created with enabled=true | is_enabled() == true |
-| `test_sandbox_is_enabled_false` | Created with enabled=false | is_enabled() == false |
-| `test_sandbox_execute_normal_command` | Enabled, echo hello | Ok with stdout |
+| `test_is_allowed_env` | Allowlist logic | PATH/HOME/LC_* allowed; secrets denied |
+| `test_execute_subprocess_scrubs_environment` | Wrapped subprocess env | Only allowlisted vars reach the child; PATH survives |
+| `test_execute_subprocess_timeout_leaves_retryable_unset` | Hung command + short timeout | Err with Timeout |
+| `test_execute_subprocess_kills_hung_process_on_timeout` | Hung command | Child killed (no orphan) |
+| `test_run_with_timeout_large_output_no_deadlock` | Output > pipe buffer | Captured, no deadlock (scanner exec) |
 
 ---
 
@@ -348,7 +315,7 @@ let result = if let Some(ref sandbox) = self.sandbox {
 | Custom `write_acl()` | `AclManager::write_config()` | Simplified |
 | `annotate_bindings()` | Moved to F1 `adapter::annotations::infer()` | Relocated |
 | Custom audit JSONL writer | `apcore_cli::AuditLogger` | Replaced |
-| No sandbox support | `apcore_cli::Sandbox` | New capability |
+| Ad-hoc subprocess spawn | Always-on isolation in `executor.rs` (timeout, output cap, no-shell, env scrubbing) | Hardened — see §5 |
 
 ### ACL YAML Format Change
 
