@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use apcore::{ErrorCode, ModuleError};
+use apcore::{ErrorCode, Executor, ModuleError};
 use apcore_a2a::{APCoreA2AConfig, BackendSource};
 use apcore_mcp::ApprovalStore;
 
@@ -170,6 +170,49 @@ impl A2aServerBuilder {
     // the rest of the apexe/apcore API surface.
     #[allow(clippy::result_large_err)]
     pub async fn serve(self) -> Result<(), ModuleError> {
+        let (executor, config) = self.prepare()?;
+
+        apcore_a2a::async_serve(BackendSource::Executor(executor), config)
+            .await
+            .map_err(|e| {
+                ModuleError::new(
+                    ErrorCode::GeneralInternalError,
+                    format!("A2A server error: {e}"),
+                )
+            })
+    }
+
+    /// Build the A2A agent card without binding a port.
+    ///
+    /// Assembles the same governed `Executor` and config `serve` would, then
+    /// asks apcore-a2a to build the app in-process and returns the resulting
+    /// agent card as JSON. Symmetric with
+    /// [`McpServerBuilder::export_openai_tools`](crate::mcp::McpServerBuilder::export_openai_tools):
+    /// an embedding/test affordance that exercises the serve assembly without a
+    /// live server. Returns `Err` when no modules are present (empty registry).
+    #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+    pub async fn agent_card(self) -> Result<serde_json::Value, ModuleError> {
+        let (executor, config) = self.prepare()?;
+        let (_router, card) = apcore_a2a::build_app(BackendSource::Executor(executor), config)
+            .await
+            .map_err(|e| {
+                ModuleError::new(
+                    ErrorCode::GeneralInternalError,
+                    format!("Failed to build A2A app: {e}"),
+                )
+            })?;
+        serde_json::to_value(&card).map_err(|e| {
+            ModuleError::new(
+                ErrorCode::GeneralInternalError,
+                format!("Failed to serialize agent card: {e}"),
+            )
+        })
+    }
+
+    /// Shared assembly for `serve` and `agent_card`: enforce the approval
+    /// precondition, build the governed executor, and construct the A2A config.
+    #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+    fn prepare(&self) -> Result<(Arc<Executor>, APCoreA2AConfig), ModuleError> {
         if self.enable_approval && self.approval_store.is_none() {
             return Err(ModuleError::new(
                 ErrorCode::GeneralInvalidInput,
@@ -198,14 +241,7 @@ impl A2aServerBuilder {
             ..APCoreA2AConfig::default()
         };
 
-        apcore_a2a::async_serve(BackendSource::Executor(executor), config)
-            .await
-            .map_err(|e| {
-                ModuleError::new(
-                    ErrorCode::GeneralInternalError,
-                    format!("A2A server error: {e}"),
-                )
-            })
+        Ok((executor, config))
     }
 }
 
