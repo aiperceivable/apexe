@@ -309,6 +309,17 @@ mod tests {
     }
 
     #[test]
+    fn test_build_arguments_injection_blocked_in_array() {
+        // F2 §5.5: a shell metacharacter inside an array element must also be
+        // rejected, not just scalar values.
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("tags".to_string(), json!(["ok", "bad; rm -rf /"]));
+        let result = build_arguments(&kwargs);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code, ErrorCode::GeneralInvalidInput);
+    }
+
+    #[test]
     fn test_validate_no_injection_clean() {
         let result = validate_no_injection("file", "hello world");
         assert!(result.is_ok());

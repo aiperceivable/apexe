@@ -388,6 +388,44 @@ mod tests {
     }
 
     #[test]
+    fn test_converter_preserves_unicode_tool_name() {
+        // F1 §5 edge: unicode in tool/command names is preserved in module_id.
+        let cmd = make_command("状态", "café 状态");
+        let tool = make_tool("café", vec![cmd]);
+        let modules = CliToolConverter::new().convert(&tool);
+
+        assert_eq!(modules.len(), 1);
+        assert_eq!(modules[0].module_id, "cli.café.状态");
+    }
+
+    #[test]
+    fn test_converter_flag_without_name_uses_unknown_key() {
+        // F1 §5 edge: a flag with neither long nor short name falls back to the
+        // "unknown" canonical key rather than panicking or being dropped.
+        use crate::models::{ScannedFlag, ValueType};
+        let mut cmd = make_command("run", "tool run");
+        cmd.flags = vec![ScannedFlag {
+            long_name: None,
+            short_name: None,
+            description: "a nameless flag".to_string(),
+            value_type: ValueType::Boolean,
+            required: false,
+            default: None,
+            enum_values: None,
+            repeatable: false,
+            value_name: None,
+        }];
+        let tool = make_tool("tool", vec![cmd]);
+        let modules = CliToolConverter::new().convert(&tool);
+
+        let props = &modules[0].input_schema["properties"];
+        assert!(
+            props.get("unknown").is_some(),
+            "no-name flag should map to the 'unknown' key; got {props:?}"
+        );
+    }
+
+    #[test]
     fn test_converter_deduplicates_colliding_module_ids() {
         // Spec §5: two leaf commands flattening to the same dotted path must
         // both survive with disambiguated ids, not silently collide.

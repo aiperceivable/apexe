@@ -422,6 +422,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_execute_json_output_parsed() {
+        // F2 §5.4: when json_flag is set and stdout is valid JSON, the result
+        // carries a parsed `json_output` object.
+        let module = CliModule::new(CliModuleConfig {
+            module_id: "test.jsontool".to_string(),
+            description: "json test".to_string(),
+            input_schema: json!({"type": "object"}),
+            output_schema: json!({"type": "object"}),
+            annotations: ModuleAnnotations::default(),
+            binary_path: "sh".to_string(),
+            command_parts: vec![
+                "-c".to_string(),
+                "echo '{\"status\":\"ok\",\"count\":2}'".to_string(),
+            ],
+            json_flag: Some("--json".to_string()),
+            timeout_ms: 5000,
+            max_output_bytes: executor::DEFAULT_MAX_OUTPUT_BYTES,
+        });
+
+        let ctx = Context::anonymous();
+        let result = module.execute(json!({}), &ctx).await.unwrap();
+        let json_out = result
+            .get("json_output")
+            .expect("json_output must be present when json_flag is set and stdout is JSON");
+        assert_eq!(json_out["status"], "ok");
+        assert_eq!(json_out["count"], 2);
+    }
+
+    #[tokio::test]
     async fn test_cli_module_timeout_retryable_only_when_idempotent() {
         let idempotent = CliModule::new(CliModuleConfig {
             module_id: "test.sleep".to_string(),
