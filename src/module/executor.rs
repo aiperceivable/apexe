@@ -140,14 +140,33 @@ async fn read_up_to<R: tokio::io::AsyncRead + Unpin>(
     Ok(buf)
 }
 
+/// Base environment variables passed through to a wrapped CLI subprocess.
+///
+/// A wrapped tool is invoked by an external agent over MCP/A2A, so it must not
+/// inherit apexe's *full* process environment — that could hold secrets (API
+/// tokens, cloud credentials) the agent should never see. The subprocess env is
+/// scrubbed to this allowlist plus any `LC_*` locale variable; file-based
+/// credentials under `$HOME` still work. (Passing tool-specific credential env
+/// through is intended as a future opt-in config knob.)
+const ENV_ALLOWLIST: &[&str] = &[
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TERM", "TZ", "TMPDIR",
+];
+
+/// Whether an environment variable is allowed through to a wrapped subprocess.
+fn is_allowed_env(key: &str) -> bool {
+    ENV_ALLOWLIST.contains(&key) || key.starts_with("LC_")
+}
+
 /// Execute a subprocess with a timeout, capturing stdout/stderr.
 ///
 /// Runs the given binary with args directly (no shell), optionally appending
-/// json_flag parts. Captured stdout/stderr are each capped at
-/// `max_output_bytes` to bound memory use against runaway output; stdout,
-/// stderr, and the exit status are collected concurrently to avoid pipe
-/// deadlock. The child has `kill_on_drop` set, so if `timeout_ms` elapses
-/// the process is actually killed rather than left running as an orphan.
+/// json_flag parts. The environment is scrubbed to [`ENV_ALLOWLIST`] so secrets
+/// in apexe's own environment do not leak to the wrapped tool. Captured
+/// stdout/stderr are each capped at `max_output_bytes` to bound memory use
+/// against runaway output; stdout, stderr, and the exit status are collected
+/// concurrently to avoid pipe deadlock. The child has `kill_on_drop` set, so if
+/// `timeout_ms` elapses the process is actually killed rather than left running
+/// as an orphan.
 #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
 pub async fn execute_subprocess(
     binary_path: &str,
@@ -166,19 +185,26 @@ pub async fn execute_subprocess(
     let timeout_duration = std::time::Duration::from_millis(timeout_ms);
 
     let run = async {
-        let mut child = Command::new(binary_path)
+        let mut command = Command::new(binary_path);
+        command
             .args(&full_args)
+            .env_clear()
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| {
-                ModuleError::new(
-                    ErrorCode::ModuleExecuteError,
-                    format!("Failed to execute '{}': {}", binary_path, e),
-                )
-            })?;
+            .kill_on_drop(true);
+        // Re-add only allowlisted environment variables (scrub secrets).
+        for (key, value) in std::env::vars() {
+            if is_allowed_env(&key) {
+                command.env(key, value);
+            }
+        }
+        let mut child = command.spawn().map_err(|e| {
+            ModuleError::new(
+                ErrorCode::ModuleExecuteError,
+                format!("Failed to execute '{}': {}", binary_path, e),
+            )
+        })?;
 
         // Read one extra byte past the cap so truncation can be detected,
         // and drive stdout/stderr/wait concurrently: reading each stream
@@ -330,6 +356,53 @@ mod tests {
         let result = validate_no_injection("arg", "a;b");
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ErrorCode::GeneralInvalidInput);
+    }
+
+    #[test]
+    fn test_is_allowed_env() {
+        // Base runtime vars pass; secrets do not.
+        assert!(is_allowed_env("PATH"));
+        assert!(is_allowed_env("HOME"));
+        assert!(is_allowed_env("LC_CTYPE")); // LC_ prefix
+        assert!(!is_allowed_env("AWS_SECRET_ACCESS_KEY"));
+        assert!(!is_allowed_env("GH_TOKEN"));
+        assert!(!is_allowed_env("OPENAI_API_KEY"));
+        assert!(!is_allowed_env("CARGO_PKG_NAME"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_subprocess_scrubs_environment() {
+        // A wrapped subprocess must NOT inherit apexe's full environment (which
+        // may hold secrets). Only allowlisted vars (plus a few sh injects) reach
+        // it; PATH must survive so tools can still run.
+        let out = execute_subprocess(
+            "sh",
+            &["-c".to_string(), "env".to_string()],
+            None,
+            5_000,
+            DEFAULT_MAX_OUTPUT_BYTES,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            out.stdout.lines().any(|l| l.starts_with("PATH=")),
+            "PATH should pass through: {}",
+            out.stdout
+        );
+        // The test process itself has many vars (cargo sets numerous CARGO_*);
+        // a scrubbed child stays tiny, proving it did not inherit them.
+        let count = out.stdout.lines().count();
+        assert!(
+            count <= 20,
+            "environment was not scrubbed, child sees {count} vars: {}",
+            out.stdout
+        );
+        assert!(
+            !out.stdout.contains("CARGO_"),
+            "cargo/apexe env leaked to the wrapped subprocess: {}",
+            out.stdout
+        );
     }
 
     #[tokio::test]
