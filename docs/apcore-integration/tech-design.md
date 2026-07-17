@@ -10,6 +10,28 @@
 
 ---
 
+> **As-built note (divergences from this design):** This is a pre-implementation
+> design doc; several proposals below were built differently. The authoritative
+> record is the current code and the `docs/features/v2-*` specs. Key divergences:
+>
+> - **No `SandboxManager` and no `src/governance/sandbox.rs`.** The `governance`
+>   module contains only `acl` (`AclManager`) and `audit` (`AuditManager`).
+> - **No `--sandbox` and no `--require-auth` CLI flags.** Subprocess isolation is
+>   always-on in `src/module/executor.rs` (`execute_subprocess`): environment
+>   scrubbing (env cleared, only a base allowlist passes through), no-shell direct
+>   argv with shell-metachar rejection, output cap (`max_output_bytes`, 64 MiB
+>   default), timeout + `kill_on_drop`, and stdin = `/dev/null`. Stronger OS
+>   sandboxing (seccomp/landlock/namespaces/cgroups) remains roadmap, not built.
+> - **Transport auth is delegated to the apcore library API** (apcore-a2a
+>   `Authenticator`); MCP/A2A servers **bind localhost (127.0.0.1) by default**.
+> - **The `nom` dependency was removed.** GNU flags are extracted via regex only
+>   (`src/scanner/parsers/gnu.rs::extract_flags`).
+> - **The audit trail is wired.** `CliModule::execute` records each execution
+>   (input hashed) and `ACL::set_audit_logger` records allow/deny decisions; both
+>   append JSONL to `config.audit_log` (file mode `0o600`). `--acl` fails closed.
+
+---
+
 ## 1. Executive Summary
 
 apexe v0.1.0 replaces all custom infrastructure (MCP server, binding generator, governance, error types) with battle-tested apcore ecosystem crates while preserving the unique 3-tier deterministic scanner engine. The result is a thinner, more maintainable codebase that inherits protocol compliance, authentication, middleware, and output tooling from the ecosystem rather than reimplementing them.
@@ -385,7 +407,9 @@ server.serve();
 - `"http"` maps to apcore-mcp `"streamable-http"` transport
 - `"sse"` maps to apcore-mcp `"sse"` transport
 
-**Authentication**: Optional JWT auth via `--require-auth` flag (new CLI argument).
+**Authentication**: As-built, there is no `--require-auth` flag; transport
+authentication is delegated to the apcore library API (apcore-a2a `Authenticator`),
+and MCP/A2A servers bind localhost (127.0.0.1) by default.
 
 See Feature Spec F4 for full details.
 
@@ -677,9 +701,9 @@ apexe list [--format json|table] [--modules-dir PATH]
 apexe config [--show] [--init]
 ```
 
-**New CLI flags in v0.1.0**:
-- `apexe serve --require-auth` -- Enable JWT authentication
-- `apexe serve --sandbox` -- Enable subprocess sandboxing
+**New CLI flags in v0.1.0** (see As-built note: `--require-auth` and `--sandbox`
+were not built; transport auth is delegated to the apcore library API and
+subprocess isolation is always-on):
 - `apexe scan --verify` -- Run verification on generated output
 - `apexe scan --dry-run` -- Preview output without writing files
 
@@ -804,7 +828,6 @@ Per-request flow:
 | `src/output/loader.rs` | Load bindings from YAML files |
 | `src/governance/acl.rs` | `AclManager` -- wraps apcore ACL |
 | `src/governance/audit.rs` | `AuditManager` -- wraps apcore-cli AuditLogger |
-| `src/governance/sandbox.rs` | `SandboxManager` -- wraps apcore-cli Sandbox |
 
 ### 9.5 Test Migration
 
@@ -1032,8 +1055,8 @@ src/
 ├── governance/          # REWRITTEN
 │   ├── mod.rs
 │   ├── acl.rs           # AclManager (wraps apcore ACL)
-│   ├── audit.rs         # AuditManager (wraps apcore-cli AuditLogger)
-│   └── sandbox.rs       # SandboxManager (wraps apcore-cli Sandbox)
+│   └── audit.rs         # AuditManager (wraps apcore-cli AuditLogger)
+│                        # As-built: no sandbox.rs; isolation is always-on in module/executor.rs
 └── serve/               # TRIMMED
     └── config_gen.rs    # Kept: integration config snippets
 ```

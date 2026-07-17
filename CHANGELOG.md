@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
-## [0.3.0] - 2026-07-16
+## [0.3.0] - 2026-07-17
 
 ### Added
 - **`apexe a2a`** — New subcommand exposing scanned CLI modules as an A2A agent via `apcore-a2a`, sharing governance (ACL, logging, approval) with `apexe serve` through a common `build_executor()`.
@@ -19,19 +19,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 - **`SkillOutput` + `apexe scan --skills-dir <DIR>`** — writes a Claude Skill (`SKILL.md`) per module via apcore-toolkit's `ModuleStyle::Skill` formatter, directly usable by Claude Code.
 - **`apexe serve --metrics`** — opt-in `/metrics` (Prometheus) and `/usage` (JSON) observability endpoints via `APCoreMCPBuilder::observability`. HTTP/SSE transports only; a no-op warning on stdio.
 - **Pluggable approval store** — `ExecutorOptions`/`McpServerBuilder`/`A2aServerBuilder` accept an optional `Arc<dyn ApprovalStore>`, switching a `requires_approval` module's approval flow from the blocking `ElicitationApprovalHandler` to the non-blocking `StorageBackedApprovalHandler`. Library-only (no CLI flag — `InMemoryApprovalStore` isn't shared across process invocations); bring your own persistent store to use it.
+- **Governance audit trail (wired end to end)** — `CliModule::execute` records every execution (module_id, status, exit_code, duration; input **hashed**, never stored raw) and `ACL::set_audit_logger` records every allow/deny decision, both appended as JSONL to `config.audit_log`. Previously `AuditManager` and `config.audit_log` were dormant.
+- **MCP & A2A serve-path integration tests** — `tests/mcp_integration.rs` / `tests/a2a_integration.rs` drive a real on-disk binding through the request path (`tools/call` executes, injection blocked, agent card exposes the scanned skill). Adds `A2aServerBuilder::agent_card()` (in-process, no port bind — the A2A analog of `McpServerBuilder::export_openai_tools`).
 
 ### Changed
 - **Upgraded apcore ecosystem** — `apcore = "0.26"`, `apcore-cli = "0.10"`, `apcore-mcp = "0.17"`, `apcore-toolkit = "0.10"` (`default-features = false`), plus new `apcore-a2a = "0.4"`.
 - **`ModuleDescriptor` construction rewritten** — matches the reshaped struct (`module_id`, `description`, `version`, `documentation`, `annotations: Option<...>`, etc.) shared by the new MCP and A2A builders via `crate::module::registry::build_executor`.
 - **`output/loader.rs`** — `load_modules_from_dir` now delegates to apcore-toolkit's `BindingLoader` (strict mode) instead of a hand-rolled parser, picking up a 16 MiB per-file cap and a 10,000-file per-directory cap for free. Drops the undocumented bare-single-`ScannedModule`-without-a-`bindings`-key fallback, which `YamlOutput` never produced anyway.
 - **Timeout retryability moved from `execute_subprocess` to `CliModule::execute`** — a killed subprocess may have partially applied a non-idempotent side effect, so only `CliModule` (which knows the module's `idempotent` annotation) decides whether a timeout is safe to retry.
+- **Removed the non-functional `apexe a2a --enable-approval` flag** — A2A has no elicitation transport and no CLI approval-store, so the flag could only ever error at serve time. Approval on A2A remains a library-only feature (supply an `ApprovalStore`); `apexe serve --enable-approval` is unaffected.
+- **Parser regexes compiled once (`LazyLock`)** — help-format parsers hoisted per-call `Regex::new` to module-level statics, removing thousands of recompiles on deep subcommand trees.
+- **CRLF help normalized at the parser pipeline boundary** — `\r\n`/`\r` help text (e.g. a Windows tool's output) now parses identically to `\n` across all parsers.
+- **Specs aligned to implementation** — the F5 `--sandbox`/`SandboxManager` and F4 `--require-auth` designs are removed from the feature specs; subprocess isolation is unconditional (see Security) and transport auth is delegated to the apcore library API with a localhost default.
 
 ### Removed
-- **`SandboxManager` / `governance::sandbox`** — deleted. `apcore-cli::Sandbox` requires the host binary to re-exec itself with an `--internal-sandbox-runner` subcommand and rediscover modules from `APCORE_EXTENSIONS_ROOT`; apexe's runtime-scanned `CliModule`s don't fit that model, and `SandboxManager` was never actually wired into any execution path. The resource-limiting behavior it was meant to provide (output caps, timeout enforcement) is now implemented directly in `execute_subprocess` — see "Subprocess hardening" above.
+- **`SandboxManager` / `governance::sandbox`** — deleted. `apcore-cli::Sandbox` requires the host binary to re-exec itself with an `--internal-sandbox-runner` subcommand and rediscover modules from `APCORE_EXTENSIONS_ROOT`; apexe's runtime-scanned `CliModule`s don't fit that model. There is no `--sandbox` toggle: subprocess isolation (timeout + kill-on-drop, output caps, no-shell direct argv, **environment scrubbing**) is applied unconditionally in `execute_subprocess`.
+- **`nom` dependency** — the unused nom-based `parse_flag_line` GNU parser (~130 LOC, never wired into the parse path) was deleted; GNU help extraction uses regex only.
+
+### Security
+- **Environment scrubbing for wrapped subprocesses** — an agent-invoked CLI no longer inherits apexe's full process environment. `execute_subprocess` clears the env and passes only a base allowlist (`PATH`/`HOME`/`USER`/`LOGNAME`/`SHELL`/`LANG`/`LC_*`/`TERM`/`TZ`/`TMPDIR`), so secrets in apexe's environment (API tokens, cloud credentials) cannot leak to a wrapped tool. File-based credentials under `$HOME` still work.
+- **ACL fails closed** — `apexe serve`/`apexe a2a --acl <path>` with a missing or malformed file now refuses to start, instead of logging a warning and serving with **no** access control (which apcore treats as allow-all).
+- **Audit log hardened to `0o600`** — the JSONL audit log (executions + ACL decisions) is created owner-only, so caller identities and denied targets are not world-readable on shared hosts.
 
 ### Fixed
 - **`ErrorCode::AclDenied` → `ACLDenied`** rename tracked.
-- **`ACL::new`** now takes an explicit audit-logger argument (`None` for apexe).
+- **ACL audit logger now populated** — the served ACL is built with an audit logger wired to `AuditManager` (previously constructed with `None`), so allow/deny decisions are actually recorded.
+- **`apexe scan`/`apexe list` surface failures** — `scan` exits non-zero when a binding/ACL/skill write fails (was warn-and-exit-0); `list` surfaces a corrupt binding's parse error instead of a misleading "No modules found".
+- **Resolved `log_level` applied to logging** — `APEXE_LOG_LEVEL` / `config.yaml` `log_level` now feed the tracing subscriber (precedence `RUST_LOG > --log-level > config > "info"`); previously only `--log-level`/`RUST_LOG` took effect.
+- **Adapter propagates examples & deduplicates module ids** — scanned `command.examples` now reach the generated module; colliding `module_id`s after subcommand flattening are disambiguated; the output schema advertises `json_output` only when the structured format is JSON.
+- **Scanner robustness** — every scan subprocess is timeout-bounded (was only the top-level `--help`); the shared timeout helper drains stdout/stderr concurrently to avoid a deadlock on large output; a discovered subcommand's `help_format` is tagged from the matching parser (was hardcoded `Unknown`); `cache.invalidate()` matches the exact tool name (was an over-broad prefix); the cobra parser handles CRLF section boundaries.
+- **Failed/killed executions are audited** — a timed-out or spawn-failed run records a `status=error` audit entry instead of leaving no trace.
 
 ---
 

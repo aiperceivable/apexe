@@ -739,53 +739,13 @@ Steps:
   7. Return ParsedHelp
 ```
 
-##### GNU Flag Extraction with nom
+##### GNU Flag Extraction (regex)
 
-```rust
-use nom::{
-    bytes::complete::{tag, take_while1},
-    character::complete::{char, multispace0, space1},
-    combinator::{opt, map},
-    sequence::{preceded, tuple},
-    IResult,
-};
-
-/// Parse a single GNU-style option line:
-///   "  -m, --message=MSG   Use the given message"
-///   "  -a, --all           Commit all changed files"
-fn parse_flag_line(input: &str) -> IResult<&str, (Option<&str>, Option<&str>, Option<&str>, &str)> {
-    let (input, _) = multispace0(input)?;
-
-    // Parse optional short flag: -X
-    let (input, short) = opt(preceded(
-        char('-'),
-        take_while1(|c: char| c.is_alphanumeric()),
-    ))(input)?;
-
-    // Skip optional comma separator
-    let (input, _) = opt(tuple((char(','), space1)))(input)?;
-
-    // Parse optional long flag: --flag-name
-    let (input, long) = opt(preceded(
-        tag("--"),
-        take_while1(|c: char| c.is_alphanumeric() || c == '-'),
-    ))(input)?;
-
-    // Parse optional value placeholder: =VALUE or <VALUE>
-    let (input, value_name) = opt(preceded(
-        opt(char('=')),
-        take_while1(|c: char| c.is_uppercase() || c == '_' || c == '<' || c == '>'),
-    ))(input)?;
-
-    // Skip whitespace before description
-    let (input, _) = space1(input)?;
-
-    // Remaining text is the description
-    let description = input.trim();
-
-    Ok(("", (short, long, value_name, description)))
-}
-```
+GNU-style option lines are extracted with regex, not a parser-combinator library.
+The `nom` dependency was removed; `src/scanner/parsers/gnu.rs::extract_flags`
+matches short/long flags, optional value placeholders, and trailing descriptions
+directly against each help line (e.g. `  -m, --message=MSG   Use the given message`
+or `  -a, --all           Commit all changed files`).
 
 ##### Subcommand Discovery (Recursive Scanning)
 
@@ -1839,7 +1799,7 @@ impl AuditLogger {
 
 ### 8.2 Alternative B: Pure Deterministic Parsing with Plugin System (Proposed)
 
-**Approach:** Parser combinators (nom) and regex-based parsers for known help formats, with a plugin system for custom formats.
+**Approach:** Regex-based parsers for known help formats, with a plugin system for custom formats.
 
 **Pros:**
 - Zero cost, zero latency

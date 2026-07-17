@@ -19,9 +19,9 @@ Outside-In CLI-to-Agent Bridge — automatically wraps existing CLI tools into g
 
 - **Scan** — Three-tier deterministic engine (--help → man pages → shell completions) with 4 built-in parsers (GNU, Click, Cobra, Clap)
 - **Schema** — Generates JSON Schema with type mapping, format hints (`path`, `uri`), defaults, enums, and required fields
-- **Serve** — MCP server via [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) (stdio / streamable-http / SSE) with JWT auth and Explorer UI, plus an A2A agent server via [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust)
-- **Govern** — Behavioral annotations (readonly/destructive/idempotent), flag boosting (`--force` → requires_approval), default-deny ACL, audit logging, `Module::preview()` dry-run for destructive commands
-- **Stay stable** — captured output capped at 64 MiB, timed-out subprocesses actually killed (`kill_on_drop`), circuit breaker + retry middleware on by default, optional `/metrics` + `/usage`
+- **Serve** — MCP server via [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) (stdio / streamable-http / SSE) with an Explorer UI, plus an A2A agent server via [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust). Servers bind localhost by default; transport authentication is available via the apcore library API
+- **Govern** — Behavioral annotations (readonly/destructive/idempotent), flag boosting (`--force` → requires_approval), **fail-closed** default-deny ACL, a JSONL audit trail of executions **and** ACL allow/deny decisions (input hashed, log `0o600`), `Module::preview()` dry-run for destructive commands
+- **Isolate** — every wrapped subprocess runs with the environment **scrubbed** to a base allowlist (secrets don't leak to tools), no shell (direct argv + injection filtering), output capped at 64 MiB, and a hard timeout that actually kills the process (`kill_on_drop`); circuit breaker + retry middleware on by default, optional `/metrics` + `/usage`
 - **AI Guidance** — Every error includes `ai_guidance` to help agents self-correct; non-zero exit codes return stderr context
 
 ### Built on the apcore ecosystem
@@ -114,14 +114,18 @@ apexe serve --no-circuit-breaker --no-retry           # Disable resilience middl
 
 ### `apexe a2a`
 
-Start an A2A agent server for scanned tools. Shares governance (ACL, logging, approval) with `apexe serve` via the same `Executor`.
+Start an A2A agent server for scanned tools. Shares governance (ACL, logging, audit) with `apexe serve` via the same `Executor`.
 
 ```bash
-apexe a2a                                            # http://127.0.0.1:8000 (default)
-apexe a2a --url http://0.0.0.0:9000 --explorer       # Custom bind address + browser UI
-apexe a2a --acl ~/.apexe/acl.yaml --enable-approval  # Governed, approval-gated
-apexe a2a --cors-origin https://example.com          # Allow a browser origin
+apexe a2a                                       # http://127.0.0.1:8000 (default)
+apexe a2a --url http://0.0.0.0:9000 --explorer  # Custom bind address + browser UI
+apexe a2a --acl ~/.apexe/acl.yaml               # Governed by an ACL policy
+apexe a2a --cors-origin https://example.com     # Allow a browser origin
 ```
+
+> A2A has no interactive elicitation transport, so there is **no `--enable-approval`
+> flag** on `apexe a2a` (it's available on `apexe serve`, and on A2A only via the
+> library `ApprovalStore` API). See [`docs/user-manual.md`](docs/user-manual.md).
 
 ### `apexe list`
 

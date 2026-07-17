@@ -4,9 +4,13 @@
 
 **apexe** -- Outside-In CLI-to-Agent Bridge. Automatically wraps CLI tools into governed apcore modules, served via MCP/A2A.
 
-**Version:** 0.1.0 — Full apcore ecosystem integration.
+**Version:** 0.3.0 — Full apcore ecosystem integration (MCP + A2A).
 
-**Status:** All features implemented. 335 tests passing, 0 failures. ~8,850 LOC Rust.
+**Status:** All features implemented. 407 tests passing, 0 failures. ~11,300 LOC Rust.
+
+> The section headings below tagged "(v0.1.0 …)" record when each piece first
+> landed; the crate is now **0.3.0**. For the authoritative current state see
+> [`CHANGELOG.md`](../CHANGELOG.md) and [`docs/user-manual.md`](user-manual.md).
 
 ## Architecture (v0.1.0)
 
@@ -21,10 +25,10 @@ CLI Tool Binary
       |
       ├──→ [YamlOutput] ──→ .binding.yaml files
       ├──→ [AclManager] ──→ acl.yaml (apcore ACL)
-      └──→ [CliModule]  ──→ apcore Module trait
+      └──→ [CliModule]  ──→ apcore Module trait (governed Executor)
               |
-              v
-      [McpServerBuilder] ──→ apcore-mcp (stdio/http/sse)
+              ├──→ [McpServerBuilder] ──→ apcore-mcp  (stdio/http/sse)
+              └──→ [A2aServerBuilder] ──→ apcore-a2a  (HTTP agent)
 ```
 
 ## Module Map
@@ -39,16 +43,17 @@ src/
 │   └── config_gen   Claude Desktop / Cursor config snippet generation
 ├── config           ApexeConfig + apcore CoreConfig integration
 ├── errors           ApexeError + From<ApexeError> for ModuleError
-├── governance/      Access control, audit, sandbox
+├── governance/      Access control, audit
 │   ├── acl          AclManager wrapping apcore::ACL
-│   ├── audit        AuditManager wrapping apcore_cli::AuditLogger
-│   └── sandbox      SandboxManager wrapping apcore_cli::Sandbox
+│   └── audit        AuditManager wrapping apcore_cli::AuditLogger
+│                    (subprocess isolation is always-on in module/executor.rs)
 ├── mcp/             MCP server integration
 │   └── server       McpServerBuilder wrapping apcore_mcp::APCoreMCP
 ├── models/          ScannedCLITool, ScannedCommand, ScannedFlag, ScannedArg
 ├── module/          apcore Module trait implementation
 │   ├── cli_module   CliModule (subprocess execution via Module trait)
-│   └── executor     Argument building, injection prevention, spawn_blocking
+│   └── executor     Argument building, injection prevention, env scrubbing,
+│                     tokio::process (timeout + kill_on_drop)
 ├── output/          Binding file I/O
 │   ├── yaml         YamlOutput wrapping apcore_toolkit::YAMLWriter
 │   └── loader       load_modules_from_dir (reads .binding.yaml)
@@ -65,10 +70,11 @@ src/
 
 | Crate | Version | Usage |
 |-------|---------|-------|
-| `apcore` | 0.14 | Module trait, Registry, ACL, ModuleError, ErrorCode, Context, Config |
-| `apcore-toolkit` | 0.4 | ScannedModule, YAMLWriter, Verifier, ModuleAnnotations |
-| `apcore-mcp` | 0.11 | APCoreMCP server (stdio, streamable-http, SSE, JWT auth, Explorer UI) |
-| `apcore-cli` | 0.3 | AuditLogger (JSONL audit), Sandbox (subprocess isolation) |
+| `apcore` | 0.26 | Module trait, Registry, ACL, ModuleError, ErrorCode, Context, Config |
+| `apcore-toolkit` | 0.10 | ScannedModule, YAMLWriter, Verifier, ModuleAnnotations, `deduplicate_ids` |
+| `apcore-mcp` | 0.17 | APCoreMCP server (stdio, streamable-http, SSE, Explorer UI) |
+| `apcore-a2a` | 0.4 | A2A agent server (`async_serve` / `build_app`, `Authenticator`) |
+| `apcore-cli` | 0.10 | AuditLogger (JSONL audit) |
 
 ## v0.1.0 Features
 
@@ -88,7 +94,7 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 
 ### Module Executor (v0.1.0 new)
 - `CliModule`: implements apcore `Module` trait for CLI subprocess execution
-- Async execution via `tokio::task::spawn_blocking` with `tokio::time::timeout`
+- Async execution via `tokio::process::Command` with `tokio::time::timeout` and `kill_on_drop(true)`
 - Shell injection prevention (`;|&$\`'"` blocked)
 - Preflight validation on all string inputs
 
@@ -100,12 +106,12 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 - `McpServerBuilder`: modules_dir → Registry → Executor → APCoreMCP
 - Transports: stdio, streamable-http (was "http"), SSE
 - Full MCP protocol compliance via apcore-mcp
-- JWT authentication support, Explorer UI (HTTP transports)
+- Explorer UI (HTTP transports); transport authentication via the apcore library API (localhost bind by default)
 
 ### Governance (v0.1.0 rewritten)
-- `AclManager`: wraps `apcore::ACL`, generates default rules from annotations
-- `AuditManager`: wraps `apcore_cli::AuditLogger`, JSONL append-only with SHA-256 hashing
-- `SandboxManager`: wraps `apcore_cli::Sandbox`, subprocess isolation with timeout
+- `AclManager`: wraps `apcore::ACL`, generates default rules from annotations; fails closed when a configured ACL is missing/malformed
+- `AuditManager`: wraps `apcore_cli::AuditLogger`, JSONL append-only with SHA-256 hashing; records executions and ACL allow/deny decisions (log `0o600`)
+- Subprocess isolation: always-on in `module/executor.rs` — env scrubbing, no-shell argv, output cap, timeout + `kill_on_drop` (no separate SandboxManager)
 
 ## Key Rust Crates
 
@@ -114,20 +120,19 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 | `apcore` | Core module system, ACL, errors |
 | `apcore-toolkit` | Scanner types, YAML writer, verifiers |
 | `apcore-mcp` | MCP protocol server |
-| `apcore-cli` | Audit logging, sandbox isolation |
+| `apcore-cli` | Audit logging (JSONL) |
 | `clap` (derive mode) | CLI argument parsing |
 | `serde` + `serde_json` + `serde_yaml` | Serialization |
 | `tokio` | Async runtime |
 | `tracing` + `tracing-subscriber` | Structured logging |
 | `thiserror` | Typed error definitions |
-| `nom` | Parser combinators for help text |
-| `regex` | Pattern matching for help format detection |
+| `regex` | Help-text parsing and format detection (all parsers) |
 | `sha2` | SHA-256 hashing for audit privacy |
 | `uuid` | UUID v4 for trace IDs |
 | `shell-words` | Shell argument splitting |
 
 ## Open Items
 
-1. **A2A protocol** -- Deferred to v0.3.0.
+1. **A2A protocol** -- Implemented in 0.3.0 (`apexe a2a`, `A2aServerBuilder`).
 2. **CLI rewiring completion** -- `apexe scan` fully rewired; `apexe serve` uses McpServerBuilder.
 3. **`apexe evo`** -- Deferred. Depends on apevo product maturity.

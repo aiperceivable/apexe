@@ -114,7 +114,7 @@ use apcore::{ModuleError, Registry};
 use apcore_toolkit::{RegistryWriter, ScannedModule, HandlerFactory};
 
 use crate::module::CliModule;
-use crate::governance::{AuditManager, SandboxManager};
+use crate::governance::AuditManager;
 
 /// Registers ScannedModules directly into an apcore Registry as CliModules.
 pub struct RegistryOutput {
@@ -125,15 +125,13 @@ impl RegistryOutput {
     /// Create a new RegistryOutput with a handler factory that produces CliModules.
     pub fn new(
         timeout_ms: u64,
-        sandbox: Option<Arc<SandboxManager>>,
         audit: Option<Arc<AuditManager>>,
     ) -> Self {
         let timeout = timeout_ms;
-        let sb = sandbox.clone();
         let au = audit.clone();
 
         let factory: HandlerFactory = Box::new(move |module: &ScannedModule| {
-            Box::new(CliModule::from_scanned(module, timeout, sb.clone(), au.clone())?)
+            Box::new(CliModule::from_scanned(module, timeout, au.clone())?)
         });
 
         Self {

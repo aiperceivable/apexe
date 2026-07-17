@@ -145,17 +145,21 @@ apexe a2a [OPTIONS]
 | `--name <NAME>` | `apexe` | A2A agent name |
 | `--explorer` | off | Enable browser-based Explorer UI |
 | `--acl <PATH>` | - | Path to ACL policy YAML file |
-| `--enable-approval` | off | Require approval for destructive commands |
 | `--no-logging` | off | Disable structured logging middleware |
 | `--no-circuit-breaker` | off | Disable CircuitBreakerMiddleware (on by default) |
 | `--no-retry` | off | Disable RetryMiddleware (on by default; only ever retries idempotent timeouts) |
 | `--execution-timeout <SECS>` | `300` | Per-task execution timeout in seconds |
 | `--cors-origin <ORIGIN>` | - | Allowed CORS origin (repeatable) |
 
+> **No `--enable-approval` on `apexe a2a`.** A2A has no interactive elicitation
+> transport, so an approval prompt can never be resolved over it; the flag would
+> only ever error. Approval on A2A is a library-only feature — construct
+> `A2aServerBuilder` with an `ApprovalStore`. `apexe serve` keeps `--enable-approval`.
+
 ```bash
-apexe a2a                                            # http://127.0.0.1:8000
-apexe a2a --url http://0.0.0.0:9000 --explorer       # custom bind address + browser UI
-apexe a2a --acl ~/.apexe/acl.yaml --enable-approval  # governed, approval-gated
+apexe a2a                                       # http://127.0.0.1:8000
+apexe a2a --url http://0.0.0.0:9000 --explorer  # custom bind address + browser UI
+apexe a2a --acl ~/.apexe/acl.yaml               # governed by an ACL policy
 ```
 
 ### 4.4 `apexe list`
@@ -394,12 +398,17 @@ Every tool invocation via `apexe serve` is logged to `~/.apexe/audit.jsonl`:
 - **Privacy**: Inputs are SHA-256 hashed with a random salt. Raw input values are never logged.
 - **Resilience**: Audit logging never causes execution failures. Write errors are silently logged via tracing.
 
-### 9.3 Subprocess Hardening
+### 9.3 Subprocess Isolation (always-on)
 
-Every `CliModule` call runs through `execute_subprocess` (`src/module/executor.rs`), which enforces two resource limits directly (not via `apcore-cli`'s `Sandbox` — that type expects the host binary to re-exec itself with an `--internal-sandbox-runner` subcommand and rediscover modules from `APCORE_EXTENSIONS_ROOT`, a model apexe's runtime-scanned CLI modules don't fit):
+Every `CliModule` call runs through `execute_subprocess` (`src/module/executor.rs`), which applies isolation **unconditionally** — there is no `--sandbox` toggle and no "unsandboxed" mode. (This is not `apcore-cli`'s `Sandbox`, which expects the host binary to re-exec itself with an `--internal-sandbox-runner` subcommand and rediscover modules from `APCORE_EXTENSIONS_ROOT` — a model apexe's runtime-scanned CLI modules don't fit.)
 
+- **Environment scrubbing**: the subprocess does **not** inherit apexe's full environment. The env is cleared and only a base allowlist is passed through (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TZ`, `TMPDIR`), so secrets in apexe's environment (API tokens, cloud credentials) can't leak to — or be surfaced by — a wrapped tool. File-based credentials under `$HOME` still work. (Per-tool credential-env passthrough is planned as an opt-in config knob.)
+- **No shell**: arguments are passed as direct argv (no shell interpolation), and client-supplied string values containing shell metacharacters are rejected before execution.
 - **Output cap**: stdout/stderr are each capped at 64 MiB (`executor::DEFAULT_MAX_OUTPUT_BYTES`). A command that exceeds it gets `stdout_truncated`/`stderr_truncated: true` in the result instead of exhausting memory.
 - **Timeout kills the process**: the child is spawned with `kill_on_drop(true)`; when `--timeout`/`default_timeout` elapses, the subprocess is actually terminated rather than left running as an orphan.
+- **stdin** is connected to `/dev/null`, so a tool that waits for input fails fast instead of hanging.
+
+Stronger OS-level sandboxing (seccomp/landlock, namespaces, cgroup limits) is tracked as roadmap; v0.x relies on the governance stack (ACL + approval + preview) plus the process isolation above.
 
 ### 9.4 Preview (Dry-Run Prediction)
 
@@ -487,13 +496,16 @@ let tools = McpServerBuilder::new()
 [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust), instead of
 (or alongside) MCP. It shares governance with `apexe serve` — both build
 their `Executor` through the same `apexe::module::build_executor()`, so an
-`--acl` policy, the logging middleware, and `--enable-approval` behave
-identically regardless of which transport a caller uses.
+`--acl` policy, the logging middleware, the audit trail, and the always-on
+subprocess isolation behave identically regardless of which transport a caller
+uses. Human-in-the-loop **approval** is the one exception: `apexe serve` offers
+`--enable-approval` (MCP elicitation), but A2A has no elicitation transport, so
+approval on A2A is library-only (supply an `ApprovalStore` to `A2aServerBuilder`).
 
 ```bash
-apexe a2a                                            # http://127.0.0.1:8000
-apexe a2a --url http://0.0.0.0:9000 --explorer       # custom bind address + browser UI
-apexe a2a --acl ~/.apexe/acl.yaml --enable-approval  # governed, approval-gated
+apexe a2a                                       # http://127.0.0.1:8000
+apexe a2a --url http://0.0.0.0:9000 --explorer  # custom bind address + browser UI
+apexe a2a --acl ~/.apexe/acl.yaml               # governed by an ACL policy
 ```
 
 ### Endpoints

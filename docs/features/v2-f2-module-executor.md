@@ -39,7 +39,7 @@ use apcore::{Context, Module, ModuleAnnotations, ModuleError, SharedData};
 use apcore_toolkit::ScannedModule;
 use serde_json::Value;
 
-use crate::governance::{AuditManager, SandboxManager};
+use crate::governance::AuditManager;
 
 /// An apcore Module implementation that executes a CLI command as a subprocess.
 pub struct CliModule {
@@ -61,8 +61,6 @@ pub struct CliModule {
     json_flag: Option<String>,
     /// Subprocess timeout in milliseconds.
     timeout_ms: u64,
-    /// Optional sandbox for subprocess isolation.
-    sandbox: Option<Arc<SandboxManager>>,
     /// Optional audit logger.
     audit: Option<Arc<AuditManager>>,
 }
@@ -79,7 +77,6 @@ impl CliModule {
     pub fn from_scanned(
         module: &ScannedModule,
         timeout_ms: u64,
-        sandbox: Option<Arc<SandboxManager>>,
         audit: Option<Arc<AuditManager>>,
     ) -> Result<Self, ModuleError>;
 
@@ -94,7 +91,6 @@ impl CliModule {
         command_parts: Vec<String>,
         json_flag: Option<String>,
         timeout_ms: u64,
-        sandbox: Option<Arc<SandboxManager>>,
         audit: Option<Arc<AuditManager>>,
     ) -> Self;
 }
@@ -110,11 +106,10 @@ impl Module for CliModule {
     /// Steps:
     /// 1. Extract trace_id from Context for correlation.
     /// 2. Build command arguments from input JSON (see Section 3.1).
-    /// 3. If sandbox is enabled, delegate to SandboxManager.
-    /// 4. Otherwise, spawn_blocking for subprocess execution (see Section 3.2).
-    /// 5. Parse subprocess output into JSON result (see Section 3.3).
-    /// 6. If audit is enabled, log the execution.
-    /// 7. Return result or ModuleError.
+    /// 3. spawn_blocking for subprocess execution (see Section 3.2).
+    /// 4. Parse subprocess output into JSON result (see Section 3.3).
+    /// 5. If audit is enabled, log the execution.
+    /// 6. Return result or ModuleError.
     async fn execute(
         &self,
         ctx: &Context<SharedData>,
