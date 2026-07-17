@@ -63,6 +63,18 @@ impl AuditManager {
             .open(&self.path)
         {
             Ok(mut file) => {
+                // Match apcore-cli's execution writer: keep the audit log
+                // owner-only so caller identities and denied targets aren't
+                // world-readable on shared hosts. An ACL denial can be the first
+                // write (before any execution), so we must harden here too.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &self.path,
+                        std::fs::Permissions::from_mode(0o600),
+                    );
+                }
                 if let Err(e) = writeln!(file, "{line}") {
                     tracing::warn!(error = %e, "Failed to append ACL audit entry");
                 }

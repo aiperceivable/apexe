@@ -264,5 +264,14 @@ mod tests {
             "ACL decision not recorded: {content}"
         );
         assert!(content.contains("cli.rm"));
+
+        // The audit log must be owner-only (0o600) even when an ACL denial is
+        // the first write — it carries caller identities and denied targets.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&audit_path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "audit log should be owner-only");
+        }
     }
 }

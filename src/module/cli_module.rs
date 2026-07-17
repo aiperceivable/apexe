@@ -222,7 +222,7 @@ impl Module for CliModule {
         let user_args = executor::build_arguments(kwargs)?;
         args.extend(user_args);
 
-        let output = executor::execute_subprocess(
+        let output = match executor::execute_subprocess(
             &self.binary_path,
             &args,
             self.json_flag.as_deref(),
@@ -230,17 +230,29 @@ impl Module for CliModule {
             self.max_output_bytes,
         )
         .await
-        .map_err(|e| {
-            // Only mark a timeout retryable when the module is annotated
-            // idempotent: a killed non-idempotent command (e.g. `rm -rf`)
-            // may have partially applied its side effect, so blindly
-            // retrying it (e.g. via RetryMiddleware) would be unsafe.
-            if e.code == ErrorCode::ModuleTimeout {
-                e.with_retryable(self.annotations.idempotent)
-            } else {
-                e
+        {
+            Ok(output) => output,
+            Err(e) => {
+                // Only mark a timeout retryable when the module is annotated
+                // idempotent: a killed non-idempotent command (e.g. `rm -rf`)
+                // may have partially applied its side effect, so blindly
+                // retrying it (e.g. via RetryMiddleware) would be unsafe.
+                let e = if e.code == ErrorCode::ModuleTimeout {
+                    e.with_retryable(self.annotations.idempotent)
+                } else {
+                    e
+                };
+                // F5 §4.3: a killed/failed attempt (timeout, spawn failure,
+                // output overflow) must still appear in the audit trail — the
+                // rm -rf-that-timed-out case above is exactly what an operator
+                // needs to see. Exit code is unknown, so record -1.
+                if let Some(ref audit) = self.audit {
+                    let duration_ms = start.elapsed().as_millis() as u64;
+                    audit.log_execution(&self.module_id, &inputs, "error", -1, duration_ms);
+                }
+                return Err(e);
             }
-        })?;
+        };
 
         let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -513,6 +525,37 @@ mod tests {
         let ctx = Context::anonymous();
         let result = module.execute(json!({}), &ctx).await.unwrap();
         assert_eq!(result["exit_code"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_execute_audits_failed_run() {
+        // F5 §4.3: a failed/aborted attempt (here: spawn failure) is still
+        // recorded with status "error", not lost.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let audit_path = tmp.path().join("audit.jsonl");
+        let audit = Arc::new(AuditManager::new(&audit_path));
+        let module = CliModule::new(CliModuleConfig {
+            module_id: "test.fail".to_string(),
+            description: "fail".to_string(),
+            input_schema: json!({"type": "object"}),
+            output_schema: json!({"type": "object"}),
+            annotations: ModuleAnnotations::default(),
+            binary_path: "zzz_no_such_binary_xyz".to_string(),
+            command_parts: vec![],
+            json_flag: None,
+            timeout_ms: 5000,
+            max_output_bytes: executor::DEFAULT_MAX_OUTPUT_BYTES,
+        })
+        .with_audit(Some(audit));
+
+        let ctx = Context::anonymous();
+        let result = module.execute(json!({}), &ctx).await;
+        assert!(result.is_err());
+
+        let content = std::fs::read_to_string(&audit_path).unwrap();
+        let entry: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(entry["module_id"], "test.fail");
+        assert_eq!(entry["status"], "error");
     }
 
     #[tokio::test]
