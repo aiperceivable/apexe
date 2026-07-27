@@ -74,6 +74,7 @@ mod tests {
                 enum_values: None,
                 repeatable: false,
                 value_name: None,
+                ..Default::default()
             }],
             positional_args: vec![ScannedArg {
                 name: "file".into(),

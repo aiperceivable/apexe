@@ -89,11 +89,25 @@ pub struct ScanArgs {
     /// `<DIR>/.claude/skills/<module_id>/SKILL.md`
     #[arg(long)]
     pub skills_dir: Option<PathBuf>,
+
+    /// Curated tool overlay to apply, overriding the heuristic scan result.
+    ///
+    /// Outranks the built-in and `~/.apexe/overlays/` overlays, and skips the
+    /// variant, platform and probe conditions the file declares: naming the
+    /// file is the operator's own assertion that it applies. The command name
+    /// must still agree.
+    #[arg(long)]
+    pub overlay: Option<PathBuf>,
 }
 
 impl ScanArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
-        let orchestrator = crate::scanner::ScanOrchestrator::new(config.clone());
+        let mut orchestrator = crate::scanner::ScanOrchestrator::new(config.clone());
+        if let Some(ref overlay_path) = self.overlay {
+            orchestrator
+                .load_overlay(overlay_path)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
         let results = orchestrator.scan(&self.tools, self.no_cache, self.depth)?;
 
         let output_dir = self
@@ -110,7 +124,7 @@ impl ScanArgs {
         self.write_bindings(&modules, &output_dir)?;
         self.write_acl(&modules, config)?;
         self.write_skills(&modules)?;
-        self.print_results(&results)?;
+        self.print_results(results, &modules)?;
 
         Ok(())
     }
@@ -158,12 +172,30 @@ impl ScanArgs {
         Ok(())
     }
 
-    fn print_results(&self, results: &[crate::models::ScannedCLITool]) -> anyhow::Result<()> {
-        for tool in results {
-            match self.format.as_str() {
-                "json" => println!("{}", serde_json::to_string_pretty(tool)?),
-                "yaml" => println!("{}", serde_yaml::to_string(tool)?),
-                _ => Self::print_tool_table(tool),
+    /// Print the scan outcome in the requested format.
+    ///
+    /// Structured formats emit a single [`ScanReport`] document covering every
+    /// scanned tool. Previously each tool was printed as its own document,
+    /// which made a multi-tool scan's stdout invalid JSON and gave consumers no
+    /// flattened command list to bind against.
+    fn print_results(
+        &self,
+        results: Vec<crate::models::ScannedCLITool>,
+        modules: &[apcore_toolkit::ScannedModule],
+    ) -> anyhow::Result<()> {
+        match self.format.as_str() {
+            "json" => {
+                let report = crate::adapter::ScanReport::new(results, modules);
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            }
+            "yaml" => {
+                let report = crate::adapter::ScanReport::new(results, modules);
+                println!("{}", serde_yaml::to_string(&report)?);
+            }
+            _ => {
+                for tool in &results {
+                    Self::print_tool_table(tool);
+                }
             }
         }
         Ok(())
@@ -176,6 +208,10 @@ impl ScanArgs {
             tool.version.as_deref().unwrap_or("unknown")
         );
         println!("  Binary: {}", tool.binary_path);
+        println!("  Variant: {}", tool.variant.as_str());
+        if let Some(ref overlay) = tool.overlay {
+            println!("  Overlay: {overlay}");
+        }
         println!("  Scan tier: {}", tool.scan_tier);
         println!("  Subcommands: {}", tool.subcommands.len());
         println!("  Global flags: {}", tool.global_flags.len());
@@ -635,6 +671,48 @@ mod tests {
     }
 
     #[test]
+    fn test_scan_overlay_default_none() {
+        let cli = Cli::try_parse_from(["apexe", "scan", "ls"]).unwrap();
+        if let Commands::Scan(args) = cli.command {
+            assert!(args.overlay.is_none());
+        } else {
+            panic!("expected Commands::Scan");
+        }
+    }
+
+    #[test]
+    fn test_scan_overlay_flag() {
+        let cli =
+            Cli::try_parse_from(["apexe", "scan", "ls", "--overlay", "/tmp/ls.json"]).unwrap();
+        if let Commands::Scan(args) = cli.command {
+            assert_eq!(args.overlay, Some(PathBuf::from("/tmp/ls.json")));
+        } else {
+            panic!("expected Commands::Scan");
+        }
+    }
+
+    #[test]
+    fn test_scan_execute_reports_unreadable_overlay() {
+        // A named overlay that cannot be read must fail the scan, not silently
+        // fall back to heuristics under an authoritative-looking banner.
+        let config = ApexeConfig::default();
+        let args = ScanArgs {
+            tools: vec!["echo".to_string()],
+            output_dir: None,
+            depth: 1,
+            no_cache: true,
+            format: "table".to_string(),
+            skills_dir: None,
+            overlay: Some(PathBuf::from("/nonexistent/overlay_xyz.json")),
+        };
+        let err = args.execute(&config).unwrap_err().to_string();
+        assert!(
+            err.contains("Failed to read overlay"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn test_scan_skills_dir_flag() {
         let cli =
             Cli::try_parse_from(["apexe", "scan", "git", "--skills-dir", "/tmp/skills"]).unwrap();
@@ -950,6 +1028,7 @@ mod tests {
             no_cache: false,
             format: "table".to_string(),
             skills_dir: None,
+            overlay: None,
         };
         let result = args.execute(&config);
         assert!(result.is_err());
@@ -976,6 +1055,7 @@ mod tests {
             no_cache: false,
             format: "table".to_string(),
             skills_dir: None,
+            overlay: None,
         };
         let modules = vec![apcore_toolkit::ScannedModule::new(
             "cli.echo".to_string(),

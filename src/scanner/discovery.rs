@@ -54,7 +54,7 @@ impl<'a> SubcommandDiscovery<'a> {
             };
 
             // Parse help text
-            let parsed = self.pipeline.parse(&help_text, tool_name, None);
+            let parsed = self.pipeline.parse(&help_text, tool_name);
 
             // Recursively discover nested subcommands
             let nested = if !parsed.subcommand_names.is_empty() {

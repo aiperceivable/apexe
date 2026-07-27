@@ -93,6 +93,7 @@ mod tests {
             enum_values: Some(vec!["json".into(), "text".into()]),
             repeatable: false,
             value_name: None,
+            ..Default::default()
         }];
         let info = detector.detect(&flags, "");
         assert!(info.supported);
@@ -113,6 +114,7 @@ mod tests {
             enum_values: None,
             repeatable: false,
             value_name: None,
+            ..Default::default()
         }];
         let info = detector.detect(&flags, "");
         assert!(info.supported);
@@ -132,6 +134,7 @@ mod tests {
             enum_values: None,
             repeatable: false,
             value_name: None,
+            ..Default::default()
         }];
         let info = detector.detect(&flags, "Some help text without json mentions");
         assert!(!info.supported);

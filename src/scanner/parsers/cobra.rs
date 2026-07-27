@@ -180,6 +180,7 @@ fn extract_cobra_flags(help_text: &str, section_header: &str) -> Vec<ScannedFlag
             enum_values: None,
             repeatable: false,
             value_name,
+            ..Default::default()
         });
     }
 

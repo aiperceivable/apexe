@@ -115,6 +115,7 @@ fn extract_click_flags(help_text: &str) -> Vec<ScannedFlag> {
             enum_values: None,
             repeatable: false,
             value_name: None,
+            ..Default::default()
         });
     }
 
@@ -177,6 +178,7 @@ fn extract_click_flags(help_text: &str) -> Vec<ScannedFlag> {
             enum_values,
             repeatable: false,
             value_name,
+            ..Default::default()
         });
     }
 

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Type classification for CLI flag/argument values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ValueType {
     String,
@@ -11,7 +11,61 @@ pub enum ValueType {
     Path,
     Enum,
     Url,
+    #[default]
     Unknown,
+}
+
+/// Where a flag definition came from.
+///
+/// Provenance is recorded per flag so a consumer can tell a curated fact from a
+/// text-scraping guess, and so agreement between two independent heuristic
+/// sources is distinguishable from a single unconfirmed one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FlagSource {
+    /// Parsed from `--help` output by a format parser (Tier 1).
+    Help,
+    /// Parsed from the tool's man page (Tier 2).
+    ManPage,
+    /// Extracted from a shell completion script (Tier 3).
+    Completion,
+    /// Supplied by a curated tool overlay.
+    Overlay,
+}
+
+/// How much a flag definition can be trusted.
+///
+/// Ordered worst-to-best so comparison and `max` behave as expected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Confidence {
+    /// A single heuristic source with nothing corroborating it.
+    #[default]
+    Low,
+    /// Two or more independent heuristic sources agree.
+    Medium,
+    /// A machine-generated completion spec, which the tool itself ships.
+    High,
+    /// A curated overlay, reviewed against the tool's own documentation.
+    Verified,
+}
+
+impl Confidence {
+    /// Derive a confidence level from the sources backing a flag.
+    ///
+    /// Overlay outranks completion, which outranks any number of heuristic
+    /// sources; two agreeing heuristic sources outrank one.
+    pub fn from_sources(sources: &[FlagSource]) -> Self {
+        if sources.contains(&FlagSource::Overlay) {
+            Confidence::Verified
+        } else if sources.contains(&FlagSource::Completion) {
+            Confidence::High
+        } else if sources.len() >= 2 {
+            Confidence::Medium
+        } else {
+            Confidence::Low
+        }
+    }
 }
 
 /// Detected help output format.
@@ -28,7 +82,11 @@ pub enum HelpFormat {
 }
 
 /// A single CLI flag parsed from help output.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `Default` is derived so a producer can set only the fields it actually knows
+/// and let provenance (`sources` / `confidence`) be stamped centrally by the
+/// orchestrator rather than by every parser.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScannedFlag {
     /// Long form flag (e.g., "--message"). None if only short form exists.
     pub long_name: Option<String>,
@@ -48,6 +106,18 @@ pub struct ScannedFlag {
     pub repeatable: bool,
     /// Placeholder name for the value (e.g., "FILE", "NUM").
     pub value_name: Option<String>,
+    /// Flags that cannot be combined with this one (e.g. `-l` vs `-1`).
+    ///
+    /// Only curated overlays populate this: no help or man page format states
+    /// mutual exclusion in a machine-readable way.
+    #[serde(default)]
+    pub conflicts_with: Vec<String>,
+    /// Every source that contributed this flag definition, in discovery order.
+    #[serde(default)]
+    pub sources: Vec<FlagSource>,
+    /// Trust level derived from [`ScannedFlag::sources`].
+    #[serde(default)]
+    pub confidence: Confidence,
 }
 
 impl ScannedFlag {
@@ -61,6 +131,17 @@ impl ScannedFlag {
         } else {
             "unknown".to_string()
         }
+    }
+
+    /// Record `source` as backing this flag and recompute its confidence.
+    ///
+    /// Re-adding a source already present is a no-op, so repeated enrichment
+    /// passes cannot inflate a single source into apparent corroboration.
+    pub fn add_source(&mut self, source: FlagSource) {
+        if !self.sources.contains(&source) {
+            self.sources.push(source);
+        }
+        self.confidence = Confidence::from_sources(&self.sources);
     }
 }
 
@@ -116,24 +197,102 @@ pub struct ScannedCommand {
 }
 
 /// Complete scan result for a single CLI tool.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScannedCLITool {
     /// Tool binary name (e.g., "git").
     pub name: String,
+    /// What the tool does, usually taken from its man page DESCRIPTION.
+    ///
+    /// Defaulted on deserialize so scan caches written before this field
+    /// existed still load.
+    #[serde(default)]
+    pub description: String,
     /// Absolute path to the binary.
     pub binary_path: String,
     /// Version string from --version, or None.
     pub version: Option<String>,
+    /// Which implementation of the command this binary is.
+    ///
+    /// A command name does not identify a program: `/bin/ls` on macOS is BSD,
+    /// `/usr/bin/ls` on a GNU/Linux box is coreutils, and Homebrew can put GNU
+    /// `ls` on a macOS box. Determined by probe, not by path.
+    #[serde(default)]
+    pub variant: ToolVariant,
+    /// Identifier of the curated overlay applied to this scan, if any.
+    #[serde(default)]
+    pub overlay: Option<String>,
     /// Tree of discovered commands.
     pub subcommands: Vec<ScannedCommand>,
     /// Flags available on all subcommands.
     pub global_flags: Vec<ScannedFlag>,
+    /// Positional arguments the tool itself accepts (`ls [file ...]`).
+    ///
+    /// Distinct from a subcommand's positional args; only meaningful for tools
+    /// invoked directly rather than through a subcommand.
+    #[serde(default)]
+    pub positional_args: Vec<ScannedArg>,
     /// Global structured output capability.
     pub structured_output: StructuredOutputInfo,
+    /// Behavioral annotations asserted by an overlay, overriding inference.
+    #[serde(default)]
+    pub annotation_overrides: AnnotationOverrides,
     /// Highest tier used during scanning (1=help, 2=man, 3=completion).
     pub scan_tier: u32,
     /// Non-fatal issues encountered during scanning.
     pub warnings: Vec<String>,
+}
+
+/// Which implementation of a command a binary is.
+///
+/// `Unknown` is the honest default: it means the probe was inconclusive, not
+/// that the tool is unusual.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolVariant {
+    /// BSD userland (macOS, FreeBSD).
+    Bsd,
+    /// GNU coreutils.
+    GnuCoreutils,
+    /// BusyBox multi-call binary (Alpine and most embedded images).
+    Busybox,
+    /// Probe was inconclusive.
+    #[default]
+    Unknown,
+}
+
+impl ToolVariant {
+    /// Stable lowercase token used in cache keys and overlay identifiers.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ToolVariant::Bsd => "bsd",
+            ToolVariant::GnuCoreutils => "gnu-coreutils",
+            ToolVariant::Busybox => "busybox",
+            ToolVariant::Unknown => "unknown",
+        }
+    }
+}
+
+/// Behavioral annotation assertions that override heuristic inference.
+///
+/// Every field is optional: an overlay states only what it actually knows, and
+/// an unset field leaves the inferred value alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnnotationOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readonly: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destructive: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotent: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_approval: Option<bool>,
+}
+
+impl AnnotationOverrides {
+    /// Whether any assertion is present.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 #[cfg(test)]
@@ -189,6 +348,95 @@ mod tests {
 
     // T2: ScannedFlag canonical_name tests
     #[test]
+    fn test_confidence_from_sources_ranks_overlay_highest() {
+        assert_eq!(
+            Confidence::from_sources(&[FlagSource::Help, FlagSource::Overlay]),
+            Confidence::Verified
+        );
+        assert_eq!(
+            Confidence::from_sources(&[FlagSource::Help, FlagSource::Completion]),
+            Confidence::High
+        );
+        assert_eq!(
+            Confidence::from_sources(&[FlagSource::Help, FlagSource::ManPage]),
+            Confidence::Medium
+        );
+        assert_eq!(
+            Confidence::from_sources(&[FlagSource::Help]),
+            Confidence::Low
+        );
+        assert_eq!(Confidence::from_sources(&[]), Confidence::Low);
+    }
+
+    #[test]
+    fn test_confidence_is_ordered_worst_to_best() {
+        assert!(Confidence::Low < Confidence::Medium);
+        assert!(Confidence::Medium < Confidence::High);
+        assert!(Confidence::High < Confidence::Verified);
+    }
+
+    #[test]
+    fn test_add_source_is_idempotent() {
+        // Re-running an enrichment pass must not inflate one source into
+        // apparent corroboration.
+        let mut flag = ScannedFlag::default();
+        flag.add_source(FlagSource::Help);
+        flag.add_source(FlagSource::Help);
+        assert_eq!(flag.sources, vec![FlagSource::Help]);
+        assert_eq!(flag.confidence, Confidence::Low);
+
+        flag.add_source(FlagSource::ManPage);
+        assert_eq!(flag.confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn test_tool_variant_tokens_are_stable() {
+        // These strings appear in cache keys and overlay ids, so they are API.
+        assert_eq!(ToolVariant::Bsd.as_str(), "bsd");
+        assert_eq!(ToolVariant::GnuCoreutils.as_str(), "gnu-coreutils");
+        assert_eq!(ToolVariant::Busybox.as_str(), "busybox");
+        assert_eq!(ToolVariant::Unknown.as_str(), "unknown");
+        assert_eq!(ToolVariant::default(), ToolVariant::Unknown);
+    }
+
+    #[test]
+    fn test_tool_variant_serde_matches_tokens() {
+        for variant in [
+            ToolVariant::Bsd,
+            ToolVariant::GnuCoreutils,
+            ToolVariant::Busybox,
+            ToolVariant::Unknown,
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, format!("\"{}\"", variant.as_str()));
+            let back: ToolVariant = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, variant);
+        }
+    }
+
+    #[test]
+    fn test_annotation_overrides_empty_by_default() {
+        assert!(AnnotationOverrides::default().is_empty());
+        assert!(!AnnotationOverrides {
+            readonly: Some(true),
+            ..Default::default()
+        }
+        .is_empty());
+    }
+
+    #[test]
+    fn test_scanned_flag_provenance_defaults_on_legacy_json() {
+        // Scan caches written before provenance existed must still load.
+        let legacy = r#"{"long_name":"--all","short_name":"-a","description":"",
+            "value_type":"boolean","required":false,"default":null,
+            "enum_values":null,"repeatable":false,"value_name":null}"#;
+        let flag: ScannedFlag = serde_json::from_str(legacy).unwrap();
+        assert!(flag.sources.is_empty());
+        assert!(flag.conflicts_with.is_empty());
+        assert_eq!(flag.confidence, Confidence::Low);
+    }
+
+    #[test]
     fn test_canonical_name_long() {
         let flag = ScannedFlag {
             long_name: Some("--message".into()),
@@ -200,6 +448,7 @@ mod tests {
             enum_values: None,
             repeatable: false,
             value_name: None,
+            ..Default::default()
         };
         assert_eq!(flag.canonical_name(), "message");
     }
@@ -216,6 +465,7 @@ mod tests {
             enum_values: None,
             repeatable: false,
             value_name: None,
+            ..Default::default()
         };
         assert_eq!(flag.canonical_name(), "dry_run");
     }
@@ -232,6 +482,7 @@ mod tests {
             enum_values: None,
             repeatable: false,
             value_name: None,
+            ..Default::default()
         };
         assert_eq!(flag.canonical_name(), "m");
     }
@@ -248,6 +499,7 @@ mod tests {
             enum_values: None,
             repeatable: false,
             value_name: None,
+            ..Default::default()
         };
         assert_eq!(flag.canonical_name(), "unknown");
     }
@@ -265,6 +517,7 @@ mod tests {
             enum_values: Some(vec!["json".into(), "text".into()]),
             repeatable: false,
             value_name: Some("FMT".into()),
+            ..Default::default()
         };
         let json = serde_json::to_string(&flag).unwrap();
         let back: ScannedFlag = serde_json::from_str(&json).unwrap();
@@ -287,6 +540,7 @@ mod tests {
             enum_values: None,
             repeatable: false,
             value_name: None,
+            ..Default::default()
         };
         let json = serde_json::to_string(&flag).unwrap();
         let back: ScannedFlag = serde_json::from_str(&json).unwrap();
@@ -408,6 +662,7 @@ mod tests {
     fn test_scanned_cli_tool_serde_round_trip() {
         let tool = ScannedCLITool {
             name: "git".into(),
+            description: String::new(),
             binary_path: "/usr/bin/git".into(),
             version: Some("2.43.0".into()),
             subcommands: vec![ScannedCommand {
@@ -424,6 +679,7 @@ mod tests {
                     enum_values: None,
                     repeatable: false,
                     value_name: Some("MSG".into()),
+                    ..Default::default()
                 }],
                 positional_args: vec![],
                 subcommands: vec![],
@@ -442,10 +698,12 @@ mod tests {
                 enum_values: None,
                 repeatable: false,
                 value_name: None,
+                ..Default::default()
             }],
             structured_output: StructuredOutputInfo::default(),
             scan_tier: 1,
             warnings: vec!["some warning".into()],
+            ..Default::default()
         };
         let json = serde_json::to_string_pretty(&tool).unwrap();
         let back: ScannedCLITool = serde_json::from_str(&json).unwrap();
@@ -460,6 +718,7 @@ mod tests {
     fn test_scanned_cli_tool_version_none() {
         let tool = ScannedCLITool {
             name: "mytool".into(),
+            description: String::new(),
             binary_path: "/usr/local/bin/mytool".into(),
             version: None,
             subcommands: vec![],
@@ -467,6 +726,7 @@ mod tests {
             structured_output: StructuredOutputInfo::default(),
             scan_tier: 1,
             warnings: vec![],
+            ..Default::default()
         };
         let json = serde_json::to_string(&tool).unwrap();
         let back: ScannedCLITool = serde_json::from_str(&json).unwrap();

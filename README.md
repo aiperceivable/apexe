@@ -95,7 +95,30 @@ apexe scan git --no-cache              # Force re-scan
 apexe scan git --format json           # Output as JSON (also: yaml, table)
 apexe scan git --output-dir ./out      # Custom output directory
 apexe scan git --skills-dir ./out      # Also write .claude/skills/<id>/SKILL.md per module
+apexe scan ls --overlay ./ls.json      # Apply a curated overlay instead of trusting the scan
 ```
+
+#### Tool variants and overlays
+
+A command name does not identify a program: macOS `/bin/ls` is BSD, Linux
+`/usr/bin/ls` is GNU coreutils, Alpine is BusyBox, and Homebrew coreutils puts
+GNU `ls` on a macOS box. Every scan probes the binary (`<binary> --version`) and
+records the result as `variant`, then looks for a **curated overlay** matching
+`(command, variant, version_range)`.
+
+An overlay is a reviewed description of one variant of one command. In
+`authoritative` mode it replaces the scan's flags, positional args and
+subcommands entirely; in `merge` mode it overrides matching flags and adds
+missing ones. Overlays are the only source that can state `conflicts_with`,
+because no help or man page format expresses mutual exclusion machine-readably.
+
+Overlays are loaded from, in increasing precedence: the built-ins compiled into
+apexe (`overlays/`), `~/.apexe/overlays/*.{json,yaml}`, and `--overlay <PATH>`.
+The format is defined by [`schemas/tool-overlay.schema.json`](schemas/tool-overlay.schema.json).
+
+Every emitted flag carries `sources` and a derived `confidence`:
+`verified` (overlay) > `high` (completion spec) > `medium` (two independent
+heuristic sources agree) > `low` (a single unconfirmed source).
 
 ### `apexe serve`
 

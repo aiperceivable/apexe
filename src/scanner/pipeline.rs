@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use tracing::{info, warn};
 
 use super::protocol::{CliParser, ParsedHelp};
@@ -15,6 +13,7 @@ impl ParserPipeline {
     /// If `plugins` is None, only built-in parsers are loaded.
     pub fn new(plugins: Option<Vec<Box<dyn CliParser>>>) -> Self {
         let mut parsers: Vec<Box<dyn CliParser>> = vec![
+            Box::new(super::parsers::bsd_usage::BsdUsageParser),
             Box::new(super::parsers::gnu::GnuHelpParser),
             Box::new(super::parsers::click::ClickHelpParser),
             Box::new(super::parsers::cobra::CobraHelpParser),
@@ -34,27 +33,16 @@ impl ParserPipeline {
     /// Parse help text using the highest-priority matching parser.
     ///
     /// Priority resolution:
-    /// 1. If `user_override` path exists, load YAML and convert to ParsedHelp.
-    /// 2. Try each parser in priority order (ascending).
-    /// 3. Fallback: return ParsedHelp with raw text as description.
-    pub fn parse(
-        &self,
-        help_text: &str,
-        tool_name: &str,
-        user_override: Option<&Path>,
-    ) -> ParsedHelp {
-        // Check for user override
-        if let Some(path) = user_override {
-            if path.exists() {
-                if let Ok(contents) = std::fs::read_to_string(path) {
-                    if let Ok(parsed) = serde_yaml::from_str::<ParsedHelp>(&contents) {
-                        info!(path = %path.display(), "Using user override");
-                        return parsed;
-                    }
-                }
-            }
-        }
-
+    /// 1. Try each parser in priority order (ascending).
+    /// 2. Fallback: return ParsedHelp with raw text as description.
+    ///
+    /// This function knows nothing about user overrides. It used to accept a
+    /// `user_override: Option<&Path>` that loaded a `ParsedHelp` YAML document,
+    /// but that hook sat below the layer where the tool's *variant* is known,
+    /// so it could not express "BSD `ls`, but not the Homebrew GNU one". It has
+    /// been lifted into [`crate::scanner::OverlayStore`], which owns the single
+    /// override path (`apexe scan --overlay <PATH>`).
+    pub fn parse(&self, help_text: &str, tool_name: &str) -> ParsedHelp {
         // Normalize line endings once here so every parser sees `\n`. The
         // parsers rely on `(?m)^...$`-anchored regexes and byte-offset section
         // slicing, both of which misbehave on CRLF (`\r\n`) help text (e.g. a
@@ -142,7 +130,7 @@ mod tests {
     #[test]
     fn test_pipeline_new_builtin_count() {
         let pipeline = ParserPipeline::new(None);
-        assert_eq!(pipeline.parser_count(), 4);
+        assert_eq!(pipeline.parser_count(), 5);
     }
 
     #[test]
@@ -154,7 +142,7 @@ mod tests {
             fail: false,
         });
         let pipeline = ParserPipeline::new(Some(vec![plugin]));
-        assert_eq!(pipeline.parser_count(), 5);
+        assert_eq!(pipeline.parser_count(), 6);
     }
 
     #[test]
@@ -181,7 +169,7 @@ mod tests {
     fn test_pipeline_uses_gnu_for_gnu_help() {
         let pipeline = ParserPipeline::new(None);
         let gnu_help = "Description\n\nUsage: tool [OPTIONS]\n\nOptions:\n  -v, --verbose          Be verbose\n";
-        let result = pipeline.parse(gnu_help, "tool", None);
+        let result = pipeline.parse(gnu_help, "tool");
         assert!(!result.description.is_empty());
     }
 
@@ -190,7 +178,7 @@ mod tests {
         let pipeline = ParserPipeline::new(None);
         let cobra_help =
             "A tool\n\nAvailable Commands:\n  sub1  First\n\nFlags:\n  --verbose  Be verbose\n";
-        let result = pipeline.parse(cobra_help, "tool", None);
+        let result = pipeline.parse(cobra_help, "tool");
         assert!(result.subcommand_names.contains(&"sub1".to_string()));
     }
 
@@ -203,8 +191,8 @@ mod tests {
         let lf = "A tool\n\nAvailable Commands:\n  sub1  First\n\nFlags:\n  --alpha  Alpha\n  --bravo  Bravo\n";
         let crlf = lf.replace('\n', "\r\n");
 
-        let lf_result = pipeline.parse(lf, "tool", None);
-        let crlf_result = pipeline.parse(&crlf, "tool", None);
+        let lf_result = pipeline.parse(lf, "tool");
+        let crlf_result = pipeline.parse(&crlf, "tool");
 
         let names = |p: &ParsedHelp| {
             let mut v: Vec<String> = p.flags.iter().filter_map(|f| f.long_name.clone()).collect();
@@ -231,22 +219,59 @@ mod tests {
         let pipeline = ParserPipeline::new(None);
 
         let cobra = "A tool\n\nAvailable Commands:\n  sub1  First\n\nFlags:\n  --v  V\n";
-        assert_eq!(
-            pipeline.parse(cobra, "tool", None).help_format,
-            HelpFormat::Cobra
-        );
+        assert_eq!(pipeline.parse(cobra, "tool").help_format, HelpFormat::Cobra);
 
         // Unmatched text falls back to Unknown.
         assert_eq!(
-            pipeline.parse("random gibberish", "tool", None).help_format,
+            pipeline.parse("random gibberish", "tool").help_format,
             HelpFormat::Unknown
+        );
+    }
+
+    #[test]
+    fn test_pipeline_routes_bundled_usage_to_bsd_parser() {
+        // The GNU parser also accepts this text (it contains "usage:") but
+        // extracts nothing from it, so the BSD parser must be tried first.
+        let pipeline = ParserPipeline::new(None);
+        let bsd = "usage: ls [-@ABCFGHILOPRSTUWXabcdefghiklmnopqrstuvwxy1%,] [--color=when] [-D format] [file ...]\n";
+        let result = pipeline.parse(bsd, "ls");
+        assert!(
+            result.flags.len() > 20,
+            "expected bundled group expanded, got {} flags",
+            result.flags.len()
+        );
+    }
+
+    #[test]
+    fn test_pipeline_still_routes_gnu_help_to_gnu_parser() {
+        // Adding the BSD parser must not steal ordinary GNU help.
+        let pipeline = ParserPipeline::new(None);
+        let gnu = "Usage: tool [OPTIONS]\n\nOptions:\n  -m, --message MSG  Use the given message\n  -a, --all          Stage all\n";
+        let result = pipeline.parse(gnu, "tool");
+        assert_eq!(result.help_format, crate::models::HelpFormat::Gnu);
+        assert!(result
+            .flags
+            .iter()
+            .any(|flag| flag.long_name.as_deref() == Some("--message")));
+    }
+
+    #[test]
+    fn test_pipeline_extracts_git_style_grouped_subcommands() {
+        // git introduces its command list in prose and splits it into blank
+        // line separated groups; both previously defeated subcommand extraction.
+        let pipeline = ParserPipeline::new(None);
+        let git_help = "usage: git [--version] <command> [<args>]\n\nThese are common Git commands used in various situations:\n\nstart a working area (see also: git help tutorial)\n   clone      Clone a repository into a new directory\n   init       Create an empty Git repository\n\nwork on the current change (see also: git help everyday)\n   add        Add file contents to the index\n   restore    Restore working tree files\n";
+        let result = pipeline.parse(git_help, "git");
+        assert_eq!(
+            result.subcommand_names,
+            vec!["clone", "init", "add", "restore"]
         );
     }
 
     #[test]
     fn test_pipeline_fallback_on_no_match() {
         let pipeline = ParserPipeline::new(None);
-        let result = pipeline.parse("random gibberish text", "tool", None);
+        let result = pipeline.parse("random gibberish text", "tool");
         assert_eq!(result.description, "random gibberish text");
         assert!(result.flags.is_empty());
     }
@@ -266,52 +291,21 @@ mod tests {
             fail: false,
         });
         let pipeline = ParserPipeline::new(Some(vec![p1, p2]));
-        let result = pipeline.parse("any text", "tool", None);
+        let result = pipeline.parse("any text", "tool");
         assert_eq!(result.description, "parsed by working");
     }
 
-    // T27: User override
     #[test]
-    fn test_pipeline_user_override() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let override_path = tmp.path().join("override.yaml");
-        let yaml_content = r#"
-description: "overridden description"
-flags: []
-positional_args: []
-subcommand_names:
-  - custom_sub
-examples: []
-structured_output:
-  supported: false
-  flag: null
-  format: null
-"#;
-        std::fs::write(&override_path, yaml_content).unwrap();
-
+    fn test_pipeline_parse_is_pure_text_to_structure() {
+        // The former `user_override` parameter is gone: overriding a scan is
+        // now the overlay mechanism's job, at the layer that knows the tool's
+        // variant. `parse` must therefore depend on nothing but its arguments,
+        // so the same help text always yields the same structure.
         let pipeline = ParserPipeline::new(None);
-        let result = pipeline.parse("ignored help text", "tool", Some(&override_path));
-        assert_eq!(result.description, "overridden description");
-        assert!(result.subcommand_names.contains(&"custom_sub".to_string()));
-    }
-
-    #[test]
-    fn test_pipeline_override_missing_file_falls_through() {
-        let pipeline = ParserPipeline::new(None);
-        let missing = std::path::PathBuf::from("/tmp/nonexistent_override.yaml");
-        let result = pipeline.parse("random text", "tool", Some(&missing));
-        // Should fall through to regular parsing (fallback since no parser matches)
-        assert!(!result.description.is_empty());
-    }
-
-    #[test]
-    fn test_pipeline_override_invalid_yaml_falls_through() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let override_path = tmp.path().join("bad.yaml");
-        std::fs::write(&override_path, "not: [valid: yaml: for ParsedHelp").unwrap();
-
-        let pipeline = ParserPipeline::new(None);
-        let result = pipeline.parse("random text", "tool", Some(&override_path));
-        assert!(!result.description.is_empty());
+        let help = "Usage: tool [OPTIONS]\n\nOptions:\n  -v, --verbose  Be verbose\n";
+        let first = pipeline.parse(help, "tool");
+        let second = pipeline.parse(help, "tool");
+        assert_eq!(first.description, second.description);
+        assert_eq!(first.flags.len(), second.flags.len());
     }
 }

@@ -169,18 +169,17 @@ impl CliToolConverter {
                 description,
                 input_schema: schema::build_input_schema(command, &tool.global_flags),
                 output_schema: schema::build_output_schema(command),
-                annotations: annotations::infer(command),
+                annotations: apply_annotation_overrides(annotations::infer(command), tool),
                 documentation,
                 full_command: command.full_command.clone(),
                 examples: command.examples.clone(),
             }
         } else {
             let synth = synthesize_root_command(tool);
-            let description = if synth.description.is_empty() {
-                format!("Execute {}", tool.name)
-            } else {
-                synth.description.clone()
-            };
+            let description = [synth.description.as_str(), tool.description.as_str()]
+                .into_iter()
+                .find(|candidate| !candidate.is_empty())
+                .map_or_else(|| format!("Execute {}", tool.name), str::to_string);
             let documentation = if synth.raw_help.is_empty() {
                 None
             } else {
@@ -190,7 +189,7 @@ impl CliToolConverter {
                 description,
                 input_schema: schema::build_input_schema(&synth, &tool.global_flags),
                 output_schema: schema::build_output_schema(&synth),
-                annotations: annotations::infer(&synth),
+                annotations: apply_annotation_overrides(annotations::infer(&synth), tool),
                 documentation,
                 full_command: tool.name.clone(),
                 examples: synth.examples.clone(),
@@ -274,13 +273,41 @@ fn synthesize_root_command(tool: &ScannedCLITool) -> ScannedCommand {
         full_command: tool.name.clone(),
         description: String::new(),
         flags: vec![],
-        positional_args: vec![],
+        // Tool-level positional args (`ls [file ...]`) belong to the root
+        // invocation, so the synthesized root command is where they surface in
+        // the generated input schema.
+        positional_args: tool.positional_args.clone(),
         subcommands: vec![],
         examples: vec![],
         help_format: HelpFormat::Unknown,
         structured_output: tool.structured_output.clone(),
         raw_help: String::new(),
     }
+}
+
+/// Apply an overlay's behavioral assertions over the inferred annotations.
+///
+/// Inference reads command names and flag names; an overlay states the answer.
+/// Only fields the overlay actually set are replaced.
+fn apply_annotation_overrides(
+    mut annotations: ModuleAnnotations,
+    tool: &ScannedCLITool,
+) -> ModuleAnnotations {
+    let overrides = &tool.annotation_overrides;
+    if let Some(readonly) = overrides.readonly {
+        annotations.readonly = readonly;
+    }
+    if let Some(destructive) = overrides.destructive {
+        annotations.destructive = destructive;
+    }
+    if let Some(idempotent) = overrides.idempotent {
+        annotations.idempotent = idempotent;
+    }
+    if let Some(requires_approval) = overrides.requires_approval {
+        annotations.requires_approval = requires_approval;
+    }
+    annotations.cacheable = annotations.readonly && annotations.idempotent;
+    annotations
 }
 
 /// Convert a HelpFormat variant to a lowercase tag string.
@@ -318,6 +345,7 @@ mod tests {
     fn make_tool(name: &str, subcommands: Vec<ScannedCommand>) -> ScannedCLITool {
         ScannedCLITool {
             name: name.to_string(),
+            description: String::new(),
             binary_path: format!("/usr/bin/{name}"),
             version: Some("1.0.0".to_string()),
             subcommands,
@@ -325,7 +353,63 @@ mod tests {
             structured_output: StructuredOutputInfo::default(),
             scan_tier: 1,
             warnings: vec![],
+            ..Default::default()
         }
+    }
+
+    #[test]
+    fn test_annotation_overrides_beat_name_inference() {
+        // `rm` is inferred destructive from its name alone. An overlay that
+        // states otherwise must win, because it was reviewed and the inference
+        // was a guess.
+        let mut tool = make_tool("rm", vec![]);
+        tool.annotation_overrides = crate::models::AnnotationOverrides {
+            readonly: Some(true),
+            destructive: Some(false),
+            idempotent: Some(true),
+            requires_approval: Some(false),
+        };
+        let modules = CliToolConverter::new().convert(&tool);
+        let annotations = modules[0].annotations.as_ref().unwrap();
+
+        assert!(annotations.readonly);
+        assert!(!annotations.destructive);
+        assert!(annotations.idempotent);
+        assert!(!annotations.requires_approval);
+        assert!(
+            annotations.cacheable,
+            "cacheable is derived, so it must be recomputed after an override"
+        );
+    }
+
+    #[test]
+    fn test_absent_annotation_overrides_leave_inference_alone() {
+        let tool = make_tool("delete", vec![]);
+        assert!(tool.annotation_overrides.is_empty());
+        let modules = CliToolConverter::new().convert(&tool);
+        let annotations = modules[0].annotations.as_ref().unwrap();
+        assert!(annotations.destructive, "inference must still apply");
+    }
+
+    #[test]
+    fn test_tool_positional_args_reach_the_root_input_schema() {
+        // `ls [file ...]` has no subcommand to hang its positional argument on,
+        // so tool-level positional args must surface through the synthesized
+        // root command or they vanish from the generated schema.
+        let mut tool = make_tool("ls", vec![]);
+        tool.positional_args = vec![crate::models::ScannedArg {
+            name: "file".to_string(),
+            description: "Files to list.".to_string(),
+            value_type: crate::models::ValueType::Path,
+            required: false,
+            variadic: true,
+        }];
+        let modules = CliToolConverter::new().convert(&tool);
+        let properties = modules[0].input_schema["properties"].as_object().unwrap();
+        assert!(
+            properties.contains_key("file"),
+            "positional arg missing from input schema: {properties:?}"
+        );
     }
 
     #[test]
@@ -337,6 +421,26 @@ mod tests {
 
         assert_eq!(modules.len(), 1);
         assert_eq!(modules[0].module_id, "cli.git.status");
+    }
+
+    #[test]
+    fn test_converter_root_module_uses_tool_description() {
+        // A subcommand-less tool used to fall back to "Execute <name>" even when
+        // the man page supplied a real description.
+        let mut tool = make_tool("ls", vec![]);
+        tool.description = "List directory contents.".to_string();
+        let modules = CliToolConverter::new().convert(&tool);
+
+        assert_eq!(modules.len(), 1);
+        assert_eq!(modules[0].description, "List directory contents.");
+    }
+
+    #[test]
+    fn test_converter_root_module_falls_back_without_description() {
+        let tool = make_tool("mytool", vec![]);
+        let modules = CliToolConverter::new().convert(&tool);
+
+        assert_eq!(modules[0].description, "Execute mytool");
     }
 
     #[test]
@@ -390,12 +494,12 @@ mod tests {
     #[test]
     fn test_converter_preserves_unicode_tool_name() {
         // F1 §5 edge: unicode in tool/command names is preserved in module_id.
-        let cmd = make_command("状态", "café 状态");
+        let cmd = make_command("état", "café état");
         let tool = make_tool("café", vec![cmd]);
         let modules = CliToolConverter::new().convert(&tool);
 
         assert_eq!(modules.len(), 1);
-        assert_eq!(modules[0].module_id, "cli.café.状态");
+        assert_eq!(modules[0].module_id, "cli.café.état");
     }
 
     #[test]
@@ -414,6 +518,7 @@ mod tests {
             enum_values: None,
             repeatable: false,
             value_name: None,
+            ..Default::default()
         }];
         let tool = make_tool("tool", vec![cmd]);
         let modules = CliToolConverter::new().convert(&tool);

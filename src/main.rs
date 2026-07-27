@@ -33,7 +33,12 @@ fn main() {
         .unwrap_or_else(|_| "info".to_string());
     let fallback_level = cli.effective_log_level(&config_level);
 
+    // Logs go to stderr so stdout stays a clean machine-readable channel:
+    // `scan --format json` is consumed by other processes (e.g. AP Studio's
+    // importer does `JSON.parse(stdout)`), and interleaved log lines would make
+    // every such parse fail.
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&fallback_level)),
         )

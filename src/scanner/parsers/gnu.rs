@@ -26,7 +26,11 @@ static ENUM_RE: LazyLock<Regex> =
 static ARG_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<([a-zA-Z_][\w-]*)>(\.\.\.)?").expect("valid static regex"));
 static SUBCMD_SECTION_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?mi)^(commands|subcommands|available commands):").expect("valid static regex")
+    // The prose variant covers git, whose help introduces its command list with
+    // "These are common Git commands used in various situations:" rather than a
+    // "Commands:" header.
+    Regex::new(r"(?mi)^((commands|subcommands|available commands):|these are .*commands.*:)")
+        .expect("valid static regex")
 });
 static CMD_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^\s{2,}([a-z][\w-]*)\s+\S").expect("valid static regex"));
@@ -216,6 +220,7 @@ fn build_flag(
         enum_values,
         repeatable,
         value_name,
+        ..Default::default()
     }
 }
 
@@ -243,22 +248,43 @@ pub fn extract_positional_args(help_text: &str) -> Vec<ScannedArg> {
     args
 }
 
-/// Extract subcommand names from commands section.
+/// Extract subcommand names from the commands section.
+///
+/// Tolerates command lists broken into labelled groups separated by blank
+/// lines, as git's help does ("start a working area", "work on the current
+/// change", ...). Stops at a blank-line run or at the next section header, so
+/// an unindented trailing paragraph does not extend the scan indefinitely.
 pub fn extract_subcommands(help_text: &str) -> Vec<String> {
     let mut names = Vec::new();
 
-    if let Some(section_match) = SUBCMD_SECTION_RE.find(help_text) {
-        let after_section = &help_text[section_match.end()..];
-        for line in after_section.lines() {
-            if line.trim().is_empty() || (!line.starts_with(' ') && !line.is_empty()) {
-                if !names.is_empty() {
-                    break;
-                }
-                continue;
+    let Some(section_match) = SUBCMD_SECTION_RE.find(help_text) else {
+        return names;
+    };
+
+    let mut consecutive_blank_lines = 0;
+    for line in help_text[section_match.end()..].lines() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() {
+            consecutive_blank_lines += 1;
+            if consecutive_blank_lines >= 2 && !names.is_empty() {
+                break;
             }
-            if let Some(cap) = CMD_RE.captures(line) {
-                names.push(cap[1].to_string());
+            continue;
+        }
+        consecutive_blank_lines = 0;
+
+        // An unindented line is either a group label (keep going) or the next
+        // section header (stop).
+        if !line.starts_with(char::is_whitespace) {
+            if trimmed.ends_with(':') && !names.is_empty() {
+                break;
             }
+            continue;
+        }
+
+        if let Some(cap) = CMD_RE.captures(line) {
+            names.push(cap[1].to_string());
         }
     }
 
@@ -581,6 +607,7 @@ Examples:
             enum_values: Some(vec!["json".into(), "text".into()]),
             repeatable: false,
             value_name: None,
+            ..Default::default()
         }];
         let info = detect_structured_output(&flags, "");
         assert!(info.supported);
@@ -599,6 +626,7 @@ Examples:
             enum_values: None,
             repeatable: false,
             value_name: None,
+            ..Default::default()
         }];
         let info = detect_structured_output(&flags, "");
         assert!(info.supported);
@@ -617,6 +645,7 @@ Examples:
             enum_values: None,
             repeatable: false,
             value_name: None,
+            ..Default::default()
         }];
         let info = detect_structured_output(&flags, "some help text");
         assert!(!info.supported);

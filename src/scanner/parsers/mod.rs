@@ -1,3 +1,4 @@
+pub mod bsd_usage;
 pub mod clap_parser;
 pub mod click;
 pub mod cobra;

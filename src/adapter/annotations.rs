@@ -189,6 +189,7 @@ mod tests {
                 enum_values: None,
                 repeatable: false,
                 value_name: None,
+                ..Default::default()
             })
             .collect();
         ScannedCommand {

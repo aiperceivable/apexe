@@ -235,6 +235,7 @@ mod tests {
             enum_values,
             repeatable,
             value_name: None,
+            ..Default::default()
         }
     }
 

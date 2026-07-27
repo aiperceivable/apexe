@@ -141,6 +141,7 @@ fn extract_clap_flags(help_text: &str) -> Vec<ScannedFlag> {
             enum_values,
             repeatable,
             value_name,
+            ..Default::default()
         });
     }
 
