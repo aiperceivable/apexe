@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0",
+  "command": "mkdir",
+  "variant": "bsd",
+  "match": {
+    "platform": ["macos", "freebsd"],
+    "probe": { "args": ["--version"], "expect": "failure" },
+    "binary_globs": ["/bin/mkdir", "/usr/bin/mkdir"]
+  },
+  "mode": "authoritative",
+  "confidence": "verified",
+  "provenance": {
+    "platform": "macos",
+    "tool_version": "macOS 26.3",
+    "source": "man-page",
+    "checked_on": "2026-07-27",
+    "command": "man -P cat mkdir | col -b",
+    "environment": "macOS 26.3 (Darwin arm64), system /bin/mkdir",
+    "notes": "Flags transcribed from the block after 'The options are as follows:'. COMPATIBILITY and STANDARDS were read for flags documented outside the option block; COMPATIBILITY only remarks that -v is non-standard and adds no option. The option set is closed: the binary's getopt(3) option string is 'm:pv', and /bin/mkdir -Z and /bin/mkdir --parents are both rejected with 'illegal option', so mode is authoritative. BSD mkdir rejects --version (exit 64, 'illegal option -- -'), which is why the probe matches on failure. No conflicts_with: the option block states no mutual exclusion and the SYNOPSIS 'mkdir [-pv] [-m mode]' shows no alternation."
+  },
+  "description": "The mkdir utility creates the directories named as operands, in the order specified, using mode \"rwxrwxrwx\" (0777) as modified by the current umask(2). The user must have write permission in the parent directory.",
+  "flags": [
+    { "short": "-m", "type": "string", "value_name": "mode", "description": "Set the file permission bits of the final created directory to the specified mode. The mode argument can be in any of the formats specified to the chmod(1) command. If a symbolic mode is specified, the operation characters '+' and '-' are interpreted relative to an initial mode of \"a=rwx\"." },
+    { "short": "-p", "type": "boolean", "description": "Create intermediate directories as required. If this option is not specified, the full path prefix of each operand must already exist. On the other hand, with this option specified, no error will be reported if a directory given as an operand already exists. Intermediate directories are created with permission bits of \"rwxrwxrwx\" (0777) as modified by the current umask, plus write and search permission for the owner." },
+    { "short": "-v", "type": "boolean", "description": "Be verbose when creating directories, listing them as they are created. The man page notes this option is non-standard and its use in scripts is not recommended." }
+  ],
+  "positional_args": [
+    { "name": "directory_name", "type": "path", "variadic": true, "required": true, "description": "Directories to create, in the order specified. At least one is required." }
+  ],
+  "annotations": {
+    "readonly": false,
+    "destructive": false,
+    "idempotent": false,
+    "requires_approval": false
+  }
+}

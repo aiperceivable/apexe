@@ -1,0 +1,47 @@
+{
+  "schema_version": "1.0",
+  "command": "cat",
+  "variant": "gnu-coreutils",
+  "match": {
+    "probe": {
+      "args": ["--version"],
+      "expect": "success",
+      "output_contains": "GNU coreutils"
+    }
+  },
+  "mode": "authoritative",
+  "confidence": "verified",
+  "provenance": {
+    "platform": "linux",
+    "tool_version": "9.7",
+    "source": "help",
+    "checked_on": "2026-07-27",
+    "command": "docker run --rm debian:stable-slim cat --help",
+    "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
+    "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention. Every flag below is transcribed from that output; no flag was added from knowledge of the tool."
+  },
+  "description": "Concatenate FILE(s) to standard output. With no FILE, or when FILE is -, read standard input.",
+  "flags": [
+    { "short": "-A", "long": "--show-all", "type": "boolean", "description": "Equivalent to -vET." },
+    { "short": "-b", "long": "--number-nonblank", "type": "boolean", "conflicts_with": ["-n"], "description": "Number nonempty output lines, overrides -n." },
+    { "short": "-e", "type": "boolean", "description": "Equivalent to -vE." },
+    { "short": "-E", "long": "--show-ends", "type": "boolean", "description": "Display $ at end of each line." },
+    { "short": "-n", "long": "--number", "type": "boolean", "conflicts_with": ["-b"], "description": "Number all output lines." },
+    { "short": "-s", "long": "--squeeze-blank", "type": "boolean", "description": "Suppress repeated empty output lines." },
+    { "short": "-t", "type": "boolean", "description": "Equivalent to -vT." },
+    { "short": "-T", "long": "--show-tabs", "type": "boolean", "description": "Display TAB characters as ^I." },
+    { "short": "-u", "type": "boolean", "description": "Ignored." },
+    { "short": "-v", "long": "--show-nonprinting", "type": "boolean", "description": "Use ^ and M- notation, except for LFD and TAB." },
+    { "long": "--help", "type": "boolean", "description": "Display this help and exit." },
+    { "long": "--version", "type": "boolean", "description": "Output version information and exit." }
+  ],
+  "positional_args": [
+    { "name": "file", "type": "path", "variadic": true, "required": false, "description": "Files to concatenate. With no FILE, or when FILE is -, read standard input." }
+  ],
+  "annotations": {
+    "readonly": true,
+    "destructive": false,
+    "idempotent": true,
+    "requires_approval": false
+  }
+}

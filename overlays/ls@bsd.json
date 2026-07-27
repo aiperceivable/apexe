@@ -9,6 +9,15 @@
   },
   "mode": "authoritative",
   "confidence": "verified",
+  "provenance": {
+    "platform": "macos",
+    "tool_version": "macOS 26.3",
+    "source": "man-page",
+    "checked_on": "2026-07-27",
+    "command": "man -P cat ls | col -b",
+    "environment": "macOS 26.3 (Darwin arm64), system /bin/ls",
+    "notes": "BSD ls is not versioned independently of the OS, so the host release identifies the build. It also rejects --version, which is why the bsd probe matches on failure rather than on a banner."
+  },
   "description": "List directory contents. For each operand naming a file other than a directory, ls displays its name plus any requested associated information; for each operand naming a directory, it displays the names of the files contained within.",
   "flags": [
     { "short": "-@", "type": "boolean", "description": "Display extended attribute keys and sizes in long (-l) output." },

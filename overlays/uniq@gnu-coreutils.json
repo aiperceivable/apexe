@@ -1,0 +1,49 @@
+{
+  "schema_version": "1.0",
+  "command": "uniq",
+  "variant": "gnu-coreutils",
+  "match": {
+    "probe": {
+      "args": ["--version"],
+      "expect": "success",
+      "output_contains": "GNU coreutils"
+    }
+  },
+  "mode": "authoritative",
+  "confidence": "verified",
+  "provenance": {
+    "platform": "linux",
+    "tool_version": "9.7",
+    "source": "help",
+    "checked_on": "2026-07-27",
+    "command": "docker run --rm debian:stable-slim uniq --help",
+    "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
+    "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention. '-D' and '--all-repeated[=METHOD]' are two separate --help entries and are kept as two flags, because -D carries no long form and --all-repeated carries no short form. GNU --help states no mutual exclusion at all, so every conflicts_with below was read off the running binary and is quoted here. '-c -D' and '-c --all-repeated=prepend' fail with 'uniq: printing all duplicated lines and repeat counts is meaningless'. '--group' combined with any of -c, -d, -D, -u or --all-repeated fails with 'uniq: --group is mutually exclusive with -c/-d/-D/-u'. Three candidates were tested and rejected: '-d -D', '-d -u' and '-D -u' are all accepted (exit 0), so no conflict is declared between them even though the BSD page documents -d as ignored under -D. '-D --all-repeated=none', '-w 2 -c' and '-z -c' are also accepted. annotations: readonly is false because uniq writes its second operand -- 'uniq INPUT OUTPUT' truncates and rewrites OUTPUT, verified against a pre-existing file."
+  },
+  "description": "Filter adjacent matching lines from INPUT (or standard input), writing to OUTPUT (or standard output). With no options, matching lines are merged to the first occurrence. A field is a run of blanks (usually spaces and/or TABs), then non-blank characters. Fields are skipped before chars. uniq does not detect repeated lines unless they are adjacent; you may want to sort the input first, or use 'sort -u' without 'uniq'.",
+  "flags": [
+    { "short": "-c", "long": "--count", "type": "boolean", "conflicts_with": ["-D", "--all-repeated", "--group"], "description": "Prefix lines by the number of occurrences." },
+    { "short": "-d", "long": "--repeated", "type": "boolean", "conflicts_with": ["--group"], "description": "Only print duplicate lines, one for each group." },
+    { "short": "-D", "type": "boolean", "conflicts_with": ["-c", "--group"], "description": "Print all duplicate lines." },
+    { "long": "--all-repeated", "type": "enum", "value_name": "METHOD", "enum_values": ["none", "prepend", "separate"], "conflicts_with": ["-c", "--group"], "description": "Like -D, but allow separating groups with an empty line. METHOD is none (the default), prepend or separate. The value must be attached, as in --all-repeated=prepend." },
+    { "short": "-f", "long": "--skip-fields", "type": "integer", "value_name": "N", "description": "Avoid comparing the first N fields." },
+    { "long": "--group", "type": "enum", "value_name": "METHOD", "enum_values": ["separate", "prepend", "append", "both"], "conflicts_with": ["-c", "-d", "-D", "--all-repeated", "-u"], "description": "Show all items, separating groups with an empty line. METHOD is separate (the default), prepend, append or both. The value must be attached, as in --group=both." },
+    { "short": "-i", "long": "--ignore-case", "type": "boolean", "description": "Ignore differences in case when comparing." },
+    { "short": "-s", "long": "--skip-chars", "type": "integer", "value_name": "N", "description": "Avoid comparing the first N characters." },
+    { "short": "-u", "long": "--unique", "type": "boolean", "conflicts_with": ["--group"], "description": "Only print unique lines." },
+    { "short": "-z", "long": "--zero-terminated", "type": "boolean", "description": "Line delimiter is NUL, not newline." },
+    { "short": "-w", "long": "--check-chars", "type": "integer", "value_name": "N", "description": "Compare no more than N characters in lines." },
+    { "long": "--help", "type": "boolean", "description": "Display this help and exit." },
+    { "long": "--version", "type": "boolean", "description": "Output version information and exit." }
+  ],
+  "positional_args": [
+    { "name": "input", "type": "path", "required": false, "description": "File to read. With no operand the standard input is read." },
+    { "name": "output", "type": "path", "required": false, "description": "File to write. It is truncated and rewritten. With no operand the standard output is used." }
+  ],
+  "annotations": {
+    "readonly": false,
+    "destructive": true,
+    "idempotent": true,
+    "requires_approval": true
+  }
+}

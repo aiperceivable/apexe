@@ -17,17 +17,85 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing::{debug, warn};
 
-use crate::adapter::overlay::{MatchContext, MatchStrength, ToolOverlay, OVERLAY_SCHEMA_VERSION};
+use crate::adapter::overlay::{
+    validate_overlay, MatchContext, MatchStrength, OverlayDefect, ToolOverlay,
+    OVERLAY_SCHEMA_VERSION,
+};
 
 /// Curated overlays compiled into the binary.
 ///
 /// Deliberately a short list: it exists to prove the mechanism end to end, not
 /// to be a library of every CLI in existence.
 const BUILTIN_OVERLAYS: &[(&str, &str)] = &[
+    ("cat@bsd", include_str!("../../overlays/cat@bsd.json")),
+    (
+        "cat@gnu-coreutils",
+        include_str!("../../overlays/cat@gnu-coreutils.json"),
+    ),
+    ("cp@bsd", include_str!("../../overlays/cp@bsd.json")),
+    (
+        "cp@gnu-coreutils",
+        include_str!("../../overlays/cp@gnu-coreutils.json"),
+    ),
+    ("cut@bsd", include_str!("../../overlays/cut@bsd.json")),
+    (
+        "cut@gnu-coreutils",
+        include_str!("../../overlays/cut@gnu-coreutils.json"),
+    ),
+    ("diff@bsd", include_str!("../../overlays/diff@bsd.json")),
+    ("head@bsd", include_str!("../../overlays/head@bsd.json")),
+    (
+        "head@gnu-coreutils",
+        include_str!("../../overlays/head@gnu-coreutils.json"),
+    ),
+    ("ln@bsd", include_str!("../../overlays/ln@bsd.json")),
+    (
+        "ln@gnu-coreutils",
+        include_str!("../../overlays/ln@gnu-coreutils.json"),
+    ),
     ("ls@bsd", include_str!("../../overlays/ls@bsd.json")),
     (
         "ls@gnu-coreutils",
         include_str!("../../overlays/ls@gnu-coreutils.json"),
+    ),
+    ("mkdir@bsd", include_str!("../../overlays/mkdir@bsd.json")),
+    (
+        "mkdir@gnu-coreutils",
+        include_str!("../../overlays/mkdir@gnu-coreutils.json"),
+    ),
+    ("mv@bsd", include_str!("../../overlays/mv@bsd.json")),
+    (
+        "mv@gnu-coreutils",
+        include_str!("../../overlays/mv@gnu-coreutils.json"),
+    ),
+    ("rm@bsd", include_str!("../../overlays/rm@bsd.json")),
+    (
+        "rm@gnu-coreutils",
+        include_str!("../../overlays/rm@gnu-coreutils.json"),
+    ),
+    (
+        "sort@gnu-coreutils",
+        include_str!("../../overlays/sort@gnu-coreutils.json"),
+    ),
+    ("tail@bsd", include_str!("../../overlays/tail@bsd.json")),
+    (
+        "tail@gnu-coreutils",
+        include_str!("../../overlays/tail@gnu-coreutils.json"),
+    ),
+    ("touch@bsd", include_str!("../../overlays/touch@bsd.json")),
+    (
+        "touch@gnu-coreutils",
+        include_str!("../../overlays/touch@gnu-coreutils.json"),
+    ),
+    ("uniq@bsd", include_str!("../../overlays/uniq@bsd.json")),
+    (
+        "uniq@gnu-coreutils",
+        include_str!("../../overlays/uniq@gnu-coreutils.json"),
+    ),
+    ("wc@bsd", include_str!("../../overlays/wc@bsd.json")),
+    (
+        "wc@gnu-coreutils",
+        include_str!("../../overlays/wc@gnu-coreutils.json"),
     ),
 ];
 
@@ -52,6 +120,23 @@ pub enum OverlayError {
         found: String,
         expected: String,
     },
+
+    /// The document parsed, but asserts something it is not allowed to assert —
+    /// most importantly `confidence: verified` with no provenance to back it.
+    #[error("Overlay '{path}' is invalid:\n{}", format_defects(.defects))]
+    Invalid {
+        path: String,
+        defects: Vec<OverlayDefect>,
+    },
+}
+
+/// Render a defect list as one indented bullet per line.
+fn format_defects(defects: &[OverlayDefect]) -> String {
+    defects
+        .iter()
+        .map(|defect| format!("  - {defect}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Where an overlay came from, which sets its baseline precedence.
@@ -247,6 +332,18 @@ fn parse_overlay(path: &str, document: &str) -> Result<ToolOverlay, OverlayError
             expected: OVERLAY_SCHEMA_VERSION.to_string(),
         });
     }
+
+    // Content invariants are enforced here rather than only in `overlay verify`
+    // so a `verified` claim can never reach a scan without provenance backing
+    // it: an authoritative overlay replaces the scan result wholesale, and an
+    // unbacked one would launder a guess into a fact an agent then acts on.
+    let defects = validate_overlay(&overlay);
+    if !defects.is_empty() {
+        return Err(OverlayError::Invalid {
+            path: path.to_string(),
+            defects,
+        });
+    }
     Ok(overlay)
 }
 
@@ -269,6 +366,12 @@ mod tests {
       "match": { "platform": ["macos"] },
       "mode": "merge",
       "confidence": "verified",
+      "provenance": {
+        "platform": "macos",
+        "tool_version": "test",
+        "source": "man-page",
+        "checked_on": "2026-07-27"
+      },
       "flags": []
     }"#;
 
@@ -320,6 +423,77 @@ mod tests {
         }];
         let selected = store.select(&ctx).expect("gnu overlay must match");
         assert_eq!(selected.overlay.id(), "ls@gnu-coreutils");
+    }
+
+    #[test]
+    fn test_builtin_rm_bsd_selected_for_bsd_probe() {
+        let store = OverlayStore::with_builtins();
+        let mut ctx = context("rm", ToolVariant::Bsd, Platform::Macos);
+        ctx.probes = vec![ProbeOutcome {
+            args: super::super::variant::version_probe_args(),
+            succeeded: false,
+            output: "rm: illegal option -- -".to_string(),
+        }];
+        let selected = store.select(&ctx).expect("bsd rm overlay must match");
+        assert_eq!(selected.overlay.id(), "rm@bsd");
+        assert_eq!(selected.strength, MatchStrength::Probe);
+    }
+
+    #[test]
+    fn test_builtin_rm_gnu_selected_when_probe_says_gnu() {
+        let store = OverlayStore::with_builtins();
+        let mut ctx = context("rm", ToolVariant::GnuCoreutils, Platform::Linux);
+        ctx.binary_path = "/usr/bin/rm".to_string();
+        ctx.version = Some("9.7".to_string());
+        ctx.probes = vec![ProbeOutcome {
+            args: super::super::variant::version_probe_args(),
+            succeeded: true,
+            output: "rm (GNU coreutils) 9.7".to_string(),
+        }];
+        let selected = store.select(&ctx).expect("gnu rm overlay must match");
+        assert_eq!(selected.overlay.id(), "rm@gnu-coreutils");
+    }
+
+    /// An under-classified `rm` would let an agent delete files without ever
+    /// reaching the approval gate, so both variants are pinned here.
+    #[test]
+    fn test_builtin_rm_overlays_assert_destructive_and_require_approval() {
+        let store = OverlayStore::with_builtins();
+        let rm_overlays: Vec<_> = store
+            .entries
+            .iter()
+            .filter(|entry| entry.overlay.command == "rm")
+            .collect();
+        assert_eq!(rm_overlays.len(), 2, "both rm variants must be registered");
+        for entry in rm_overlays {
+            let annotations = &entry.overlay.annotations;
+            assert_eq!(annotations.destructive, Some(true));
+            assert_eq!(annotations.requires_approval, Some(true));
+            assert_eq!(annotations.readonly, Some(false));
+        }
+    }
+
+    /// Every curated built-in claims `verified`, which the loader only accepts
+    /// with provenance behind it. This asserts the intent rather than relying
+    /// on a silent skip if someone strips a provenance block.
+    #[test]
+    fn test_builtin_overlays_are_verified_with_provenance() {
+        let store = OverlayStore::with_builtins();
+        for entry in &store.entries {
+            assert_eq!(
+                entry.overlay.confidence,
+                crate::models::Confidence::Verified,
+                "{} must be verified",
+                entry.overlay.id()
+            );
+            let provenance = entry
+                .overlay
+                .provenance
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} must carry provenance", entry.overlay.id()));
+            assert!(!provenance.tool_version.trim().is_empty());
+            assert_eq!(provenance.checked_on.len(), 10);
+        }
     }
 
     #[test]

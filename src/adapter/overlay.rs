@@ -155,6 +155,55 @@ pub struct OverlayArg {
     pub variadic: bool,
 }
 
+/// Which document an overlay's facts were read out of.
+///
+/// Deliberately narrow: these are the only three things a human can actually
+/// have consulted. "I know this tool" is not a source, and there is no variant
+/// of this enum that lets an author record it as one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EvidenceSource {
+    /// The installed tool's own man page.
+    ManPage,
+    /// The installed tool's own `--help` (or bundled usage) output.
+    Help,
+    /// Published upstream or vendor documentation for a stated release.
+    VendorDocs,
+}
+
+/// The audit record of how an overlay's contents were checked.
+///
+/// An overlay is a human assertion about a program the agent will then act on.
+/// Without this block a `verified` overlay is indistinguishable from a
+/// confident guess, and the three required fields are exactly what decides
+/// whether a past check still applies: *which* build was looked at
+/// (`platform` + `tool_version`), *what* was read (`source`), and *when*
+/// (`checked_on`) — because a verification against an older release cannot
+/// know about flags added after it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverlayProvenance {
+    /// Platform the reference installation ran on.
+    pub platform: Platform,
+    /// Version of the reference installation, verbatim (e.g. `"9.7"`).
+    pub tool_version: String,
+    /// Which document the flag list was read from.
+    pub source: EvidenceSource,
+    /// ISO-8601 calendar date the check was performed (`YYYY-MM-DD`).
+    pub checked_on: String,
+    /// The exact command that produced the evidence, so it can be re-run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Where the reference installation came from, e.g. a container image tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+    /// Citation for [`EvidenceSource::VendorDocs`], which has no command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    /// Anything a later auditor needs that the fields above cannot carry.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notes: String,
+}
+
 /// A curated description of one command variant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolOverlay {
@@ -171,6 +220,12 @@ pub struct ToolOverlay {
     /// Confidence stamped onto every flag this overlay contributes.
     #[serde(default)]
     pub confidence: Confidence,
+    /// How the contents were checked. Mandatory at [`Confidence::Verified`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<OverlayProvenance>,
+    /// Free-form authoring note; carries the "unreviewed" banner on scaffolds.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notes: String,
     /// Replacement tool description. Empty leaves the scanned one alone.
     #[serde(default)]
     pub description: String,
@@ -180,6 +235,25 @@ pub struct ToolOverlay {
     pub positional_args: Vec<OverlayArg>,
     #[serde(default)]
     pub annotations: AnnotationOverrides,
+}
+
+impl Default for ToolOverlay {
+    fn default() -> Self {
+        Self {
+            schema_version: OVERLAY_SCHEMA_VERSION.to_string(),
+            command: String::new(),
+            variant: ToolVariant::default(),
+            match_rules: OverlayMatch::default(),
+            mode: OverlayMode::default(),
+            confidence: Confidence::default(),
+            provenance: None,
+            notes: String::new(),
+            description: String::new(),
+            flags: Vec::new(),
+            positional_args: Vec::new(),
+            annotations: AnnotationOverrides::default(),
+        }
+    }
 }
 
 /// Everything about the running system an overlay may be matched against.
@@ -255,6 +329,172 @@ impl ToolOverlay {
             Some(range) => version_in_range(version, range),
         }
     }
+}
+
+/// A structural fault in an overlay document.
+///
+/// Separate from [`crate::scanner::OverlayError`] because these are statements
+/// about the *content* of a well-formed document, and every one of them is
+/// decidable without touching the filesystem or the described tool.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum OverlayDefect {
+    #[error("schema_version is '{found}', but this build supports '{expected}'")]
+    UnsupportedVersion { found: String, expected: String },
+
+    #[error("command must not be empty")]
+    EmptyCommand,
+
+    #[error("command '{0}' looks like a path; overlays are keyed by bare command name")]
+    CommandIsPath(String),
+
+    #[error(
+        "confidence 'verified' requires a 'provenance' block recording platform, \
+         tool_version, source and checked_on"
+    )]
+    VerifiedWithoutProvenance,
+
+    #[error("provenance.tool_version must not be empty")]
+    EmptyToolVersion,
+
+    #[error("provenance.checked_on '{0}' is not an ISO-8601 calendar date (YYYY-MM-DD)")]
+    MalformedCheckedOn(String),
+
+    #[error("provenance.source is 'vendor-docs', which requires a 'reference' citation")]
+    VendorDocsWithoutReference,
+
+    #[error("flag #{index} declares neither 'long' nor 'short'")]
+    FlagWithoutName { index: usize },
+
+    #[error("flag long form '{0}' must start with '--'")]
+    MalformedLong(String),
+
+    #[error("flag short form '{0}' must be a single dash followed by one character")]
+    MalformedShort(String),
+
+    #[error("flag '{0}' is declared more than once")]
+    DuplicateFlag(String),
+
+    #[error("flag '{0}' has type 'enum' but declares no enum_values")]
+    EnumWithoutValues(String),
+
+    #[error("flag '{flag}' conflicts_with '{other}', which this overlay never declares")]
+    UnknownConflict { flag: String, other: String },
+
+    #[error("positional arg #{0} has an empty name")]
+    UnnamedArg(usize),
+}
+
+/// Check every invariant of `overlay` that needs no access to the real tool.
+///
+/// Returns all defects rather than the first, so an author fixes a file in one
+/// pass. Completeness against the real tool is a separate, machine-checked
+/// question — see `crate::scanner::overlay_verify`.
+pub fn validate_overlay(overlay: &ToolOverlay) -> Vec<OverlayDefect> {
+    let mut defects = Vec::new();
+    if !overlay.is_supported_version() {
+        defects.push(OverlayDefect::UnsupportedVersion {
+            found: overlay.schema_version.clone(),
+            expected: OVERLAY_SCHEMA_VERSION.to_string(),
+        });
+    }
+    if overlay.command.trim().is_empty() {
+        defects.push(OverlayDefect::EmptyCommand);
+    } else if overlay.command.contains('/') || overlay.command.contains('\\') {
+        defects.push(OverlayDefect::CommandIsPath(overlay.command.clone()));
+    }
+    validate_provenance(overlay, &mut defects);
+    validate_flags(&overlay.flags, &mut defects);
+    for (index, arg) in overlay.positional_args.iter().enumerate() {
+        if arg.name.trim().is_empty() {
+            defects.push(OverlayDefect::UnnamedArg(index));
+        }
+    }
+    defects
+}
+
+/// Enforce the provenance contract: `verified` is a claim that must be backed.
+fn validate_provenance(overlay: &ToolOverlay, defects: &mut Vec<OverlayDefect>) {
+    let Some(ref provenance) = overlay.provenance else {
+        if overlay.confidence == Confidence::Verified {
+            defects.push(OverlayDefect::VerifiedWithoutProvenance);
+        }
+        return;
+    };
+    if provenance.tool_version.trim().is_empty() {
+        defects.push(OverlayDefect::EmptyToolVersion);
+    }
+    if !is_iso_date(&provenance.checked_on) {
+        defects.push(OverlayDefect::MalformedCheckedOn(
+            provenance.checked_on.clone(),
+        ));
+    }
+    let uncited = provenance
+        .reference
+        .as_deref()
+        .is_none_or(|text| text.trim().is_empty());
+    if provenance.source == EvidenceSource::VendorDocs && uncited {
+        defects.push(OverlayDefect::VendorDocsWithoutReference);
+    }
+}
+
+/// Check flag naming, uniqueness, enum completeness and conflict references.
+fn validate_flags(flags: &[OverlayFlag], defects: &mut Vec<OverlayDefect>) {
+    let mut seen: Vec<String> = Vec::new();
+    for (index, flag) in flags.iter().enumerate() {
+        if flag.long.is_none() && flag.short.is_none() {
+            defects.push(OverlayDefect::FlagWithoutName { index });
+        }
+        for name in flag.names() {
+            if name.starts_with("--") {
+                if name.len() < 3 {
+                    defects.push(OverlayDefect::MalformedLong(name.clone()));
+                }
+            } else if name.chars().count() != 2 || !name.starts_with('-') {
+                defects.push(OverlayDefect::MalformedShort(name.clone()));
+            }
+            if seen.contains(&name) {
+                defects.push(OverlayDefect::DuplicateFlag(name.clone()));
+            }
+            seen.push(name);
+        }
+        if flag.value_type == ValueType::Enum && flag.enum_values.as_ref().is_none_or(Vec::is_empty)
+        {
+            defects.push(OverlayDefect::EnumWithoutValues(flag.display_name()));
+        }
+    }
+    for flag in flags {
+        for other in &flag.conflicts_with {
+            if !seen.iter().any(|name| name == other) {
+                defects.push(OverlayDefect::UnknownConflict {
+                    flag: flag.display_name(),
+                    other: other.clone(),
+                });
+            }
+        }
+    }
+}
+
+/// Whether `text` is a `YYYY-MM-DD` calendar date with plausible components.
+///
+/// A hand-rolled check rather than a date crate: the only thing that matters is
+/// that the field is a real, sortable date an auditor can compare against a
+/// release timeline, and pulling in `chrono` for ten lines is not worth it.
+fn is_iso_date(text: &str) -> bool {
+    let parts: Vec<&str> = text.split('-').collect();
+    let [year, month, day] = parts[..] else {
+        return false;
+    };
+    let numeric = |part: &str, width: usize| -> Option<u32> {
+        (part.len() == width && part.chars().all(|c| c.is_ascii_digit()))
+            .then(|| part.parse().ok())
+            .flatten()
+    };
+    let (Some(year), Some(month), Some(day)) =
+        (numeric(year, 4), numeric(month, 2), numeric(day, 2))
+    else {
+        return false;
+    };
+    year >= 1970 && (1..=12).contains(&month) && (1..=31).contains(&day)
 }
 
 /// Whether a recorded probe outcome satisfies a declared probe matcher.
@@ -364,6 +604,20 @@ fn compare_versions(left: &str, right: &str) -> std::cmp::Ordering {
 }
 
 impl OverlayFlag {
+    /// Every name this flag claims, long form first.
+    ///
+    /// Both alias forms count independently: an overlay that gets `--all` right
+    /// and `-a` wrong is wrong about one flag name, and flattening to a single
+    /// identifier would hide that.
+    pub fn names(&self) -> Vec<String> {
+        self.long.iter().chain(self.short.iter()).cloned().collect()
+    }
+
+    /// The name to show a human, preferring the long form.
+    pub fn display_name(&self) -> String {
+        self.names().first().cloned().unwrap_or_default()
+    }
+
     /// Convert to the scanner's flag model, stamped with overlay provenance.
     fn to_scanned(&self, confidence: Confidence) -> ScannedFlag {
         ScannedFlag {
@@ -515,6 +769,20 @@ mod tests {
                 readonly: Some(true),
                 ..Default::default()
             },
+            // The fixture claims `Verified`, so it must carry provenance for the
+            // same reason a real overlay must: a verified claim nobody can
+            // re-check is indistinguishable from a guess.
+            provenance: Some(OverlayProvenance {
+                platform: Platform::Macos,
+                tool_version: "unknown".to_string(),
+                source: EvidenceSource::ManPage,
+                checked_on: "2026-07-27".to_string(),
+                command: Some("man ls".to_string()),
+                environment: None,
+                reference: None,
+                notes: String::new(),
+            }),
+            notes: String::new(),
         }
     }
 

@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0",
+  "command": "rm",
+  "variant": "gnu-coreutils",
+  "match": {
+    "probe": {
+      "args": ["--version"],
+      "expect": "success",
+      "output_contains": "GNU coreutils"
+    }
+  },
+  "mode": "authoritative",
+  "confidence": "verified",
+  "provenance": {
+    "platform": "linux",
+    "tool_version": "9.7",
+    "source": "help",
+    "checked_on": "2026-07-27",
+    "command": "docker run --rm debian:stable-slim rm --help",
+    "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
+    "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention. '-r, -R, --recursive' is one help entry; it is split into a -r/--recursive flag and a separate -R alias because the overlay format carries at most one short form per flag."
+  },
+  "description": "Remove (unlink) the FILE(s). By default, rm does not remove directories; use --recursive (-r or -R) to remove each listed directory along with all of its contents. Any attempt to remove a file whose last file name component is '.' or '..' is rejected with a diagnostic.",
+  "flags": [
+    { "short": "-f", "long": "--force", "type": "boolean", "conflicts_with": ["-i", "-I", "--interactive"], "description": "Ignore nonexistent files and arguments, never prompt." },
+    { "short": "-i", "type": "boolean", "conflicts_with": ["-f", "-I", "--interactive"], "description": "Prompt before every removal." },
+    { "short": "-I", "type": "boolean", "conflicts_with": ["-f", "-i", "--interactive"], "description": "Prompt once before removing more than three files, or when removing recursively; less intrusive than -i, while still giving protection against most mistakes." },
+    { "long": "--interactive", "type": "enum", "value_name": "WHEN", "enum_values": ["never", "once", "always"], "conflicts_with": ["-f", "-i", "-I"], "description": "Prompt according to WHEN: never, once (-I), or always (-i); without WHEN, prompt always." },
+    { "long": "--one-file-system", "type": "boolean", "description": "When removing a hierarchy recursively, skip any directory that is on a file system different from that of the corresponding command line argument." },
+    { "long": "--no-preserve-root", "type": "boolean", "conflicts_with": ["--preserve-root"], "description": "Do not treat '/' specially." },
+    { "long": "--preserve-root", "type": "enum", "value_name": "all", "enum_values": ["all"], "conflicts_with": ["--no-preserve-root"], "description": "Do not remove '/' (default); with 'all', reject any command line argument on a separate device from its parent." },
+    { "short": "-r", "long": "--recursive", "type": "boolean", "description": "Remove directories and their contents recursively." },
+    { "short": "-R", "type": "boolean", "description": "Remove directories and their contents recursively; listed by --help as an alias of -r." },
+    { "short": "-d", "long": "--dir", "type": "boolean", "description": "Remove empty directories." },
+    { "short": "-v", "long": "--verbose", "type": "boolean", "description": "Explain what is being done." },
+    { "long": "--help", "type": "boolean", "description": "Display this help and exit." },
+    { "long": "--version", "type": "boolean", "description": "Output version information and exit." }
+  ],
+  "positional_args": [
+    { "name": "file", "type": "path", "variadic": true, "required": true, "description": "Files to remove. At least one is required." }
+  ],
+  "annotations": {
+    "readonly": false,
+    "destructive": true,
+    "idempotent": false,
+    "requires_approval": true
+  }
+}

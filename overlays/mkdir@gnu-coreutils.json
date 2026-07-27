@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "command": "mkdir",
+  "variant": "gnu-coreutils",
+  "match": {
+    "probe": {
+      "args": ["--version"],
+      "expect": "success",
+      "output_contains": "GNU coreutils"
+    }
+  },
+  "mode": "authoritative",
+  "confidence": "verified",
+  "provenance": {
+    "platform": "linux",
+    "tool_version": "9.7",
+    "source": "help",
+    "checked_on": "2026-07-27",
+    "command": "docker run --rm debian:stable-slim mkdir --help",
+    "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
+    "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention. No conflicts_with: --help states no mutual exclusion, and 'mkdir -Z --context=x DIR' was run against the reference build and exited 0 (with a warning that --context needs an SELinux/SMACK-enabled kernel), so -Z and --context are not exclusive."
+  },
+  "description": "Create the DIRECTORY(ies), if they do not already exist. Mandatory arguments to long options are mandatory for short options too.",
+  "flags": [
+    { "short": "-m", "long": "--mode", "type": "string", "value_name": "MODE", "description": "Set file mode (as in chmod), not a=rwx - umask." },
+    { "short": "-p", "long": "--parents", "type": "boolean", "description": "No error if existing, make parent directories as needed, with their file modes unaffected by any -m option." },
+    { "short": "-v", "long": "--verbose", "type": "boolean", "description": "Print a message for each created directory." },
+    { "short": "-Z", "type": "boolean", "description": "Set SELinux security context of each created directory to the default type." },
+    { "long": "--context", "type": "string", "value_name": "CTX", "description": "Like -Z, or if CTX is specified then set the SELinux or SMACK security context to CTX. The value is optional." },
+    { "long": "--help", "type": "boolean", "description": "Display this help and exit." },
+    { "long": "--version", "type": "boolean", "description": "Output version information and exit." }
+  ],
+  "positional_args": [
+    { "name": "directory", "type": "path", "variadic": true, "required": true, "description": "Directories to create. At least one is required." }
+  ],
+  "annotations": {
+    "readonly": false,
+    "destructive": false,
+    "idempotent": false,
+    "requires_approval": false
+  }
+}

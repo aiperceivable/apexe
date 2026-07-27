@@ -113,6 +113,31 @@ make check   # Run all gates (do this before git commit)
 
 ---
 
+## Tool Overlays
+
+Overlays in `overlays/` are curated human assertions that can replace the scan
+result entirely (`mode: authoritative`) and carry the highest trust label in the
+system (`confidence: verified`). They are plain data files, which makes them
+deceptively easy to add — and a wrong one is worse than none, because an agent
+will act on it.
+
+- **Never mark an overlay `verified` without reading the flag list off a real
+  installation.** Writing from model knowledge yields plausible, mostly-correct
+  output that silently omits recently added flags. The schema requires a
+  `provenance` block; do not satisfy it by inventing one.
+- **Never copy a flag description from one variant to another.** Of the 38 flags
+  `ls` shares between its BSD and GNU variants, zero have identical
+  descriptions, and some differ in behavior rather than wording.
+- **When you cannot verify against a real installation**, use `mode: merge` with
+  a lower confidence, so a gap degrades to the scanner's answer instead of
+  erasing a real flag.
+
+Read [`docs/overlays.md`](docs/overlays.md) before adding or editing an overlay.
+It is the single source for the verification procedure — keep summaries
+elsewhere short and link to it rather than duplicating the steps.
+
+---
+
 ## General Guidelines
 
 - **English only** for all code, comments, doc comments, error messages, and commit messages.

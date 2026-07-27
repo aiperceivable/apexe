@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "command": "cut",
+  "variant": "gnu-coreutils",
+  "match": {
+    "probe": {
+      "args": ["--version"],
+      "expect": "success",
+      "output_contains": "GNU coreutils"
+    }
+  },
+  "mode": "authoritative",
+  "confidence": "verified",
+  "provenance": {
+    "platform": "linux",
+    "tool_version": "9.7",
+    "source": "help",
+    "checked_on": "2026-07-27",
+    "command": "docker run --rm debian:stable-slim cut --help",
+    "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
+    "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention. A naive extraction over this --help reports a '-M' option; it is an artifact of the range legend line \"  -M    from first to M'th (included) byte, character or field\" and is not a flag -- 'cut -M 1' fails with \"invalid option -- 'M'\". conflicts_with: -b, -c and -f come from the --help sentence 'Use one, and only one of -b, -c or -f', and the binary diagnoses every pairing with 'cut: only one list may be specified'. -d against -b and -c comes from the binary's 'an input delimiter may be specified only when operating on fields'; -s against -b and -c from 'suppressing non-delimited lines makes sense only when operating on fields'. Four candidates were tested and rejected: -n is documented as '(ignored)' and is accepted alongside -b, -c and -f alike, so unlike BSD cut it carries no conflict; --output-delimiter and --complement are accepted with -b as well as -f. annotations: cut opens every operand read-only and has no option that names an output file, so readonly is true."
+  },
+  "description": "Print selected parts of lines from each FILE to standard output. With no FILE, or when FILE is -, read standard input. Use one, and only one of -b, -c or -f. Each LIST is made up of one range, or many ranges separated by commas. Selected input is written in the same order that it is read, and is written exactly once. Each range is one of: N (the N'th byte, character or field, counted from 1), N- (from the N'th to end of line), N-M (from the N'th to the M'th, included) or -M (from first to the M'th, included).",
+  "flags": [
+    { "short": "-b", "long": "--bytes", "type": "string", "value_name": "LIST", "conflicts_with": ["-c", "-f", "-d", "-s"], "description": "Select only these bytes." },
+    { "short": "-c", "long": "--characters", "type": "string", "value_name": "LIST", "conflicts_with": ["-b", "-f", "-d", "-s"], "description": "Select only these characters." },
+    { "short": "-d", "long": "--delimiter", "type": "string", "value_name": "DELIM", "conflicts_with": ["-b", "-c"], "description": "Use DELIM instead of TAB for field delimiter." },
+    { "short": "-f", "long": "--fields", "type": "string", "value_name": "LIST", "conflicts_with": ["-b", "-c"], "description": "Select only these fields; also print any line that contains no delimiter character, unless the -s option is specified." },
+    { "short": "-n", "type": "boolean", "description": "Ignored. Listed by --help with no effect of its own." },
+    { "long": "--complement", "type": "boolean", "description": "Complement the set of selected bytes, characters or fields." },
+    { "short": "-s", "long": "--only-delimited", "type": "boolean", "conflicts_with": ["-b", "-c"], "description": "Do not print lines not containing delimiters." },
+    { "long": "--output-delimiter", "type": "string", "value_name": "STRING", "description": "Use STRING as the output delimiter. The default is to use the input delimiter." },
+    { "short": "-z", "long": "--zero-terminated", "type": "boolean", "description": "Line delimiter is NUL, not newline." },
+    { "long": "--help", "type": "boolean", "description": "Display this help and exit." },
+    { "long": "--version", "type": "boolean", "description": "Output version information and exit." }
+  ],
+  "positional_args": [
+    { "name": "file", "type": "path", "variadic": true, "required": false, "description": "Files to cut. With no FILE, or when FILE is -, read standard input." }
+  ],
+  "annotations": {
+    "readonly": true,
+    "destructive": false,
+    "idempotent": true,
+    "requires_approval": false
+  }
+}

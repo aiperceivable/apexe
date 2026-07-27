@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "command": "tail",
+  "variant": "bsd",
+  "match": {
+    "platform": ["macos", "freebsd"],
+    "probe": { "args": ["--version"], "expect": "failure" },
+    "binary_globs": ["/bin/tail", "/usr/bin/tail"]
+  },
+  "mode": "authoritative",
+  "confidence": "verified",
+  "provenance": {
+    "platform": "macos",
+    "tool_version": "macOS 26.3",
+    "source": "man-page",
+    "checked_on": "2026-07-27",
+    "command": "man -P cat tail | col -b",
+    "environment": "macOS 26.3 (Darwin arm64), system /usr/bin/tail",
+    "notes": "Flags transcribed from the block after 'The options are as follows:'. STANDARDS was read for flags documented outside the option block; it only records that -F, -b and -r are extensions to POSIX.2 and adds no option. The option set is closed: the binary's getopt(3) option string is '+Fb:c:fn:qrv', so mode is authoritative. '-q, --quiet, --silent' is one man page entry carrying two long forms; it is split into a -q/--quiet flag and a separate --silent alias because the overlay format carries at most one long form per flag. All long forms (--blocks, --bytes, --lines, --quiet, --silent, --verbose) were run against the binary and exited 0. conflicts_with: -b, -c and -n are mutually exclusive per the SYNOPSIS 'tail ... [-b number | -c number | -n number]' and the binary diagnoses every pairing with its usage line; -r is exclusive with -f and -F per the SYNOPSIS 'tail [-F | -f | -r]' and both pairings are diagnosed. Two SYNOPSIS-suggested exclusions were rejected after testing the binary: -r combines with -b, -c and -n ('tail -r -c 4 FILE' exits 0, which STANDARDS confirms by saying those options modify -r), and -f combines with -F (accepted; -F is documented to imply -f). -q against -v is not diagnosed but comes from 'The -q flag disables the printing of the header in all cases' set against -v 'Prepend each file with a header'. BSD tail rejects --version (exit 1, 'unrecognized option `--version''), which is why the probe matches on failure. The binary's own usage line prints '[-q]' where the man page SYNOPSIS prints '[-qv]'; -v is real and documented, so the man page was followed."
+  },
+  "description": "The tail utility displays the contents of file or, by default, its standard input, to the standard output. The display begins at a byte, line or 512-byte block location in the input. Numbers having a leading plus sign are relative to the beginning of the input; numbers having a leading minus sign or no explicit sign are relative to the end of the input. The default starting location is \"-n 10\", or the last 10 lines of the input.",
+  "flags": [
+    { "short": "-b", "long": "--blocks", "type": "integer", "value_name": "number", "conflicts_with": ["-c", "-n"], "description": "The location is number 512-byte blocks." },
+    { "short": "-c", "long": "--bytes", "type": "integer", "value_name": "number", "conflicts_with": ["-b", "-n"], "description": "The location is number bytes." },
+    { "short": "-f", "type": "boolean", "conflicts_with": ["-r"], "description": "Causes tail to not stop when end of file is reached, but rather to wait for additional data to be appended to the input. The -f option is ignored if the standard input is a pipe, but not if it is a FIFO. This option does not terminate on its own." },
+    { "short": "-F", "type": "boolean", "conflicts_with": ["-r"], "description": "Implies the -f option, but tail will also check to see if the file being followed has been renamed or rotated. The file is closed and reopened when tail detects that the filename being read from has a new inode number. If the file being followed does not (yet) exist or if it is removed, tail will keep looking and will display the file from the beginning if and when it is created. The -F option is the same as the -f option if reading from standard input rather than a file. This option does not terminate on its own." },
+    { "short": "-n", "long": "--lines", "type": "integer", "value_name": "number", "conflicts_with": ["-b", "-c"], "description": "The location is number lines." },
+    { "short": "-q", "long": "--quiet", "type": "boolean", "conflicts_with": ["-v"], "description": "Suppresses printing of headers when multiple files are being examined. The -q flag disables the printing of the header in all cases." },
+    { "long": "--silent", "type": "boolean", "conflicts_with": ["-v"], "description": "Suppresses printing of headers when multiple files are being examined; documented by the man page as an alias of -q and --quiet." },
+    { "short": "-r", "type": "boolean", "conflicts_with": ["-f", "-F"], "description": "Causes the input to be displayed in reverse order, by line. Additionally, this option changes the meaning of the -b, -c and -n options: when -r is specified they give the number of bytes, lines or 512-byte blocks to display, instead of the position from which to begin the display. The default for the -r option is to display all of the input." },
+    { "short": "-v", "long": "--verbose", "type": "boolean", "conflicts_with": ["-q", "--silent"], "description": "Prepend each file with a header consisting of the string \"==> XXX <==\" where XXX is the name of the file." }
+  ],
+  "positional_args": [
+    { "name": "file", "type": "path", "variadic": true, "required": false, "description": "Files to display the last part of. With no operand the standard input is read." }
+  ],
+  "annotations": {
+    "readonly": true,
+    "destructive": false,
+    "idempotent": true,
+    "requires_approval": false
+  }
+}

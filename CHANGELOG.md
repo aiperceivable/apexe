@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Overlay provenance is mandatory at `confidence: verified`** — an overlay claiming to be verified must record how it was checked: the platform and version of the reference installation, which document was read (`man-page` / `help` / `vendor-docs`), the date, and ideally the re-runnable command and a digest-pinned environment. The schema rejects a `verified` overlay without it, and `vendor-docs` additionally requires a `reference` citation because it has no command anyone can re-run. Without this, a `verified` + `authoritative` overlay replaces the entire scan result with an assertion nobody can re-check. `EvidenceSource` has exactly three variants by design — there is none meaning "I know this tool", because that is not evidence.
+- **`docs/overlays.md`** — the overlay authoring guide: when an overlay is warranted, the per-variant verification procedure with exact commands (`man -P cat <tool> | col -b` for BSD, `docker run --rm debian:stable-slim <tool> --help` for GNU, `alpine` for BusyBox), how to fill in provenance, an explicit table of what can and cannot be machine-checked, and the traps already hit in practice.
+
+### Fixed
+- **`ls@gnu-coreutils` was missing `--zero`** — found by diffing the overlay against a real GNU coreutils 9.7 `--help` in a container. The overlay had been written without a GNU reference installation and scored 100% precision, but omitted a flag added in coreutils 8.25. Everything present was correct, which is what makes this failure mode hard to notice, and is the reason provenance is now required.
+
+### Notes
+- **No `apexe overlay verify` subcommand was added, deliberately.** A tool can compare flag names; it cannot check descriptions, `conflicts_with`, types or enum values — and those are the reason overlays exist at all. A green check covering only the mechanical half would be read as "this overlay is correct". The verification procedure is documented for humans instead. See "What cannot be automated" in `docs/overlays.md`.
+
+---
+
 ## [0.4.0] - 2026-07-27
 
 ### Added

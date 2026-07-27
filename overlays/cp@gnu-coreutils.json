@@ -1,0 +1,73 @@
+{
+  "schema_version": "1.0",
+  "command": "cp",
+  "variant": "gnu-coreutils",
+  "match": {
+    "probe": {
+      "args": ["--version"],
+      "expect": "success",
+      "output_contains": "GNU coreutils"
+    }
+  },
+  "mode": "authoritative",
+  "confidence": "verified",
+  "provenance": {
+    "platform": "linux",
+    "tool_version": "9.7",
+    "source": "help",
+    "checked_on": "2026-07-27",
+    "command": "docker run --rm debian:stable-slim cp --help",
+    "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
+    "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention. '-R, -r, --recursive' is one help entry; it is split into a -r/--recursive flag and a separate -R alias because the overlay format carries at most one short form per flag. Enum values for --reflink, --sparse, --update and --backup come from the explanatory paragraphs in the same --help output, not from outside knowledge."
+  },
+  "description": "Copy SOURCE to DEST, or multiple SOURCE(s) to DIRECTORY. Mandatory arguments to long options are mandatory for short options too.",
+  "flags": [
+    { "short": "-a", "long": "--archive", "type": "boolean", "description": "Same as -dR --preserve=all." },
+    { "long": "--attributes-only", "type": "boolean", "description": "Don't copy the file data, just the attributes." },
+    { "long": "--backup", "type": "enum", "value_name": "CONTROL", "enum_values": ["none", "off", "numbered", "t", "existing", "nil", "simple", "never"], "description": "Make a backup of each existing destination file. The version control method may also be selected through the VERSION_CONTROL environment variable." },
+    { "short": "-b", "type": "boolean", "description": "Like --backup but does not accept an argument." },
+    { "long": "--copy-contents", "type": "boolean", "description": "Copy contents of special files when recursive." },
+    { "short": "-d", "type": "boolean", "description": "Same as --no-dereference --preserve=links." },
+    { "long": "--debug", "type": "boolean", "description": "Explain how a file is copied. Implies -v." },
+    { "short": "-f", "long": "--force", "type": "boolean", "conflicts_with": ["-n"], "description": "If an existing destination file cannot be opened, remove it and try again (this option is ignored when the -n option is also used)." },
+    { "short": "-i", "long": "--interactive", "type": "boolean", "conflicts_with": ["-n"], "description": "Prompt before overwrite (overrides a previous -n option)." },
+    { "short": "-H", "type": "boolean", "conflicts_with": ["-P"], "description": "Follow command-line symbolic links in SOURCE." },
+    { "short": "-l", "long": "--link", "type": "boolean", "description": "Hard link files instead of copying." },
+    { "short": "-L", "long": "--dereference", "type": "boolean", "conflicts_with": ["-P"], "description": "Always follow symbolic links in SOURCE." },
+    { "short": "-n", "long": "--no-clobber", "type": "boolean", "conflicts_with": ["-f", "-i"], "description": "Deprecated. Silently skip existing files. See also --update." },
+    { "short": "-P", "long": "--no-dereference", "type": "boolean", "conflicts_with": ["-H", "-L"], "description": "Never follow symbolic links in SOURCE." },
+    { "short": "-p", "type": "boolean", "description": "Same as --preserve=mode,ownership,timestamps." },
+    { "long": "--preserve", "type": "string", "value_name": "ATTR_LIST", "description": "Preserve the specified attributes. ATTR_LIST is a comma-separated list of 'mode', 'ownership', 'timestamps', 'links', 'context', 'xattr' and 'all'." },
+    { "long": "--no-preserve", "type": "string", "value_name": "ATTR_LIST", "description": "Don't preserve the specified attributes." },
+    { "long": "--parents", "type": "boolean", "description": "Use full source file name under DIRECTORY." },
+    { "short": "-r", "long": "--recursive", "type": "boolean", "description": "Copy directories recursively." },
+    { "short": "-R", "type": "boolean", "description": "Copy directories recursively; listed by --help as an alias of -r." },
+    { "long": "--reflink", "type": "enum", "value_name": "WHEN", "enum_values": ["always", "auto", "never"], "description": "Control clone/CoW copies. With always, perform a lightweight copy and fail if that is not possible; auto falls back to a standard copy; never inhibits the lightweight copy." },
+    { "long": "--remove-destination", "type": "boolean", "description": "Remove each existing destination file before attempting to open it (contrast with --force)." },
+    { "long": "--sparse", "type": "enum", "value_name": "WHEN", "enum_values": ["auto", "always", "never"], "description": "Control creation of sparse files. auto detects sparse SOURCE files by a crude heuristic; always creates a sparse DEST whenever SOURCE contains a long enough run of zero bytes; never inhibits sparse files." },
+    { "long": "--strip-trailing-slashes", "type": "boolean", "description": "Remove any trailing slashes from each SOURCE argument." },
+    { "short": "-s", "long": "--symbolic-link", "type": "boolean", "description": "Make symbolic links instead of copying." },
+    { "short": "-S", "long": "--suffix", "type": "string", "value_name": "SUFFIX", "description": "Override the usual backup suffix. The default is '~', unless set with SIMPLE_BACKUP_SUFFIX." },
+    { "short": "-t", "long": "--target-directory", "type": "path", "value_name": "DIRECTORY", "conflicts_with": ["-T"], "description": "Copy all SOURCE arguments into DIRECTORY." },
+    { "short": "-T", "long": "--no-target-directory", "type": "boolean", "conflicts_with": ["-t"], "description": "Treat DEST as a normal file." },
+    { "long": "--update", "type": "enum", "value_name": "UPDATE", "enum_values": ["all", "none", "none-fail", "older"], "description": "Control which existing files are updated. 'all' replaces every existing destination file; 'none' skips them without failing; 'none-fail' skips and diagnoses them; 'older' (the default when --update is given) replaces files older than the source." },
+    { "short": "-u", "type": "boolean", "description": "Equivalent to --update=older." },
+    { "short": "-v", "long": "--verbose", "type": "boolean", "description": "Explain what is being done." },
+    { "long": "--keep-directory-symlink", "type": "boolean", "description": "Follow existing symlinks to directories." },
+    { "short": "-x", "long": "--one-file-system", "type": "boolean", "description": "Stay on this file system." },
+    { "short": "-Z", "type": "boolean", "description": "Set SELinux security context of destination file to default type." },
+    { "long": "--context", "type": "string", "value_name": "CTX", "description": "Like -Z, or if CTX is specified then set the SELinux or SMACK security context to CTX." },
+    { "long": "--help", "type": "boolean", "description": "Display this help and exit." },
+    { "long": "--version", "type": "boolean", "description": "Output version information and exit." }
+  ],
+  "positional_args": [
+    { "name": "source", "type": "path", "variadic": true, "required": true, "description": "File or directory to copy from." },
+    { "name": "dest", "type": "path", "required": true, "description": "Destination file, or the DIRECTORY multiple SOURCEs are copied into. Not given when -t is used." }
+  ],
+  "annotations": {
+    "readonly": false,
+    "destructive": true,
+    "idempotent": true,
+    "requires_approval": true
+  }
+}

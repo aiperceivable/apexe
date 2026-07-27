@@ -612,6 +612,12 @@ mod tests {
               "variant": "unknown",
               "mode": "authoritative",
               "confidence": "verified",
+              "provenance": {
+                "platform": "macos",
+                "tool_version": "test",
+                "source": "man-page",
+                "checked_on": "2026-07-27"
+              },
               "description": "Curated echo.",
               "flags": [{ "short": "-n", "type": "boolean", "description": "No trailing newline." }]
             }"#,

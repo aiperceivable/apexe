@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "command": "touch",
+  "variant": "gnu-coreutils",
+  "match": {
+    "probe": {
+      "args": ["--version"],
+      "expect": "success",
+      "output_contains": "GNU coreutils"
+    }
+  },
+  "mode": "authoritative",
+  "confidence": "verified",
+  "provenance": {
+    "platform": "linux",
+    "tool_version": "9.7",
+    "source": "help",
+    "checked_on": "2026-07-27",
+    "command": "docker run --rm debian:stable-slim touch --help",
+    "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
+    "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention. Enum values for --time come from the value list in the same --help output. conflicts_with was settled against the reference build because --help states no exclusion: 'touch -t ... -d ...' and 'touch -t ... -r FILE' both fail with 'touch: cannot specify times from more than one source', while 'touch -d ... -r FILE' exits 0, so -t is exclusive with -d and -r but -d and -r are not exclusive with each other. 'touch -a -m FILE' and 'touch --time=access -m FILE' both exit 0, so the access/modification selectors are combinable and carry no conflicts_with."
+  },
+  "description": "Update the access and modification times of each FILE to the current time. A FILE argument that does not exist is created empty, unless -c or -h is supplied. A FILE argument string of - is handled specially and causes touch to change the times of the file associated with standard output.",
+  "flags": [
+    { "short": "-a", "type": "boolean", "description": "Change only the access time." },
+    { "short": "-c", "long": "--no-create", "type": "boolean", "description": "Do not create any files." },
+    { "short": "-d", "long": "--date", "type": "string", "value_name": "STRING", "conflicts_with": ["-t"], "description": "Parse STRING and use it instead of current time." },
+    { "short": "-f", "type": "boolean", "description": "Ignored. Listed by --help as '(ignored)'." },
+    { "short": "-h", "long": "--no-dereference", "type": "boolean", "description": "Affect each symbolic link instead of any referenced file (useful only on systems that can change the timestamps of a symlink)." },
+    { "short": "-m", "type": "boolean", "description": "Change only the modification time." },
+    { "short": "-r", "long": "--reference", "type": "path", "value_name": "FILE", "conflicts_with": ["-t"], "description": "Use this file's times instead of current time." },
+    { "short": "-t", "type": "string", "value_name": "STAMP", "conflicts_with": ["-d", "-r"], "description": "Use specified time instead of current time, with a date-time format that differs from -d's. The argument is of the form [[CC]YY]MMDDhhmm[.ss]." },
+    { "long": "--time", "type": "enum", "value_name": "WORD", "enum_values": ["access", "atime", "use", "modify", "mtime"], "description": "Specify which time to change: access time (-a) is selected by 'access', 'atime' or 'use'; modification time (-m) is selected by 'modify' or 'mtime'." },
+    { "long": "--help", "type": "boolean", "description": "Display this help and exit." },
+    { "long": "--version", "type": "boolean", "description": "Output version information and exit." }
+  ],
+  "positional_args": [
+    { "name": "file", "type": "path", "variadic": true, "required": true, "description": "Files whose times are updated. A file that does not exist is created empty unless -c or -h is supplied; a literal - refers to the file associated with standard output." }
+  ],
+  "annotations": {
+    "readonly": false,
+    "destructive": false,
+    "idempotent": false,
+    "requires_approval": false
+  }
+}

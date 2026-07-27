@@ -120,6 +120,31 @@ Every emitted flag carries `sources` and a derived `confidence`:
 `verified` (overlay) > `high` (completion spec) > `medium` (two independent
 heuristic sources agree) > `low` (a single unconfirmed source).
 
+**Writing one.** An overlay claiming `confidence: verified` must carry a
+`provenance` block recording how it was checked — which build was consulted,
+which document was read (`man-page` / `help` / `vendor-docs`), and when. The
+schema rejects a `verified` overlay without it, because a `verified` +
+`authoritative` overlay replaces the entire scan result with an assertion
+nobody can re-check.
+
+Read the flag list off the tool itself, never from memory:
+
+```bash
+man -P cat ls | col -b                          # BSD / macOS (strips overstrike)
+docker run --rm debian:stable-slim ls --help    # GNU coreutils
+docker run --rm alpine ls --help                # BusyBox
+```
+
+There is deliberately **no `apexe overlay verify` command**. A tool can compare
+flag names, but not descriptions, `conflicts_with`, types or enum values — and
+those are the reason overlays exist. A green check covering only the mechanical
+half would read as "this overlay is correct".
+
+See **[Authoring Tool Overlays](docs/overlays.md)** for the full procedure,
+including how to cross-check a draft against a reference installation and the
+traps already hit in practice (of the 38 flags `ls` shares between its BSD and
+GNU variants, **zero** have identical descriptions — never copy one across).
+
 ### `apexe serve`
 
 Start MCP server for scanned tools.
@@ -304,6 +329,7 @@ apexe --log-level trace scan git
 |----------|-------------|
 | **[Quick Start](docs/quickstart.md)** | Get running in 30 seconds |
 | **[User Manual](docs/user-manual.md)** | Full reference — commands, config, scanning, schema generation, annotations, governance, MCP server, AI integration, error handling |
+| **[Authoring Tool Overlays](docs/overlays.md)** | How to write and verify a curated overlay — required reading before adding one |
 | **[Examples](examples/README.md)** | Shell script walkthrough + Rust library API usage |
 | **[Changelog](CHANGELOG.md)** | Release history and migration notes |
 

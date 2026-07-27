@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "command": "cat",
+  "variant": "bsd",
+  "match": {
+    "platform": ["macos", "freebsd"],
+    "probe": { "args": ["--version"], "expect": "failure" },
+    "binary_globs": ["/bin/cat", "/usr/bin/cat"]
+  },
+  "mode": "authoritative",
+  "confidence": "verified",
+  "provenance": {
+    "platform": "macos",
+    "tool_version": "macOS 26.3",
+    "source": "man-page",
+    "checked_on": "2026-07-27",
+    "command": "man -P cat cat | col -b",
+    "environment": "macOS 26.3 (Darwin arm64), system /bin/cat",
+    "notes": "The SYNOPSIS line 'cat [-belnstuv] [file ...]' enumerates exactly the eight options documented under 'The options are as follows:', so the option set is complete and this overlay is authoritative. BSD cat rejects --version (exit 1, 'illegal option -- -'), which is why the probe matches on failure."
+  },
+  "description": "The cat utility reads files sequentially, writing them to the standard output. The file operands are processed in command-line order. If file is a single dash (`-') or absent, cat reads from the standard input. If file is a UNIX domain socket, cat connects to it and then reads it until EOF.",
+  "flags": [
+    { "short": "-b", "type": "boolean", "description": "Number the non-blank output lines, starting at 1." },
+    { "short": "-e", "type": "boolean", "description": "Display non-printing characters (see the -v option), and display a dollar sign (`$') at the end of each line." },
+    { "short": "-l", "type": "boolean", "description": "Set an exclusive advisory lock on the standard output file descriptor. If the output file is already locked, cat will block until the lock is acquired." },
+    { "short": "-n", "type": "boolean", "description": "Number the output lines, starting at 1." },
+    { "short": "-s", "type": "boolean", "description": "Squeeze multiple adjacent empty lines, causing the output to be single spaced." },
+    { "short": "-t", "type": "boolean", "description": "Display non-printing characters (see the -v option), and display tab characters as `^I'." },
+    { "short": "-u", "type": "boolean", "description": "Disable output buffering." },
+    { "short": "-v", "type": "boolean", "description": "Display non-printing characters so they are visible. Control characters print as `^X' for control-X; the delete character (octal 0177) prints as `^?'. Non-ASCII characters are printed as `M-' followed by the character for the low 7 bits." }
+  ],
+  "positional_args": [
+    { "name": "file", "type": "path", "variadic": true, "required": false, "description": "Files to concatenate, processed in command-line order. A single dash or no operand reads from the standard input." }
+  ],
+  "annotations": {
+    "readonly": true,
+    "destructive": false,
+    "idempotent": true,
+    "requires_approval": false
+  }
+}

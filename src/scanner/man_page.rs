@@ -9,6 +9,9 @@ use crate::scanner::protocol::ParsedHelp;
 const BSD_OPTION_INTROS: &[&str] = &[
     "the following options are available",
     "the options are as follows",
+    // macOS `sort` words it differently again; without this its whole option
+    // block is invisible to Tier 2.
+    "the command line options are as follows",
 ];
 
 /// A flag parsed from one man page option line, plus any description text that
@@ -456,6 +459,26 @@ ENVIRONMENT
         assert_eq!(flags[0].short_name.as_deref(), Some("-@"));
         assert!(flags[0].description.contains("Display extended attribute"));
         assert_eq!(flags[1].short_name.as_deref(), Some("-A"));
+    }
+
+    #[test]
+    fn test_extract_man_options_bsd_command_line_options_intro() {
+        // macOS `sort` uses a third wording. Missing it hides the entire option
+        // block, which is silent rather than loud: the scan just returns fewer
+        // flags.
+        let man_text = r#"DESCRIPTION
+     Sorts lines.
+
+     The command line options are as follows:
+
+     -r      Reverse the sort order.
+
+ENVIRONMENT
+     LANG   Locale.
+"#;
+        let flags = extract_man_options(man_text);
+        assert_eq!(flags.len(), 1);
+        assert_eq!(flags[0].short_name.as_deref(), Some("-r"));
     }
 
     #[test]
