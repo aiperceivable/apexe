@@ -4,12 +4,12 @@
 
 **apexe** -- Outside-In CLI-to-Agent Bridge. Automatically wraps CLI tools into governed apcore modules, served via MCP/A2A.
 
-**Version:** 0.5.0 — Full apcore ecosystem integration (MCP + A2A) plus curated tool overlays and variant-aware scanning.
+**Version:** 0.5.1 — Full apcore ecosystem integration (MCP + A2A) plus curated tool overlays and variant-aware scanning.
 
-**Status:** All features implemented. 584 tests passing, 0 failures.
+**Status:** All features implemented. 597 tests passing, 0 failures.
 
 > The section headings below tagged "(v0.1.0 …)" record when each piece first
-> landed; the crate is now **0.5.0**. For the authoritative current state see
+> landed; the crate is now **0.5.1**. For the authoritative current state see
 > [`CHANGELOG.md`](../CHANGELOG.md) and [`docs/user-manual.md`](user-manual.md).
 
 ## Architecture (v0.1.0)

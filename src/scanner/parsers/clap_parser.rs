@@ -15,8 +15,6 @@ static DEFAULT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[default:\s*([^\]]+)\]").expect("valid static regex"));
 static ENUM_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[possible values:\s*([^\]]+)\]").expect("valid static regex"));
-static ARG_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<([a-zA-Z_][\w-]*)>(\.\.\.)?").expect("valid static regex"));
 static SUBCMD_SECTION_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?mi)^(SUBCOMMANDS|Commands):").expect("valid static regex"));
 static CMD_RE: LazyLock<Regex> =
@@ -154,17 +152,9 @@ fn extract_clap_args(help_text: &str) -> Vec<ScannedArg> {
     for line in help_text.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("Usage:") {
-            for cap in ARG_RE.captures_iter(trimmed) {
-                let name = cap[1].to_string();
-                let variadic = cap.get(2).is_some();
-                args.push(ScannedArg {
-                    name,
-                    description: String::new(),
-                    value_type: ValueType::String,
-                    required: true,
-                    variadic,
-                });
-            }
+            args.extend(super::positional_args::extract_args_from_usage_line(
+                trimmed,
+            ));
         }
     }
 

@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 0.5.0 |
+| **Version** | 0.5.1 |
 | **Date** | 2026-07-28 |
 | **Platform** | macOS / Linux |
 

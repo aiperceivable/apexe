@@ -20,8 +20,6 @@ static FLAG_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static DEFAULT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\(default\s+([^)]+)\)").expect("valid static regex"));
-static ARG_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<([a-zA-Z_][\w-]*)>(\.\.\.)?").expect("valid static regex"));
 
 /// Parser for Go Cobra-style help output.
 ///
@@ -198,17 +196,9 @@ fn extract_cobra_args(help_text: &str) -> Vec<ScannedArg> {
         }
         // Cobra usage lines are often indented: "  tool [command] <arg>"
         if help_text.contains("Usage:") {
-            for cap in ARG_RE.captures_iter(trimmed) {
-                let name = cap[1].to_string();
-                let variadic = cap.get(2).is_some();
-                args.push(ScannedArg {
-                    name,
-                    description: String::new(),
-                    value_type: ValueType::String,
-                    required: true,
-                    variadic,
-                });
-            }
+            args.extend(super::positional_args::extract_args_from_usage_line(
+                trimmed,
+            ));
             if !args.is_empty() {
                 break;
             }

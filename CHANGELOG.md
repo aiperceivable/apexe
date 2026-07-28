@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
+## [0.5.1] - 2026-07-28
+
+### Fixed
+- **A global option's value placeholder is no longer scanned as a positional argument.** Usage lines spell an option's argument with the same `<name>` angle brackets as a real operand, and the extractor took every `<name>` on the line — so `usage: git [-v | --version] [-h | --help] [-C <path>] [-c <name>=<value>]` gave `git` three *required* positional arguments named `path`, `name` and `value`, none of which the bare command accepts. An agent reading that contract would construct a call `git` rejects. Placeholders bound to an option (`-C <path>`, `-c <name>=<value>`, `--git-dir=<path>`, `--exec-path[=<path>]`, and repeatable forms like `--include=<path>...` and `-I <dir>...`) are now skipped, and a placeholder inside an optional `[...]` group reports `required: false` instead of the hardcoded `true` — the trailing `<args>` in `git [--version] <command> [<args>]` is optional by construction.
+- **The four help parsers share one usage-line extractor.** `gnu`, `cobra`, `clap` and `click` each carried a verbatim copy of the same naive regex, so the defect was present in all of them and a fix to one would have left three behind. They now call `scanner::parsers::positional_args::extract_args_from_usage_line`. The BSD parser already avoided this class of mistake (its `BUNDLED_RE` documents why valued options must not match) and is unchanged. Overlays are unaffected — they carry no subcommand layer and never took this path.
+
+---
+
 ## [0.5.0] - 2026-07-28
 
 ### Added

@@ -23,8 +23,6 @@ static DEFAULT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[default:\s*([^\]]+)\]").expect("valid static regex"));
 static ENUM_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\{([^}]+)\}").expect("valid static regex"));
-static ARG_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<([a-zA-Z_][\w-]*)>(\.\.\.)?").expect("valid static regex"));
 static SUBCMD_SECTION_RE: LazyLock<Regex> = LazyLock::new(|| {
     // The prose variant covers git, whose help introduces its command list with
     // "These are common Git commands used in various situations:" rather than a
@@ -231,17 +229,9 @@ pub fn extract_positional_args(help_text: &str) -> Vec<ScannedArg> {
     for line in help_text.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("Usage:") || trimmed.starts_with("usage:") {
-            for cap in ARG_RE.captures_iter(trimmed) {
-                let name = cap[1].to_string();
-                let variadic = cap.get(2).is_some();
-                args.push(ScannedArg {
-                    name,
-                    description: String::new(),
-                    value_type: ValueType::String,
-                    required: true,
-                    variadic,
-                });
-            }
+            args.extend(super::positional_args::extract_args_from_usage_line(
+                trimmed,
+            ));
         }
     }
 
@@ -511,6 +501,16 @@ mod tests {
         let help = "Usage: tool [OPTIONS]\n";
         let args = extract_positional_args(help);
         assert!(args.is_empty());
+    }
+
+    #[test]
+    fn test_extract_args_ignores_global_option_value_placeholders() {
+        // Regression: git's root usage line spells global option values with
+        // the same `<name>` syntax as positional args ([-C <path>],
+        // [-c <name>=<value>]); none of those are operands of `git` itself.
+        let help = "usage: git [-v | --version] [-h | --help] [-C <path>] [-c <name>=<value>]\n";
+        let args = extract_positional_args(help);
+        assert!(args.is_empty(), "expected no positional args, got {args:?}");
     }
 
     // T18: extract_subcommands
