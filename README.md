@@ -47,6 +47,33 @@ cargo install --path .
 apexe --version
 ```
 
+### Platform support
+
+apexe scans Unix CLIs. What you get depends on the host:
+
+| Host | Scanning | Curated overlays |
+|---|---|---|
+| **macOS** | Full — all four tiers | 21 commands (`bsd`, `apple`) |
+| **Linux** | Full — install `man-db` for tier 2 | 21 commands (`gnu`) |
+| **FreeBSD** | Full | `bsd` overlays apply |
+| **OpenBSD / NetBSD / DragonFly** | Full | none — falls back to scanning |
+| **Other Unix** (Solaris, illumos, AIX) | Tiers 1–2 | none |
+| **Windows** | **Not supported** | none |
+
+The GNU overlays carry no platform condition — they are selected by probing the
+binary — so they apply anywhere GNU tools are installed, including WSL and a
+macOS box with Homebrew coreutils. The BSD overlays declare `macos` and
+`freebsd`, which is why the other BSDs fall back to scanning: their tools are
+separately evolved code, not the same source, so claiming otherwise would be a
+guess.
+
+**On Windows apexe runs but produces little.** Tier 2 shells out to `man` and
+tier 3 to `zsh`; both are absent, so both return nothing rather than failing
+loudly. Tier 1 still runs `--help`, but the parsers target Unix conventions
+while Windows help is `/?` output with `/X` switches. Expect near-empty results,
+not an error message. Native Windows support means a PowerShell reflection path
+and a `/?` parser, and is not implemented.
+
 ---
 
 ## Quick Start
