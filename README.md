@@ -396,6 +396,21 @@ RUST_LOG=debug apexe scan git
 apexe --log-level trace scan git
 ```
 
+### Releasing
+
+`apdev-rs release` handles tagging, the GitHub Release, and publishing to
+crates.io; pushing the `rust/vX.Y.Z` tag it creates automatically triggers
+[`.github/workflows/release.yml`](.github/workflows/release.yml), which builds
+the prebuilt binaries described in [Installation](#installation) and attaches
+them to that release. No separate step is needed for a normal release.
+
+To backfill binaries onto a release that's missing them (e.g. one published
+before this workflow existed), dispatch it manually against the existing tag:
+
+```bash
+gh workflow run release.yml -f tag=rust/vX.Y.Z
+```
+
 ---
 
 ## Documentation
