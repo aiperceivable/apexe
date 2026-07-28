@@ -89,7 +89,7 @@ docker run --rm debian:stable-slim ls --help \
 and from the overlay:
 
 ```bash
-python3 -c "import json;print('\n'.join(sorted(f['long'] for f in json.load(open('overlays/ls@gnu-coreutils.json'))['flags'] if f.get('long'))))"
+python3 -c "import json;print('\n'.join(sorted(f['long'] for f in json.load(open('overlays/ls@gnu.json'))['flags'] if f.get('long'))))"
 ```
 
 Then `diff` them. Two directions, two different meanings:
@@ -126,6 +126,7 @@ When a diff surprises you, check the extractor, then check the shell quoting, th
 "provenance": {
   "platform": "linux",
   "tool_version": "9.7",
+  "package": "coreutils",
   "source": "help",
   "checked_on": "2026-07-27",
   "command": "docker run --rm debian:stable-slim ls --help",
@@ -134,7 +135,7 @@ When a diff surprises you, check the extractor, then check the shell quoting, th
 }
 ```
 
-`command` should be re-runnable verbatim by someone else. `environment` should identify the exact reference build — an image digest, not a tag, since tags move.
+`command` should be re-runnable verbatim by someone else. `environment` should identify the exact reference build — an image digest, not a tag, since tags move. `package` is optional but expected on any `gnu` overlay, because the `gnu` variant spans several projects and `9.7` alone does not say which one it versions.
 
 `source` has exactly three values: `man-page`, `help`, `vendor-docs`. There is intentionally no variant meaning "I know this tool", because that is not evidence.
 
@@ -170,7 +171,7 @@ GNU's `-h` also affects `-s`; BSD's does not. Never copy a description across va
 
 **This is also why overlays are one file per variant.** A shared base with per-variant overrides would invite exactly this mistake — the author assumes differences are confined to what they explicitly override, and a difference like `-h` above is only visible if you read both man pages line by line.
 
-**Knowledge-written overlays miss new flags.** An earlier revision of `ls@gnu-coreutils.json` was written without a GNU reference. Checked against coreutils 9.7 it scored 100% precision but missed `--zero`, added in 8.25. Everything it did contain was right, which is precisely what makes this failure mode hard to notice.
+**Knowledge-written overlays miss new flags.** An earlier revision of `ls@gnu.json` was written without a GNU reference. Checked against coreutils 9.7 it scored 100% precision but missed `--zero`, added in 8.25. Everything it did contain was right, which is precisely what makes this failure mode hard to notice.
 
 **BSD does not always reject `--version`.** macOS `grep` accepts it and prints `grep (BSD grep, GNU compatible) 2.6.0-FreeBSD` with exit 0. A "BSD rejects `--version`" rule classifies it as unknown. Variant detection therefore also matches positive banners, checked *after* the GNU test so `GNU compatible` in that string does not win.
 
@@ -191,32 +192,179 @@ GNU's `-h` also affects `-s`; BSD's does not. Never copy a description across va
 
 ---
 
+## How a variant is decided
+
+An overlay only applies if its `variant` equals the one the scanner detected, so
+the classification rule decides which overlays are *reachable at all*. It lives
+in `src/scanner/variant.rs` and runs six tests, **in this order**:
+
+| # | Test | Verdict |
+|---|---|---|
+| 1 | `busybox` anywhere in the probe output | `busybox` |
+| 2 | a BSD marker in a successful banner | `bsd` |
+| 3 | a `GNU <package>` pair in a successful banner | `gnu` |
+| 4 | an Apple marker in a successful banner, *after* target triples are stripped | `apple` |
+| 5 | a rejected `--version` on a BSD-family platform | `bsd` |
+| 6 | otherwise | `unknown` |
+
+**Do not reorder rules 2 and 3.** macOS `grep` answers the probe with
+`grep (BSD grep, GNU compatible) 2.6.0-FreeBSD`, which names both families. It
+is a BSD tool advertising GNU compatibility, not a GNU tool, so BSD is the
+truthful reading — and testing GNU first hands `grep` the GNU overlay. This used
+to work by accident, because rule 3 matched only the literal string
+`GNU coreutils`; now that it matches the whole GNU family, the ordering is the
+only thing keeping it correct.
+
+**Rule 4 strips `<arch>-apple-<os>` triples before looking for Apple.** The
+token appears in the banner of tools that are not Apple ports at all —
+`curl 8.7.1 (x86_64-apple-darwin25.0)` and
+`GNU bash, version 3.2.57(1)-release (arm64-apple-darwin25)` — and position is
+no help, since "Apple" is the third token of `sort`'s banner and the sixth of
+`curl`'s. Both are kept as regression tests.
+
+**Rule 2 matches token prefixes, not whole tokens.** libarchive announces itself
+as `bsdtar 3.5.3 - libarchive 3.7.4`, fusing the marker into the program name; a
+whole-token test calls that `unknown`. The cost is that a hypothetical token
+like `bsdish` would also match, which is judged the better trade: `bsdtar`,
+`bsdcpio` and `bsdcat` are real shipping programs.
+
+**Rule 3 matches a pair, not the bare word `GNU`.** Every GNU tool prints
+`License GPLv3+: GNU GPL version 3 or later`, and so does any unrelated GPL tool
+that quotes the licence — so a bare-word test would promote half of `/usr/bin`.
+A short list of boilerplate words (`general`, `public`, `gpl`, `org`, ...) is
+excluded from the package position.
+
+### The `gnu` variant is the whole GNU family
+
+`coreutils`, `diffutils`, `tar`, `sed`, `grep` and `bash` are separate projects
+with separate release lines, but they are all "the GNU one" as far as an overlay
+author is concerned, and a variant per package scales badly. The package is
+recorded in two places instead:
+
+- `provenance.package` — `"coreutils"`, `"diffutils"`, ... so `tool_version:
+  "9.7"` says what it is a version *of*.
+- `match.probe.output_contains` — where it actually has to be enforced. The 14
+  built-in GNU overlays keep `"output_contains": "GNU coreutils"`, so a GNU
+  `tar` cannot pick up a coreutils overlay even though both classify `gnu`.
+
+Overlays before this change were named `<tool>@gnu-coreutils.json` and declared
+`variant: gnu-coreutils`. Both are now `gnu`; a user overlay still using the old
+token fails to parse.
+
+### `apple` is for Apple's own ports
+
+macOS ships builds whose banner names Apple rather than BSD: `sort` reports
+`2.3-Apple (197)` and `git` reports `git version 2.50.1 (Apple Git-155)`. Both
+were `unknown` before, so no overlay could ever match them — declaring
+`variant: bsd` would have been a lie the probe never confirms.
+
+Note that a banner naming **both** vendors resolves to BSD, by rule order:
+`Apple diff (based on FreeBSD diff)` is `bsd`, and `diff@bsd` depends on that.
+
+### There is no Linux distribution dimension, and there should not be
+
+A recurring proposal is to key overlays on the distribution — `ls@debian`,
+`ls@fedora`. The measurements say no. GNU coreutils `ls`, compared across three
+distributions running three different releases:
+
+| Reference | coreutils | Flags |
+|---|---|---|
+| Debian stable-slim | 9.7 | 83 |
+| Ubuntu 24.04 | 9.4 | 83 |
+| Fedora 41 | 9.5 | 83 |
+
+Not merely the same count — the flag sets are **identical**, and `sort` matches
+across all three too. Distributions package the same upstream source; changing
+the option set would make it something other than coreutils.
+
+Compare that with a different *implementation* of the same command:
+
+| Reference | Flags |
+|---|---|
+| GNU coreutils `ls` | 83 |
+| BusyBox `ls` | 21 |
+
+Divergence tracks the implementation, which `variant` already captures. A distro
+dimension would multiply the overlay count by a factor whose every copy is
+identical — the same arithmetic that ruled out a shared base layer, run in
+reverse.
+
+What genuinely does vary is covered already: **version** by `version_range`
+(a compile-time option such as SELinux `-Z` shows up here), **kernel/userland**
+by `platform`, and anything else by `probe.output_contains`, which is decisive.
+When a real difference cannot be pinned down, the answer is `mode: merge`, not a
+new axis — the gap then degrades to what the scanner actually observed on the
+machine in front of it.
+
+---
+
+## A single-dash form may be longer than one character
+
+`find`'s option set is not `-a -b -c`. Its entire expression language is
+single-dash multi-character tokens — `-name`, `-delete`, `-maxdepth`,
+`-files0-from`, `-newerat` — and they are what a user types, so `short` has to
+carry them:
+
+```json
+{ "short": "-maxdepth", "type": "integer", "value_name": "n", "description": "..." }
+```
+
+The JSON Schema's `^-[^-]` pattern always allowed this; the Rust validator was
+stricter and required exactly two characters, which made `find` inexpressible.
+The validator now matches the schema. What is still rejected is a bare `-` and
+a name with no leading dash, which is the typo the check exists for.
+
+Two consequences worth knowing:
+
+- **`-files0-from` is not a long option.** GNU `find` spells it with one dash;
+  `--files0-from=FILE` is rejected as an unknown predicate. Getting this
+  backwards produces an overlay that looks right and never works.
+- **A single-dash multi-character name is not automatically an option.** BSD
+  `chmod` accepts `-w`, `-r` and `-x` because they are *mode* syntax that
+  `getopt(3)` is deliberately allowed to swallow, not because they are flags.
+  Ask the binary what a token does before listing it.
+
+---
+
+## Long-running flags
+
+`tail -f` may never terminate. An agent invoking it through apexe blocks until
+the harness timeout kills the subprocess — this happened for a full two minutes
+during overlay verification. The flag type therefore carries a boolean:
+
+```json
+{ "short": "-f", "type": "boolean", "long_running": true, "description": "..." }
+```
+
+It reaches `ScannedFlag.long_running` and then the emitted contract, as the JSON
+Schema extension keyword `x-apexe-long-running` on that flag's property. An
+extension keyword rather than a constraint, because `follow: true` is a
+perfectly valid *value*; what it tells an executor is to bound the timeout or
+refuse, not to reject the input.
+
+Three rules for setting it:
+
+- **It belongs to a flag, not a command.** `tail` is fine; `tail -f` is not.
+- **The claim is "may not terminate on its own", never "always blocks".** The
+  BSD man page states `tail -f` returns immediately when its input is a pipe, so
+  a field asserting certainty would be false. Write the description the same
+  way.
+- **Flags that change *how long* a follow lasts are out of scope.** GNU `tail
+  --retry` and `--sleep-interval` extend a follow; `--pid` and
+  `--max-unchanged-stats` bound one. None of them decides termination on their
+  own, and marking them would dilute the signal.
+
+Set today on exactly four flags, all verified against the real binaries: BSD
+`tail -f` and `-F`, GNU `tail -f/--follow` and `-F`. `less`, `top`, `watch`,
+`ping` and `yes` have the same property but no overlay yet — do not guess at a
+tool you have not checked.
+
+---
+
 ## Open design questions
 
-Deferred deliberately — recorded here so they are decided once, on evidence, rather than improvised inside an unrelated change.
-
-### Long-running flags have no machine-readable representation
-
-`tail -f` / `--follow` never terminates on its own. An agent invoking it through
-apexe blocks until the harness timeout kills the subprocess; this happened for a
-full two minutes during overlay verification. The same applies to `tail -F`, and
-to `less`, `top`, `watch`, `ping` and `yes` — so it is not a `tail` patch.
-
-Today this is expressible only as prose in a flag's `description`, which no
-executor can act on. A boolean such as `long_running` on `flag` would let the
-adapter refuse the invocation, or apply a bounded timeout, instead of letting an
-agent hang.
-
-Two constraints on any design:
-
-- The property belongs to a **flag**, not to the command. `tail` is fine; `tail -f` is not.
-- "Always blocks" would be a false claim. The BSD man page states `tail -f` returns
-  immediately when the input is a pipe, so the semantics need room for
-  "blocks depending on its operand".
-
-Adjacent flags modify duration rather than termination — GNU `tail --retry` and
-`--sleep-interval` extend a follow, `--pid` and `--max-unchanged-stats` bound
-one. A design should say whether those are in scope.
+Deferred deliberately — recorded here so they are decided once, on evidence,
+rather than improvised inside an unrelated change.
 
 ### BSD `tail`'s runtime usage line contradicts its own man page
 
@@ -224,41 +372,3 @@ The binary prints `[-q]` where its SYNOPSIS prints `[-qv]`. `-v` is real and
 documented, so `tail@bsd` follows the man page. Noted in that overlay's
 `provenance.notes`. If more cases like this appear, the scanner may need to
 prefer one source explicitly rather than leaving it to whoever writes the overlay.
-
-### Apple-ported tools are not classified
-
-macOS `sort` answers `--version` with `2.3-Apple (197)` and is classified
-`unknown`: the banner carries no BSD token, and it is not GNU. `diff` escapes
-this only by luck — `Apple diff (based on FreeBSD diff)` happens to name FreeBSD.
-
-The obvious fix, adding `apple` to the BSD banner tokens, is **wrong**: `curl`
-reports `curl 8.1.2 (x86_64-apple-darwin)`, so the token also appears in target
-triples of tools that are not BSD at all. Position is no help either — "Apple"
-is the third token in `sort`'s banner and the sixth in `curl`'s.
-
-Consequence: an overlay for `sort` cannot declare `variant: bsd`, because the
-probe will never produce that verdict and the overlay would never match. Until
-this is decided, such tools need either `variant: unknown` or a `match` block
-resting on `platform` + `binary_globs` + `probe.output_contains`.
-
-Worth deciding together with whether `ToolVariant` should gain an `apple`
-member, or whether "the vendor's own port of a BSD userland" is better expressed
-as BSD with a separate provenance note.
-
-### `gnu-coreutils` is narrower than "GNU"
-
-The GNU probe matches the literal banner `GNU coreutils`, but plenty of GNU
-tools ship in other packages: `diff --version` reports `diff (GNU diffutils)
-3.10`, and `grep`, `sed`, `awk`, `tar` and `find` are each their own project.
-All of them classify as `unknown` today.
-
-So `ToolVariant::GnuCoreutils` is really "GNU, and specifically coreutils",
-while overlay authors will reasonably read it as "the GNU one". Options:
-
-- Add a broader `Gnu` variant and keep `GnuCoreutils` for cases where the
-  package genuinely matters.
-- Match on `GNU ` as a prefix and record the package in provenance instead.
-- Add one variant per GNU package, which scales badly.
-
-This blocks GNU-side overlays for every non-coreutils GNU tool, so it is worth
-settling before the overlay set grows much further.

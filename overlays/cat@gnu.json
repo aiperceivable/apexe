@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "command": "cat",
-  "variant": "gnu-coreutils",
+  "variant": "gnu",
   "match": {
     "probe": {
       "args": ["--version"],
@@ -14,6 +14,7 @@
   "provenance": {
     "platform": "linux",
     "tool_version": "9.7",
+    "package": "coreutils",
     "source": "help",
     "checked_on": "2026-07-27",
     "command": "docker run --rm debian:stable-slim cat --help",

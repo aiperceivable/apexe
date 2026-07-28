@@ -28,75 +28,47 @@ use crate::adapter::overlay::{
 /// to be a library of every CLI in existence.
 const BUILTIN_OVERLAYS: &[(&str, &str)] = &[
     ("cat@bsd", include_str!("../../overlays/cat@bsd.json")),
-    (
-        "cat@gnu-coreutils",
-        include_str!("../../overlays/cat@gnu-coreutils.json"),
-    ),
+    ("cat@gnu", include_str!("../../overlays/cat@gnu.json")),
+    ("chmod@bsd", include_str!("../../overlays/chmod@bsd.json")),
+    ("chmod@gnu", include_str!("../../overlays/chmod@gnu.json")),
     ("cp@bsd", include_str!("../../overlays/cp@bsd.json")),
-    (
-        "cp@gnu-coreutils",
-        include_str!("../../overlays/cp@gnu-coreutils.json"),
-    ),
+    ("cp@gnu", include_str!("../../overlays/cp@gnu.json")),
     ("cut@bsd", include_str!("../../overlays/cut@bsd.json")),
-    (
-        "cut@gnu-coreutils",
-        include_str!("../../overlays/cut@gnu-coreutils.json"),
-    ),
+    ("cut@gnu", include_str!("../../overlays/cut@gnu.json")),
+    ("df@bsd", include_str!("../../overlays/df@bsd.json")),
+    ("df@gnu", include_str!("../../overlays/df@gnu.json")),
     ("diff@bsd", include_str!("../../overlays/diff@bsd.json")),
+    ("diff@gnu", include_str!("../../overlays/diff@gnu.json")),
+    ("du@bsd", include_str!("../../overlays/du@bsd.json")),
+    ("du@gnu", include_str!("../../overlays/du@gnu.json")),
+    ("find@bsd", include_str!("../../overlays/find@bsd.json")),
+    ("find@gnu", include_str!("../../overlays/find@gnu.json")),
+    ("grep@bsd", include_str!("../../overlays/grep@bsd.json")),
+    ("grep@gnu", include_str!("../../overlays/grep@gnu.json")),
     ("head@bsd", include_str!("../../overlays/head@bsd.json")),
-    (
-        "head@gnu-coreutils",
-        include_str!("../../overlays/head@gnu-coreutils.json"),
-    ),
+    ("head@gnu", include_str!("../../overlays/head@gnu.json")),
     ("ln@bsd", include_str!("../../overlays/ln@bsd.json")),
-    (
-        "ln@gnu-coreutils",
-        include_str!("../../overlays/ln@gnu-coreutils.json"),
-    ),
+    ("ln@gnu", include_str!("../../overlays/ln@gnu.json")),
     ("ls@bsd", include_str!("../../overlays/ls@bsd.json")),
-    (
-        "ls@gnu-coreutils",
-        include_str!("../../overlays/ls@gnu-coreutils.json"),
-    ),
+    ("ls@gnu", include_str!("../../overlays/ls@gnu.json")),
     ("mkdir@bsd", include_str!("../../overlays/mkdir@bsd.json")),
-    (
-        "mkdir@gnu-coreutils",
-        include_str!("../../overlays/mkdir@gnu-coreutils.json"),
-    ),
+    ("mkdir@gnu", include_str!("../../overlays/mkdir@gnu.json")),
     ("mv@bsd", include_str!("../../overlays/mv@bsd.json")),
-    (
-        "mv@gnu-coreutils",
-        include_str!("../../overlays/mv@gnu-coreutils.json"),
-    ),
+    ("mv@gnu", include_str!("../../overlays/mv@gnu.json")),
     ("rm@bsd", include_str!("../../overlays/rm@bsd.json")),
-    (
-        "rm@gnu-coreutils",
-        include_str!("../../overlays/rm@gnu-coreutils.json"),
-    ),
-    (
-        "sort@gnu-coreutils",
-        include_str!("../../overlays/sort@gnu-coreutils.json"),
-    ),
+    ("rm@gnu", include_str!("../../overlays/rm@gnu.json")),
+    ("sort@apple", include_str!("../../overlays/sort@apple.json")),
+    ("sort@gnu", include_str!("../../overlays/sort@gnu.json")),
     ("tail@bsd", include_str!("../../overlays/tail@bsd.json")),
-    (
-        "tail@gnu-coreutils",
-        include_str!("../../overlays/tail@gnu-coreutils.json"),
-    ),
+    ("tail@gnu", include_str!("../../overlays/tail@gnu.json")),
     ("touch@bsd", include_str!("../../overlays/touch@bsd.json")),
-    (
-        "touch@gnu-coreutils",
-        include_str!("../../overlays/touch@gnu-coreutils.json"),
-    ),
+    ("touch@gnu", include_str!("../../overlays/touch@gnu.json")),
     ("uniq@bsd", include_str!("../../overlays/uniq@bsd.json")),
-    (
-        "uniq@gnu-coreutils",
-        include_str!("../../overlays/uniq@gnu-coreutils.json"),
-    ),
+    ("uniq@gnu", include_str!("../../overlays/uniq@gnu.json")),
     ("wc@bsd", include_str!("../../overlays/wc@bsd.json")),
-    (
-        "wc@gnu-coreutils",
-        include_str!("../../overlays/wc@gnu-coreutils.json"),
-    ),
+    ("wc@gnu", include_str!("../../overlays/wc@gnu.json")),
+    ("xargs@bsd", include_str!("../../overlays/xargs@bsd.json")),
+    ("xargs@gnu", include_str!("../../overlays/xargs@gnu.json")),
 ];
 
 /// Failures while loading overlay documents.
@@ -385,6 +357,26 @@ mod tests {
         }
     }
 
+    /// An Apple-variant overlay must be *expressible*, not merely nameable:
+    /// before `ToolVariant::Apple` existed, macOS `sort` classified `unknown`,
+    /// so an overlay for it could never match on anything but a path. No such
+    /// overlay ships — this asserts the mechanism, not a curated file.
+    #[test]
+    fn test_apple_variant_overlay_is_selectable() {
+        let document = MINIMAL
+            .replace("\"widget\"", "\"sort\"")
+            .replace("\"variant\": \"bsd\"", "\"variant\": \"apple\"");
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("sort.json"), document).unwrap();
+
+        let mut store = OverlayStore::empty();
+        store.load_dir(tmp.path()).unwrap();
+
+        let ctx = context("sort", ToolVariant::Apple, Platform::new("macos"));
+        let selected = store.select(&ctx).expect("apple overlay must match");
+        assert_eq!(selected.overlay.id(), "sort@apple");
+    }
+
     #[test]
     fn test_builtin_overlays_all_parse() {
         // A malformed built-in would be silently skipped at runtime, so assert
@@ -397,7 +389,7 @@ mod tests {
     #[test]
     fn test_builtin_ls_bsd_selected_for_bsd_probe() {
         let store = OverlayStore::with_builtins();
-        let mut ctx = context("ls", ToolVariant::Bsd, Platform::Macos);
+        let mut ctx = context("ls", ToolVariant::Bsd, Platform::new("macos"));
         ctx.probes = vec![ProbeOutcome {
             args: super::super::variant::version_probe_args(),
             succeeded: false,
@@ -413,7 +405,7 @@ mod tests {
         // Homebrew coreutils on macOS: path heuristics would say BSD; the probe
         // is the only thing that gets this right.
         let store = OverlayStore::with_builtins();
-        let mut ctx = context("ls", ToolVariant::GnuCoreutils, Platform::Macos);
+        let mut ctx = context("ls", ToolVariant::Gnu, Platform::new("macos"));
         ctx.binary_path = "/opt/homebrew/opt/coreutils/libexec/gnubin/ls".to_string();
         ctx.version = Some("9.4".to_string());
         ctx.probes = vec![ProbeOutcome {
@@ -422,13 +414,13 @@ mod tests {
             output: "ls (GNU coreutils) 9.4".to_string(),
         }];
         let selected = store.select(&ctx).expect("gnu overlay must match");
-        assert_eq!(selected.overlay.id(), "ls@gnu-coreutils");
+        assert_eq!(selected.overlay.id(), "ls@gnu");
     }
 
     #[test]
     fn test_builtin_rm_bsd_selected_for_bsd_probe() {
         let store = OverlayStore::with_builtins();
-        let mut ctx = context("rm", ToolVariant::Bsd, Platform::Macos);
+        let mut ctx = context("rm", ToolVariant::Bsd, Platform::new("macos"));
         ctx.probes = vec![ProbeOutcome {
             args: super::super::variant::version_probe_args(),
             succeeded: false,
@@ -442,7 +434,7 @@ mod tests {
     #[test]
     fn test_builtin_rm_gnu_selected_when_probe_says_gnu() {
         let store = OverlayStore::with_builtins();
-        let mut ctx = context("rm", ToolVariant::GnuCoreutils, Platform::Linux);
+        let mut ctx = context("rm", ToolVariant::Gnu, Platform::new("linux"));
         ctx.binary_path = "/usr/bin/rm".to_string();
         ctx.version = Some("9.7".to_string());
         ctx.probes = vec![ProbeOutcome {
@@ -451,7 +443,7 @@ mod tests {
             output: "rm (GNU coreutils) 9.7".to_string(),
         }];
         let selected = store.select(&ctx).expect("gnu rm overlay must match");
-        assert_eq!(selected.overlay.id(), "rm@gnu-coreutils");
+        assert_eq!(selected.overlay.id(), "rm@gnu");
     }
 
     /// An under-classified `rm` would let an agent delete files without ever
@@ -496,13 +488,154 @@ mod tests {
         }
     }
 
+    /// `ToolVariant::Gnu` is the whole GNU family, so the variant alone says
+    /// nothing about the package. Package identity has to be enforced where it
+    /// actually bites — the probe — or a GNU `tar` could pick up a coreutils
+    /// overlay. `provenance.package` records the same fact for an auditor, and
+    /// the two must agree, which is what this asserts: the probe string is
+    /// `GNU <package>` for whichever package the provenance names. It is
+    /// deliberately not a fixed count or a fixed string, because coreutils,
+    /// diffutils, grep and findutils are all `gnu` and all curated here.
+    #[test]
+    fn test_builtin_gnu_overlays_pin_their_own_package() {
+        let store = OverlayStore::with_builtins();
+        let gnu: Vec<_> = store
+            .entries
+            .iter()
+            .filter(|entry| entry.overlay.variant == ToolVariant::Gnu)
+            .collect();
+        assert!(
+            gnu.len() >= 14,
+            "the curated GNU overlays must all be registered, found {}",
+            gnu.len()
+        );
+        for entry in gnu {
+            let provenance = entry
+                .overlay
+                .provenance
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} must carry provenance", entry.overlay.id()));
+            let package = provenance
+                .package
+                .as_deref()
+                .unwrap_or_else(|| panic!("{} must name its upstream package", entry.overlay.id()));
+            let probe = entry
+                .overlay
+                .match_rules
+                .probe
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} must declare a probe", entry.overlay.id()));
+            assert_eq!(
+                probe.output_contains.as_deref(),
+                Some(format!("GNU {package}").as_str()),
+                "{} must pin its package in the probe",
+                entry.overlay.id()
+            );
+        }
+    }
+
+    /// The `gnu` variant covers the whole GNU family, so a non-coreutils
+    /// package has to reach its own overlay. These three are the first ones
+    /// that are not coreutils, and each is separated from the others only by
+    /// `probe.output_contains`.
+    #[test]
+    fn test_builtin_non_coreutils_gnu_overlays_are_selected_by_their_banner() {
+        let store = OverlayStore::with_builtins();
+        for (command, banner, expected) in [
+            ("grep", "grep (GNU grep) 3.11", "grep@gnu"),
+            ("find", "find (GNU findutils) 4.10.0", "find@gnu"),
+            ("xargs", "xargs (GNU findutils) 4.10.0", "xargs@gnu"),
+            ("diff", "diff (GNU diffutils) 3.10", "diff@gnu"),
+        ] {
+            let mut ctx = context(command, ToolVariant::Gnu, Platform::new("linux"));
+            ctx.binary_path = format!("/usr/bin/{command}");
+            ctx.probes = vec![ProbeOutcome {
+                args: super::super::variant::version_probe_args(),
+                succeeded: true,
+                output: banner.to_string(),
+            }];
+            let selected = store
+                .select(&ctx)
+                .unwrap_or_else(|| panic!("{expected} must match"));
+            assert_eq!(selected.overlay.id(), expected);
+
+            // A coreutils banner must not satisfy a diffutils/grep/findutils
+            // probe, which is the whole reason the package is pinned there.
+            ctx.probes = vec![ProbeOutcome {
+                args: super::super::variant::version_probe_args(),
+                succeeded: true,
+                output: format!("{command} (GNU coreutils) 9.7"),
+            }];
+            assert!(
+                store.select(&ctx).is_none(),
+                "{expected} must not match a coreutils banner"
+            );
+        }
+    }
+
+    /// The `apple` variant exists so that Apple's own ports, whose banner names
+    /// Apple rather than BSD, can carry an overlay at all. `sort` is the first
+    /// one, and its probe must key on the banner: Homebrew coreutils can put a
+    /// GNU `sort` at the same path, where every platform and path signal still
+    /// says macOS.
+    #[test]
+    fn test_builtin_sort_apple_selected_only_on_the_apple_banner() {
+        let store = OverlayStore::with_builtins();
+        let mut ctx = context("sort", ToolVariant::Apple, Platform::new("macos"));
+        ctx.binary_path = "/usr/bin/sort".to_string();
+        ctx.probes = vec![ProbeOutcome {
+            args: super::super::variant::version_probe_args(),
+            succeeded: true,
+            output: "2.3-Apple (197)".to_string(),
+        }];
+        let selected = store.select(&ctx).expect("apple overlay must match");
+        assert_eq!(selected.overlay.id(), "sort@apple");
+        assert_eq!(selected.strength, MatchStrength::Probe);
+
+        // A GNU sort installed at the same path must not pick it up.
+        ctx.probes = vec![ProbeOutcome {
+            args: super::super::variant::version_probe_args(),
+            succeeded: true,
+            output: "sort (GNU coreutils) 9.7".to_string(),
+        }];
+        assert!(store.select(&ctx).is_none());
+    }
+
+    /// Prose in a description is not actionable; the boolean has to survive
+    /// the trip from the shipped overlay into the scanned flag.
+    #[test]
+    fn test_builtin_tail_overlays_mark_follow_long_running() {
+        let store = OverlayStore::with_builtins();
+        let tails: Vec<_> = store
+            .entries
+            .iter()
+            .filter(|entry| entry.overlay.command == "tail")
+            .collect();
+        assert_eq!(tails.len(), 2, "both tail variants must be registered");
+        for entry in tails {
+            let marked: Vec<&str> = entry
+                .overlay
+                .flags
+                .iter()
+                .filter(|flag| flag.long_running)
+                .filter_map(|flag| flag.short.as_deref())
+                .collect();
+            assert_eq!(
+                marked,
+                vec!["-f", "-F"],
+                "{}: only the following flags may claim it",
+                entry.overlay.id()
+            );
+        }
+    }
+
     #[test]
     fn test_select_returns_none_for_unknown_command() {
         let store = OverlayStore::with_builtins();
         let ctx = context(
             "definitely-not-a-real-tool",
             ToolVariant::Bsd,
-            Platform::Macos,
+            Platform::new("macos"),
         );
         assert!(store.select(&ctx).is_none());
     }
@@ -545,7 +678,7 @@ mod tests {
         let loaded = store.load_dir(tmp.path()).unwrap();
         assert_eq!(loaded, 1);
         assert!(store
-            .select(&context("widget", ToolVariant::Bsd, Platform::Macos))
+            .select(&context("widget", ToolVariant::Bsd, Platform::new("macos")))
             .is_some());
     }
 
@@ -609,7 +742,7 @@ mod tests {
         let mut store = OverlayStore::with_builtins();
         store.load_explicit(&path).unwrap();
 
-        let ctx = context("ls", ToolVariant::Unknown, Platform::Linux);
+        let ctx = context("ls", ToolVariant::Unknown, Platform::new("linux"));
         let selected = store.select(&ctx).expect("explicit overlay must apply");
         assert_eq!(selected.strength, MatchStrength::Explicit);
     }
@@ -624,7 +757,7 @@ mod tests {
         store.load_explicit(&path).unwrap();
 
         assert!(store
-            .select(&context("cat", ToolVariant::Bsd, Platform::Macos))
+            .select(&context("cat", ToolVariant::Bsd, Platform::new("macos")))
             .is_none());
     }
 
@@ -641,7 +774,7 @@ mod tests {
 
         // No probe outcomes recorded, so the built-in (probe-gated) overlays do
         // not match and only the user's platform-free overlay survives.
-        let ctx = context("ls", ToolVariant::Bsd, Platform::Macos);
+        let ctx = context("ls", ToolVariant::Bsd, Platform::new("macos"));
         let selected = store.select(&ctx).unwrap();
         assert_eq!(selected.strength, MatchStrength::Platform);
     }

@@ -106,6 +106,29 @@ GNU `ls` on a macOS box. Every scan probes the binary (`<binary> --version`) and
 records the result as `variant`, then looks for a **curated overlay** matching
 `(command, variant, version_range)`.
 
+The vocabulary is `bsd`, `gnu`, `apple`, `busybox`, `unknown`. `gnu` is the
+whole GNU family, not just coreutils — `diffutils`, `tar`, `sed` and `bash` are
+separate projects, and the specific package is recorded in `provenance.package`
+and pinned, where it matters, in `match.probe.output_contains`. `apple` covers
+Apple's own ports, whose banner names Apple rather than BSD (macOS `sort`
+reports `2.3-Apple (197)`, `git` reports `(Apple Git-155)`).
+
+`match.platform`, by contrast, is an **open string** taken verbatim from Rust's
+`std::env::consts::OS` — `macos`, `linux`, `freebsd`, `openbsd`, `netbsd`,
+`dragonfly`, `solaris` and anything else a host reports. Operating systems are
+not an enumerable set, so naming a new one needs no apexe change. There is
+deliberately no Linux distribution dimension: GNU coreutils `ls` has the same
+83 flags on Debian, Ubuntu and Fedora across three different releases, while
+BusyBox `ls` has 21 — divergence tracks the implementation, which `variant`
+already captures.
+
+The classification order is load bearing: BSD is tested **before** GNU, because
+macOS `grep` reports `grep (BSD grep, GNU compatible) 2.6.0-FreeBSD` and is a
+BSD tool advertising GNU compatibility rather than a GNU tool. Apple is tested
+only after `<arch>-apple-<os>` target triples are stripped, because
+`curl 8.7.1 (x86_64-apple-darwin25.0)` is not an Apple port. See
+[Authoring Tool Overlays](docs/overlays.md).
+
 An overlay is a reviewed description of one variant of one command. In
 `authoritative` mode it replaces the scan's flags, positional args and
 subcommands entirely; in `merge` mode it overrides matching flags and adds
@@ -119,6 +142,13 @@ The format is defined by [`schemas/tool-overlay.schema.json`](schemas/tool-overl
 Every emitted flag carries `sources` and a derived `confidence`:
 `verified` (overlay) > `high` (completion spec) > `medium` (two independent
 heuristic sources agree) > `low` (a single unconfirmed source).
+
+An overlay flag may also declare `long_running: true` — "this option may make
+the command never terminate on its own", which is why `tail -f` hangs an agent
+until the harness timeout. It reaches the emitted contract as the JSON Schema
+extension keyword `x-apexe-long-running`, so an executor can bound the timeout
+or refuse instead of blocking. The claim is possibility, not certainty: BSD
+`tail -f` returns immediately when its input is a pipe.
 
 **Writing one.** An overlay claiming `confidence: verified` must carry a
 `provenance` block recording how it was checked — which build was consulted,

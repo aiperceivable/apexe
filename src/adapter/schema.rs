@@ -46,6 +46,20 @@ fn apply_default(schema: &mut JsonValue, flag: &ScannedFlag) {
     }
 }
 
+/// Annotate a property with the flag's "may not terminate on its own" warning.
+///
+/// Emitted as a JSON Schema extension keyword (`x-` prefix), which validators
+/// ignore, because it is not a constraint on the *value*: `follow: true` is a
+/// perfectly valid input. It tells an executor that accepting it may mean the
+/// process never exits, so the invocation needs a bounded timeout or a refusal.
+/// The claim is possibility, not certainty — BSD `tail -f` returns immediately
+/// when its input is a pipe.
+fn apply_long_running(schema: &mut JsonValue, flag: &ScannedFlag) {
+    if flag.long_running {
+        schema["x-apexe-long-running"] = json!(true);
+    }
+}
+
 /// Convert a ScannedFlag into a JSON Schema property value.
 fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
     let base_type = value_type_to_json_schema(flag.value_type);
@@ -58,6 +72,7 @@ fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
         if !flag.description.is_empty() {
             schema["description"] = json!(flag.description);
         }
+        apply_long_running(&mut schema, flag);
         return schema;
     }
 
@@ -83,6 +98,8 @@ fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
     if let Some(ref enum_values) = flag.enum_values {
         schema["enum"] = json!(enum_values);
     }
+
+    apply_long_running(&mut schema, flag);
 
     schema
 }
@@ -343,6 +360,65 @@ mod tests {
 
         assert_eq!(schema["properties"]["include"]["type"], "array");
         assert_eq!(schema["properties"]["include"]["items"]["type"], "string");
+    }
+
+    #[test]
+    fn test_schema_long_running_flag_is_annotated() {
+        // `tail -f`: the executor cannot learn this from the flag's type, and
+        // prose in the description is not actionable.
+        let mut flag = make_flag(
+            Some("--follow"),
+            "Output appended data as the file grows.",
+            ValueType::Boolean,
+            false,
+            None,
+            None,
+            false,
+        );
+        flag.long_running = true;
+        let cmd = make_command(vec![flag], vec![]);
+        let schema = build_input_schema(&cmd, &[]);
+
+        assert_eq!(schema["properties"]["follow"]["x-apexe-long-running"], true);
+    }
+
+    #[test]
+    fn test_schema_long_running_survives_repeatable_branch() {
+        // Repeatable flags return early from flag_to_schema, so the annotation
+        // has to be applied on that path too.
+        let mut flag = make_flag(
+            Some("--watch"),
+            "Keep watching.",
+            ValueType::String,
+            false,
+            None,
+            None,
+            true,
+        );
+        flag.long_running = true;
+        let cmd = make_command(vec![flag], vec![]);
+        let schema = build_input_schema(&cmd, &[]);
+
+        assert_eq!(schema["properties"]["watch"]["type"], "array");
+        assert_eq!(schema["properties"]["watch"]["x-apexe-long-running"], true);
+    }
+
+    #[test]
+    fn test_schema_omits_long_running_when_unset() {
+        // Absent, not `false`: an ordinary flag makes no claim either way.
+        let flag = make_flag(
+            Some("--lines"),
+            "Number of lines.",
+            ValueType::Integer,
+            false,
+            None,
+            None,
+            false,
+        );
+        let cmd = make_command(vec![flag], vec![]);
+        let schema = build_input_schema(&cmd, &[]);
+
+        assert!(schema["properties"]["lines"]["x-apexe-long-running"].is_null());
     }
 
     #[test]

@@ -4,15 +4,20 @@ use std::process::Command;
 use crate::models::{ScannedFlag, ValueType};
 use crate::scanner::protocol::ParsedHelp;
 
-/// Intro lines that start an option list embedded in a BSD `DESCRIPTION`
-/// section, which has no dedicated `OPTIONS` header.
-const BSD_OPTION_INTROS: &[&str] = &[
-    "the following options are available",
-    "the options are as follows",
-    // macOS `sort` words it differently again; without this its whole option
-    // block is invisible to Tier 2.
-    "the command line options are as follows",
-];
+/// How a BSD `DESCRIPTION` section announces its option list, since those pages
+/// have no dedicated `OPTIONS` header.
+///
+/// Matched as a pattern rather than a fixed list because the wording varies per
+/// page and the variants kept arriving one bug at a time: `ls` says "The
+/// following options are available", `cat` "The options are as follows", `sort`
+/// "The command line options are as follows", `chmod` "The generic options are
+/// as follows". Missing one is silent — the whole option block simply becomes
+/// invisible to Tier 2 and the tool scans with fewer flags.
+fn is_bsd_option_intro(lowered: &str) -> bool {
+    lowered.starts_with("the ")
+        && lowered.contains("options are")
+        && (lowered.contains("as follows") || lowered.contains("available"))
+}
 
 /// A flag parsed from one man page option line, plus any description text that
 /// shared that line.
@@ -168,10 +173,7 @@ fn is_options_start(line: &str) -> bool {
     if trimmed == "OPTIONS" || trimmed == "Options" {
         return true;
     }
-    let lowered = trimmed.to_ascii_lowercase();
-    BSD_OPTION_INTROS
-        .iter()
-        .any(|intro| lowered.starts_with(intro))
+    is_bsd_option_intro(&trimmed.to_ascii_lowercase())
 }
 
 /// Whether a line is a top-level section header (all caps, not indented).
@@ -459,6 +461,27 @@ ENVIRONMENT
         assert_eq!(flags[0].short_name.as_deref(), Some("-@"));
         assert!(flags[0].description.contains("Display extended attribute"));
         assert_eq!(flags[1].short_name.as_deref(), Some("-A"));
+    }
+
+    #[test]
+    fn test_is_bsd_option_intro_accepts_every_observed_wording() {
+        // Each of these is a real macOS man page. They arrived one at a time as
+        // bugs, which is why this is a pattern rather than a list.
+        for wording in [
+            "the following options are available:",
+            "the options are as follows:",
+            "the command line options are as follows:",
+            "the generic options are as follows:",
+        ] {
+            assert!(is_bsd_option_intro(wording), "should accept: {wording}");
+        }
+        for wording in [
+            "the tool reads options from a file",
+            "these options are documented elsewhere",
+            "the following environment variables are used",
+        ] {
+            assert!(!is_bsd_option_intro(wording), "should reject: {wording}");
+        }
     }
 
     #[test]

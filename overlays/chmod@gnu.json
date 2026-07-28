@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0",
+  "command": "chmod",
+  "variant": "gnu",
+  "match": {
+    "probe": {
+      "args": ["--version"],
+      "expect": "success",
+      "output_contains": "GNU coreutils"
+    }
+  },
+  "mode": "authoritative",
+  "confidence": "verified",
+  "provenance": {
+    "platform": "linux",
+    "tool_version": "9.7",
+    "package": "coreutils",
+    "source": "help",
+    "checked_on": "2026-07-27",
+    "command": "docker run --rm debian:stable-slim chmod --help",
+    "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
+    "notes": "Acceptance by the binary is NOT usable as evidence for chmod: its symbolic mode grammar shares the '-x' shape with its options, so 'chmod -w file' succeeds while '-w' is a MODE operand. Only options listed in --help are recorded. -H/-L/-P are deliberately NOT marked as conflicting here even though the BSD variant documents them as overriding each other: GNU's help makes no such statement and 'chmod -R -L -P 755 f' exits 0, so the BSD wording was not carried across. GNU has no ACL options; that surface is BSD-only."
+  },
+  "description": "Change the mode of each FILE to MODE. With --reference, change the mode of each FILE to that of RFILE. MODE may be given as an octal number or as a symbolic mode string.",
+  "flags": [
+    { "short": "-c", "long": "--changes", "type": "boolean", "description": "Like --verbose but report only when a change is actually made." },
+    { "short": "-f", "long": "--silent", "type": "boolean", "description": "Suppress most error messages. Also spelled --quiet." },
+    { "long": "--quiet", "type": "boolean", "description": "Suppress most error messages. Synonym for --silent." },
+    { "short": "-v", "long": "--verbose", "type": "boolean", "description": "Output a diagnostic for every file processed." },
+    { "long": "--dereference", "type": "boolean", "conflicts_with": ["--no-dereference", "-h"], "description": "Affect the referent of each symbolic link, rather than the symbolic link itself." },
+    { "short": "-h", "long": "--no-dereference", "type": "boolean", "conflicts_with": ["--dereference"], "description": "Affect each symbolic link, rather than the referent it points to." },
+    { "long": "--no-preserve-root", "type": "boolean", "conflicts_with": ["--preserve-root"], "description": "Do not treat '/' specially. This is the default." },
+    { "long": "--preserve-root", "type": "boolean", "conflicts_with": ["--no-preserve-root"], "description": "Fail to operate recursively on '/'." },
+    { "long": "--reference", "type": "path", "value_name": "RFILE", "description": "Use RFILE's mode instead of specifying a MODE value. RFILE is always dereferenced if it is a symbolic link." },
+    { "short": "-R", "long": "--recursive", "type": "boolean", "description": "Change files and directories recursively." },
+    { "short": "-H", "type": "boolean", "description": "If a command line argument is a symbolic link to a directory, traverse it. Modifies how a hierarchy is traversed when -R is also specified." },
+    { "short": "-L", "type": "boolean", "description": "Traverse every symbolic link to a directory encountered. Modifies how a hierarchy is traversed when -R is also specified." },
+    { "short": "-P", "type": "boolean", "description": "Do not traverse any symbolic links. This is the default. Modifies how a hierarchy is traversed when -R is also specified." },
+    { "long": "--help", "type": "boolean", "description": "Display help and exit." },
+    { "long": "--version", "type": "boolean", "description": "Output version information and exit." }
+  ],
+  "positional_args": [
+    { "name": "mode", "type": "string", "description": "The new mode, as an octal number or a symbolic mode string. Omitted when --reference is used." },
+    { "name": "file", "type": "path", "required": true, "variadic": true, "description": "Files whose mode is to be changed." }
+  ],
+  "annotations": {
+    "readonly": false,
+    "destructive": true,
+    "idempotent": true,
+    "requires_approval": true
+  }
+}

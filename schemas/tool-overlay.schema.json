@@ -89,10 +89,26 @@
   },
   "$defs": {
     "variant": {
-      "enum": ["bsd", "gnu-coreutils", "busybox", "unknown"]
+      "description": "bsd = a BSD userland (macOS, FreeBSD). gnu = the GNU project's build, whichever package ships it: coreutils, diffutils, tar, sed and bash are separate projects, so the package is recorded in provenance.package and pinned, when it matters, in match.probe.output_contains. apple = Apple's own port, whose banner names Apple rather than BSD (macOS sort reports \"2.3-Apple (197)\"). busybox = a BusyBox multi-call binary. unknown = the probe was inconclusive.",
+      "enum": ["bsd", "gnu", "apple", "busybox", "unknown"]
     },
     "platform": {
-      "enum": ["macos", "linux", "freebsd", "windows", "other"]
+      "description": "A host operating system, named exactly as Rust's std::env::consts::OS names it, lower-cased. Deliberately a free string and NOT an enum: the set of operating systems is not enumerable, and any closed list collapses OpenBSD, NetBSD, DragonFly, Solaris, illumos and AIX into a single catch-all, which is both lossy and a code change plus a release for every addition. The examples below are guidance, not a constraint; any value std::env::consts::OS can produce is valid. Comparison is case-insensitive, so \"macOS\" and \"MACOS\" both mean \"macos\".",
+      "type": "string",
+      "minLength": 1,
+      "examples": [
+        "macos",
+        "linux",
+        "freebsd",
+        "openbsd",
+        "netbsd",
+        "dragonfly",
+        "windows",
+        "solaris",
+        "illumos",
+        "android",
+        "ios"
+      ]
     },
     "provenance": {
       "type": "object",
@@ -107,6 +123,10 @@
           "description": "Version of the reference installation, verbatim, e.g. \"9.7\". A verification against an older release cannot know about flags added after it, which is exactly how GNU ls --zero (coreutils 8.25) was missed.",
           "type": "string",
           "minLength": 1
+        },
+        "package": {
+          "description": "Upstream package the reference build came from, e.g. \"coreutils\" or \"diffutils\". Where package identity lives now that the \"gnu\" variant covers the whole GNU family: coreutils and diffutils are separate projects on separate release lines, so tool_version alone does not say what \"9.7\" is a version of.",
+          "type": "string"
         },
         "source": {
           "description": "Which document the flag list was read from. There is deliberately no value meaning \"from knowledge\".",
@@ -223,6 +243,11 @@
         },
         "required": { "type": "boolean", "default": false },
         "repeatable": { "type": "boolean", "default": false },
+        "long_running": {
+          "description": "Whether this flag can make the command run until it is killed. The claim is \"may not terminate on its own\", NOT \"always blocks\": tail -f follows a regular file indefinitely, yet the BSD man page states it returns immediately when its input is a pipe, so certainty here would be a false claim. An executor should read it as a reason to bound the timeout or refuse the invocation, never as a prediction that the process will hang. It belongs to the flag, not the command: `tail` is fine, `tail -f` is not. Reaches the emitted contract as the JSON Schema extension keyword \"x-apexe-long-running\" on the flag's property. Flags that merely change how long a follow lasts (GNU tail --retry, --sleep-interval, --pid, --max-unchanged-stats) are out of scope: they modify a duration rather than decide termination.",
+          "type": "boolean",
+          "default": false
+        },
         "default": { "type": "string" },
         "enum_values": {
           "type": "array",

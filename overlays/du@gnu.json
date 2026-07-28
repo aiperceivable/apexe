@@ -1,0 +1,64 @@
+{
+  "schema_version": "1.0",
+  "command": "du",
+  "variant": "gnu",
+  "match": {
+    "probe": {
+      "args": ["--version"],
+      "expect": "success",
+      "output_contains": "GNU coreutils"
+    }
+  },
+  "mode": "authoritative",
+  "confidence": "verified",
+  "provenance": {
+    "platform": "linux",
+    "tool_version": "9.7",
+    "package": "coreutils",
+    "source": "help",
+    "checked_on": "2026-07-27",
+    "command": "docker run --rm debian:stable-slim du --help",
+    "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
+    "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help. GNU --help is not exhaustive for every tool (it is not for df, see df@gnu), so it was not trusted on its own: all 52 single letters a-z A-Z 0 1 were passed to the binary, and exactly the 19 shorts that --help lists (-0 -a -B -b -c -D -d -H -h -k -L -l -m -P -S -s -t -X -x) were accepted with no extras; 4 further long forms (--megabytes --kilobytes --exclude-type --print-type) were rejected. The set is therefore closed and mode is authoritative. Enum values for --time were closed against the binary rather than the help text: atime, access, use, ctime and status are accepted, while mtime, modify, birth and creation are rejected with 'invalid argument ... Valid arguments are'. conflicts_with: 'du -s -a' fails with 'cannot both summarize and show all entries' and 'du -s -d 1' fails with 'summarizing conflicts with --max-depth=1', both in either order; 'du -a -d 1' succeeds, so -a and -d are not in conflict. -h, -k, --si and --block-size were tested together and all exit 0 with the last one winning, so they are not recorded as conflicts. --inodes with -b or --apparent-size only emits a warning and exits 0, so it is described rather than declared a conflict. --files0-from replaces the FILE operands: 'du --files0-from=F /t' fails with \"extra operand\", which is recorded in the operand description because conflicts_with can only name flags. annotations: no option names an output file; du run with -a --inodes --apparent-size -c -h over a tree left it byte-identical under diff -r, so readonly is true."
+  },
+  "description": "Summarize device usage of the set of FILEs, recursively for directories. Display values are in units of the first available SIZE from --block-size, and the DU_BLOCK_SIZE, BLOCK_SIZE and BLOCKSIZE environment variables; otherwise units default to 1024 bytes (or 512 if POSIXLY_CORRECT is set).",
+  "flags": [
+    { "short": "-0", "long": "--null", "type": "boolean", "description": "End each output line with NUL, not newline." },
+    { "short": "-a", "long": "--all", "type": "boolean", "conflicts_with": ["-s"], "description": "Write counts for all files, not just directories." },
+    { "long": "--apparent-size", "type": "boolean", "description": "Print apparent sizes rather than device usage; although the apparent size is usually smaller, it may be larger due to holes in ('sparse') files, internal fragmentation, indirect blocks, and the like." },
+    { "short": "-B", "long": "--block-size", "type": "string", "value_name": "SIZE", "description": "Scale sizes by SIZE before printing them; e.g., '-BM' prints sizes in units of 1,048,576 bytes. SIZE is an integer and optional unit (example: 10K is 10*1024); units are K,M,G,T,P,E,Z,Y,R,Q (powers of 1024) or KB,MB,... (powers of 1000), and binary prefixes such as KiB=K may be used too." },
+    { "short": "-b", "long": "--bytes", "type": "boolean", "description": "Equivalent to '--apparent-size --block-size=1'." },
+    { "short": "-c", "long": "--total", "type": "boolean", "description": "Produce a grand total." },
+    { "short": "-D", "long": "--dereference-args", "type": "boolean", "description": "Dereference only symlinks that are listed on the command line." },
+    { "short": "-d", "long": "--max-depth", "type": "integer", "value_name": "N", "conflicts_with": ["-s"], "description": "Print the total for a directory (or file, with --all) only if it is N or fewer levels below the command line argument; --max-depth=0 is the same as --summarize." },
+    { "long": "--files0-from", "type": "path", "value_name": "F", "description": "Summarize device usage of the NUL-terminated file names specified in file F; if F is -, then read names from standard input. This replaces the FILE operands rather than adding to them." },
+    { "short": "-H", "type": "boolean", "description": "Equivalent to --dereference-args (-D)." },
+    { "short": "-h", "long": "--human-readable", "type": "boolean", "description": "Print sizes in human readable format (e.g., 1K 234M 2G)." },
+    { "long": "--inodes", "type": "boolean", "description": "List inode usage information instead of block usage. Combining it with --apparent-size or -b is accepted but warns that those options are ineffective with --inodes." },
+    { "short": "-k", "type": "boolean", "description": "Like --block-size=1K." },
+    { "short": "-L", "long": "--dereference", "type": "boolean", "description": "Dereference all symbolic links." },
+    { "short": "-l", "long": "--count-links", "type": "boolean", "description": "Count sizes many times if hard linked." },
+    { "short": "-m", "type": "boolean", "description": "Like --block-size=1M." },
+    { "short": "-P", "long": "--no-dereference", "type": "boolean", "description": "Don't follow any symbolic links (this is the default)." },
+    { "short": "-S", "long": "--separate-dirs", "type": "boolean", "description": "For directories do not include size of subdirectories." },
+    { "long": "--si", "type": "boolean", "description": "Like -h, but use powers of 1000 not 1024." },
+    { "short": "-s", "long": "--summarize", "type": "boolean", "conflicts_with": ["-a", "-d"], "description": "Display only a total for each argument." },
+    { "short": "-t", "long": "--threshold", "type": "string", "value_name": "SIZE", "description": "Exclude entries smaller than SIZE if positive, or entries greater than SIZE if negative." },
+    { "long": "--time", "type": "enum", "value_name": "WORD", "enum_values": ["atime", "access", "use", "ctime", "status"], "description": "Show time of the last modification of any file in the directory, or any of its subdirectories. The argument is optional: with WORD, show that time instead of the modification time." },
+    { "long": "--time-style", "type": "string", "value_name": "STYLE", "description": "Show times using STYLE, which can be full-iso, long-iso, iso, or +FORMAT; FORMAT is interpreted like in 'date'." },
+    { "short": "-X", "long": "--exclude-from", "type": "path", "value_name": "FILE", "description": "Exclude files that match any pattern in FILE." },
+    { "long": "--exclude", "type": "string", "value_name": "PATTERN", "repeatable": true, "description": "Exclude files that match PATTERN." },
+    { "short": "-x", "long": "--one-file-system", "type": "boolean", "description": "Skip directories on different file systems." },
+    { "long": "--help", "type": "boolean", "description": "Display this help and exit." },
+    { "long": "--version", "type": "boolean", "description": "Output version information and exit." }
+  ],
+  "positional_args": [
+    { "name": "file", "type": "path", "variadic": true, "required": false, "description": "Files and directories to summarize. Not given when --files0-from is used, which rejects any FILE operand as an extra operand." }
+  ],
+  "annotations": {
+    "readonly": true,
+    "destructive": false,
+    "idempotent": true,
+    "requires_approval": false
+  }
+}

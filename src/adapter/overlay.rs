@@ -23,16 +23,70 @@ use crate::models::{
 /// Overlay schema version this build understands.
 pub const OVERLAY_SCHEMA_VERSION: &str = "1.0";
 
-/// Host operating system family, as named in an overlay's `match.platform`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Platform {
-    Macos,
-    Linux,
-    Freebsd,
-    Windows,
-    /// Anything not separately named.
-    Other,
+/// Host operating system, as named in an overlay's `match.platform`.
+///
+/// # Why this is a string and [`ToolVariant`] is not
+///
+/// The set of operating systems is **not enumerable**. OpenBSD, NetBSD,
+/// DragonFly, Solaris, illumos, AIX and whatever ships next are all real hosts
+/// an overlay may legitimately name, and a closed enum collapses every one of
+/// them into a single `Other` bucket — which is both lossy and a code change
+/// plus a release for every addition. The vocabulary is therefore borrowed
+/// wholesale from [`std::env::consts::OS`]: the scanner reports what Rust
+/// reports, and no translation table sits in between to lose information.
+///
+/// [`ToolVariant`] stays an enum for the opposite reason. Its members are
+/// exhaustive because each one exists only if the classifier can *probe* for
+/// it: `bsd`, `gnu`, `apple`, `busybox`, `unknown` each have detection logic
+/// behind them, and adding a member means deciding how it is recognised. Were
+/// it a string, an overlay could declare `variant: "gnu-ish"` and silently
+/// never match, because no probe ever produces that token. Platform is an open
+/// set that the host names; variant is a closed set that this crate decides.
+///
+/// # Normalisation
+///
+/// The wrapped value is lower-cased and trimmed on construction and on
+/// deserialization, so `macos`, `macOS` and `MACOS` are the same platform and
+/// a mis-cased overlay cannot silently fail to match. Comparison is therefore
+/// plain `==` on the normalised form.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
+pub struct Platform(String);
+
+impl Platform {
+    /// Normalise `raw` into a platform name.
+    pub fn new(raw: &str) -> Self {
+        Self(raw.trim().to_ascii_lowercase())
+    }
+
+    /// The normalised platform name, e.g. `"macos"`.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for Platform {
+    fn from(raw: String) -> Self {
+        Platform::new(&raw)
+    }
+}
+
+impl From<&str> for Platform {
+    fn from(raw: &str) -> Self {
+        Platform::new(raw)
+    }
+}
+
+impl From<Platform> for String {
+    fn from(platform: Platform) -> Self {
+        platform.0
+    }
+}
+
+impl std::fmt::Display for Platform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// How an overlay combines with the heuristic scan result.
@@ -86,7 +140,8 @@ pub struct ProbeOutcome {
 /// Conditions under which an overlay applies.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OverlayMatch {
-    /// Host platforms this overlay is valid on. Empty means "any".
+    /// Host platforms this overlay is valid on, named as
+    /// [`std::env::consts::OS`] names them. Empty means "any".
     #[serde(default)]
     pub platform: Vec<Platform>,
     /// Probe that must succeed for this overlay to apply.
@@ -135,6 +190,15 @@ pub struct OverlayFlag {
     pub required: bool,
     #[serde(default)]
     pub repeatable: bool,
+    /// Whether this flag can make the command run until it is killed.
+    ///
+    /// States possibility, not certainty. `tail -f` follows a regular file
+    /// indefinitely, yet the BSD man page says it returns immediately when its
+    /// input is a pipe — so the honest claim is "may not terminate on its
+    /// own", and an executor should read it as a reason to bound the timeout
+    /// or refuse, never as a prediction that the process will hang.
+    #[serde(default)]
+    pub long_running: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -186,6 +250,14 @@ pub struct OverlayProvenance {
     pub platform: Platform,
     /// Version of the reference installation, verbatim (e.g. `"9.7"`).
     pub tool_version: String,
+    /// Upstream package the reference build came from (e.g. `"coreutils"`).
+    ///
+    /// This is where package identity lives now that [`ToolVariant::Gnu`]
+    /// covers the whole GNU family: `coreutils` and `diffutils` are separate
+    /// projects on separate release lines, so `tool_version` alone does not
+    /// say what `9.7` is a version *of*.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
     /// Which document the flag list was read from.
     pub source: EvidenceSource,
     /// ISO-8601 calendar date the check was performed (`YYYY-MM-DD`).
@@ -299,7 +371,7 @@ impl ToolOverlay {
         if !self.version_matches(context.version.as_deref()) {
             return None;
         }
-        if !self.platform_matches(context.platform) {
+        if !self.platform_matches(context.platform.as_ref()) {
             return None;
         }
         if let Some(ref probe) = self.match_rules.probe {
@@ -316,11 +388,11 @@ impl ToolOverlay {
         Some(MatchStrength::Platform)
     }
 
-    fn platform_matches(&self, platform: Option<Platform>) -> bool {
+    fn platform_matches(&self, platform: Option<&Platform>) -> bool {
         if self.match_rules.platform.is_empty() {
             return true;
         }
-        platform.is_some_and(|current| self.match_rules.platform.contains(&current))
+        platform.is_some_and(|current| self.match_rules.platform.contains(current))
     }
 
     fn version_matches(&self, version: Option<&str>) -> bool {
@@ -368,7 +440,7 @@ pub enum OverlayDefect {
     #[error("flag long form '{0}' must start with '--'")]
     MalformedLong(String),
 
-    #[error("flag short form '{0}' must be a single dash followed by one character")]
+    #[error("flag short form '{0}' must be a single dash followed by at least one character; a '--long' form belongs in the long field")]
     MalformedShort(String),
 
     #[error("flag '{0}' is declared more than once")]
@@ -444,14 +516,28 @@ fn validate_flags(flags: &[OverlayFlag], defects: &mut Vec<OverlayDefect>) {
         if flag.long.is_none() && flag.short.is_none() {
             defects.push(OverlayDefect::FlagWithoutName { index });
         }
-        for name in flag.names() {
-            if name.starts_with("--") {
-                if name.len() < 3 {
-                    defects.push(OverlayDefect::MalformedLong(name.clone()));
-                }
-            } else if name.chars().count() != 2 || !name.starts_with('-') {
-                defects.push(OverlayDefect::MalformedShort(name.clone()));
+        // Validated per field rather than over the merged name list: a name is
+        // only well-formed relative to the field it was declared in, and a
+        // combined loop cannot tell `--verbose` written in `short` from the
+        // same token legitimately written in `long`.
+        if let Some(ref long) = flag.long {
+            if !long.starts_with("--") || long.chars().count() < 3 {
+                defects.push(OverlayDefect::MalformedLong(long.clone()));
             }
+        }
+        if let Some(ref short) = flag.short {
+            // A single-dash form may be longer than one character. `find`'s
+            // expression language is built entirely out of such tokens —
+            // `-name`, `-delete`, `-maxdepth`, `-files0-from` — and they are
+            // what a user types, so an overlay has to be able to state them.
+            // Still rejected: a bare `-`, anything without a leading dash, and
+            // a `--long` form misfiled here, which the JSON Schema's `^-[^-]`
+            // pattern also refuses.
+            if !short.starts_with('-') || short.starts_with("--") || short.chars().count() < 2 {
+                defects.push(OverlayDefect::MalformedShort(short.clone()));
+            }
+        }
+        for name in flag.names() {
             if seen.contains(&name) {
                 defects.push(OverlayDefect::DuplicateFlag(name.clone()));
             }
@@ -630,6 +716,7 @@ impl OverlayFlag {
             enum_values: self.enum_values.clone(),
             repeatable: self.repeatable,
             value_name: self.value_name.clone(),
+            long_running: self.long_running,
             conflicts_with: self.conflicts_with.clone(),
             sources: vec![FlagSource::Overlay],
             confidence,
@@ -773,8 +860,9 @@ mod tests {
             // same reason a real overlay must: a verified claim nobody can
             // re-check is indistinguishable from a guess.
             provenance: Some(OverlayProvenance {
-                platform: Platform::Macos,
+                platform: Platform::new("macos"),
                 tool_version: "unknown".to_string(),
+                package: None,
                 source: EvidenceSource::ManPage,
                 checked_on: "2026-07-27".to_string(),
                 command: Some("man ls".to_string()),
@@ -815,7 +903,7 @@ mod tests {
     #[test]
     fn test_evaluate_rejects_other_command() {
         let overlay = overlay(OverlayMode::Merge);
-        let mut ctx = context(ToolVariant::Bsd, Platform::Macos, "/bin/ls");
+        let mut ctx = context(ToolVariant::Bsd, Platform::new("macos"), "/bin/ls");
         ctx.command = "cat".to_string();
         assert_eq!(overlay.evaluate(&ctx), None);
     }
@@ -825,32 +913,32 @@ mod tests {
         // The whole point of variant detection: a GNU binary must not pick up
         // the BSD overlay just because the command name agrees.
         let overlay = overlay(OverlayMode::Merge);
-        let ctx = context(ToolVariant::GnuCoreutils, Platform::Macos, "/bin/ls");
+        let ctx = context(ToolVariant::Gnu, Platform::new("macos"), "/bin/ls");
         assert_eq!(overlay.evaluate(&ctx), None);
     }
 
     #[test]
     fn test_evaluate_platform_only_is_weakest_match() {
         let mut overlay = overlay(OverlayMode::Merge);
-        overlay.match_rules.platform = vec![Platform::Macos];
-        let ctx = context(ToolVariant::Bsd, Platform::Macos, "/bin/ls");
+        overlay.match_rules.platform = vec![Platform::new("macos")];
+        let ctx = context(ToolVariant::Bsd, Platform::new("macos"), "/bin/ls");
         assert_eq!(overlay.evaluate(&ctx), Some(MatchStrength::Platform));
     }
 
     #[test]
     fn test_evaluate_rejects_wrong_platform() {
         let mut overlay = overlay(OverlayMode::Merge);
-        overlay.match_rules.platform = vec![Platform::Macos, Platform::Freebsd];
-        let ctx = context(ToolVariant::Bsd, Platform::Linux, "/bin/ls");
+        overlay.match_rules.platform = vec![Platform::new("macos"), Platform::new("freebsd")];
+        let ctx = context(ToolVariant::Bsd, Platform::new("linux"), "/bin/ls");
         assert_eq!(overlay.evaluate(&ctx), None);
     }
 
     #[test]
     fn test_evaluate_glob_outranks_platform_alone() {
         let mut overlay = overlay(OverlayMode::Merge);
-        overlay.match_rules.platform = vec![Platform::Macos];
+        overlay.match_rules.platform = vec![Platform::new("macos")];
         overlay.match_rules.binary_globs = vec!["/bin/*".to_string()];
-        let ctx = context(ToolVariant::Bsd, Platform::Macos, "/bin/ls");
+        let ctx = context(ToolVariant::Bsd, Platform::new("macos"), "/bin/ls");
         assert_eq!(overlay.evaluate(&ctx), Some(MatchStrength::PlatformAndGlob));
         assert!(MatchStrength::PlatformAndGlob > MatchStrength::Platform);
     }
@@ -859,7 +947,11 @@ mod tests {
     fn test_evaluate_rejects_unmatched_glob() {
         let mut overlay = overlay(OverlayMode::Merge);
         overlay.match_rules.binary_globs = vec!["/bin/ls".to_string()];
-        let ctx = context(ToolVariant::Bsd, Platform::Macos, "/opt/homebrew/bin/ls");
+        let ctx = context(
+            ToolVariant::Bsd,
+            Platform::new("macos"),
+            "/opt/homebrew/bin/ls",
+        );
         assert_eq!(overlay.evaluate(&ctx), None);
     }
 
@@ -872,7 +964,7 @@ mod tests {
             expect: ProbeExpectation::Failure,
             output_contains: None,
         });
-        let mut ctx = context(ToolVariant::Bsd, Platform::Macos, "/bin/ls");
+        let mut ctx = context(ToolVariant::Bsd, Platform::new("macos"), "/bin/ls");
         ctx.probes = vec![ProbeOutcome {
             args: vec!["--version".to_string()],
             succeeded: false,
@@ -893,7 +985,7 @@ mod tests {
             expect: ProbeExpectation::Failure,
             output_contains: None,
         });
-        let mut ctx = context(ToolVariant::Bsd, Platform::Macos, "/bin/ls");
+        let mut ctx = context(ToolVariant::Bsd, Platform::new("macos"), "/bin/ls");
         ctx.probes = vec![ProbeOutcome {
             args: vec!["--version".to_string()],
             succeeded: true,
@@ -905,13 +997,13 @@ mod tests {
     #[test]
     fn test_evaluate_probe_requires_output_substring() {
         let mut overlay = overlay(OverlayMode::Merge);
-        overlay.variant = ToolVariant::GnuCoreutils;
+        overlay.variant = ToolVariant::Gnu;
         overlay.match_rules.probe = Some(ProbeMatcher {
             args: vec!["--version".to_string()],
             expect: ProbeExpectation::Success,
             output_contains: Some("GNU coreutils".to_string()),
         });
-        let mut ctx = context(ToolVariant::GnuCoreutils, Platform::Linux, "/usr/bin/ls");
+        let mut ctx = context(ToolVariant::Gnu, Platform::new("linux"), "/usr/bin/ls");
         ctx.probes = vec![ProbeOutcome {
             args: vec!["--version".to_string()],
             succeeded: true,
@@ -931,7 +1023,7 @@ mod tests {
             expect: ProbeExpectation::Failure,
             output_contains: None,
         });
-        let ctx = context(ToolVariant::Bsd, Platform::Macos, "/bin/ls");
+        let ctx = context(ToolVariant::Bsd, Platform::new("macos"), "/bin/ls");
         assert_eq!(overlay.evaluate(&ctx), None);
     }
 
@@ -939,7 +1031,7 @@ mod tests {
     fn test_evaluate_respects_version_range() {
         let mut overlay = overlay(OverlayMode::Merge);
         overlay.match_rules.version_range = Some(">=9.0".to_string());
-        let mut ctx = context(ToolVariant::Bsd, Platform::Macos, "/bin/ls");
+        let mut ctx = context(ToolVariant::Bsd, Platform::new("macos"), "/bin/ls");
         ctx.version = Some("8.32".to_string());
         assert_eq!(overlay.evaluate(&ctx), None);
         ctx.version = Some("9.4".to_string());
@@ -1079,6 +1171,64 @@ mod tests {
         assert!(decoded.is_supported_version());
     }
 
+    #[test]
+    fn test_overlay_flag_long_running_reaches_the_scanned_flag() {
+        // The point of the field: prose in a description is not actionable, so
+        // it has to survive the conversion an executor actually reads.
+        let mut overlay = overlay(OverlayMode::Authoritative);
+        overlay.command = "tail".to_string();
+        overlay.flags = vec![
+            OverlayFlag {
+                short: Some("-f".to_string()),
+                long_running: true,
+                description: "Follow the file.".to_string(),
+                ..Default::default()
+            },
+            OverlayFlag {
+                short: Some("-n".to_string()),
+                description: "Number of lines.".to_string(),
+                ..Default::default()
+            },
+        ];
+        let mut tool = ScannedCLITool {
+            name: "tail".to_string(),
+            ..Default::default()
+        };
+        apply_overlay(&mut tool, &overlay);
+
+        assert!(tool.global_flags[0].long_running);
+        assert!(
+            !tool.global_flags[1].long_running,
+            "an ordinary flag must not inherit the claim"
+        );
+    }
+
+    #[test]
+    fn test_overlay_flag_long_running_defaults_to_false_when_absent() {
+        // Overlays written before the field existed must not start asserting
+        // something their author never checked.
+        let document = r#"{ "short": "-n", "type": "integer" }"#;
+        let flag: OverlayFlag = serde_json::from_str(document).unwrap();
+        assert!(!flag.long_running);
+    }
+
+    #[test]
+    fn test_overlay_provenance_package_round_trips() {
+        // `9.7` alone does not say what it is a version *of* once the variant
+        // is the whole GNU family.
+        let document = r#"{
+          "platform": "linux",
+          "tool_version": "9.7",
+          "package": "coreutils",
+          "source": "help",
+          "checked_on": "2026-07-27"
+        }"#;
+        let provenance: OverlayProvenance = serde_json::from_str(document).unwrap();
+        assert_eq!(provenance.package.as_deref(), Some("coreutils"));
+        let encoded = serde_json::to_string(&provenance).unwrap();
+        assert!(encoded.contains("\"package\":\"coreutils\""));
+    }
+
     /// The standalone JSON Schema, which is the contract for overlay authors
     /// who never see the Rust types.
     const SCHEMA: &str = include_str!("../../schemas/tool-overlay.schema.json");
@@ -1112,7 +1262,8 @@ mod tests {
         declared.sort();
         let mut actual: Vec<String> = [
             ToolVariant::Bsd,
-            ToolVariant::GnuCoreutils,
+            ToolVariant::Gnu,
+            ToolVariant::Apple,
             ToolVariant::Busybox,
             ToolVariant::Unknown,
         ]
@@ -1124,27 +1275,32 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_platform_enum_matches_rust_platforms() {
-        let mut declared = schema_enum("/$defs/platform/enum");
-        declared.sort();
-        let mut actual: Vec<String> = [
-            Platform::Macos,
-            Platform::Linux,
-            Platform::Freebsd,
-            Platform::Windows,
-            Platform::Other,
-        ]
-        .iter()
-        .map(|p| {
-            serde_json::to_value(p)
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .to_string()
-        })
-        .collect();
-        actual.sort();
-        assert_eq!(declared, actual);
+    fn test_schema_platform_is_an_open_string_with_examples() {
+        // The point of the change: `enum` here would reimpose the closed set
+        // the schema was freed from, so its absence is the assertion.
+        let schema: serde_json::Value = serde_json::from_str(SCHEMA).unwrap();
+        let platform = schema.pointer("/$defs/platform").expect("missing platform");
+        assert_eq!(platform["type"], "string");
+        assert!(
+            platform.get("enum").is_none(),
+            "platform must stay an open string; `enum` closes it again"
+        );
+        let examples = schema_enum("/$defs/platform/examples");
+        for expected in ["macos", "linux", "freebsd", "openbsd", "netbsd"] {
+            assert!(
+                examples.iter().any(|value| value == expected),
+                "schema examples should mention {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_schema_platform_examples_are_all_normalized() {
+        // A mis-cased example would document a value the loader silently
+        // rewrites, which is exactly the confusion normalisation removes.
+        for example in schema_enum("/$defs/platform/examples") {
+            assert_eq!(Platform::new(&example).as_str(), example);
+        }
     }
 
     #[test]
@@ -1202,5 +1358,45 @@ mod tests {
         let mut overlay = overlay(OverlayMode::Merge);
         overlay.schema_version = "99.0".to_string();
         assert!(!overlay.is_supported_version());
+    }
+
+    /// `find`'s entire expression language is single-dash multi-character
+    /// tokens, so rejecting them would make the tool inexpressible.
+    #[test]
+    fn test_validate_overlay_accepts_multi_character_short_form() {
+        let mut overlay = overlay(OverlayMode::Authoritative);
+        overlay.flags = vec![OverlayFlag {
+            short: Some("-maxdepth".to_string()),
+            value_type: ValueType::Integer,
+            description: "Descend at most n directory levels.".to_string(),
+            ..Default::default()
+        }];
+        assert!(validate_overlay(&overlay).is_empty());
+    }
+
+    /// The relaxation above must not turn the check off: a bare dash names no
+    /// option, and a name with no dash at all is the typo the check exists for.
+    #[test]
+    fn test_validate_overlay_rejects_bare_dash_and_undashed_short_form() {
+        // `--verbose` is included because relaxing the short-form length rule
+        // for `find`'s `-maxdepth` opened a hole: validation used to walk the
+        // merged name list, so a `--long` token misfiled under `short` matched
+        // the long branch and passed. The JSON Schema's `^-[^-]` always
+        // refused it; the Rust check now agrees.
+        for bad in ["-", "maxdepth", "--verbose"] {
+            let mut overlay = overlay(OverlayMode::Authoritative);
+            overlay.flags = vec![OverlayFlag {
+                short: Some(bad.to_string()),
+                value_type: ValueType::Boolean,
+                ..Default::default()
+            }];
+            let defects = validate_overlay(&overlay);
+            assert!(
+                defects.iter().any(
+                    |defect| matches!(defect, OverlayDefect::MalformedShort(name) if name == bad)
+                ),
+                "'{bad}' must be reported as a malformed short form, got {defects:?}"
+            );
+        }
     }
 }

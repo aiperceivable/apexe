@@ -242,10 +242,9 @@ impl ScanOrchestrator {
             &arg_sets,
             Duration::from_secs(self.config.default_timeout),
         );
-        let detected = variant::classify_variant(
-            variant::version_outcome(&probes),
-            variant::current_platform(),
-        );
+        let platform = variant::current_platform();
+        let detected =
+            variant::classify_variant(variant::version_outcome(&probes), Some(&platform));
         info!(
             tool = %command_name,
             variant = detected.as_str(),
@@ -262,7 +261,7 @@ impl ScanOrchestrator {
         let context = MatchContext {
             command: tool.name.clone(),
             variant: detected.variant,
-            platform: variant::current_platform(),
+            platform: Some(variant::current_platform()),
             binary_path: tool.binary_path.clone(),
             version: tool.version.clone(),
             probes: detected.probes.clone(),
@@ -551,12 +550,14 @@ mod tests {
 
         match tool.variant {
             ToolVariant::Bsd => assert_eq!(tool.overlay.as_deref(), Some("ls@bsd")),
-            ToolVariant::GnuCoreutils => {
-                assert_eq!(tool.overlay.as_deref(), Some("ls@gnu-coreutils"))
+            ToolVariant::Gnu => {
+                assert_eq!(tool.overlay.as_deref(), Some("ls@gnu"))
             }
-            // No curated overlay ships for BusyBox `ls`, and an inconclusive
-            // probe must not pick one at random.
-            ToolVariant::Busybox | ToolVariant::Unknown => assert!(tool.overlay.is_none()),
+            // No curated overlay ships for BusyBox or Apple `ls`, and an
+            // inconclusive probe must not pick one at random.
+            ToolVariant::Apple | ToolVariant::Busybox | ToolVariant::Unknown => {
+                assert!(tool.overlay.is_none())
+            }
         }
 
         if tool.overlay.is_some() {

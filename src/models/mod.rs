@@ -106,6 +106,19 @@ pub struct ScannedFlag {
     pub repeatable: bool,
     /// Placeholder name for the value (e.g., "FILE", "NUM").
     pub value_name: Option<String>,
+    /// Whether this flag can make the command run until it is killed.
+    ///
+    /// The claim is "may not terminate on its own", not "always blocks":
+    /// `tail -f` follows a regular file indefinitely, yet the BSD man page
+    /// states it returns immediately when its input is a pipe. An executor
+    /// should read this as "bound the timeout or refuse", never as a
+    /// prediction that the process will hang.
+    ///
+    /// Only curated overlays populate this; no help or man page format states
+    /// it machine-readably. Defaulted on deserialize so caches written before
+    /// the field existed still load.
+    #[serde(default)]
+    pub long_running: bool,
     /// Flags that cannot be combined with this one (e.g. `-l` vs `-1`).
     ///
     /// Only curated overlays populate this: no help or man page format states
@@ -251,8 +264,20 @@ pub struct ScannedCLITool {
 pub enum ToolVariant {
     /// BSD userland (macOS, FreeBSD).
     Bsd,
-    /// GNU coreutils.
-    GnuCoreutils,
+    /// The GNU project's build, whichever package ships it.
+    ///
+    /// Deliberately the whole family rather than one package: `coreutils`,
+    /// `diffutils`, `tar`, `sed`, `grep` and `bash` are separate projects with
+    /// separate release lines, and a variant per package would scale badly
+    /// while telling an overlay author nothing it cannot state more precisely
+    /// in `match.probe.output_contains` and `provenance.package`.
+    Gnu,
+    /// Apple's own port, whose banner names Apple rather than BSD.
+    ///
+    /// macOS `sort` reports `2.3-Apple (197)` and `git` reports
+    /// `git version 2.50.1 (Apple Git-155)`. Neither is classifiable as BSD
+    /// from its banner, and calling them GNU would be wrong.
+    Apple,
     /// BusyBox multi-call binary (Alpine and most embedded images).
     Busybox,
     /// Probe was inconclusive.
@@ -265,7 +290,8 @@ impl ToolVariant {
     pub fn as_str(self) -> &'static str {
         match self {
             ToolVariant::Bsd => "bsd",
-            ToolVariant::GnuCoreutils => "gnu-coreutils",
+            ToolVariant::Gnu => "gnu",
+            ToolVariant::Apple => "apple",
             ToolVariant::Busybox => "busybox",
             ToolVariant::Unknown => "unknown",
         }
@@ -393,7 +419,8 @@ mod tests {
     fn test_tool_variant_tokens_are_stable() {
         // These strings appear in cache keys and overlay ids, so they are API.
         assert_eq!(ToolVariant::Bsd.as_str(), "bsd");
-        assert_eq!(ToolVariant::GnuCoreutils.as_str(), "gnu-coreutils");
+        assert_eq!(ToolVariant::Gnu.as_str(), "gnu");
+        assert_eq!(ToolVariant::Apple.as_str(), "apple");
         assert_eq!(ToolVariant::Busybox.as_str(), "busybox");
         assert_eq!(ToolVariant::Unknown.as_str(), "unknown");
         assert_eq!(ToolVariant::default(), ToolVariant::Unknown);
@@ -403,7 +430,8 @@ mod tests {
     fn test_tool_variant_serde_matches_tokens() {
         for variant in [
             ToolVariant::Bsd,
-            ToolVariant::GnuCoreutils,
+            ToolVariant::Gnu,
+            ToolVariant::Apple,
             ToolVariant::Busybox,
             ToolVariant::Unknown,
         ] {
@@ -434,6 +462,7 @@ mod tests {
         assert!(flag.sources.is_empty());
         assert!(flag.conflicts_with.is_empty());
         assert_eq!(flag.confidence, Confidence::Low);
+        assert!(!flag.long_running);
     }
 
     #[test]

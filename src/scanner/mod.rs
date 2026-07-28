@@ -14,6 +14,25 @@
 //!
 //! The `ScanOrchestrator` coordinates all tiers, with caching and plugin support.
 
+/// Phrases a tool uses to reject an option it does not recognise.
+///
+/// Shared because two tiers ask the same question of the same text and must not
+/// disagree: variant detection reads a rejected `--version` as evidence of a
+/// non-GNU userland, and the BSD usage parser strips these lines so an error
+/// message is never mistaken for a description. They had drifted apart, which
+/// is why OpenBSD failed to classify.
+///
+/// The wording is not uniform across BSDs — macOS says "unrecognized option",
+/// OpenBSD says "unknown option" — and a missing marker fails silently: the
+/// tool just comes back `unknown`.
+pub const OPTION_REJECTION_MARKERS: &[&str] = &[
+    "unrecognized option",
+    "unrecognised option",
+    "illegal option",
+    "invalid option",
+    "unknown option",
+];
+
 pub mod cache;
 pub mod completion;
 pub mod discovery;

@@ -245,7 +245,7 @@ mod tests {
         bsd.variant = ToolVariant::Bsd;
         bsd.binary_path = "/bin/ls".to_string();
         let mut gnu = make_tool("ls", None);
-        gnu.variant = ToolVariant::GnuCoreutils;
+        gnu.variant = ToolVariant::Gnu;
         gnu.binary_path = "/opt/homebrew/bin/ls".to_string();
         cache.put(&bsd).unwrap();
         cache.put(&gnu).unwrap();
@@ -255,10 +255,7 @@ mod tests {
             "/bin/ls"
         );
         assert_eq!(
-            cache
-                .get("ls", ToolVariant::GnuCoreutils, None)
-                .unwrap()
-                .binary_path,
+            cache.get("ls", ToolVariant::Gnu, None).unwrap().binary_path,
             "/opt/homebrew/bin/ls"
         );
     }
@@ -271,14 +268,14 @@ mod tests {
         let mut bsd = make_tool("ls", None);
         bsd.variant = ToolVariant::Bsd;
         let mut gnu = make_tool("ls", None);
-        gnu.variant = ToolVariant::GnuCoreutils;
+        gnu.variant = ToolVariant::Gnu;
         cache.put(&bsd).unwrap();
         cache.put(&gnu).unwrap();
 
         cache.invalidate("ls");
 
         assert!(cache.get("ls", ToolVariant::Bsd, None).is_none());
-        assert!(cache.get("ls", ToolVariant::GnuCoreutils, None).is_none());
+        assert!(cache.get("ls", ToolVariant::Gnu, None).is_none());
     }
 
     #[test]

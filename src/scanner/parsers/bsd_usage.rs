@@ -29,14 +29,7 @@ static LONG_RE: LazyLock<Regex> = LazyLock::new(|| {
 static OPERAND_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[([a-z][\w-]*)\s*\.\.\.\]").expect("valid static regex"));
 
-/// Error lines emitted by a tool that rejects `--help`; never a description.
-const ERROR_MARKERS: &[&str] = &[
-    "unrecognized option",
-    "illegal option",
-    "invalid option",
-    "unknown option",
-    "unrecognised option",
-];
+use crate::scanner::OPTION_REJECTION_MARKERS;
 
 /// Parser for BSD-style single-line usage output.
 ///
@@ -119,7 +112,9 @@ fn extract_description(help_text: &str) -> String {
 /// Whether a line is a tool's complaint about an unsupported option.
 fn is_error_line(line: &str) -> bool {
     let lowered = line.to_ascii_lowercase();
-    ERROR_MARKERS.iter().any(|marker| lowered.contains(marker))
+    OPTION_REJECTION_MARKERS
+        .iter()
+        .any(|marker| lowered.contains(marker))
 }
 
 /// Expand `[-abc]` into one boolean flag per character.

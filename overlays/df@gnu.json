@@ -1,0 +1,56 @@
+{
+  "schema_version": "1.0",
+  "command": "df",
+  "variant": "gnu",
+  "match": {
+    "probe": {
+      "args": ["--version"],
+      "expect": "success",
+      "output_contains": "GNU coreutils"
+    }
+  },
+  "mode": "authoritative",
+  "confidence": "verified",
+  "provenance": {
+    "platform": "linux",
+    "tool_version": "9.7",
+    "package": "coreutils",
+    "source": "help",
+    "checked_on": "2026-07-27",
+    "command": "docker run --rm debian:stable-slim df --help",
+    "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
+    "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help -- but GNU --help is NOT exhaustive here. Passing all 52 single letters a-z A-Z 0 1 to the binary found two options --help does not print: -m, which produces exactly the same table as --block-size=1M, and -F, which takes a type argument and filters identically to -t/--type ('df -F overlay /' and 'df -t overlay /' return the same row, and 'df -F' alone reports \"option requires an argument -- 'F'\"). Both are included. With those two added the set is closed -- no other letter and none of --direct, --megabytes or --kilobytes is accepted -- so mode is authoritative. conflicts_with: the binary states the exclusion itself, 'df: options -i and --output are mutually exclusive', and likewise for -T and -P, in both orders; --output was separately tested against -F, -v, -t, -x, -a, -h, -k and --total, all of which exit 0, so only those three are recorded. --sync with --no-sync exits 0 with the last one winning, and -h with -H, -k with -m and --block-size all exit 0, so none of those is a conflict. 'df -t overlay -x overlay' does fail with 'file system type both selected and excluded', but that depends on the two values being equal rather than on the two flags being present ('df -t overlay -x proc' exits 0), so it is described rather than declared a conflict. annotations: no option names an output file, and --sync only asks the kernel to flush already-dirty buffers rather than writing anything of its own; df --sync over a test tree left it byte-identical under diff -r, so readonly is true."
+  },
+  "description": "Show information about the file system on which each FILE resides, or all file systems by default. Display values are in units of the first available SIZE from --block-size, and the DF_BLOCK_SIZE, BLOCK_SIZE and BLOCKSIZE environment variables; otherwise units default to 1024 bytes (or 512 if POSIXLY_CORRECT is set).",
+  "flags": [
+    { "short": "-a", "long": "--all", "type": "boolean", "description": "Include pseudo, duplicate, inaccessible file systems." },
+    { "short": "-B", "long": "--block-size", "type": "string", "value_name": "SIZE", "description": "Scale sizes by SIZE before printing them; e.g., '-BM' prints sizes in units of 1,048,576 bytes. SIZE is an integer and optional unit (example: 10K is 10*1024); units are K,M,G,T,P,E,Z,Y,R,Q (powers of 1024) or KB,MB,... (powers of 1000), and binary prefixes such as KiB=K may be used too." },
+    { "short": "-F", "type": "string", "value_name": "TYPE", "description": "Limit listing to file systems of type TYPE. An undocumented synonym of -t/--type: it is accepted by the binary and filters identically, but GNU --help does not list it." },
+    { "short": "-h", "long": "--human-readable", "type": "boolean", "description": "Print sizes in powers of 1024 (e.g., 1023M)." },
+    { "short": "-H", "long": "--si", "type": "boolean", "description": "Print sizes in powers of 1000 (e.g., 1.1G)." },
+    { "short": "-i", "long": "--inodes", "type": "boolean", "conflicts_with": ["--output"], "description": "List inode information instead of block usage." },
+    { "short": "-k", "type": "boolean", "description": "Like --block-size=1K." },
+    { "short": "-l", "long": "--local", "type": "boolean", "description": "Limit listing to local file systems." },
+    { "short": "-m", "type": "boolean", "description": "Like --block-size=1M. Accepted by the binary and verified to produce the same table as --block-size=1M, but GNU --help does not list it." },
+    { "long": "--no-sync", "type": "boolean", "description": "Do not invoke sync before getting usage info (default)." },
+    { "long": "--output", "type": "string", "value_name": "FIELD_LIST", "conflicts_with": ["-i", "-T", "-P"], "description": "Use the output format defined by FIELD_LIST, or print all fields if FIELD_LIST is omitted. FIELD_LIST is a comma-separated list of columns; valid field names are 'source', 'fstype', 'itotal', 'iused', 'iavail', 'ipcent', 'size', 'used', 'avail', 'pcent', 'file' and 'target'." },
+    { "short": "-P", "long": "--portability", "type": "boolean", "conflicts_with": ["--output"], "description": "Use the POSIX output format." },
+    { "long": "--sync", "type": "boolean", "description": "Invoke sync before getting usage info." },
+    { "long": "--total", "type": "boolean", "description": "Elide all entries insignificant to available space, and produce a grand total." },
+    { "short": "-t", "long": "--type", "type": "string", "value_name": "TYPE", "description": "Limit listing to file systems of type TYPE. Selecting and excluding the same type, as in 'df -t X -x X', fails with \"file system type both selected and excluded\"." },
+    { "short": "-T", "long": "--print-type", "type": "boolean", "conflicts_with": ["--output"], "description": "Print file system type." },
+    { "short": "-x", "long": "--exclude-type", "type": "string", "value_name": "TYPE", "description": "Limit listing to file systems not of type TYPE. Excluding a type that -t also selects fails with \"file system type both selected and excluded\"." },
+    { "short": "-v", "type": "boolean", "description": "Accepted and ignored; GNU --help documents it as \"(ignored)\"." },
+    { "long": "--help", "type": "boolean", "description": "Display this help and exit." },
+    { "long": "--version", "type": "boolean", "description": "Output version information and exit." }
+  ],
+  "positional_args": [
+    { "name": "file", "type": "path", "variadic": true, "required": false, "description": "Files whose containing file system is reported on. With no FILE, all file systems are shown." }
+  ],
+  "annotations": {
+    "readonly": true,
+    "destructive": false,
+    "idempotent": true,
+    "requires_approval": false
+  }
+}
