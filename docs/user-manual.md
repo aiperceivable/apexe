@@ -90,7 +90,7 @@ apexe scan <TOOLS>... [OPTIONS]
 | `--no-cache` | off | Force fresh scan, bypass cache |
 | `--format <FMT>` | `table` | Output format: `json`, `yaml`, or `table` |
 | `--skills-dir <DIR>` | - | Also write a Claude Skill (`SKILL.md`) per module under `<DIR>/.claude/skills/<module_id>/` |
-| `--overlay <PATH>` | - | Load an additional curated overlay file (JSON/YAML), repeatable. See [§6.5 Tool Overlays](#65-tool-overlays) |
+| `--overlay <PATH>` | - | Load one explicit curated overlay file (JSON/YAML). See [§6.5 Tool Overlays](#65-tool-overlays) |
 
 ```bash
 apexe scan git                         # basic scan
@@ -308,7 +308,7 @@ An overlay is a curated, human-reviewed description of one tool variant, keyed b
 - Overlays are the only source that can express `conflicts_with` (mutually exclusive flags) and `long_running` (a flag that may block indefinitely, e.g. `tail -f`) — no `--help`/man format expresses either machine-readably.
 - Overlays can also override behavioral annotations (`readonly`/`destructive`/`idempotent`/`requires_approval`) for a specific command.
 
-Load additional overlays with `apexe scan <tool> --overlay <PATH>` (JSON or YAML, repeatable) or by dropping files under `~/.apexe/overlays/`. The format is defined by `schemas/tool-overlay.schema.json`. See [`docs/overlays.md`](overlays.md) for the full authoring and verification procedure — writing a `verified` overlay from memory instead of a real installation is exactly what it warns against.
+Load one explicit overlay with `apexe scan <tool> --overlay <PATH>` (JSON or YAML), or install multiple overlays by dropping files under `~/.apexe/overlays/`. The format is defined by `schemas/tool-overlay.schema.json`. See [`docs/overlays.md`](overlays.md) for the full authoring and verification procedure — writing a `verified` overlay from memory instead of a real installation is exactly what it warns against.
 
 ---
 
