@@ -38,6 +38,24 @@ Outside-In CLI-to-Agent Bridge — automatically wraps existing CLI tools into g
 
 ## Installation
 
+### Prebuilt binary
+
+No Rust toolchain required. Download the archive for your platform from the
+[Releases page](https://github.com/aiperceivable/apexe/releases), verify the
+checksum, and put the `apexe` binary on your `PATH`:
+
+```bash
+tar -xzf apexe-<target>.tar.gz
+shasum -a 256 -c apexe-<target>.tar.gz.sha256
+sudo mv apexe-<target>/apexe /usr/local/bin/
+apexe --version
+```
+
+Available targets: `x86_64-apple-darwin`, `aarch64-apple-darwin`,
+`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`.
+
+### From source
+
 Requires **Rust 1.75+** and Cargo.
 
 ```bash
