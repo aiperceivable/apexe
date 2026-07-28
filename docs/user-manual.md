@@ -2,8 +2,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 0.2.0 (unreleased) |
-| **Date** | 2026-07-16 |
+| **Version** | 0.5.0 |
+| **Date** | 2026-07-28 |
 | **Platform** | macOS / Linux |
 
 ---
@@ -90,6 +90,7 @@ apexe scan <TOOLS>... [OPTIONS]
 | `--no-cache` | off | Force fresh scan, bypass cache |
 | `--format <FMT>` | `table` | Output format: `json`, `yaml`, or `table` |
 | `--skills-dir <DIR>` | - | Also write a Claude Skill (`SKILL.md`) per module under `<DIR>/.claude/skills/<module_id>/` |
+| `--overlay <PATH>` | - | Load an additional curated overlay file (JSON/YAML), repeatable. See [§6.5 Tool Overlays](#65-tool-overlays) |
 
 ```bash
 apexe scan git                         # basic scan
@@ -98,6 +99,7 @@ apexe scan git --depth 3               # deeper subcommand discovery
 apexe scan git --no-cache              # force re-scan
 apexe scan git --format json           # JSON output
 apexe scan git --skills-dir ./out      # also write .claude/skills/cli.git.*/SKILL.md
+apexe scan ls --overlay ~/.apexe/overlays/ls-gnu.json  # apply a curated overlay
 ```
 
 ### 4.2 `apexe serve`
@@ -240,23 +242,25 @@ apexe uses a three-tier deterministic scanning engine. No LLM is involved.
 
 ### Tier 1: `--help` Parsing
 
-Runs `<tool> --help` and auto-detects the help format. Four built-in parsers:
+Runs `<tool> --help` and auto-detects the help format. Five built-in parsers:
 
 | Parser | Detects | Examples |
 |--------|---------|---------|
-| **GNU** | Standard GNU-style help | ls, grep, curl, git |
+| **BSD Usage** | Single-line bundled usage (BSD/macOS built-ins that reject `--help`) | ls, cat, chmod, sort (macOS) |
+| **GNU** | Standard GNU-style help | ls, grep, curl, git (GNU/Linux) |
 | **Click** | Python Click / argparse | aws, pip |
 | **Cobra** | Go Cobra framework | kubectl, docker, gh |
 | **Clap** | Rust Clap framework | ripgrep, fd, bat |
 
-Extracts: subcommands, flags (long/short), positional args, types, defaults, enum values, descriptions.
+Extracts: subcommands, flags (long/short), positional args, types, defaults, enum values, descriptions. Each extracted flag also records a `confidence` level (`verified` > `high` > `medium` > `low`) reflecting how many independent sources (parsers, man page, overlay) agree on it.
 
 ### Tier 2: Man Page Enrichment
 
-Parses `man <tool>` output to supplement Tier 1:
+Parses `man <tool>` output — both GNU (`OPTIONS` section) and BSD (options listed inside `DESCRIPTION`) layouts:
 
 - **DESCRIPTION section**: Enriches commands that have sparse descriptions (< 20 chars).
-- **OPTIONS section**: Extracts flag descriptions and merges into flags that have sparse descriptions (< 10 chars) from Tier 1.
+- **OPTIONS section**: Contributes flags directly to `global_flags` (not just enrichment) — this is what makes tools whose `--help` is a single bundled usage line (most BSD/macOS built-ins) scan to a full flag list instead of zero.
+- **EXAMPLES section**: Hand-written invocations are extracted into `ScannedCLITool.examples` / `CommandContract.examples` — the only human-reviewed usage a scan can reach, since flag parsing alone can't say which flag combinations make sense together.
 
 ### Tier 3: Shell Completion Discovery
 
@@ -278,7 +282,33 @@ git remote --help   → discovers: add, remove, show, ...
 
 ### Caching
 
-Scan results are cached in `~/.apexe/cache/`. Cache is keyed by tool name + version. Use `--no-cache` to force a fresh scan.
+Scan results are cached in `~/.apexe/cache/`. Cache entries are keyed by tool name + **variant** + version (`<name>@<variant>_<version>.scan.json`), so a machine with both BSD `/bin/ls` and Homebrew's GNU `ls` caches them separately instead of one overwriting the other. Use `--no-cache` to force a fresh scan.
+
+### 6.4 Tool Variant Detection
+
+Every scan probes the binary (`<binary> --version`) and classifies it into `ScannedCLITool.variant`:
+
+| Variant | Example |
+|---------|---------|
+| `bsd` | macOS system `/bin/ls`, `/usr/bin/grep` |
+| `gnu` | Linux coreutils, Homebrew GNU tools on macOS |
+| `apple` | Apple-authored ports (`sort`, `git` shipped with Xcode CLT) |
+| `busybox` | BusyBox-based Linux (Alpine, embedded) |
+| `unknown` | Version probe inconclusive |
+
+The same command name can be a different program depending on the host, and BSD/GNU/Apple builds of the same tool frequently expose different flag sets — variant detection is what lets a scan (and a matching overlay, see below) pick the right one.
+
+### 6.5 Tool Overlays
+
+An overlay is a curated, human-reviewed description of one tool variant, keyed by `(command, variant, version_range)`. 42 ship built in, covering the 21-command POSIX core (`cat chmod cp cut df diff du find grep head ln ls mkdir mv rm sort tail touch uniq wc xargs`) across their BSD/GNU/Apple variants.
+
+- **`mode: authoritative`** replaces the scan result for that command entirely.
+- **`mode: merge`** keeps the scan as the base and only overrides the flags the overlay declares — a gap in the overlay degrades to the scanner's answer instead of erasing a real flag.
+- **`confidence: verified`** requires a `provenance` block (platform, version, source document, date) recording how the overlay was checked; the schema rejects a `verified` overlay without it.
+- Overlays are the only source that can express `conflicts_with` (mutually exclusive flags) and `long_running` (a flag that may block indefinitely, e.g. `tail -f`) — no `--help`/man format expresses either machine-readably.
+- Overlays can also override behavioral annotations (`readonly`/`destructive`/`idempotent`/`requires_approval`) for a specific command.
+
+Load additional overlays with `apexe scan <tool> --overlay <PATH>` (JSON or YAML, repeatable) or by dropping files under `~/.apexe/overlays/`. The format is defined by `schemas/tool-overlay.schema.json`. See [`docs/overlays.md`](overlays.md) for the full authoring and verification procedure — writing a `verified` overlay from memory instead of a real installation is exactly what it warns against.
 
 ---
 
@@ -347,6 +377,10 @@ Certain flags escalate the annotation regardless of command name:
 | `--dry-run`, `--check`, `--diff`, `--noop`, `--simulate`, `--whatif`, `--plan` | `idempotent = true` |
 
 **Example**: `git push` has flag `--force`, so it gets `requires_approval = true` even though "push" is not in the destructive list.
+
+### Risk / `open_world`
+
+Risk is derived from annotations plus an `open_world` signal — the executable itself (`curl`, `wget`, `ssh`, `scp`, `rsync`, …) or a networked subcommand of an otherwise local tool (`push`, `pull`, `fetch`, `clone`, `deploy`, `login`, …). Precedence when a command matches more than one: `destructive` > `open-world` > `readonly`. This is name-based, so it's a floor rather than a guarantee — an overlay's `annotation_overrides` is the way to assert the truth for a specific tool that doesn't fit the pattern.
 
 ---
 

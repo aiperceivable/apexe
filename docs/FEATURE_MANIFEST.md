@@ -4,12 +4,12 @@
 
 **apexe** -- Outside-In CLI-to-Agent Bridge. Automatically wraps CLI tools into governed apcore modules, served via MCP/A2A.
 
-**Version:** 0.3.0 — Full apcore ecosystem integration (MCP + A2A).
+**Version:** 0.5.0 — Full apcore ecosystem integration (MCP + A2A) plus curated tool overlays and variant-aware scanning.
 
-**Status:** All features implemented. 407 tests passing, 0 failures. ~11,300 LOC Rust.
+**Status:** All features implemented. 584 tests passing, 0 failures.
 
 > The section headings below tagged "(v0.1.0 …)" record when each piece first
-> landed; the crate is now **0.3.0**. For the authoritative current state see
+> landed; the crate is now **0.5.0**. For the authoritative current state see
 > [`CHANGELOG.md`](../CHANGELOG.md) and [`docs/user-manual.md`](user-manual.md).
 
 ## Architecture (v0.1.0)
@@ -113,6 +113,15 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 - `AuditManager`: wraps `apcore_cli::AuditLogger`, JSONL append-only with SHA-256 hashing; records executions and ACL allow/deny decisions (log `0o600`)
 - Subprocess isolation: always-on in `module/executor.rs` — env scrubbing, no-shell argv, output cap, timeout + `kill_on_drop` (no separate SandboxManager)
 
+## Tool Overlays & Variant Detection (v0.4.0, extended in v0.5.0)
+
+- **Variant detection**: every scan probes the binary (`<binary> --version`) and classifies it as `bsd`, `gnu`, `apple`, `busybox` or `unknown`, surfaced as `ScannedCLITool.variant`. Same command name, different implementation (macOS `/bin/ls` vs. Homebrew GNU `ls`) now yields different, correct results instead of one overwriting the other in cache.
+- **Curated overlays**: a reviewed description of one `(command, variant, version_range)`, matched by `probe` > `platform` + `binary_globs` > `platform` alone. `mode: authoritative` replaces the scan surface; `mode: merge` overrides matching flags on top of the scan. 42 ship built in, covering the 21-command POSIX core across BSD/GNU/Apple variants. `~/.apexe/overlays/*.{json,yaml}` and `apexe scan --overlay <PATH>` add more. Format defined by `schemas/tool-overlay.schema.json`. See [`docs/overlays.md`](overlays.md) for the authoring/verification procedure.
+- **Provenance requirement**: an overlay at `confidence: verified` must record how it was checked (platform, version, source document, date); the schema rejects a `verified` overlay without it.
+- **Per-flag confidence/sources**: every `ScannedFlag` records which tiers produced it plus a derived trust level (`verified` > `high` > `medium` > `low`).
+- **Man page `EXAMPLES` extraction** (v0.5.0): `ScannedCLITool.examples` / `CommandContract.examples` carry hand-written invocations pulled from a tool's man page.
+- **`open_world` inference** (v0.5.0, breaking): risk annotation is inferred from the executable and networked subcommand names instead of being hardcoded, so `Risk::OpenWorld` is now actually emitted (e.g. `curl`, `git push`/`pull`/`clone`).
+
 ## Key Rust Crates
 
 | Crate | Purpose |
@@ -135,4 +144,5 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 
 1. **A2A protocol** -- Implemented in 0.3.0 (`apexe a2a`, `A2aServerBuilder`).
 2. **CLI rewiring completion** -- `apexe scan` fully rewired; `apexe serve` uses McpServerBuilder.
-3. **`apexe evo`** -- Deferred. Depends on apevo product maturity.
+3. **Tool overlays & variant detection** -- Implemented in 0.4.0; man page examples and `open_world` inference added in 0.5.0.
+4. **`apexe evo`** -- Deferred. Depends on apevo product maturity.
