@@ -7,15 +7,29 @@ use crate::models::{ScannedFlag, StructuredOutputInfo};
 /// Known JSON-output flag patterns, compiled once (the scan hot path calls
 /// `detect` per subcommand; recompiling these every call is wasteful).
 ///
+/// Every pattern requires the word `json` on the same line as the flag, because
+/// the flag alone does not mean the tool emits JSON: `tar --format` selects an
+/// archive format (`ustar`, `pax`, `cpio`) and `tar -j` selects bzip2
+/// compression, yet a bare `--format` or `-j` pattern matched both and tagged
+/// `tar` as structured-output — telling an agent it could request JSON from a
+/// command that has never emitted any.
+///
+/// The line is the unit rather than the token immediately after the flag,
+/// because a help entry names the value separately from the choices:
+/// `--format string   Output format (json, text)`. `[^\n]*` keeps that a match
+/// while `tar`'s bare `--format <format>` stays out.
+///
+/// `-j` is dropped entirely: across CLIs it means "jobs" or "bzip2" far more
+/// often than JSON, so it cannot carry the claim by itself.
+///
 /// INVARIANT: every pattern is a compile-time constant known to be a valid
 /// regex, so `Regex::new` never fails here.
 static JSON_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
     [
-        (r"--format\b", "--format json"),
-        (r"--output-format\b", "--output-format json"),
-        (r"-o\s+json\b|--output\s+json\b", "-o json"),
+        (r"--format[^\n]*\bjson\b", "--format json"),
+        (r"--output-format[^\n]*\bjson\b", "--output-format json"),
+        (r"-o[^\n]*\bjson\b|--output[^\n]*\bjson\b", "-o json"),
         (r"--json\b", "--json"),
-        (r"-j\b", "-j"),
     ]
     .into_iter()
     .map(|(pattern, flag)| (Regex::new(pattern).expect("valid static regex"), flag))
@@ -154,5 +168,37 @@ mod tests {
         let info = detector.detect(&[], "  --format string  Output format (json, text)");
         assert!(info.supported);
         assert_eq!(info.flag.as_deref(), Some("--format json"));
+    }
+
+    #[test]
+    fn test_format_flag_without_json_is_not_structured_output() {
+        // `tar --format` selects an archive format. Claiming structured output
+        // here tells an agent it can ask for JSON from a command that emits none.
+        let detector = StructuredOutputDetector;
+        let info = detector.detect(
+            &[],
+            "  --format <format>  Archive format (ustar, pax, cpio)",
+        );
+        assert!(!info.supported);
+    }
+
+    #[test]
+    fn test_short_j_flag_is_not_structured_output() {
+        // `-j` is bzip2 for tar and "jobs" for make; it never implies JSON.
+        let detector = StructuredOutputDetector;
+        let info = detector.detect(&[], "  -j, --bzip2   Compress with bzip2");
+        assert!(!info.supported);
+    }
+
+    #[test]
+    fn test_json_on_another_line_does_not_bind_to_the_flag() {
+        // A tool that merely mentions JSON somewhere in its help does not thereby
+        // gain a `--format json`.
+        let detector = StructuredOutputDetector;
+        let info = detector.detect(
+            &[],
+            "  --format <format>  Archive format\n\n  Reads JSON manifests.",
+        );
+        assert!(!info.supported);
     }
 }

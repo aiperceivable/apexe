@@ -54,14 +54,16 @@ impl ManPageParser {
         let text = strip_overstrike(&raw);
         let description = extract_man_description(&text);
         let flags = extract_man_options(&text);
+        let examples = extract_man_examples(&text, tool_name);
 
-        if description.is_empty() && flags.is_empty() {
+        if description.is_empty() && flags.is_empty() && examples.is_empty() {
             return None;
         }
 
         Some(ParsedHelp {
             description,
             flags,
+            examples,
             ..Default::default()
         })
     }
@@ -115,6 +117,85 @@ pub fn extract_man_description(text: &str) -> String {
     }
 
     lines.join(" ").chars().take(200).collect()
+}
+
+/// Most examples kept from one page, and the longest single example kept.
+///
+/// A man page lists a handful of illustrative invocations, so a page offering
+/// far more than this is being misread, and an example far longer than this is
+/// a wrapped paragraph rather than a command.
+const MAX_MAN_EXAMPLES: usize = 20;
+const MAX_MAN_EXAMPLE_LEN: usize = 300;
+
+/// Extract example invocations from a man page's `EXAMPLES` section.
+///
+/// These are the only hand-written, human-reviewed usages a scan can reach: the
+/// help text lists what the flags *are*, while `EXAMPLES` shows which
+/// combinations actually make sense together. That is what a caller needs to
+/// use the tool, and no amount of flag parsing recovers it.
+///
+/// Two layouts appear, so both are matched:
+///   * a shell prompt — `$ grep -w 'patricia' myfile` (`ls`, `grep`)
+///   * a bare invocation — `tar -czf file.tar.gz source.c` (`tar`, `find`)
+///
+/// A bare invocation is only accepted when it starts with the tool's own name,
+/// which is what separates a command from the prose describing it — every one
+/// of these pages interleaves the two.
+pub fn extract_man_examples(text: &str, tool_name: &str) -> Vec<String> {
+    let Some(body) = section_body(text, "EXAMPLES") else {
+        return Vec::new();
+    };
+    let mut examples: Vec<String> = Vec::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        let candidate = if let Some(rest) = trimmed.strip_prefix("$ ") {
+            rest.trim()
+        } else if trimmed == tool_name
+            || trimmed
+                .strip_prefix(tool_name)
+                .is_some_and(|rest| rest.starts_with(char::is_whitespace))
+        {
+            trimmed
+        } else {
+            continue;
+        };
+        if candidate.is_empty() || candidate.len() > MAX_MAN_EXAMPLE_LEN {
+            continue;
+        }
+        let candidate = candidate.to_string();
+        if !examples.contains(&candidate) {
+            examples.push(candidate);
+        }
+        if examples.len() >= MAX_MAN_EXAMPLES {
+            break;
+        }
+    }
+    examples
+}
+
+/// The body of a top-level man section, or `None` when the page has no such
+/// section. Section headers sit at column zero; everything until the next one
+/// belongs to the section.
+fn section_body<'a>(text: &'a str, header: &str) -> Option<&'a str> {
+    let mut start: Option<usize> = None;
+    let mut offset = 0usize;
+    for line in text.lines() {
+        let line_start = offset;
+        offset += line.len() + 1;
+        match start {
+            None => {
+                if line.trim() == header {
+                    start = Some(offset.min(text.len()));
+                }
+            }
+            Some(begin) => {
+                if is_section_header(line) {
+                    return Some(&text[begin..line_start.min(text.len())]);
+                }
+            }
+        }
+    }
+    start.map(|begin| &text[begin.min(text.len())..])
 }
 
 /// Extract flags from a man page's option list.
@@ -384,6 +465,96 @@ OPTIONS
         assert!(parser
             .parse_man_page("zzz_no_such_tool_xyz_12345")
             .is_none());
+    }
+
+    #[test]
+    fn test_extract_man_examples_shell_prompt_layout() {
+        // The `ls`/`grep` layout: prose, then the command behind a `$` prompt.
+        let man_text = "\
+EXAMPLES
+     List the contents of the current working directory in long format:
+
+           $ ls -l
+
+     Show inode numbers as well:
+
+           $ ls -lioF
+
+SEE ALSO
+     chflags(1)
+";
+        assert_eq!(
+            extract_man_examples(man_text, "ls"),
+            vec!["ls -l".to_string(), "ls -lioF".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_extract_man_examples_bare_invocation_layout() {
+        // The `tar`/`find` layout: no prompt, the command indented under prose.
+        let man_text = "\
+EXAMPLES
+     The following creates a new archive called file.tar.gz:
+           tar -czf file.tar.gz source.c source.h
+
+     To view a detailed table of contents for this archive:
+           tar -tvf file.tar.gz
+
+SEE ALSO
+";
+        assert_eq!(
+            extract_man_examples(man_text, "tar"),
+            vec![
+                "tar -czf file.tar.gz source.c source.h".to_string(),
+                "tar -tvf file.tar.gz".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extract_man_examples_skips_the_prose() {
+        // Every one of these pages interleaves description with commands; only
+        // the tool's own name separates the two in the bare layout.
+        let man_text = "\
+EXAMPLES
+     The following creates a new archive called file.tar.gz that contains two
+     files source.c and source.h:
+           tar -czf file.tar.gz source.c source.h
+";
+        assert_eq!(
+            extract_man_examples(man_text, "tar"),
+            vec!["tar -czf file.tar.gz source.c source.h".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_extract_man_examples_stops_at_the_next_section() {
+        let man_text = "\
+EXAMPLES
+     $ ls -l
+
+SEE ALSO
+     $ ls -Z
+";
+        assert_eq!(
+            extract_man_examples(man_text, "ls"),
+            vec!["ls -l".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_extract_man_examples_absent_section() {
+        let man_text = "DESCRIPTION\n     A tool.\n\nSEE ALSO\n     other(1)\n";
+        assert!(extract_man_examples(man_text, "tool").is_empty());
+    }
+
+    #[test]
+    fn test_extract_man_examples_deduplicates() {
+        let man_text = "EXAMPLES\n     $ ls -l\n\n     $ ls -l\n";
+        assert_eq!(
+            extract_man_examples(man_text, "ls"),
+            vec!["ls -l".to_string()]
+        );
     }
 
     #[test]

@@ -340,10 +340,19 @@ impl ScanOrchestrator {
         let Some(man_help) = self.man_parser.parse_man_page(lookup_name) else {
             return;
         };
-        if man_help.description.is_empty() && man_help.flags.is_empty() {
+        if man_help.description.is_empty()
+            && man_help.flags.is_empty()
+            && man_help.examples.is_empty()
+        {
             return;
         }
         tool.scan_tier = tool.scan_tier.max(2);
+
+        // Only the man page carries hand-written examples, so there is nothing
+        // to merge against — Tier 1 never produces any for these tools.
+        if !man_help.examples.is_empty() && tool.examples.is_empty() {
+            tool.examples.clone_from(&man_help.examples);
+        }
 
         if !man_help.description.is_empty() {
             // The man page DESCRIPTION is the authoritative tool-level summary,

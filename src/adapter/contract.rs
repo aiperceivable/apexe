@@ -35,6 +35,18 @@ pub struct CommandContract {
     pub input_schema: JsonValue,
     /// JSON Schema for the command's output.
     pub output_schema: JsonValue,
+    /// Hand-written example invocations, verbatim from the man page.
+    ///
+    /// Command lines rather than structured inputs, deliberately: an example
+    /// like `find / \! -name "*.c" -print` does not survive being parsed back
+    /// into schema fields, and a consumer that guessed at one would produce a
+    /// call the tool rejects. The schema states what *can* be passed; these
+    /// state what a human actually passes, which is the part flag parsing
+    /// cannot recover.
+    ///
+    /// Defaulted on deserialize so reports written before this field still load.
+    #[serde(default)]
+    pub examples: Vec<String>,
 }
 
 /// The machine-readable envelope emitted by `apexe scan --format json|yaml`.
@@ -66,6 +78,16 @@ impl CommandContract {
             risk: risk_from_annotations(module.annotations.as_ref()),
             input_schema: module.input_schema.clone(),
             output_schema: module.output_schema.clone(),
+            // The converter stores each man-page invocation as a `ModuleExample`
+            // title with no structured `inputs`, so the title is the whole
+            // example. Without this the flattened contract silently lost the
+            // examples that the generated binding carried.
+            examples: module
+                .examples
+                .iter()
+                .map(|example| example.title.clone())
+                .filter(|title| !title.is_empty())
+                .collect(),
         }
     }
 }
@@ -82,11 +104,15 @@ fn command_from_module_id(module_id: &str) -> String {
 
 /// Collapse behavioral annotations into a single risk class.
 ///
-/// `open_world` is not consulted: the CLI adapter sets it unconditionally, so
-/// it carries no signal here.
+/// Destructive outranks open-world: irreversibility is the property a consumer
+/// must gate on first, and a command that is both is already the stricter case.
+/// Open-world outranks readonly, because `curl` reading a URL still crosses a
+/// trust boundary — that is what a credential gate and a network-denying sandbox
+/// key on, and calling it readonly would hide it from both.
 fn risk_from_annotations(annotations: Option<&ModuleAnnotations>) -> Risk {
     match annotations {
         Some(annotations) if annotations.destructive => Risk::Destructive,
+        Some(annotations) if annotations.open_world => Risk::OpenWorld,
         Some(annotations) if annotations.readonly => Risk::Readonly,
         _ => Risk::Write,
     }
@@ -110,11 +136,22 @@ mod tests {
         module
     }
 
+    /// `open_world` is set explicitly rather than defaulted: apcore's default is
+    /// `true` (MCP's conservative `openWorldHint`), which would make every
+    /// fixture here an open-world command and hide what these cases assert.
     fn annotations(readonly: bool, destructive: bool) -> ModuleAnnotations {
         ModuleAnnotations {
             readonly,
             destructive,
+            open_world: false,
             ..Default::default()
+        }
+    }
+
+    fn open_world_annotations() -> ModuleAnnotations {
+        ModuleAnnotations {
+            open_world: true,
+            ..annotations(false, false)
         }
     }
 
@@ -142,6 +179,33 @@ mod tests {
             risk_from_annotations(Some(&annotations(true, true))),
             Risk::Destructive
         );
+    }
+
+    #[test]
+    fn test_risk_open_world() {
+        // The class exists so a consumer can demand a credential boundary and
+        // refuse to run the command in a local sandbox. It was never emitted
+        // while `open_world` was hardcoded true and therefore ignored here.
+        assert_eq!(
+            risk_from_annotations(Some(&open_world_annotations())),
+            Risk::OpenWorld
+        );
+    }
+
+    #[test]
+    fn test_risk_destructive_wins_over_open_world() {
+        let mut annotations = open_world_annotations();
+        annotations.destructive = true;
+        assert_eq!(risk_from_annotations(Some(&annotations)), Risk::Destructive);
+    }
+
+    #[test]
+    fn test_risk_open_world_wins_over_readonly() {
+        // `curl` reading a URL still crosses a trust boundary; reporting it as
+        // readonly would hide it from the gate that exists for exactly that.
+        let mut annotations = open_world_annotations();
+        annotations.readonly = true;
+        assert_eq!(risk_from_annotations(Some(&annotations)), Risk::OpenWorld);
     }
 
     #[test]

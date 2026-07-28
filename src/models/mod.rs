@@ -244,6 +244,14 @@ pub struct ScannedCLITool {
     /// invoked directly rather than through a subcommand.
     #[serde(default)]
     pub positional_args: Vec<ScannedArg>,
+    /// Example invocations of the tool itself, from its man page `EXAMPLES`.
+    ///
+    /// The only hand-written usages a scan can reach: help text lists what the
+    /// flags are, while `EXAMPLES` shows which combinations make sense together.
+    /// Tool-level, like `positional_args`, so they reach the synthesized root
+    /// command; a subcommand's own examples live on its `ScannedCommand`.
+    #[serde(default)]
+    pub examples: Vec<String>,
     /// Global structured output capability.
     pub structured_output: StructuredOutputInfo,
     /// Behavioral annotations asserted by an overlay, overriding inference.

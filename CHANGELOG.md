@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
+## [0.5.0] - 2026-07-28
+
+### Added
+- **Man page `EXAMPLES` are extracted** — `ScannedCLITool.examples` and `CommandContract.examples` now carry the hand-written invocations from a tool's man page: `ls` yields 3, `find` 9, `tar` 10 and `grep` 13, where every tool previously yielded 0. This is the only human-reviewed usage a scan can reach — help text lists what the flags *are*, while `EXAMPLES` shows which combinations make sense together, and no amount of flag parsing recovers that. Both man layouts are matched: a shell prompt (`$ grep -w 'patricia' myfile`, used by `ls` and `grep`) and a bare invocation (`tar -czf file.tar.gz source.c`, used by `tar` and `find`). A bare invocation is accepted only when it starts with the tool's own name, which is what separates a command from the prose describing it — every one of these pages interleaves the two. Kept as command lines rather than parsed into structured inputs, deliberately: `find / \! -name "*.c" -print` does not survive being parsed back into schema fields, and a consumer that guessed at one would emit a call the tool rejects.
+- **`CommandContract.examples`** — the flattened contract dropped the examples the generated binding carried, so one scan described the same command differently depending on which output a consumer read.
+
+### Fixed
+- **BREAKING: `open_world` is inferred rather than asserted.** It was hardcoded `true` for every command, which left the annotation carrying no signal at all: `ls` and `curl` were indistinguishable, `risk_from_annotations` had to ignore the field (its own doc comment said so), and **`Risk::OpenWorld` was therefore never emitted by any scan** — a declared risk class no output could contain. A consumer gating on the boundary (demanding a declared credential, or refusing to run a networked command in a local sandbox) had nothing to gate on. Two signals now: the executable itself (`curl`, `wget`, `ssh`, `scp`, `sftp`, `rsync`, `nc`, `telnet`, `ftp`, …), and networked subcommands of otherwise local tools (`push`, `pull`, `fetch`, `clone`, `publish`, `install`, `deploy`, `login`, …). `git` scans to 4 `open-world`, 7 `readonly`, 127 `write` and 4 `destructive` commands where every one was previously alike. Name-based, so it is a floor rather than a guarantee — a tool that opens a socket under an unremarkable name is not caught, and an overlay's `annotation_overrides` remains the way to state the truth for a specific one.
+- **BREAKING: `risk` consumes `open_world`.** `curl`, `wget` and `ssh` report `open-world` where they reported `write`. Destructive outranks open-world, because irreversibility is what a consumer must gate on first; open-world outranks readonly, because `curl` reading a URL still crosses a trust boundary, and reporting it as readonly hides it from the gate that exists for exactly that.
+- **`--format` and `-j` no longer imply JSON output.** The structured-output regex fallback matched a bare `--format` or `-j` anywhere in help text, so `tar` was tagged `structured-output` — telling an agent it could request JSON from a command that has never emitted any. `tar --format` selects an archive format (`ustar`, `pax`, `cpio`) and `tar -j` selects bzip2 compression. Every pattern now requires the word `json` on the same line as the flag, which keeps the Cobra-style `--format string   Output format (json, text)` matching while dropping `tar`'s bare `--format <format>`. `-j` is removed entirely: across CLIs it means "jobs" or "bzip2" far more often than JSON.
+
+---
+
 ## [0.4.0] - 2026-07-28
 
 ### Added

@@ -19,6 +19,35 @@ const IDEMPOTENT_PATTERNS: &[&str] = &[
     "get", "list", "show", "status", "info", "describe", "version", "help", "check",
 ];
 
+/// Executables whose whole purpose is to reach another host.
+///
+/// Matched on the executable rather than the subcommand, because for these there
+/// is no local-only invocation to distinguish.
+const OPEN_WORLD_TOOLS: &[&str] = &[
+    "curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "netcat", "telnet", "ftp", "http",
+    "httpie", "wscat",
+];
+
+/// Subcommands that reach the network on an otherwise local tool.
+///
+/// `git` is local until it is `git push`, and the same split holds for package
+/// managers and container tools, so this is matched on the subcommand name.
+const OPEN_WORLD_SUBCOMMANDS: &[&str] = &[
+    "push",
+    "pull",
+    "fetch",
+    "clone",
+    "publish",
+    "upload",
+    "download",
+    "install",
+    "uninstall",
+    "deploy",
+    "sync",
+    "login",
+    "logout",
+];
+
 /// Flags that escalate a command to requires_approval even if the command name
 /// is not in DESTRUCTIVE_PATTERNS.
 const APPROVAL_FLAGS: &[&str] = &[
@@ -46,6 +75,37 @@ const IDEMPOTENT_FLAGS: &[&str] = &[
     "--whatif",
     "--plan",
 ];
+
+/// Whether this command reaches outside the machine.
+///
+/// Previously hardcoded to `true`, which made the annotation carry no signal at
+/// all: `ls` and `curl` were indistinguishable, `risk_from_annotations` had to
+/// ignore the field, and `Risk::OpenWorld` was therefore never emitted. A
+/// consumer that gates on the boundary — demanding a declared credential, or
+/// refusing to execute a networked command in a local sandbox — was left with
+/// nothing to gate on.
+///
+/// Two signals, because networking sits at two different levels: the executable
+/// itself (`curl`), or one subcommand of an otherwise local tool (`git push`).
+/// Name-based, so it is a floor rather than a guarantee — a tool that opens a
+/// socket under an unremarkable name is not caught, and an overlay's
+/// `annotation_overrides` remains the way to state the truth for a specific one.
+fn infer_open_world(command: &ScannedCommand) -> bool {
+    let executable = command
+        .full_command
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_lowercase();
+    if OPEN_WORLD_TOOLS.iter().any(|tool| executable == *tool) {
+        return true;
+    }
+    let name_lower = command.name.to_lowercase();
+    OPEN_WORLD_SUBCOMMANDS.iter().any(|sub| name_lower == *sub)
+}
 
 /// Infer behavioral annotations from command name and flags.
 pub fn infer(command: &ScannedCommand) -> ModuleAnnotations {
@@ -82,7 +142,7 @@ pub fn infer(command: &ScannedCommand) -> ModuleAnnotations {
         destructive,
         idempotent,
         requires_approval,
-        open_world: true,
+        open_world: infer_open_world(command),
         streaming: false,
         cacheable,
         cache_ttl: 0,
@@ -112,6 +172,49 @@ mod tests {
             structured_output: StructuredOutputInfo::default(),
             raw_help: String::new(),
         }
+    }
+
+    fn make_command_for(full_command: &str) -> ScannedCommand {
+        let name = full_command
+            .split_whitespace()
+            .last()
+            .unwrap_or(full_command);
+        ScannedCommand {
+            full_command: full_command.to_string(),
+            ..make_command_named(name)
+        }
+    }
+
+    #[test]
+    fn test_open_world_is_inferred_not_asserted() {
+        // Hardcoding this to `true` made `ls` and `curl` indistinguishable, so
+        // nothing downstream could gate on the boundary.
+        assert!(!infer(&make_command_for("ls")).open_world);
+        assert!(!infer(&make_command_for("cat")).open_world);
+        assert!(!infer(&make_command_for("git add")).open_world);
+    }
+
+    #[test]
+    fn test_open_world_networked_executable() {
+        for executable in ["curl", "wget", "ssh", "scp", "rsync"] {
+            assert!(
+                infer(&make_command_for(executable)).open_world,
+                "{executable} reaches another host"
+            );
+        }
+    }
+
+    #[test]
+    fn test_open_world_executable_is_matched_by_basename() {
+        assert!(infer(&make_command_for("/usr/bin/curl")).open_world);
+    }
+
+    #[test]
+    fn test_open_world_networked_subcommand_of_a_local_tool() {
+        // `git` is local until it is `git push`.
+        assert!(infer(&make_command_for("git push")).open_world);
+        assert!(infer(&make_command_for("git clone")).open_world);
+        assert!(!infer(&make_command_for("git commit")).open_world);
     }
 
     #[test]

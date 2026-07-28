@@ -278,7 +278,9 @@ fn synthesize_root_command(tool: &ScannedCLITool) -> ScannedCommand {
         // the generated input schema.
         positional_args: tool.positional_args.clone(),
         subcommands: vec![],
-        examples: vec![],
+        // Same reasoning as positional_args: the man page's EXAMPLES describe
+        // invoking the tool itself, so they belong to the root command.
+        examples: tool.examples.clone(),
         help_format: HelpFormat::Unknown,
         structured_output: tool.structured_output.clone(),
         raw_help: String::new(),
