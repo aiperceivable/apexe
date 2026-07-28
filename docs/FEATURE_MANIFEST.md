@@ -60,7 +60,7 @@ src/
 └── scanner/         3-tier deterministic CLI scanner engine
     ├── orchestrator  ScanOrchestrator (top-level coordinator)
     ├── pipeline      ParserPipeline (priority-based parser selection)
-    ├── parsers/      GNU, Click, Cobra, Clap format parsers
+    ├── parsers/      BSD Usage, GNU, Click, Cobra, Clap format parsers
     ├── discovery     SubcommandDiscovery (recursive subcommand scanning)
     ├── cache         ScanCache (JSON filesystem caching)
     └── resolver      ToolResolver (binary path + version + format detection)
@@ -81,7 +81,7 @@ src/
 ### Scanner Engine (preserved from v0.1.x)
 Three-tier deterministic scanner with plugin system:
 
-1. **Tier 1 -- `--help` parser** (4 built-in parsers: GNU, Click, Cobra, Clap)
+1. **Tier 1 -- `--help` parser** (5 built-in parsers: BSD Usage, GNU, Click, Cobra, Clap)
 2. **Tier 2 -- Man page parser** (DESCRIPTION extraction)
 3. **Tier 3 -- Shell completion parser** (zsh/bash subcommand discovery)
 
