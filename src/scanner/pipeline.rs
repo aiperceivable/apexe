@@ -13,6 +13,7 @@ impl ParserPipeline {
     /// If `plugins` is None, only built-in parsers are loaded.
     pub fn new(plugins: Option<Vec<Box<dyn CliParser>>>) -> Self {
         let mut parsers: Vec<Box<dyn CliParser>> = vec![
+            Box::new(super::parsers::man_help::ManHelpParser),
             Box::new(super::parsers::bsd_usage::BsdUsageParser),
             Box::new(super::parsers::gnu::GnuHelpParser),
             Box::new(super::parsers::click::ClickHelpParser),
@@ -55,8 +56,16 @@ impl ParserPipeline {
         for parser in &self.parsers {
             if parser.can_parse(&normalized, tool_name) {
                 match parser.parse(&normalized, tool_name) {
-                    Ok(result) => {
+                    Ok(mut result) => {
                         info!(parser = parser.name(), "Parsed help text");
+                        // Applied here rather than inside each parser: every
+                        // format has option lines whose value placeholder its
+                        // regex does not anticipate, and a flag that takes a
+                        // value but is typed boolean is unusable in both
+                        // directions. See `value_placeholder`.
+                        super::parsers::value_placeholder::recover_values_from_descriptions(
+                            &mut result.flags,
+                        );
                         return result;
                     }
                     Err(e) => {
@@ -130,7 +139,7 @@ mod tests {
     #[test]
     fn test_pipeline_new_builtin_count() {
         let pipeline = ParserPipeline::new(None);
-        assert_eq!(pipeline.parser_count(), 5);
+        assert_eq!(pipeline.parser_count(), 6);
     }
 
     #[test]
@@ -142,7 +151,7 @@ mod tests {
             fail: false,
         });
         let pipeline = ParserPipeline::new(Some(vec![plugin]));
-        assert_eq!(pipeline.parser_count(), 6);
+        assert_eq!(pipeline.parser_count(), 7);
     }
 
     #[test]

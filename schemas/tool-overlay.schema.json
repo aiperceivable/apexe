@@ -264,7 +264,12 @@
         "type": { "$ref": "#/$defs/valueType", "default": "unknown" },
         "description": { "type": "string" },
         "required": { "type": "boolean", "default": false },
-        "variadic": { "type": "boolean", "default": false }
+        "variadic": { "type": "boolean", "default": false },
+        "before_flags": {
+          "description": "Render this operand before the command's flags rather than after. The default matches the usual `tool [options] operands` grammar. Set it for a `find`-shaped grammar — `find path ... [expression]` — where the options are per-file predicates that must follow the operands: `find -name '*.txt' dir` is rejected outright (\"illegal option -- n\") while `find dir -name '*.txt'` works. Not derivable from a scan, because the usage line does not say which of a tool's options live in the trailing operand slot: find's predicates are documented in PRIMARIES, not in the synopsis. Stated here or not at all.",
+          "type": "boolean",
+          "default": false
+        }
       }
     },
     "annotations": {

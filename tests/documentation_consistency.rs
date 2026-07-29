@@ -18,14 +18,14 @@ fn feature_manifest_lists_every_builtin_parser() {
     let parser_count = apexe::scanner::ParserPipeline::new(None).parser_count();
     let manifest = include_str!("../docs/FEATURE_MANIFEST.md");
     let expected_inventory =
-        format!("({parser_count} built-in parsers: BSD Usage, GNU, Click, Cobra, Clap)");
+        format!("({parser_count} built-in parsers: Man, BSD Usage, GNU, Click, Cobra, Clap)");
 
     assert!(
         manifest.contains(&expected_inventory),
         "feature manifest must match the runtime parser inventory: {expected_inventory}"
     );
     assert!(
-        manifest.contains("BSD Usage, GNU, Click, Cobra, Clap format parsers"),
-        "feature manifest module map must include the BSD Usage parser"
+        manifest.contains("Man, BSD Usage, GNU, Click, Cobra, Clap format parsers"),
+        "feature manifest module map must include every built-in parser"
     );
 }

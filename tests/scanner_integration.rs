@@ -124,6 +124,59 @@ fn test_scan_docker() {
     );
 }
 
+/// Regression (#20): scan the real `find` on this host, build its module the
+/// way `apexe scan` does, and run it.
+///
+/// This is deliberately end to end. `find`'s predicates render correctly as
+/// strings under any ordering, so a string assertion on the argv proves
+/// nothing — the defect was that `find -name '*.txt' dir` is *rejected by the
+/// binary* ("illegal option -- n" on BSD, "paths must precede expression" on
+/// GNU). Only executing it can tell the two apart.
+#[tokio::test]
+async fn test_find_predicates_render_after_the_path() {
+    use apcore::Module;
+    use apexe::adapter::CliToolConverter;
+    use apexe::module::CliModule;
+
+    let (tmp, config) = test_config();
+    let sandbox = tmp.path().join("sandbox");
+    std::fs::create_dir_all(&sandbox).unwrap();
+    std::fs::write(sandbox.join("wanted.txt"), b"x").unwrap();
+    std::fs::write(sandbox.join("ignored.log"), b"x").unwrap();
+
+    let orchestrator = ScanOrchestrator::new(config);
+    let tools = orchestrator
+        .scan(&["find".into()], true, 1)
+        .expect("find should scan");
+    let modules = CliToolConverter::new().convert(&tools[0]);
+    let module = CliModule::from_scanned(&modules[0], 10_000).expect("binding should parse");
+
+    let result = module
+        .execute(
+            serde_json::json!({
+                "path": [sandbox.to_str().unwrap()],
+                "name": "*.txt",
+            }),
+            &apcore::Context::anonymous(),
+        )
+        .await
+        .expect("find should execute");
+
+    assert_eq!(
+        result["exit_code"], 0,
+        "find rejected the rendered argv: {result}"
+    );
+    let stdout = result["stdout"].as_str().unwrap_or_default();
+    assert!(
+        stdout.contains("wanted.txt"),
+        "the predicate did not take effect: {result}"
+    );
+    assert!(
+        !stdout.contains("ignored.log"),
+        "the predicate was not applied: {result}"
+    );
+}
+
 // T46: Graceful degradation test
 #[test]
 fn test_graceful_degradation() {

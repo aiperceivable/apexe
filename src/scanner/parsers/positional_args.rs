@@ -126,15 +126,24 @@ pub fn extract_args_from_usage_line(line: &str) -> Vec<ScannedArg> {
         if is_option_value {
             continue;
         }
+        let name = normalize_name(&cap[1]);
+        // `git log [<options>] [<revision-range>] ...` names its option group
+        // in the same angle-bracket syntax as a real operand. Reporting
+        // `options` as a positional would put a bare `options` token on the
+        // command line, which no tool accepts.
+        if is_option_group_word(&name) {
+            continue;
+        }
 
         found.push((
             whole.start(),
             ScannedArg {
-                name: normalize_name(&cap[1]),
+                name,
                 description: String::new(),
                 value_type: ValueType::String,
                 required: bracket_depth_before(line, whole.start()) <= 0,
                 variadic: cap.get(2).is_some(),
+                before_flags: false,
             },
         ));
     }
@@ -174,6 +183,7 @@ pub fn extract_args_from_usage_line(line: &str) -> Vec<ScannedArg> {
                 // Bracketed by construction, hence optional.
                 required: false,
                 variadic,
+                before_flags: false,
             },
         ));
     }
@@ -206,6 +216,7 @@ pub fn extract_args_from_usage_line(line: &str) -> Vec<ScannedArg> {
                 value_type: ValueType::String,
                 required: bracket_depth_before(line, whole.start()) <= 0,
                 variadic: cap.get(2).is_some(),
+                before_flags: false,
             },
         ));
     }

@@ -82,6 +82,7 @@ mod tests {
                 value_type: crate::models::ValueType::Path,
                 required: true,
                 variadic: false,
+                before_flags: false,
             }],
             subcommand_names: vec!["sub1".into()],
             examples: vec!["$ tool --verbose file.txt".into()],

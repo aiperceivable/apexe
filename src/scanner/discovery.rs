@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use tracing::warn;
 
+use super::man_page::strip_overstrike;
 use super::pipeline::ParserPipeline;
 use crate::models::ScannedCommand;
 
@@ -83,6 +84,13 @@ impl<'a> SubcommandDiscovery<'a> {
     /// Run `<tool> <subcommand...> --help` and capture output.
     ///
     /// Returns stdout if non-empty, falls back to stderr, or None if both empty.
+    ///
+    /// The captured text is passed through [`strip_overstrike`] because several
+    /// tools delegate `--help` to their man page: `git log --help` runs `man
+    /// git-log`, whose output carries nroff overstrike sequences (`l\x08l`).
+    /// That text is stored verbatim as the module's `documentation`, so leaving
+    /// it encoded makes the field both unreadable and roughly twice its needed
+    /// size — and no parser recognizes a section header spelled `N\x08NA\x08AME`.
     pub fn run_help(&self, tool_name: &str, full_cmd: &[String]) -> Option<String> {
         let mut args: Vec<&str> = full_cmd[1..].iter().map(|s| s.as_str()).collect();
         args.push("--help");
@@ -93,14 +101,15 @@ impl<'a> SubcommandDiscovery<'a> {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
         // Some tools output help to stderr
-        if stdout.trim().is_empty() && !stderr.trim().is_empty() {
-            Some(stderr)
+        let text = if stdout.trim().is_empty() && !stderr.trim().is_empty() {
+            stderr
         } else if !stdout.trim().is_empty() {
-            Some(stdout)
+            stdout
         } else {
             warn!(command = %full_cmd.join(" "), "Empty help output");
-            None
-        }
+            return None;
+        };
+        Some(strip_overstrike(&text).into_owned())
     }
 }
 
@@ -140,6 +149,27 @@ mod tests {
         let result = discovery.run_help("echo", &["echo".into(), "hello".into()]);
         // echo will output "hello --help" to stdout
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_run_help_strips_man_page_overstrike() {
+        // `git log --help` delegates to `man git-log`, whose output encodes bold
+        // as `l\x08l`. That text is stored as the module's `documentation`, so
+        // it has to be collapsed at the point of capture. `printf` stands in for
+        // a tool that pipes its man page out.
+        let pipeline = ParserPipeline::new(None);
+        let discovery = SubcommandDiscovery::new(&pipeline, 2, std::time::Duration::from_secs(5));
+        let result = discovery
+            .run_help(
+                "printf",
+                &["printf".into(), "N\\bNA\\bAM\\bME\\bE\\n".into()],
+            )
+            .expect("printf writes to stdout");
+        assert!(
+            result.contains("NAME"),
+            "overstrike not collapsed: {result:?}"
+        );
+        assert!(!result.contains('\u{8}'), "backspace survived: {result:?}");
     }
 
     #[test]

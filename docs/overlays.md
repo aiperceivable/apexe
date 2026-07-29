@@ -402,6 +402,54 @@ tool you have not checked.
 
 ---
 
+## Operand placement
+
+Almost every tool's grammar is `tool [options] operands`, and the renderer
+emits operands after the flags. `find` inverts it: its grammar is `find path
+... [expression]`, and its predicates are spelled like options (`-name`,
+`-type`) but are evaluated per file, so they must follow the paths. Rendering
+`find -name '*.txt' dir` is not merely unconventional — both variants reject it
+outright:
+
+```
+/usr/bin/find: illegal option -- n                       # BSD, exit 1
+find: paths must precede expression: `/t'                 # GNU findutils, exit 1
+```
+
+A positional arg therefore carries a boolean:
+
+```json
+{ "name": "path", "type": "path", "variadic": true, "before_flags": true, "description": "..." }
+```
+
+It reaches `ScannedArg.before_flags` and then the emitted contract, as
+`x-apexe-operand-position: "before-flags"` on that property. The executor
+renders marked operands ahead of every flag and unmarked ones after, each group
+still ordered by its recorded index — which is why placement is a separate
+keyword rather than a sign on the index: `find` has one operand on each side of
+the flags and both need their relative order kept.
+
+Three rules for setting it:
+
+- **It belongs to an operand, not to the flags.** `find`'s constraint is on
+  where the paths go, not on any one of its 98 primaries. Marking the operand
+  once is both correct and the only thing that scales.
+- **It is not derivable, so it is stated or it is absent.** The usage line
+  gives the operand order but never says which of a tool's options live inside
+  the trailing operand slot — `find`'s predicates are documented in PRIMARIES,
+  not in the synopsis. There is deliberately no heuristic for this; a scan
+  without an overlay keeps the ordinary trailing-operand behaviour.
+- **Check it by running the binary, both ways.** The wrong ordering fails
+  loudly for `find`, which makes it cheap to verify and worth doing rather than
+  reasoning from the synopsis.
+
+Set today on exactly two operands, both verified against the real binaries:
+`find@bsd`'s `path` and `find@gnu`'s `path`. `xargs`, `nice`, `env`, `timeout`
+and `sudo` all place an operand before a trailing command and may need the same
+treatment — do not guess at a tool you have not checked.
+
+---
+
 ## Open design questions
 
 Deferred deliberately — recorded here so they are decided once, on evidence,

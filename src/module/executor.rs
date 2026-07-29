@@ -119,12 +119,23 @@ fn json_value_to_string(value: &Value) -> String {
     }
 }
 
+/// Where an operand sits relative to the command's flags.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OperandPlacement {
+    /// After every flag — the `tool [options] operands` grammar, and the default.
+    AfterFlags,
+    /// Before every flag — the `find path ... [expression]` grammar, where the
+    /// options are per-file predicates that must follow the paths.
+    BeforeFlags,
+}
+
 /// How a single input property is spelled on the command line.
 enum ArgForm {
     /// Passed behind a flag token, e.g. `-l` or `--output FILE`.
     Flag(String),
-    /// Passed bare, at the given index among the command's operands.
-    Positional(u64),
+    /// Passed bare, at the given index among the command's operands, on the
+    /// stated side of the flags.
+    Positional(u64, OperandPlacement),
 }
 
 /// Decide how `key` is spelled, from the `x-apexe-*` annotations the scanner
@@ -143,7 +154,16 @@ fn arg_form(schema: Option<&Value>, key: &str) -> ArgForm {
         .and_then(|p| p.get("x-apexe-positional"))
         .and_then(Value::as_u64)
     {
-        return ArgForm::Positional(index);
+        let placement = match property
+            .and_then(|p| p.get("x-apexe-operand-position"))
+            .and_then(Value::as_str)
+        {
+            Some("before-flags") => OperandPlacement::BeforeFlags,
+            // Absent or unrecognized keeps the prior behaviour, which is right
+            // for every tool whose grammar is `tool [options] operands`.
+            _ => OperandPlacement::AfterFlags,
+        };
+        return ArgForm::Positional(index, placement);
     }
 
     if let Some(literal) = property
@@ -220,15 +240,64 @@ fn reject_conflicting_flags(
     Ok(())
 }
 
+/// Refuse to emit a bare flag token for an option the schema says takes a value.
+///
+/// A bare `--proxy` is not a no-op: the tool reads whatever argv token comes
+/// next as its value, so `{"proxy": true, "connect_timeout": true}` rendered
+/// `--proxy --connect-timeout` and curl dialled a proxy named
+/// `--connect-timeout`. That is the failure mode `x-apexe-conflicts-with`
+/// exists to prevent — an invocation that runs, and does something the caller
+/// never asked for — reached here from the renderer's own output rather than
+/// from the caller's key order.
+///
+/// Schema validation upstream rejects a boolean for a `string` property, so in
+/// the served path this never fires. It is the backstop for the paths that do
+/// not validate first — `preview`, and bindings whose schema was generated
+/// before an option's value placeholder was recognized.
+#[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+fn reject_bare_flag_for_value_option(
+    input_schema: Option<&Value>,
+    key: &str,
+    literal: &str,
+) -> Result<(), ModuleError> {
+    let declared_type = input_schema
+        .and_then(|s| s.get("properties"))
+        .and_then(|p| p.get(key))
+        .and_then(|p| p.get("type"))
+        .and_then(Value::as_str);
+
+    // Only a stated non-boolean scalar type is treated as "takes a value".
+    // An absent type, or `array`, says nothing either way and is left alone.
+    if matches!(
+        declared_type,
+        Some("string" | "number" | "integer") // array/object/absent are not a claim about arity
+    ) {
+        return Err(ModuleError::new(
+            ErrorCode::GeneralInvalidInput,
+            format!(
+                "Parameter '{key}' takes a value, so it cannot be sent as `true`: \
+                 '{literal}' would be rendered bare and the wrapped command would \
+                 read the next argument as its value"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Build CLI args from JSON kwargs, spelling each one the way `input_schema`
 /// says the wrapped tool accepts it.
 ///
 /// Bool `true` emits the bare flag, `false` and null are skipped, and an array
 /// repeats the flag once per element. Values marked `x-apexe-positional` are
-/// emitted bare, after every flag and ordered by their recorded index — an
-/// input object has no ordering of its own, so without that index `cp source
-/// target` would depend on the order the caller happened to write the JSON
-/// keys in.
+/// emitted bare and ordered by their recorded index — an input object has no
+/// ordering of its own, so without that index `cp source target` would depend
+/// on the order the caller happened to write the JSON keys in.
+///
+/// Operands go after the flags unless the schema says otherwise. It says
+/// otherwise for `find`, whose grammar is `find path ... [expression]`: its
+/// predicates are spelled like options but are evaluated per file, so
+/// `find -name '*.txt' dir` is rejected outright ("illegal option -- n") while
+/// `find dir -name '*.txt'` works. See `x-apexe-operand-position`.
 #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
 pub fn build_arguments(
     kwargs: &serde_json::Map<String, Value>,
@@ -237,9 +306,10 @@ pub fn build_arguments(
     reject_conflicting_flags(kwargs, input_schema)?;
 
     let mut flags: Vec<String> = Vec::new();
-    // (index, values) -- sorted before being appended, so operands land in the
-    // order the usage line declared regardless of JSON key order.
-    let mut operands: Vec<(u64, Vec<String>)> = Vec::new();
+    // (index, values) -- each list is sorted before being appended, so operands
+    // land in the order the usage line declared regardless of JSON key order.
+    let mut leading_operands: Vec<(u64, Vec<String>)> = Vec::new();
+    let mut trailing_operands: Vec<(u64, Vec<String>)> = Vec::new();
 
     for (key, value) in kwargs {
         let form = arg_form(input_schema, key);
@@ -250,6 +320,7 @@ pub fn build_arguments(
         if let Value::Bool(enabled) = value {
             if let ArgForm::Flag(ref literal) = form {
                 if *enabled {
+                    reject_bare_flag_for_value_option(input_schema, key, literal)?;
                     flags.push(literal.clone());
                 }
             }
@@ -285,19 +356,30 @@ pub fn build_arguments(
                     rendered.push(literal.clone());
                     rendered.push(text);
                 }
-                ArgForm::Positional(_) => rendered.push(text),
+                ArgForm::Positional(..) => rendered.push(text),
             }
         }
 
         match form {
             ArgForm::Flag(_) => flags.extend(rendered),
-            ArgForm::Positional(index) => operands.push((index, rendered)),
+            ArgForm::Positional(index, OperandPlacement::BeforeFlags) => {
+                leading_operands.push((index, rendered));
+            }
+            ArgForm::Positional(index, OperandPlacement::AfterFlags) => {
+                trailing_operands.push((index, rendered));
+            }
         }
     }
 
-    operands.sort_by_key(|(index, _)| *index);
-    let mut args = flags;
-    args.extend(operands.into_iter().flat_map(|(_, values)| values));
+    leading_operands.sort_by_key(|(index, _)| *index);
+    trailing_operands.sort_by_key(|(index, _)| *index);
+
+    let mut args: Vec<String> = leading_operands
+        .into_iter()
+        .flat_map(|(_, values)| values)
+        .collect();
+    args.extend(flags);
+    args.extend(trailing_operands.into_iter().flat_map(|(_, values)| values));
     Ok(args)
 }
 
@@ -512,6 +594,127 @@ mod tests {
         kwargs.insert("all".to_string(), json!(false));
         let args = build_arguments(&kwargs, None).unwrap();
         assert!(args.is_empty());
+    }
+
+    #[test]
+    fn test_build_arguments_places_marked_operands_before_flags() {
+        // Regression (#20): `find` renders as `find path ... [expression]`, so
+        // its predicates must follow the paths. Rendering `-name '*.txt' dir`
+        // is rejected by the binary with "illegal option -- n", which made all
+        // 98 of cli.find's predicate properties unusable.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "array",
+                    "x-apexe-positional": 0,
+                    "x-apexe-operand-position": "before-flags"
+                },
+                "expression": { "type": "array", "x-apexe-positional": 1 },
+                "name": { "type": "string", "x-apexe-flag": "-name" },
+            }
+        });
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("name".to_string(), json!("*.txt"));
+        kwargs.insert("path".to_string(), json!(["sandbox"]));
+
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            vec!["sandbox", "-name", "*.txt"]
+        );
+    }
+
+    #[test]
+    fn test_build_arguments_keeps_unmarked_operands_after_flags() {
+        // The default must not move: `tool [options] operands` is the grammar
+        // of nearly everything else, and `ls -l dir` would break if it did.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "file": { "type": "array", "x-apexe-positional": 0 },
+                "l": { "type": "boolean", "x-apexe-flag": "-l" },
+            }
+        });
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("file".to_string(), json!(["dir"]));
+        kwargs.insert("l".to_string(), json!(true));
+
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            vec!["-l", "dir"]
+        );
+    }
+
+    #[test]
+    fn test_build_arguments_orders_operands_on_both_sides_of_the_flags() {
+        // `find` has one operand on each side, and each side keeps its own
+        // declared order — which is why placement is a separate keyword rather
+        // than a sign on the index.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "root": {
+                    "type": "string",
+                    "x-apexe-positional": 1,
+                    "x-apexe-operand-position": "before-flags"
+                },
+                "start": {
+                    "type": "string",
+                    "x-apexe-positional": 0,
+                    "x-apexe-operand-position": "before-flags"
+                },
+                "tail": { "type": "string", "x-apexe-positional": 0 },
+                "v": { "type": "boolean", "x-apexe-flag": "-v" },
+            }
+        });
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("tail".to_string(), json!("last"));
+        kwargs.insert("root".to_string(), json!("second"));
+        kwargs.insert("v".to_string(), json!(true));
+        kwargs.insert("start".to_string(), json!("first"));
+
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            vec!["first", "second", "-v", "last"]
+        );
+    }
+
+    #[test]
+    fn test_build_arguments_rejects_true_for_a_value_taking_option() {
+        // Regression (#21): `--proxy` typed boolean rendered a bare `--proxy`,
+        // and curl read the *next* flag as the proxy address. A flag that takes
+        // a value has no bare spelling, so `true` has to fail rather than
+        // render something the caller did not ask for.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "proxy": { "type": "string", "x-apexe-flag": "--proxy" },
+                "connect_timeout": { "type": "number", "x-apexe-flag": "--connect-timeout" },
+            }
+        });
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("proxy".to_string(), json!(true));
+        kwargs.insert("connect_timeout".to_string(), json!(true));
+
+        let err = build_arguments(&kwargs, Some(&schema))
+            .expect_err("a value-taking option must not render bare");
+        assert_eq!(err.code, ErrorCode::GeneralInvalidInput);
+        assert!(
+            err.message.contains("takes a value"),
+            "unhelpful message: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_build_arguments_still_renders_declared_boolean_flags() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "verbose": { "type": "boolean", "x-apexe-flag": "-v" } }
+        });
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("verbose".to_string(), json!(true));
+        assert_eq!(build_arguments(&kwargs, Some(&schema)).unwrap(), vec!["-v"]);
     }
 
     #[test]

@@ -53,7 +53,11 @@ impl ManPageParser {
         let raw = String::from_utf8_lossy(&output.stdout);
         let text = strip_overstrike(&raw);
         let description = extract_man_description(&text);
-        let flags = extract_man_options(&text);
+        let mut flags = extract_man_options(&text);
+        // Same repair the parser pipeline applies to `--help` output: an option
+        // whose value placeholder ended up at the head of its description takes
+        // a value, and must not be typed boolean.
+        crate::scanner::parsers::value_placeholder::recover_values_from_descriptions(&mut flags);
         let examples = extract_man_examples(&text, tool_name);
 
         if description.is_empty() && flags.is_empty() && examples.is_empty() {
@@ -171,6 +175,88 @@ pub fn extract_man_examples(text: &str, tool_name: &str) -> Vec<String> {
         }
     }
     examples
+}
+
+/// Whether `text` is a man page rather than ordinary `--help` output.
+///
+/// Several tools delegate `--help` to their man page — `git log --help` runs
+/// `man git-log` — so the text a scan captures for a subcommand can be either
+/// shape, and the wrong parser extracts nothing at all from it.
+///
+/// Both `NAME` and `SYNOPSIS` are required, at column zero. Requiring both is
+/// what keeps ordinary help text out: a `--help` listing may well contain the
+/// word SYNOPSIS in prose, but the pair as unindented section headers is
+/// specific to a roff page.
+pub fn is_man_page(text: &str) -> bool {
+    let mut has_name = false;
+    let mut has_synopsis = false;
+    for line in text.lines() {
+        if !is_section_header(line) {
+            continue;
+        }
+        match line.trim() {
+            "NAME" => has_name = true,
+            "SYNOPSIS" => has_synopsis = true,
+            _ => {}
+        }
+        if has_name && has_synopsis {
+            return true;
+        }
+    }
+    false
+}
+
+/// The one-line summary a man page's `NAME` section states, without the
+/// `command - ` prefix that section always carries.
+///
+/// `NAME` is where a page says what the command *is* in one sentence
+/// ("git-log - Show commit logs"). `DESCRIPTION` opens with prose that reads
+/// poorly as a module description, so this is preferred when present.
+pub fn extract_man_summary(text: &str) -> String {
+    let Some(body) = section_body(text, "NAME") else {
+        return String::new();
+    };
+    let Some(line) = body.lines().map(str::trim).find(|line| !line.is_empty()) else {
+        return String::new();
+    };
+    // The separator is an ASCII hyphen surrounded by spaces; a hyphen inside
+    // the command name (`git-log`) has none, which is what distinguishes them.
+    match line.split_once(" - ") {
+        Some((_, summary)) => summary.trim().to_string(),
+        None => line.to_string(),
+    }
+}
+
+/// The first invocation form from a man page's `SYNOPSIS`, unwrapped onto one
+/// line.
+///
+/// Only the first form is returned. A page listing several — `git checkout` has
+/// six — describes alternatives, and merging their operands yields an argument
+/// list that no single invocation accepts. The first form is the canonical one.
+///
+/// Wrapped continuations are joined: a form too long for the page width is
+/// broken across lines indented further than the form's own first line.
+pub fn extract_man_synopsis(text: &str) -> String {
+    let Some(body) = section_body(text, "SYNOPSIS") else {
+        return String::new();
+    };
+    let mut lines = body
+        .lines()
+        .skip_while(|line| line.trim().is_empty())
+        .peekable();
+    let Some(first) = lines.next() else {
+        return String::new();
+    };
+    let base_indent = indent_width(first);
+    let mut form = first.trim().to_string();
+    for line in lines {
+        if line.trim().is_empty() || indent_width(line) <= base_indent {
+            break;
+        }
+        form.push(' ');
+        form.push_str(line.trim());
+    }
+    form
 }
 
 /// The body of a top-level man section, or `None` when the page has no such
@@ -307,31 +393,84 @@ fn flush_flag(
 /// Parse the flag names, value placeholder, and any same-line description from
 /// one option line (already trimmed).
 ///
-/// Handles alias lists (`-a, --all`), inline values (`--color=when`), and
-/// separate value placeholders (`-D format`, `-o FILE`).
+/// Handles alias lists (`-a, --all`), inline values (`--color=when`), separate
+/// value placeholders (`-D format`, `-o FILE`), and the optional-value form
+/// `--exec-path[=<path>]`.
 fn parse_flag_line(trimmed: &str) -> FlagLine {
     let tokens: Vec<&str> = trimmed.split_whitespace().collect();
     let mut short_name: Option<String> = None;
     let mut long_name: Option<String> = None;
     let mut value_name: Option<String> = None;
+    let mut value_optional = false;
     let mut consumed = 0;
 
     while consumed < tokens.len() {
-        let token = tokens[consumed].trim_end_matches(',');
+        let raw = tokens[consumed];
+        let token = raw.trim_end_matches(',');
         if !token.starts_with('-') || token.len() < 2 {
+            // A detached value placeholder in the middle of an alias list:
+            // `-n <number>, --max-count=<number>`. The trailing comma is what
+            // says the list continues, and without consuming this token the
+            // scan stopped at `-n` and lost every long alias spelled this way.
+            // A placeholder *without* a comma is left to the post-loop check,
+            // which requires it to be the whole remainder — otherwise `-l list
+            // in long format` would read "list" as a value name.
+            let continues = raw.ends_with(',');
+            if continues && consumed > 0 && is_value_placeholder(token) {
+                if value_name.is_none() {
+                    value_name = Some(strip_placeholder_brackets(token));
+                }
+                consumed += 1;
+                continue;
+            }
             break;
         }
         let (name, inline_value) = match token.split_once('=') {
             Some((name, value)) => (name, Some(value)),
             None => (token, None),
         };
+        // `--exec-path[=<path>]` puts the bracket on the *name* side of the
+        // `=`. Left in place it produced a flag literally named `--exec-path[`
+        // and a schema property key ending in `[` — a token git rejects, and an
+        // awkward identifier for any consumer generating code from the schema.
+        // The bracket is the only thing distinguishing an optional value from a
+        // required one, so it is recorded rather than merely dropped.
+        let name = match name.strip_suffix('[') {
+            Some(stripped) => {
+                value_optional = true;
+                stripped
+            }
+            None => name,
+        };
         if let Some(value) = inline_value.filter(|value| !value.is_empty()) {
             value_name = Some(strip_placeholder_brackets(value));
         }
+        // A short option may carry its value attached with no separator at all:
+        // git spells `-n<num>`, `-S<string>`, `-G<regex>`, `-O<orderfile>`.
+        // Splitting at the placeholder is what keeps the property key `n`
+        // rather than `n<num>`.
+        let name = match name.split_once('<') {
+            Some((head, tail)) if !head.is_empty() => {
+                if value_name.is_none() {
+                    value_name = Some(strip_placeholder_brackets(tail));
+                }
+                head
+            }
+            _ => name,
+        };
+        let name = strip_optional_group(name);
+        if name.trim_start_matches('-').is_empty() {
+            // `--` on its own is the end-of-options marker, not an option, and
+            // it is documented in OPTIONS by several tools. `canonical_name`
+            // strips the dashes, so it used to reach the schema as a property
+            // whose key was the empty string.
+            consumed += 1;
+            continue;
+        }
         if name.starts_with("--") {
-            long_name = Some(name.to_string());
+            long_name = Some(name);
         } else if short_name.is_none() {
-            short_name = Some(name.to_string());
+            short_name = Some(name);
         }
         consumed += 1;
     }
@@ -343,10 +482,15 @@ fn parse_flag_line(trimmed: &str) -> FlagLine {
         inline_description = String::new();
     }
 
-    let value_type = if value_name.is_some() {
-        ValueType::String
-    } else {
-        ValueType::Boolean
+    // A placeholder states the value's shape as well as its existence:
+    // `--max-count=<number>` typed `string` rejects the `3` a caller naturally
+    // sends. Inference is shared with the pipeline's placeholder-recovery pass
+    // so both paths type the same wording the same way.
+    let value_type = match value_name.as_deref() {
+        Some(placeholder) => {
+            crate::scanner::parsers::value_placeholder::infer_value_type(placeholder)
+        }
+        None => ValueType::Boolean,
     };
 
     FlagLine {
@@ -360,6 +504,7 @@ fn parse_flag_line(trimmed: &str) -> FlagLine {
             enum_values: None,
             repeatable: false,
             value_name,
+            value_optional,
             ..Default::default()
         },
         inline_description,
@@ -390,6 +535,36 @@ fn is_value_placeholder(token: &str) -> bool {
 /// Strip the brackets conventionally wrapping a value placeholder.
 fn strip_placeholder_brackets(value: &str) -> String {
     value.trim_matches(['<', '>', '[', ']']).to_string()
+}
+
+/// Remove an optional segment written inside the option's own name, keeping the
+/// affirmative spelling: `--[no-]verify` becomes `--verify`, and
+/// `--reference[-if-able]` becomes `--reference`.
+///
+/// Left in place these produced property keys of `[no_]verify` and
+/// `reference[_if_able]` — names no caller can render back to a flag the tool
+/// accepts, and awkward identifiers for any consumer generating code from the
+/// schema.
+///
+/// The negated spelling `--no-verify` is a real flag that this notation also
+/// documents, and it is *not* emitted here: the parser produces one flag per
+/// option line, and manufacturing a second one is a change to that contract
+/// rather than a fix to a malformed name. It stays a known coverage gap.
+fn strip_optional_group(name: &str) -> String {
+    if !name.contains('[') {
+        return name.to_string();
+    }
+    let mut out = String::with_capacity(name.len());
+    let mut depth = 0u32;
+    for ch in name.chars() {
+        match ch {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -718,7 +893,10 @@ ENVIRONMENT
         let flags = extract_man_options(man_text);
         assert_eq!(flags.len(), 3);
         assert_eq!(flags[0].value_name.as_deref(), Some("FILE"));
-        assert_eq!(flags[0].value_type, ValueType::String);
+        // The placeholder states the value's shape as well as its existence.
+        assert_eq!(flags[0].value_type, ValueType::Path);
+        // An unrecognized placeholder stays a plain string rather than being
+        // guessed at, since a wrong type rejects a value the tool accepts.
         assert_eq!(flags[1].value_name.as_deref(), Some("format"));
         assert_eq!(flags[1].value_type, ValueType::String);
         assert!(flags[2].value_name.is_none());
@@ -732,6 +910,81 @@ ENVIRONMENT
         assert_eq!(flags.len(), 1);
         assert_eq!(flags[0].long_name.as_deref(), Some("--color"));
         assert_eq!(flags[0].value_name.as_deref(), Some("when"));
+    }
+
+    #[test]
+    fn test_extract_man_options_strips_optional_value_bracket() {
+        // Regression (#18): git's `--exec-path[=<path>]` produced a flag named
+        // `--exec-path[`, hence a schema property key ending in `[` — a token
+        // git rejects and an awkward identifier for a code generator.
+        let man_text =
+            "OPTIONS\n       --exec-path[=<path>]\n              Path to core programs.\n";
+        let flags = extract_man_options(man_text);
+        assert_eq!(flags.len(), 1);
+        assert_eq!(flags[0].long_name.as_deref(), Some("--exec-path"));
+        assert_eq!(flags[0].value_name.as_deref(), Some("path"));
+        assert_eq!(flags[0].canonical_name(), "exec_path");
+        assert!(
+            flags[0].value_optional,
+            "the bracket is the only marker of an optional value; dropping it loses the fact"
+        );
+    }
+
+    #[test]
+    fn test_extract_man_options_strips_optional_name_segment() {
+        // `--[no-]verify` and `--reference[-if-able]` produced the property keys
+        // `[no_]verify` and `reference[_if_able]`, neither of which renders back
+        // to a flag any tool accepts.
+        let man_text = "OPTIONS\n       --[no-]verify\n              Run hooks.\n\n       --reference[-if-able] <repo>\n              Reference repository.\n";
+        let flags = extract_man_options(man_text);
+        assert_eq!(flags.len(), 2);
+        assert_eq!(flags[0].long_name.as_deref(), Some("--verify"));
+        assert_eq!(flags[0].canonical_name(), "verify");
+        assert_eq!(flags[1].long_name.as_deref(), Some("--reference"));
+        assert_eq!(flags[1].canonical_name(), "reference");
+    }
+
+    #[test]
+    fn test_extract_man_options_splits_an_attached_short_value() {
+        // git spells `-n<num>`, `-S<string>`, `-G<regex>` with no separator.
+        let man_text = "OPTIONS\n       -n<num>\n              Limit output.\n\n       -S<string>\n              Search for string.\n";
+        let flags = extract_man_options(man_text);
+        assert_eq!(flags.len(), 2);
+        assert_eq!(flags[0].short_name.as_deref(), Some("-n"));
+        assert_eq!(flags[0].value_name.as_deref(), Some("num"));
+        assert_eq!(flags[0].canonical_name(), "n");
+        assert_eq!(flags[1].short_name.as_deref(), Some("-S"));
+        assert_eq!(flags[1].value_name.as_deref(), Some("string"));
+    }
+
+    #[test]
+    fn test_extract_man_options_parses_alias_after_a_detached_value() {
+        // `-n <number>, --max-count=<number>` stopped at `-n`, silently losing
+        // every long alias git spells this way.
+        let man_text =
+            "OPTIONS\n       -n <number>, --max-count=<number>\n              Limit commits.\n";
+        let flags = extract_man_options(man_text);
+        assert_eq!(flags.len(), 1);
+        assert_eq!(flags[0].short_name.as_deref(), Some("-n"));
+        assert_eq!(flags[0].long_name.as_deref(), Some("--max-count"));
+        assert_eq!(flags[0].value_name.as_deref(), Some("number"));
+    }
+
+    #[test]
+    fn test_extract_man_options_skips_the_end_of_options_marker() {
+        // A bare `--` is the end-of-options separator, not an option; it used to
+        // become a flag whose property key was the empty string.
+        let man_text = "OPTIONS\n       --\n              Do not interpret any more arguments as options.\n\n       --all\n              Everything.\n";
+        let flags = extract_man_options(man_text);
+        let names: Vec<&str> = flags
+            .iter()
+            .filter_map(|f| f.long_name.as_deref())
+            .collect();
+        assert_eq!(names, vec!["--all"]);
+        assert!(
+            flags.iter().all(|f| !f.canonical_name().is_empty()),
+            "a flag with no usable name must not reach the schema"
+        );
     }
 
     #[test]

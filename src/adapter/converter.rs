@@ -21,7 +21,6 @@ struct CommandFields {
     output_schema: serde_json::Value,
     annotations: ModuleAnnotations,
     documentation: Option<String>,
-    full_command: String,
     examples: Vec<String>,
 }
 
@@ -74,11 +73,9 @@ impl CliToolConverter {
         path: &[String],
         command_opt: Option<&&ScannedCommand>,
     ) -> ScannedModule {
-        let module_id = if path.is_empty() {
-            format!("{}.{}", self.namespace, tool.name)
-        } else {
-            format!("{}.{}.{}", self.namespace, tool.name, path.join("."))
-        };
+        let mut segments = vec![self.namespace.clone(), sanitize_id_segment(&tool.name)];
+        segments.extend(path.iter().map(|segment| sanitize_id_segment(segment)));
+        let module_id = segments.join(".");
 
         let fields = Self::extract_command_fields(tool, command_opt);
 
@@ -87,11 +84,14 @@ impl CliToolConverter {
 
         let tags = self.build_tags(tool, command_opt, help_format_name);
         // For root-only tools (no subcommands), target is just the binary path.
-        // For subcommands, include the command path (e.g., "exec:///usr/bin/git commit").
+        // For subcommands, append the subcommand path only (e.g.
+        // "exec:///usr/bin/git commit"). `fields.full_command` cannot be used
+        // here: it is the *full* invocation ("git commit"), so prefixing the
+        // binary path spelled the tool name twice and produced `git git commit`.
         let target = if path.is_empty() {
             format!("exec://{}", tool.binary_path)
         } else {
-            format!("exec://{} {}", tool.binary_path, fields.full_command)
+            format!("exec://{} {}", tool.binary_path, path.join(" "))
         };
         let version = tool
             .version
@@ -137,19 +137,34 @@ impl CliToolConverter {
         help_format_name: &str,
     ) -> HashMap<String, serde_json::Value> {
         let suggested_alias = if path.is_empty() {
-            tool.name.clone()
+            sanitize_id_segment(&tool.name)
         } else {
-            format!("{}_{}", tool.name, path.join("_"))
+            format!(
+                "{}_{}",
+                sanitize_id_segment(&tool.name),
+                path.iter()
+                    .map(|segment| sanitize_id_segment(segment))
+                    .collect::<Vec<_>>()
+                    .join("_")
+            )
         };
         let mut metadata = HashMap::new();
         metadata.insert("scan_tier".to_string(), json!(tool.scan_tier));
         metadata.insert("help_format".to_string(), json!(help_format_name));
         metadata.insert("binary_path".to_string(), json!(tool.binary_path));
         metadata.insert("suggested_alias".to_string(), json!(suggested_alias));
+        // The module id folds `-` to `_` to satisfy the apcore id grammar, so
+        // `git cat-file` is served as `cli.git.cat_file`. The hyphenated form is
+        // what argv needs and what a user searches for, and it is not
+        // recoverable from the id — an underscore is a legal subcommand
+        // character too. Record it rather than lose it.
+        let mut command_path = vec![tool.name.clone()];
+        command_path.extend(path.iter().cloned());
+        metadata.insert("command_path".to_string(), json!(command_path));
         metadata
     }
 
-    /// Extract description, schemas, annotations, docs, examples, and full_command from a command.
+    /// Extract description, schemas, annotations, docs, and examples from a command.
     fn extract_command_fields(
         tool: &ScannedCLITool,
         command_opt: Option<&&ScannedCommand>,
@@ -171,7 +186,6 @@ impl CliToolConverter {
                 output_schema: schema::build_output_schema(command),
                 annotations: apply_annotation_overrides(annotations::infer(command), tool),
                 documentation,
-                full_command: command.full_command.clone(),
                 examples: command.examples.clone(),
             }
         } else {
@@ -191,7 +205,6 @@ impl CliToolConverter {
                 output_schema: schema::build_output_schema(&synth),
                 annotations: apply_annotation_overrides(annotations::infer(&synth), tool),
                 documentation,
-                full_command: tool.name.clone(),
                 examples: synth.examples.clone(),
             }
         }
@@ -312,6 +325,42 @@ fn apply_annotation_overrides(
     annotations
 }
 
+/// Fold one command name into a segment the apcore module-id grammar accepts.
+///
+/// apcore requires `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`, and rejects
+/// anything else at *registration* time. Deriving the id straight from the
+/// command name therefore produced ids that a scan happily wrote to disk, that
+/// `apexe list` counted, and that the server then refused: 63 of git's 142
+/// subcommands — every hyphenated one, `cat-file` through `rev-parse` — were
+/// dropped with only a warning on stderr. Applying the charset here makes the
+/// generated surface and the served surface the same set.
+///
+/// The mapping is deliberately lossy and one-way: `-` becomes `_`, uppercase
+/// folds down, and any remaining out-of-charset byte becomes `_`. The command
+/// name as argv needs it is preserved in `metadata["command_path"]`, and
+/// collisions introduced by the folding (`cat-file` vs a hypothetical
+/// `cat_file`) are resolved downstream by [`deduplicate_ids`].
+fn sanitize_id_segment(name: &str) -> String {
+    let folded: String = name
+        .chars()
+        .map(|c| {
+            let lowered = c.to_ascii_lowercase();
+            if lowered.is_ascii_lowercase() || lowered.is_ascii_digit() {
+                lowered
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    // The grammar also requires a leading letter, which a subcommand such as
+    // `7z` or one folded down to `_x` would not have.
+    if folded.starts_with(|c: char| c.is_ascii_lowercase()) {
+        folded
+    } else {
+        format!("t{folded}")
+    }
+}
+
 /// Convert a HelpFormat variant to a lowercase tag string.
 fn help_format_to_tag(format: HelpFormat) -> &'static str {
     match format {
@@ -320,6 +369,7 @@ fn help_format_to_tag(format: HelpFormat) -> &'static str {
         HelpFormat::Argparse => "argparse",
         HelpFormat::Cobra => "cobra",
         HelpFormat::Clap => "clap",
+        HelpFormat::Man => "man",
         HelpFormat::Unknown => "unknown",
     }
 }
@@ -405,6 +455,7 @@ mod tests {
             value_type: crate::models::ValueType::Path,
             required: false,
             variadic: true,
+            before_flags: false,
         }];
         let modules = CliToolConverter::new().convert(&tool);
         let properties = modules[0].input_schema["properties"].as_object().unwrap();
@@ -494,14 +545,28 @@ mod tests {
     }
 
     #[test]
-    fn test_converter_preserves_unicode_tool_name() {
-        // F1 §5 edge: unicode in tool/command names is preserved in module_id.
+    fn test_converter_preserves_unicode_tool_name_outside_the_id() {
+        // F1 §5 edge. This used to assert that unicode survives *into* the
+        // module_id, which is the same defect as `cli.git.cat-file`: the apcore
+        // grammar is ASCII, so such an id is written, counted, and then refused
+        // at registration. The name is preserved — in metadata, where it does
+        // not have to satisfy a grammar — and the id is folded.
         let cmd = make_command("état", "café état");
         let tool = make_tool("café", vec![cmd]);
         let modules = CliToolConverter::new().convert(&tool);
 
         assert_eq!(modules.len(), 1);
-        assert_eq!(modules[0].module_id, "cli.café.état");
+        assert!(
+            apcore::module_id_pattern().is_match(&modules[0].module_id),
+            "unregistrable id: {}",
+            modules[0].module_id
+        );
+        assert_eq!(
+            modules[0].metadata.get("command_path"),
+            Some(&json!(["café", "état"])),
+            "the real command name must survive folding"
+        );
+        assert_eq!(modules[0].target, "exec:///usr/bin/café état");
     }
 
     #[test]
@@ -658,7 +723,56 @@ mod tests {
         let converter = CliToolConverter::new();
         let modules = converter.convert(&tool);
 
-        assert_eq!(modules[0].target, "exec:///usr/bin/mytool mytool list");
+        // The target is the binary plus the *subcommand* path. Asserting
+        // "mytool mytool list" here used to pin the `git git log` defect as
+        // correct behaviour; the argv it produced was rejected by every tool
+        // that has subcommands.
+        assert_eq!(modules[0].target, "exec:///usr/bin/mytool list");
+    }
+
+    #[test]
+    fn test_converter_nested_subcommand_target_keeps_full_path() {
+        let mut parent = make_command("remote", "mytool remote");
+        parent.subcommands = vec![make_command("add", "mytool remote add")];
+        let tool = make_tool("mytool", vec![parent]);
+        let modules = CliToolConverter::new().convert(&tool);
+
+        assert_eq!(modules[0].module_id, "cli.mytool.remote.add");
+        assert_eq!(modules[0].target, "exec:///usr/bin/mytool remote add");
+    }
+
+    #[test]
+    fn test_converter_hyphenated_subcommand_gets_registrable_id() {
+        // `git cat-file` produced `cli.git.cat-file`, which apcore rejects at
+        // registration; the module was written, counted by `apexe list`, and
+        // then silently never served.
+        let tool = make_tool("git", vec![make_command("cat-file", "git cat-file")]);
+        let modules = CliToolConverter::new().convert(&tool);
+
+        assert_eq!(modules[0].module_id, "cli.git.cat_file");
+        assert!(
+            apcore::module_id_pattern().is_match(&modules[0].module_id),
+            "generated id must satisfy the grammar apcore enforces at registration"
+        );
+        // argv still needs the hyphen, so the real name has to survive.
+        assert_eq!(
+            modules[0].target, "exec:///usr/bin/git cat-file",
+            "the folded id must not reach the command line"
+        );
+        assert_eq!(
+            modules[0].metadata.get("command_path"),
+            Some(&json!(["git", "cat-file"]))
+        );
+    }
+
+    #[test]
+    fn test_sanitize_id_segment_folds_out_of_charset_characters() {
+        assert_eq!(sanitize_id_segment("cat-file"), "cat_file");
+        assert_eq!(sanitize_id_segment("for-each-ref"), "for_each_ref");
+        assert_eq!(sanitize_id_segment("MyTool"), "mytool");
+        assert_eq!(sanitize_id_segment("plain"), "plain");
+        // A leading non-letter would still fail the grammar.
+        assert_eq!(sanitize_id_segment("7z"), "t7z");
     }
 
     #[test]

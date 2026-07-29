@@ -7,7 +7,6 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use apcore::middleware::circuit_breaker::CircuitBreakerMiddleware;
 use apcore::middleware::logging::LoggingMiddleware;
 use apcore::middleware::retry::{RetryConfig, RetryMiddleware};
 use apcore::registry::registry::ModuleDescriptor;
@@ -15,7 +14,7 @@ use apcore::{ApprovalHandler, Config, ErrorCode, Executor, ModuleError, Registry
 use apcore_mcp::{ApprovalStore, ElicitationApprovalHandler, StorageBackedApprovalHandler};
 use apcore_toolkit::ScannedModule;
 
-use crate::module::CliModule;
+use crate::module::{CliModule, HealthOnlyCircuitBreaker};
 use crate::output::load_modules_from_dir;
 
 /// Options controlling how the shared `Executor` is assembled.
@@ -31,7 +30,9 @@ pub struct ExecutorOptions<'a> {
     pub enable_approval: bool,
     /// Short-circuit calls to a (module, caller) pair after repeated
     /// failures, instead of letting every caller keep hammering a hanging
-    /// or broken CLI tool. See [`CircuitBreakerMiddleware`].
+    /// or broken CLI tool. Only failures that say the wrapped binary is
+    /// unhealthy count; a caller sending invalid arguments does not open a
+    /// circuit. See [`HealthOnlyCircuitBreaker`].
     pub enable_circuit_breaker: bool,
     /// Retry a call after a transient failure. Only ever fires on errors
     /// explicitly marked `retryable` — `CliModule` only does that for
@@ -86,9 +87,9 @@ pub fn build_executor(opts: &ExecutorOptions<'_>) -> Result<Arc<Executor>, Modul
     }
 
     if opts.enable_circuit_breaker {
-        let breaker = CircuitBreakerMiddleware::builder().build();
+        let breaker = HealthOnlyCircuitBreaker::with_defaults();
         if let Err(e) = executor.use_middleware(Box::new(breaker)) {
-            tracing::warn!(error = %e, "Failed to add CircuitBreakerMiddleware");
+            tracing::warn!(error = %e, "Failed to add HealthOnlyCircuitBreaker");
         }
     }
 

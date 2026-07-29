@@ -77,6 +77,9 @@ pub enum HelpFormat {
     Argparse,
     Cobra,
     Clap,
+    /// A roff man page, which is what several tools' `--help` actually prints:
+    /// `git log --help` runs `man git-log`.
+    Man,
     #[default]
     Unknown,
 }
@@ -106,6 +109,16 @@ pub struct ScannedFlag {
     pub repeatable: bool,
     /// Placeholder name for the value (e.g., "FILE", "NUM").
     pub value_name: Option<String>,
+    /// Whether the value may be omitted, as in `--exec-path[=<path>]`.
+    ///
+    /// Such a flag has two legal spellings — bare, and with a value attached by
+    /// `=` — and the difference is meaningful: `git --exec-path` prints the
+    /// path while `git --exec-path=<p>` sets it. The bracket in the help text
+    /// is the only thing that states this, so it is recorded here rather than
+    /// stripped and forgotten. Defaulted on deserialize so caches written
+    /// before the field existed still load.
+    #[serde(default)]
+    pub value_optional: bool,
     /// Whether this flag can make the command run until it is killed.
     ///
     /// The claim is "may not terminate on its own", not "always blocks":
@@ -171,6 +184,24 @@ pub struct ScannedArg {
     pub required: bool,
     /// Whether the argument accepts multiple values.
     pub variadic: bool,
+    /// Whether this operand must be rendered *before* the command's flags.
+    ///
+    /// The default — operands last — is right for the great majority of tools,
+    /// whose grammar is `tool [options] operands`. It is wrong for `find`,
+    /// whose grammar is `find path ... [expression]`: the predicates are
+    /// spelled like options (`-name`, `-type`) but are evaluated per file and
+    /// must follow the paths. Rendering `find -name '*.txt' dir` produces
+    /// "illegal option -- n", so every one of `find`'s 98 predicates is
+    /// unusable without this.
+    ///
+    /// The usage line states the ordering but does not state which of a tool's
+    /// options live in the trailing operand slot — `find`'s predicates are
+    /// documented in PRIMARIES, not in the synopsis — so this is not derivable
+    /// from a heuristic scan and is populated only by curated overlays.
+    /// Defaulted on deserialize so caches and bindings written before the field
+    /// existed still load, with the prior behaviour.
+    #[serde(default)]
+    pub before_flags: bool,
 }
 
 /// Information about a CLI tool's structured output capability.
@@ -595,6 +626,7 @@ mod tests {
             value_type: ValueType::Path,
             required: true,
             variadic: false,
+            before_flags: false,
         };
         let json = serde_json::to_string(&arg).unwrap();
         let back: ScannedArg = serde_json::from_str(&json).unwrap();
@@ -612,6 +644,7 @@ mod tests {
             value_type: ValueType::Path,
             required: false,
             variadic: true,
+            before_flags: false,
         };
         let json = serde_json::to_string(&arg).unwrap();
         let back: ScannedArg = serde_json::from_str(&json).unwrap();

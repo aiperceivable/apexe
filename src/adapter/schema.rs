@@ -100,7 +100,17 @@ fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
         return schema;
     }
 
-    let mut schema = json!({ "type": base_type });
+    // An optional-value flag has two legal spellings and the contract has to
+    // admit both, or one of them is unreachable: `git --exec-path` prints the
+    // exec path while `git --exec-path=<p>` sets it. `true` selects the bare
+    // form and a string supplies a value; the executor already renders long
+    // options as `--flag=value`, which is the spelling an optional value
+    // requires.
+    let mut schema = if flag.value_optional {
+        json!({ "type": [base_type, "boolean"], "x-apexe-value-optional": true })
+    } else {
+        json!({ "type": base_type })
+    };
 
     // Add format hints so AI agents can distinguish path/URI from plain strings
     match flag.value_type {
@@ -137,6 +147,12 @@ fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
 /// what order it goes in. Order is not recoverable at call time — an input
 /// object has no inherent ordering, and `cp source target` inverts its meaning
 /// if the two are swapped.
+///
+/// `x-apexe-operand-position` is emitted only for the minority of operands that
+/// precede the flags. It is a separate keyword rather than a negative index
+/// because the two orderings are independent: `find path ... [expression]` has
+/// one operand on each side of the flags, and both still need their relative
+/// order recorded.
 fn arg_to_schema(arg: &ScannedArg, index: usize) -> JsonValue {
     let base_type = value_type_to_json_schema(arg.value_type);
 
@@ -163,6 +179,9 @@ fn arg_to_schema(arg: &ScannedArg, index: usize) -> JsonValue {
         schema["description"] = json!(arg.description);
     }
     schema["x-apexe-positional"] = json!(index);
+    if arg.before_flags {
+        schema["x-apexe-operand-position"] = json!("before-flags");
+    }
 
     schema
 }
@@ -528,6 +547,7 @@ mod tests {
             value_type: ValueType::Path,
             required: true,
             variadic: false,
+            before_flags: false,
         };
         let cmd = make_command(vec![], vec![arg]);
         let schema = build_input_schema(&cmd, &[]);
@@ -545,6 +565,7 @@ mod tests {
             value_type: ValueType::String,
             required: false,
             variadic: true,
+            before_flags: false,
         };
         let cmd = make_command(vec![], vec![arg]);
         let schema = build_input_schema(&cmd, &[]);

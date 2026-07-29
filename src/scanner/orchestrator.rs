@@ -302,11 +302,14 @@ impl ScanOrchestrator {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
         // Some tools output help to stderr
-        if stdout.trim().is_empty() && !stderr.trim().is_empty() {
-            Ok(stderr)
+        let text = if stdout.trim().is_empty() && !stderr.trim().is_empty() {
+            stderr
         } else {
-            Ok(stdout)
-        }
+            stdout
+        };
+        // A tool whose `--help` delegates to its man page returns nroff
+        // overstrike sequences; see `SubcommandDiscovery::run_help`.
+        Ok(super::man_page::strip_overstrike(&text).into_owned())
     }
 
     /// Try expanded help variants: `--help all`, `-h`.
@@ -323,7 +326,7 @@ impl ScanOrchestrator {
                     stderr
                 };
                 if result.len() > 100 {
-                    return Ok(result);
+                    return Ok(super::man_page::strip_overstrike(&result).into_owned());
                 }
             }
         }

@@ -219,6 +219,160 @@ async fn test_mcp_tools_call_executes() {
     assert_eq!(result["exit_code"], 0);
 }
 
+/// Write a binding for a tool that has subcommands, produced the way `apexe
+/// scan` produces one. `/bin/echo` stands in for the wrapped binary so the
+/// argv the module builds is visible on stdout: whatever `echo` prints is
+/// exactly what was passed to it.
+fn write_converted_subcommand_binding(dir: &Path, subcommand: &str) -> String {
+    let tool = ScannedCLITool {
+        name: "echo".to_string(),
+        description: "Echo a message".to_string(),
+        binary_path: "/bin/echo".to_string(),
+        subcommands: vec![apexe::models::ScannedCommand {
+            name: subcommand.to_string(),
+            full_command: format!("echo {subcommand}"),
+            description: format!("Run {subcommand}"),
+            flags: vec![],
+            positional_args: vec![],
+            subcommands: vec![],
+            examples: vec![],
+            help_format: apexe::models::HelpFormat::Gnu,
+            structured_output: apexe::models::StructuredOutputInfo::default(),
+            raw_help: String::new(),
+        }],
+        ..Default::default()
+    };
+    let modules = CliToolConverter::new().convert(&tool);
+    let module_id = modules[0].module_id.clone();
+    YamlOutput::without_verification()
+        .write(&modules, dir, false)
+        .expect("binding should be written");
+    module_id
+}
+
+#[tokio::test]
+async fn test_subcommand_module_runs_the_subcommand_not_the_tool_name_twice() {
+    // Regression (#17): the target was built from `full_command`, which already
+    // carries the tool name, so `cli.git.log` ran `git git log`. A rendered
+    // target is not a running target — assert the argv the child actually
+    // received, not the string that produced it.
+    let dir = TempDir::new().unwrap();
+    let module_id = write_converted_subcommand_binding(dir.path(), "hello");
+    assert_eq!(module_id, "cli.echo.hello");
+
+    let executor = build_test_executor(dir.path());
+    let result = executor
+        .call(&module_id, json!({}), None, None)
+        .await
+        .expect("the subcommand module should execute");
+
+    assert_eq!(
+        result["stdout"].as_str().unwrap_or_default().trim(),
+        "hello",
+        "argv must be `<binary> <subcommand>`, with the tool name spelled once: {result}"
+    );
+    assert_eq!(result["exit_code"], 0);
+}
+
+#[tokio::test]
+async fn test_hyphenated_subcommand_registers_and_runs() {
+    // Regression (#19): `git cat-file` generated the id `cli.git.cat-file`,
+    // which apcore rejects at registration. The scan reported success and
+    // `apexe list` counted it, but the module never reached a client — 63 of
+    // git's 142 subcommands vanished this way. The id is now folded, and the
+    // hyphen still has to reach argv.
+    let dir = TempDir::new().unwrap();
+    let module_id = write_converted_subcommand_binding(dir.path(), "cat-file");
+    assert_eq!(module_id, "cli.echo.cat_file");
+
+    let executor = build_test_executor(dir.path());
+    assert!(
+        executor
+            .registry()
+            .get_definition(&module_id)
+            .expect("registry lookup should succeed")
+            .is_some(),
+        "a module the scan wrote must be a module the server serves"
+    );
+
+    let result = executor
+        .call(&module_id, json!({}), None, None)
+        .await
+        .expect("the hyphenated subcommand should execute");
+    assert_eq!(
+        result["stdout"].as_str().unwrap_or_default().trim(),
+        "cat-file",
+        "the folded id must not reach the command line: {result}"
+    );
+}
+
+/// Write an `/bin/echo`-backed binding whose two flags are declared mutually
+/// exclusive, so a caller can provoke the conflict refusal without the wrapped
+/// binary ever being spawned.
+fn write_conflicting_flags_binding(dir: &Path) {
+    let module = ScannedModule::new(
+        "cli.echo".to_string(),
+        "Echo a message".to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "l": { "type": "boolean", "x-apexe-flag": "-l", "x-apexe-conflicts-with": ["one"] },
+                "one": { "type": "boolean", "x-apexe-flag": "-1", "x-apexe-conflicts-with": ["l"] },
+                "message": { "type": "string" },
+            },
+            "additionalProperties": false
+        }),
+        json!({ "type": "object" }),
+        vec!["cli".to_string()],
+        "exec:///bin/echo".to_string(),
+    );
+    YamlOutput::without_verification()
+        .write(&[module], dir, false)
+        .expect("binding should be written");
+}
+
+#[tokio::test]
+async fn test_repeated_validation_refusals_do_not_trip_the_breaker() {
+    // Regression (#22): five conflict refusals opened the circuit for the whole
+    // module, and the next perfectly valid call was rejected with
+    // CircuitBreakerOpen. Schema trial-and-error is the normal behaviour of an
+    // LLM caller — an agent that reads a refusal and corrects itself is the
+    // success case, and doing it five times must not disable the tool.
+    let dir = TempDir::new().unwrap();
+    write_conflicting_flags_binding(dir.path());
+
+    let mut opts = exec_opts(dir.path());
+    opts.enable_circuit_breaker = true;
+    let executor = build_executor(&opts).expect("executor should build");
+
+    for _ in 0..5 {
+        let err = executor
+            .call("cli.echo", json!({ "l": true, "one": true }), None, None)
+            .await
+            .expect_err("conflicting flags must be refused");
+        assert_ne!(
+            err.code,
+            apcore::ErrorCode::CircuitBreakerOpen,
+            "a validation refusal must not become a breaker trip: {err:?}"
+        );
+    }
+
+    let result = executor
+        .call(
+            "cli.echo",
+            json!({ "message": "still_working" }),
+            None,
+            None,
+        )
+        .await
+        .expect("a valid call after five refusals must still execute");
+    assert_eq!(result["exit_code"], 0);
+    assert!(result["stdout"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("still_working"));
+}
+
 #[tokio::test]
 async fn test_mcp_tools_call_option_injection_blocked() {
     // A client-supplied value that the wrapped command would parse as an

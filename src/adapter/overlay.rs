@@ -212,6 +212,11 @@ pub struct OverlayFlag {
     pub default: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enum_values: Option<Vec<String>>,
+    /// Whether the value may be omitted, as in `--exec-path[=<path>]`.
+    ///
+    /// See [`ScannedFlag::value_optional`].
+    #[serde(default)]
+    pub value_optional: bool,
 }
 
 /// A curated positional argument definition.
@@ -226,6 +231,11 @@ pub struct OverlayArg {
     pub required: bool,
     #[serde(default)]
     pub variadic: bool,
+    /// Render this operand before the command's flags rather than after.
+    ///
+    /// Only `find`-shaped grammars need it: see [`ScannedArg::before_flags`].
+    #[serde(default)]
+    pub before_flags: bool,
 }
 
 /// Which document an overlay's flag list and descriptions were read out of.
@@ -734,6 +744,7 @@ impl OverlayFlag {
             enum_values: self.enum_values.clone(),
             repeatable: self.repeatable,
             value_name: self.value_name.clone(),
+            value_optional: self.value_optional,
             long_running: self.long_running,
             conflicts_with: self.conflicts_with.clone(),
             sources: vec![FlagSource::Overlay],
@@ -750,6 +761,7 @@ impl OverlayArg {
             value_type: self.value_type,
             required: self.required,
             variadic: self.variadic,
+            before_flags: self.before_flags,
         }
     }
 }
@@ -1228,6 +1240,49 @@ mod tests {
         let document = r#"{ "short": "-n", "type": "integer" }"#;
         let flag: OverlayFlag = serde_json::from_str(document).unwrap();
         assert!(!flag.long_running);
+    }
+
+    #[test]
+    fn test_overlay_arg_before_flags_reaches_the_scanned_arg() {
+        // `find`'s paths must render ahead of its predicates. The claim is
+        // stated in an overlay because no help or man page format states it
+        // machine-readably, so it has to survive into the scanned model that
+        // the input schema — and then the executor — is built from.
+        let mut overlay = overlay(OverlayMode::Authoritative);
+        overlay.command = "find".to_string();
+        overlay.positional_args = vec![
+            OverlayArg {
+                name: "path".to_string(),
+                value_type: ValueType::Path,
+                variadic: true,
+                before_flags: true,
+                ..Default::default()
+            },
+            OverlayArg {
+                name: "expression".to_string(),
+                variadic: true,
+                ..Default::default()
+            },
+        ];
+        let mut tool = ScannedCLITool {
+            name: "find".to_string(),
+            ..Default::default()
+        };
+        apply_overlay(&mut tool, &overlay);
+
+        assert!(tool.positional_args[0].before_flags);
+        assert!(
+            !tool.positional_args[1].before_flags,
+            "the trailing operand must stay after the flags"
+        );
+    }
+
+    #[test]
+    fn test_overlay_arg_before_flags_defaults_to_false_when_absent() {
+        // Overlays written before the field existed keep the prior ordering.
+        let document = r#"{ "name": "file", "type": "path" }"#;
+        let arg: OverlayArg = serde_json::from_str(document).unwrap();
+        assert!(!arg.before_flags);
     }
 
     #[test]
