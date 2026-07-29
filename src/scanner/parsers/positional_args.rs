@@ -6,9 +6,24 @@ use crate::models::{ScannedArg, ValueType};
 
 // INVARIANT: every pattern is a compile-time constant valid regex.
 
-/// A positional-argument placeholder in a usage line, e.g. `<file>` or `<file>...`.
+/// A positional-argument placeholder in a usage line, e.g. `<file>`,
+/// `<file>...` or `<jq filter>`.
+///
+/// The name may contain spaces: `jq [options] <jq filter> [file...]` spells its
+/// operand as two words, and requiring a single token dropped `jq`'s only
+/// required argument — the filter — leaving a module that could not do any of
+/// the tool's actual work.
 static ARG_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<([a-zA-Z_][\w-]*)>(\.\.\.)?").expect("valid static regex"));
+    LazyLock::new(|| Regex::new(r"<([a-zA-Z_][\w -]*)>(\.\.\.)?").expect("valid static regex"));
+
+/// A bracketed variadic operand, e.g. `[file ...]` or `[file...]`.
+///
+/// The trailing `...` is required, and that is what stops this from swallowing
+/// `[options]`, `[-l]` or `[--color=when]`: a bracketed group is only read as an
+/// operand when it is explicitly repeatable. Mirrors the BSD parser's
+/// `OPERAND_RE`, which has carried the same restriction since it was written.
+static BRACKET_OPERAND_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[([a-z][\w-]*)\s*\.\.\.\]").expect("valid static regex"));
 
 /// An option together with the value placeholder(s) it takes, e.g. `-C <path>`,
 /// `-c <name>=<value>`, `--git-dir=<path>`, or `--exec-path[=<path>]`.
@@ -35,7 +50,11 @@ pub fn extract_args_from_usage_line(line: &str) -> Vec<ScannedArg> {
         .map(|m| (m.start(), m.end()))
         .collect();
 
-    let mut args = Vec::new();
+    // Collected with their offsets so both placeholder styles can be returned
+    // in the order they appear on the line. Order is the argument's meaning:
+    // `<jq filter> [file...]` and `[file...] <jq filter>` are different calls.
+    let mut found: Vec<(usize, ScannedArg)> = Vec::new();
+
     for cap in ARG_RE.captures_iter(line) {
         // INVARIANT: group 0 is the whole match, always present on a capture.
         let Some(whole) = cap.get(0) else { continue };
@@ -50,15 +69,48 @@ pub fn extract_args_from_usage_line(line: &str) -> Vec<ScannedArg> {
             continue;
         }
 
-        args.push(ScannedArg {
-            name: cap[1].to_string(),
-            description: String::new(),
-            value_type: ValueType::String,
-            required: bracket_depth_before(line, whole.start()) <= 0,
-            variadic: cap.get(2).is_some(),
-        });
+        found.push((
+            whole.start(),
+            ScannedArg {
+                name: normalize_name(&cap[1]),
+                description: String::new(),
+                value_type: ValueType::String,
+                required: bracket_depth_before(line, whole.start()) <= 0,
+                variadic: cap.get(2).is_some(),
+            },
+        ));
     }
-    args
+
+    for cap in BRACKET_OPERAND_RE.captures_iter(line) {
+        // INVARIANT: group 0 is the whole match, always present on a capture.
+        let Some(whole) = cap.get(0) else { continue };
+        let name = normalize_name(&cap[1]);
+        if found.iter().any(|(_, arg)| arg.name == name) {
+            continue;
+        }
+        found.push((
+            whole.start(),
+            ScannedArg {
+                name,
+                description: String::new(),
+                value_type: ValueType::String,
+                // Bracketed by construction, hence optional.
+                required: false,
+                variadic: true,
+            },
+        ));
+    }
+
+    found.sort_by_key(|(offset, _)| *offset);
+    found.into_iter().map(|(_, arg)| arg).collect()
+}
+
+/// Normalize a placeholder name into a schema-property-safe form.
+///
+/// Spaces become underscores so a two-word placeholder like `<jq filter>`
+/// yields `jq_filter` rather than a key no caller could type.
+fn normalize_name(raw: &str) -> String {
+    raw.trim().replace(' ', "_")
 }
 
 /// Count unmatched `[` occurring before `pos`, to tell whether a token sits
@@ -146,5 +198,53 @@ mod tests {
     fn test_full_git_root_usage_line_yields_no_positional_args() {
         let line = "usage: git [-v | --version] [-h | --help] [-C <path>] [-c <name>=<value>]";
         assert!(extract_args_from_usage_line(line).is_empty());
+    }
+
+    #[test]
+    fn test_extracts_multi_word_placeholder_name() {
+        // jq's only required argument is spelled as two words; requiring a
+        // single token dropped it, leaving a module that could not filter.
+        let args = extract_args_from_usage_line("Usage:\tjq [options] <jq filter> [file...]");
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0].name, "jq_filter");
+        assert!(args[0].required);
+        assert!(!args[0].variadic);
+    }
+
+    #[test]
+    fn test_extracts_bracketed_variadic_operand() {
+        let args = extract_args_from_usage_line("Usage:\tjq [options] <jq filter> [file...]");
+        assert_eq!(args[1].name, "file");
+        assert!(!args[1].required);
+        assert!(args[1].variadic);
+    }
+
+    #[test]
+    fn test_bracketed_operand_requires_ellipsis() {
+        // Without the `...` restriction this would read `[options]`,
+        // `[-l]` and `[--color=when]` as operands.
+        let args = extract_args_from_usage_line(
+            "usage: ls [options] [-l] [--color=when] [--exclude=<pat>]",
+        );
+        assert!(
+            args.is_empty(),
+            "bracketed groups without `...` are not operands: {args:?}"
+        );
+    }
+
+    #[test]
+    fn test_operands_are_returned_in_usage_order() {
+        // Order is the argument's meaning; the two styles must interleave
+        // correctly rather than one being appended after the other.
+        let args = extract_args_from_usage_line("usage: tool [src ...] <dest>");
+        let names: Vec<&str> = args.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["src", "dest"]);
+    }
+
+    #[test]
+    fn test_bracketed_operand_does_not_duplicate_angle_placeholder() {
+        let args = extract_args_from_usage_line("usage: tool <file> [file ...]");
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0].name, "file");
     }
 }

@@ -157,13 +157,40 @@ fn load_scanned_modules(modules_dir: Option<&Path>) -> Result<Vec<ScannedModule>
     }
 }
 
+/// Remove `display.mcp.alias` from a display overlay, in place.
+///
+/// apcore-mcp advertises `display.mcp.alias` as the MCP tool name, but routes
+/// an incoming `tools/call` by treating the received tool name *as* a
+/// `module_id` and looking it up in the registry — there is no alias-to-id
+/// reverse map anywhere on that path. An alias that differs from the
+/// `module_id` therefore produces a tool that is listed but cannot be called,
+/// and apcore-toolkit's `sanitize_mcp_alias` rewrites `.` to `_`, so a dotted
+/// `module_id` — the apcore convention, and what apexe emits — guarantees the
+/// mismatch. Every tool apexe exposed over MCP failed with `ModuleNotFound`.
+///
+/// Dropping the alias makes apcore-mcp fall back to `module_id`, so the name it
+/// advertises is the name that works. Only the MCP alias is removed: A2A keeps
+/// the id and the display name in separate fields (`skill.id` / `skill.name`)
+/// and never had this problem, and `mcp.description` / `mcp.guidance` are left
+/// in place because only the *name* is load-bearing for routing.
+fn strip_mcp_alias(display: &mut serde_json::Value) {
+    if let Some(mcp) = display
+        .get_mut("mcp")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        mcp.remove("alias");
+    }
+}
+
 /// Register `ScannedModule`s into a `Registry` as `CliModule`s.
 ///
 /// Carries the full binding metadata (version, documentation, tags, and the
 /// `DisplayResolver`-computed `metadata["display"]` overlay) into the
 /// `ModuleDescriptor`, so apcore-mcp/apcore-a2a's alias-resolution and
 /// rich-description logic (which reads `descriptor.display` /
-/// `descriptor.metadata["display"]`) actually sees it.
+/// `descriptor.metadata["display"]`) actually sees it — minus the MCP tool-name
+/// alias, which [`strip_mcp_alias`] removes so the advertised name stays
+/// callable.
 fn register_modules(
     modules: &[ScannedModule],
     registry: &Registry,
@@ -176,6 +203,20 @@ fn register_modules(
                 let cli_module = cli_module.with_audit(audit.clone());
                 let module_id = scanned.module_id.clone();
                 let annotations = scanned.annotations.clone().unwrap_or_default();
+
+                // Both places apcore-mcp looks for the alias must be cleared:
+                // it reads `descriptor.display` first and only falls back to
+                // `metadata["display"]`, so leaving either one intact would
+                // still expose an uncallable tool name.
+                let mut metadata = scanned.metadata.clone();
+                if let Some(display) = metadata.get_mut("display") {
+                    strip_mcp_alias(display);
+                }
+                let mut display = scanned.display.clone();
+                if let Some(display) = display.as_mut() {
+                    strip_mcp_alias(display);
+                }
+
                 let descriptor = ModuleDescriptor {
                     module_id: module_id.clone(),
                     name: None,
@@ -187,8 +228,8 @@ fn register_modules(
                     tags: scanned.tags.clone(),
                     annotations: Some(annotations),
                     examples: vec![],
-                    metadata: scanned.metadata.clone(),
-                    display: scanned.display.clone(),
+                    metadata,
+                    display,
                     sunset_date: None,
                     dependencies: vec![],
                     enabled: true,

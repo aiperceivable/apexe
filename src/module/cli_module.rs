@@ -181,7 +181,7 @@ impl Module for CliModule {
         change.target = self.binary_path.clone();
         change.summary = match inputs.as_object() {
             None => "Cannot preview: input must be a JSON object.".to_string(),
-            Some(kwargs) => match executor::build_arguments(kwargs) {
+            Some(kwargs) => match executor::build_arguments(kwargs, Some(&self.input_schema)) {
                 Err(e) => format!("Cannot preview: invalid arguments ({}).", e.message),
                 Ok(user_args) => {
                     let mut full_command = vec![self.binary_path.clone()];
@@ -219,7 +219,7 @@ impl Module for CliModule {
         let start = std::time::Instant::now();
 
         let mut args: Vec<String> = self.command_parts.clone();
-        let user_args = executor::build_arguments(kwargs)?;
+        let user_args = executor::build_arguments(kwargs, Some(&self.input_schema))?;
         args.extend(user_args);
 
         let output = match executor::execute_subprocess(
@@ -658,8 +658,10 @@ mod tests {
 
     #[test]
     fn test_cli_module_preview_surfaces_argument_validation_failure() {
-        // Same as above, but for the build_arguments() failure path (e.g. a
-        // shell-injection character in a parameter value).
+        // Same as above, but for the build_arguments() failure path (here: a
+        // value the wrapped command would parse as an option). Any rejected
+        // input works -- this covers preview's error branch, not the specific
+        // validation rule.
         let module = make_echo_module_with_annotations(
             vec!["-rf".to_string()],
             None,
@@ -671,7 +673,7 @@ mod tests {
         );
 
         let preview = module
-            .preview(&json!({"msg": "hi; rm -rf /"}), None)
+            .preview(&json!({"msg": "--no-preserve-root"}), None)
             .expect("destructive modules must surface a preview even on invalid arguments");
         assert!(preview.changes[0].summary.contains("Cannot preview"));
         assert!(preview.changes[0].summary.contains("invalid arguments"));

@@ -35,7 +35,7 @@
     { "short": "-d", "long": "--directory", "type": "boolean", "description": "List directories themselves, not their contents." },
     { "short": "-D", "long": "--dired", "type": "boolean", "description": "Generate output designed for Emacs' dired mode." },
     { "short": "-f", "type": "boolean", "description": "Do not sort; enable -aU and disable -ls --color." },
-    { "short": "-F", "long": "--classify", "type": "boolean", "description": "Append an indicator (one of */=>@|) to entries." },
+    { "short": "-F", "long": "--classify", "type": "enum", "value_name": "WHEN", "enum_values": ["always", "auto", "never"], "description": "Append an indicator (one of */=>@|) to entries WHEN." },
     { "long": "--file-type", "type": "boolean", "description": "Like --classify, except do not append '*'." },
     { "long": "--format", "type": "enum", "value_name": "WORD", "enum_values": ["across", "commas", "horizontal", "long", "single-column", "verbose", "vertical"], "description": "Select an output format by name." },
     { "long": "--full-time", "type": "boolean", "description": "Like -l --time-style=full-iso." },

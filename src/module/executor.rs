@@ -3,23 +3,48 @@ use serde_json::Value;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
-/// Characters that MUST NOT appear in command arguments to prevent injection.
-/// Includes shell metacharacters, quotes, null bytes, and redirection operators.
-const SHELL_INJECTION_CHARS: &[char] = &[
+/// Characters that MUST NOT appear in values taken from a binding file.
+///
+/// `json_flag` and `command_parts` are build-time artifacts produced by a scan,
+/// not runtime data: nothing legitimate puts a shell metacharacter in them, so
+/// the conservative set is kept as a tamper signal for binding files edited by
+/// hand or in transit. Runtime parameter values are a different trust class and
+/// go through [`validate_argument_value`] instead.
+const BINDING_INJECTION_CHARS: &[char] = &[
     ';', '|', '&', '$', '`', '\\', '\'', '"', '\n', '\r', '\0', '(', ')', '<', '>',
 ];
+
+/// Characters rejected in *any* argument value, whatever its source.
+///
+/// This is deliberately tiny. Every argument reaches the child through
+/// [`execute_subprocess`], which builds a `Command` and passes argv straight to
+/// `execve` — no shell is spawned anywhere on the execution path (the one
+/// `sh`/`zsh` invocation in the crate, in `scanner::completion`, runs a
+/// hardcoded constant script with no interpolation). Shell metacharacters are
+/// therefore ordinary bytes in argv: `;`, `|`, `&`, `$`, backtick and quotes
+/// cannot start a command, open a pipe, or expand a variable. Rejecting them
+/// bought no safety and cost the tool's core use cases — `curl` could not send
+/// a JSON body (`{"a":1}`) or a form (`a=1&b=2`), and no `jq` filter containing
+/// `|`, `(`, `)` or `$` could be passed at all.
+///
+/// What remains:
+/// - `\0` — `Command` rejects it anyway; catching it here gives a better error.
+/// - `\n` / `\r` — not an execve risk, but they corrupt the audit log's line
+///   framing and any line-oriented protocol the wrapped tool speaks.
+const CONTROL_CHARS: &[char] = &['\0', '\n', '\r'];
 
 /// Default cap on captured stdout/stderr per stream, matching apcore-cli's
 /// `Sandbox::with_max_output_bytes` default. Prevents a runaway CLI tool
 /// (e.g. one that dumps a multi-GB file to stdout) from exhausting memory.
 pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 
-/// Validate that a value does not contain shell injection characters.
+/// Validate a value that came from a binding file (`json_flag`,
+/// `command_parts`), rejecting the conservative [`BINDING_INJECTION_CHARS`] set.
 #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
 pub fn validate_no_injection(param_name: &str, value: &str) -> Result<(), ModuleError> {
     let found: Vec<char> = value
         .chars()
-        .filter(|c| SHELL_INJECTION_CHARS.contains(c))
+        .filter(|c| BINDING_INJECTION_CHARS.contains(c))
         .collect();
     if !found.is_empty() {
         return Err(ModuleError::new(
@@ -33,6 +58,58 @@ pub fn validate_no_injection(param_name: &str, value: &str) -> Result<(), Module
     Ok(())
 }
 
+/// Validate a caller-supplied parameter value before it becomes one argv entry.
+///
+/// Two checks, both about what a value can do *as an argument* rather than what
+/// it would mean to a shell that never runs:
+///
+/// 1. [`CONTROL_CHARS`] are rejected outright.
+/// 2. A value that starts with `-` is rejected, because the wrapped tool's own
+///    parser reads argv positionally: a value of `--output=/etc/passwd` or `-K
+///    /etc/shadow` is indistinguishable from an option the caller was never
+///    granted. This is the injection that actually exists on an execve path,
+///    and the previous shell-metacharacter blacklist did not cover it — `-` was
+///    not in that set. It matters most for values that reach argv bare (a
+///    positional argument) and for options whose argument is optional, where
+///    the tool will happily treat the next `-`-prefixed token as a new flag.
+///
+/// `numeric` exempts check 2 for values that arrived as a JSON number, so a
+/// legitimate negative number still works. A *string* `"-1"` is still rejected:
+/// the caller asked for text, and honoring a leading `-` in text is exactly the
+/// ambiguity being closed.
+#[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+pub fn validate_argument_value(
+    param_name: &str,
+    value: &str,
+    numeric: bool,
+) -> Result<(), ModuleError> {
+    let found: Vec<char> = value
+        .chars()
+        .filter(|c| CONTROL_CHARS.contains(c))
+        .collect();
+    if !found.is_empty() {
+        return Err(ModuleError::new(
+            ErrorCode::GeneralInvalidInput,
+            format!(
+                "Parameter '{}' contains prohibited control characters: {:?}",
+                param_name, found
+            ),
+        ));
+    }
+
+    if !numeric && value.starts_with('-') {
+        return Err(ModuleError::new(
+            ErrorCode::GeneralInvalidInput,
+            format!(
+                "Parameter '{param_name}' starts with '-', which the wrapped \
+                 command would parse as an option rather than a value"
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
 fn json_value_to_string(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
@@ -42,41 +119,108 @@ fn json_value_to_string(value: &Value) -> String {
     }
 }
 
-/// Build CLI args from JSON kwargs. Returns Vec of --flag value pairs.
+/// How a single input property is spelled on the command line.
+enum ArgForm {
+    /// Passed behind a flag token, e.g. `-l` or `--output FILE`.
+    Flag(String),
+    /// Passed bare, at the given index among the command's operands.
+    Positional(u64),
+}
+
+/// Decide how `key` is spelled, from the `x-apexe-*` annotations the scanner
+/// wrote onto its schema property.
 ///
-/// Bool true becomes `--flag`, false is skipped, null is skipped,
-/// arrays repeat `--flag item` for each element, and underscores in
-/// keys become hyphens in flag names.
+/// Falls back to `--{key-with-hyphens}` when the schema says nothing. Bindings
+/// generated before these annotations existed carry no such markers, and
+/// silently rendering nothing for them would turn a wrong command into a
+/// missing argument; the fallback keeps their prior behaviour exactly.
+fn arg_form(schema: Option<&Value>, key: &str) -> ArgForm {
+    let property = schema
+        .and_then(|s| s.get("properties"))
+        .and_then(|p| p.get(key));
+
+    if let Some(index) = property
+        .and_then(|p| p.get("x-apexe-positional"))
+        .and_then(Value::as_u64)
+    {
+        return ArgForm::Positional(index);
+    }
+
+    if let Some(literal) = property
+        .and_then(|p| p.get("x-apexe-flag"))
+        .and_then(Value::as_str)
+    {
+        return ArgForm::Flag(literal.to_string());
+    }
+
+    ArgForm::Flag(format!("--{}", key.replace('_', "-")))
+}
+
+/// Build CLI args from JSON kwargs, spelling each one the way `input_schema`
+/// says the wrapped tool accepts it.
+///
+/// Bool `true` emits the bare flag, `false` and null are skipped, and an array
+/// repeats the flag once per element. Values marked `x-apexe-positional` are
+/// emitted bare, after every flag and ordered by their recorded index — an
+/// input object has no ordering of its own, so without that index `cp source
+/// target` would depend on the order the caller happened to write the JSON
+/// keys in.
 #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
 pub fn build_arguments(
     kwargs: &serde_json::Map<String, Value>,
+    input_schema: Option<&Value>,
 ) -> Result<Vec<String>, ModuleError> {
-    let mut args: Vec<String> = Vec::new();
+    let mut flags: Vec<String> = Vec::new();
+    // (index, values) -- sorted before being appended, so operands land in the
+    // order the usage line declared regardless of JSON key order.
+    let mut operands: Vec<(u64, Vec<String>)> = Vec::new();
+
     for (key, value) in kwargs {
-        match value {
-            Value::Null => continue,
-            Value::Bool(b) => {
-                if *b {
-                    let flag = format!("--{}", key.replace('_', "-"));
-                    args.push(flag);
+        let form = arg_form(input_schema, key);
+
+        // A bare operand cannot carry a boolean: there is no token to emit for
+        // `true` and no way to express `false`. Skipping is the only coherent
+        // reading, and matches how `false` is treated for flags.
+        if let Value::Bool(enabled) = value {
+            if let ArgForm::Flag(ref literal) = form {
+                if *enabled {
+                    flags.push(literal.clone());
                 }
             }
-            Value::Array(items) => {
-                for item in items {
-                    let s = json_value_to_string(item);
-                    validate_no_injection(key, &s)?;
-                    args.push(format!("--{}", key.replace('_', "-")));
-                    args.push(s);
+            continue;
+        }
+
+        if value.is_null() {
+            continue;
+        }
+
+        let items: Vec<&Value> = match value {
+            Value::Array(items) => items.iter().collect(),
+            other => vec![other],
+        };
+
+        let mut rendered: Vec<String> = Vec::new();
+        for item in items {
+            let text = json_value_to_string(item);
+            validate_argument_value(key, &text, item.is_number())?;
+            match form {
+                ArgForm::Flag(ref literal) => {
+                    rendered.push(literal.clone());
+                    rendered.push(text);
                 }
-            }
-            other => {
-                let s = json_value_to_string(other);
-                validate_no_injection(key, &s)?;
-                args.push(format!("--{}", key.replace('_', "-")));
-                args.push(s);
+                ArgForm::Positional(_) => rendered.push(text),
             }
         }
+
+        match form {
+            ArgForm::Flag(_) => flags.extend(rendered),
+            ArgForm::Positional(index) => operands.push((index, rendered)),
+        }
     }
+
+    operands.sort_by_key(|(index, _)| *index);
+    let mut args = flags;
+    args.extend(operands.into_iter().flat_map(|(_, values)| values));
     Ok(args)
 }
 
@@ -273,7 +417,7 @@ mod tests {
     fn test_build_arguments_string_value() {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("file".to_string(), json!("test.txt"));
-        let args = build_arguments(&kwargs).unwrap();
+        let args = build_arguments(&kwargs, None).unwrap();
         assert_eq!(args, vec!["--file", "test.txt"]);
     }
 
@@ -281,7 +425,7 @@ mod tests {
     fn test_build_arguments_boolean_true() {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("all".to_string(), json!(true));
-        let args = build_arguments(&kwargs).unwrap();
+        let args = build_arguments(&kwargs, None).unwrap();
         assert_eq!(args, vec!["--all"]);
     }
 
@@ -289,7 +433,7 @@ mod tests {
     fn test_build_arguments_boolean_false() {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("all".to_string(), json!(false));
-        let args = build_arguments(&kwargs).unwrap();
+        let args = build_arguments(&kwargs, None).unwrap();
         assert!(args.is_empty());
     }
 
@@ -297,7 +441,7 @@ mod tests {
     fn test_build_arguments_null_skipped() {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("x".to_string(), json!(null));
-        let args = build_arguments(&kwargs).unwrap();
+        let args = build_arguments(&kwargs, None).unwrap();
         assert!(args.is_empty());
     }
 
@@ -305,7 +449,7 @@ mod tests {
     fn test_build_arguments_array_values() {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("include".to_string(), json!(["a", "b"]));
-        let args = build_arguments(&kwargs).unwrap();
+        let args = build_arguments(&kwargs, None).unwrap();
         assert_eq!(args, vec!["--include", "a", "--include", "b"]);
     }
 
@@ -313,7 +457,7 @@ mod tests {
     fn test_build_arguments_underscore_to_hyphen() {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("no_cache".to_string(), json!(true));
-        let args = build_arguments(&kwargs).unwrap();
+        let args = build_arguments(&kwargs, None).unwrap();
         assert_eq!(args, vec!["--no-cache"]);
     }
 
@@ -321,28 +465,218 @@ mod tests {
     fn test_build_arguments_integer_value() {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("count".to_string(), json!(5));
-        let args = build_arguments(&kwargs).unwrap();
+        let args = build_arguments(&kwargs, None).unwrap();
         assert_eq!(args, vec!["--count", "5"]);
     }
 
     #[test]
-    fn test_build_arguments_injection_blocked() {
+    fn test_build_arguments_option_like_value_blocked() {
+        // The injection that exists on an execve path: a value the wrapped
+        // tool's own parser would read as an option. `--output=` would make
+        // curl write to an arbitrary file.
         let mut kwargs = serde_json::Map::new();
-        kwargs.insert("msg".to_string(), json!("hi; rm"));
-        let result = build_arguments(&kwargs);
+        kwargs.insert("data".to_string(), json!("--output=/etc/passwd"));
+        let result = build_arguments(&kwargs, None);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ErrorCode::GeneralInvalidInput);
     }
 
     #[test]
-    fn test_build_arguments_injection_blocked_in_array() {
-        // F2 §5.5: a shell metacharacter inside an array element must also be
-        // rejected, not just scalar values.
+    fn test_build_arguments_option_like_value_blocked_in_array() {
+        // F2 §5.5: array elements go through the same validation as scalars.
+        // The array branch re-emits `--flag item` per element, so a `-`-leading
+        // element is exactly where a variadic option would absorb it as a flag.
         let mut kwargs = serde_json::Map::new();
-        kwargs.insert("tags".to_string(), json!(["ok", "bad; rm -rf /"]));
-        let result = build_arguments(&kwargs);
+        kwargs.insert("tags".to_string(), json!(["ok", "-K/etc/shadow"]));
+        let result = build_arguments(&kwargs, None);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ErrorCode::GeneralInvalidInput);
+    }
+
+    #[test]
+    fn test_build_arguments_allows_shell_metacharacters() {
+        // No shell runs on the execution path, so these are ordinary argv
+        // bytes. Rejecting them used to make curl unable to POST a JSON body
+        // and jq unable to receive any filter at all.
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("data".to_string(), json!(r#"{"name":"apexe"}"#));
+        let args = build_arguments(&kwargs, None).expect("a JSON body must be passable");
+        assert_eq!(args, vec!["--data", r#"{"name":"apexe"}"#]);
+
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("data".to_string(), json!("name=apexe&lang=rust"));
+        let args = build_arguments(&kwargs, None).expect("a form body must be passable");
+        assert_eq!(args, vec!["--data", "name=apexe&lang=rust"]);
+
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("filter".to_string(), json!(r#".items[] | select(.n > $x)"#));
+        let args = build_arguments(&kwargs, None).expect("a jq filter must be passable");
+        assert_eq!(args, vec!["--filter", r#".items[] | select(.n > $x)"#]);
+    }
+
+    #[test]
+    fn test_build_arguments_rejects_control_characters() {
+        for bad in ["a\nb", "a\rb", "a\0b"] {
+            let mut kwargs = serde_json::Map::new();
+            kwargs.insert("msg".to_string(), json!(bad));
+            let result = build_arguments(&kwargs, None);
+            assert!(
+                result.is_err(),
+                "control character in {bad:?} must be rejected"
+            );
+            assert_eq!(result.unwrap_err().code, ErrorCode::GeneralInvalidInput);
+        }
+    }
+
+    #[test]
+    fn test_build_arguments_negative_number_allowed() {
+        // A JSON number is type-evidence that the caller meant a value, so a
+        // legitimate negative number survives the `-` prefix rule.
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("offset".to_string(), json!(-5));
+        let args = build_arguments(&kwargs, None).unwrap();
+        assert_eq!(args, vec!["--offset", "-5"]);
+    }
+
+    #[test]
+    fn test_build_arguments_negative_number_as_string_blocked() {
+        // ...but the same thing typed as a string is not: the caller asked for
+        // text, and a leading `-` in text is the ambiguity being closed.
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("offset".to_string(), json!("-5"));
+        assert!(build_arguments(&kwargs, None).is_err());
+    }
+
+    /// A schema shaped like the scanner emits, for the given properties.
+    fn schema_with(properties: Value) -> Value {
+        json!({ "type": "object", "properties": properties })
+    }
+
+    #[test]
+    fn test_build_arguments_short_flag_uses_single_dash() {
+        // 45 of `ls`'s 47 properties are single-character short options. The
+        // key `l` used to render as `--l`, which BSD ls rejects outright, so
+        // the module could not pass any of them.
+        let schema = schema_with(json!({
+            "l": { "type": "boolean", "x-apexe-flag": "-l" },
+            "a": { "type": "boolean", "x-apexe-flag": "-a" },
+        }));
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("l".to_string(), json!(true));
+        kwargs.insert("a".to_string(), json!(true));
+
+        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        assert_eq!(args, vec!["-l", "-a"]);
+    }
+
+    #[test]
+    fn test_build_arguments_multi_character_single_dash_flag() {
+        // `find -daystart` is spelled with one dash despite being many
+        // characters, so no "one character means one dash" rule recovers it.
+        let schema = schema_with(json!({
+            "daystart": { "type": "boolean", "x-apexe-flag": "-daystart" },
+        }));
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("daystart".to_string(), json!(true));
+
+        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        assert_eq!(args, vec!["-daystart"]);
+    }
+
+    #[test]
+    fn test_build_arguments_positional_is_passed_bare() {
+        let schema = schema_with(json!({
+            "file": {
+                "type": "array",
+                "items": { "type": "string" },
+                "x-apexe-positional": 0,
+            },
+        }));
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("file".to_string(), json!(["/tmp", "/var"]));
+
+        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        assert_eq!(args, vec!["/tmp", "/var"]);
+    }
+
+    #[test]
+    fn test_build_arguments_positional_order_ignores_key_order() {
+        // `cp source target` inverts its meaning if the two are swapped, and a
+        // JSON object carries no ordering the renderer can rely on -- serde's
+        // preserve_order means the caller's key order would otherwise decide.
+        let schema = schema_with(json!({
+            "source": { "type": "string", "x-apexe-positional": 0 },
+            "target": { "type": "string", "x-apexe-positional": 1 },
+        }));
+
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("target".to_string(), json!("/dst"));
+        kwargs.insert("source".to_string(), json!("/src"));
+
+        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        assert_eq!(args, vec!["/src", "/dst"]);
+    }
+
+    #[test]
+    fn test_build_arguments_flags_precede_positionals() {
+        let schema = schema_with(json!({
+            "l": { "type": "boolean", "x-apexe-flag": "-l" },
+            "file": { "type": "string", "x-apexe-positional": 0 },
+        }));
+
+        // Deliberately insert the operand first.
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("file".to_string(), json!("/tmp"));
+        kwargs.insert("l".to_string(), json!(true));
+
+        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        assert_eq!(args, vec!["-l", "/tmp"]);
+    }
+
+    #[test]
+    fn test_build_arguments_boolean_positional_is_skipped() {
+        // There is no token to emit for a bare operand set to `true`, and no
+        // way at all to express `false`.
+        let schema = schema_with(json!({
+            "file": { "type": "string", "x-apexe-positional": 0 },
+        }));
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("file".to_string(), json!(true));
+
+        assert!(build_arguments(&kwargs, Some(&schema)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_build_arguments_falls_back_without_schema_annotations() {
+        // Bindings generated before the annotations existed must keep working
+        // exactly as they did, rather than silently rendering nothing.
+        let schema = schema_with(json!({ "no_cache": { "type": "boolean" } }));
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("no_cache".to_string(), json!(true));
+
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            vec!["--no-cache"]
+        );
+        assert_eq!(
+            build_arguments(&kwargs, None).unwrap(),
+            vec!["--no-cache"],
+            "no schema at all must behave the same as an unannotated one"
+        );
+    }
+
+    #[test]
+    fn test_build_arguments_long_flag_literal_survives_underscore() {
+        // `_` -> `-` is lossy: a long flag that genuinely contains an
+        // underscore cannot be recovered from the property key.
+        let schema = schema_with(json!({
+            "foo_bar": { "type": "string", "x-apexe-flag": "--foo_bar" },
+        }));
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("foo_bar".to_string(), json!("v"));
+
+        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        assert_eq!(args, vec!["--foo_bar", "v"]);
     }
 
     #[test]
@@ -353,9 +687,20 @@ mod tests {
 
     #[test]
     fn test_validate_no_injection_semicolon() {
+        // Binding-sourced values keep the conservative set: nothing legitimate
+        // puts a shell metacharacter in `json_flag` or `command_parts`, so it
+        // stays useful as a tamper signal even though no shell would see it.
         let result = validate_no_injection("arg", "a;b");
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ErrorCode::GeneralInvalidInput);
+    }
+
+    #[test]
+    fn test_validate_argument_value_trust_classes_differ() {
+        // The same string is fine as a runtime parameter and rejected as a
+        // binding value -- that asymmetry is the point.
+        assert!(validate_argument_value("data", "a;b|c", false).is_ok());
+        assert!(validate_no_injection("json_flag", "a;b|c").is_err());
     }
 
     #[test]

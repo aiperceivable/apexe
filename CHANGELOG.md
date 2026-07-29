@@ -6,6 +6,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
+## [0.6.0] - 2026-07-29
+
+Every tool apexe served over MCP was uncallable, and most of the ones that could
+be called were spelled wrong on the command line. Both are fixed here, along with
+the input validation that made the two most-used wrapped tools unable to do any
+real work.
+
+### Fixed
+
+- **BREAKING: the MCP tool name is the `module_id` again, so advertised tools can actually be called.** apcore-mcp lists `display.mcp.alias` as the tool name but routes an incoming `tools/call` by treating the received name *as* a `module_id` and looking it up in the registry — there is no alias-to-id reverse map anywhere on that path. apcore-toolkit's `sanitize_mcp_alias` rewrites `.` to `_`, so a dotted `module_id` — the apcore convention, and what apexe emits — guaranteed `alias != module_id` and **every tool apexe exposed failed with `[ModuleNotFound]`**, including every button in the Explorer UI. The alias is now stripped before registration, so the name in `tools/list` is the name `tools/call` accepts: `cli.curl`, not `curl`. A2A was never affected — it keeps the id and the display name in separate fields (`skill.id` / `skill.name`) — and `mcp.description` / `mcp.guidance` still apply, since only the *name* is load-bearing for routing. The upstream defect remains; this works around it without touching the `module_id` that ACL rules, `--prefix` filtering, audit records and A2A skill ids are all anchored to.
+- **BREAKING: flags are spelled the way the tool actually accepts them.** The renderer prefixed every input key with `--`, which is wrong for most of what a scan finds. **452 of the 1006 flags across the 42 built-in overlays (44.9%) are short-only** and need one dash: `ls -l` was emitted as `ls --l`, which BSD `ls` rejects outright, so **45 of `cli.ls`'s 47 properties were unusable**. `find`'s `-daystart` and `-regextype` are multi-character yet single-dash, which no "one character means one dash" heuristic recovers. And `_` → `-` is lossy, so a long flag containing an underscore could never round-trip. The scanner now records the literal token it saw as `x-apexe-flag` on the schema property and the renderer reproduces it, rather than trying to invert a lossy mapping.
+- **BREAKING: positional arguments are passed bare, in their declared order.** All 42 built-in overlays declare `positional_args`, and every one of them was emitted as `--name value`: `ls /tmp` went out as `ls --file /tmp`. Order was lost too — nothing recorded it, so `cp source target` depended on the order the caller happened to write the JSON keys in, and `cp` inverts its meaning if the two are swapped. Operands now carry `x-apexe-positional` with their index, are emitted after all flags, and are sorted by that index. `curl` masked this in every demo: it accepts `--url` as an equivalent long option, so the one positional anybody exercised happened to work by coincidence.
+- **A positional no longer silently discards a same-named flag's description.** Building the schema inserted operands last and unconditionally, so `curl`'s `<url>` operand overwrote the `--url` property and took its documentation with it. The description is now inherited when the operand has none — the common case, since usage lines carry no prose — and a name that is both required as a flag and as an operand no longer appears twice in `required`.
+- **Shell metacharacters are no longer rejected in parameter values.** The 15-character blacklist was carried over from the v0.1 prototype and guarded a threat that does not exist on this execution path: arguments reach the child through `Command::args()`, which passes argv straight to `execve`, and no shell is spawned anywhere (the single `zsh` invocation in `scanner::completion` runs a hardcoded constant with no interpolation). `;`, `|`, `&`, `$`, backtick and quotes are ordinary bytes in argv — they cannot start a command, open a pipe or expand a variable. Rejecting them bought nothing and **made `curl` unable to send a JSON body (`{"a":1}`) or a form (`a=1&b=2`), and `jq` unable to receive any filter containing `|`, `(`, `)` or `$`** — that is, unable to do the only thing `jq` does. `\0`, `\n` and `\r` are still rejected: the first is refused by `Command` anyway, and the latter two corrupt the audit log's line framing.
+- **Option-injection is now blocked, which the old blacklist did not do.** `-` was not in that 15-character set, so a value of `--output=/etc/passwd` or `-K /etc/shadow` passed validation and was handed to the wrapped tool's own parser, which cannot distinguish it from an option the caller was never granted. Values that begin with `-` are now rejected. This matters more after the change above, because an operand reaches argv bare with no flag token in front of it. A JSON *number* is exempt, so a legitimate negative number still works; the same thing typed as a string is not, because the caller asked for text.
+- **Values from binding files keep the strict character set.** `json_flag` and `command_parts` are build-time scan artifacts, not runtime data, so nothing legitimate puts a shell metacharacter in them and the conservative check stays useful there as a tamper signal. Applying one rule to both classes was the original mistake: it imposed a build-time constraint on caller-supplied data.
+- **`jq`'s filter — its only required argument — is now extracted.** The usage-line parser required a placeholder name to be a single token, so `jq [options] <jq filter> [file...]` yielded nothing at all and the generated module could not filter anything. Multi-word placeholders are now read (`<jq filter>` → `jq_filter`), and bracketed variadic operands (`[file...]`) are recognised alongside the angle-bracket form. The trailing `...` is required for the bracketed form, which is what stops it from reading `[options]`, `[-l]` or `[--color=when]` as operands — the same restriction the BSD parser has always carried. Both styles are returned in usage-line order, since order is the argument's meaning.
+
+### Changed
+
+- **Existing bindings keep working, but need a rescan to benefit.** The renderer falls back to the old `--{key}` spelling for any property without the new annotations, so bindings generated before this release behave exactly as they did rather than silently emitting nothing. Re-run `apexe scan` to pick up the corrected flag forms and operand ordering.
+- **`ln` is annotated `destructive`.** `ln -f` unlinks an existing target before linking, discarding that file's directory entry irrecoverably — the same overwrite behaviour for which `cp` and `mv` are already marked destructive, and the reason GNU `ln` offers `--backup`. Verified against the binary rather than inferred.
+
+### Fixed (overlays)
+
+- **`ls@gnu`: `-F` / `--classify` takes an optional value.** It was typed `boolean`, so `ls --classify=never` could not be expressed at all under `mode: authoritative`. GNU coreutils 9.7 spells it `--classify[=WHEN]` and rejects `--classify=bogus`; it is now an `enum` over `always`/`auto`/`never`, matching how the same file already handles `--color` and `--hyperlink`. Verified in the digest-pinned image the overlay's own provenance names.
+- **`chmod@bsd`: `mode` is not always required.** BSD `chmod`'s second usage form — `chmod [-fhv] [-R [-H | -L | -P]] [-E | -C | -N | -i | -I] file ...` — takes an ACL option in place of a mode operand, and `chmod -C <file>` parses fine without one. Marking it required blocked the entire ACL usage form.
+
+### Documentation
+
+- The built-in GNU overlay count in `docs/overlays.md` said 14; there are 21, and four of them declare `GNU diffutils` / `GNU grep` / `GNU findutils` rather than `GNU coreutils`.
+- The basic example advertised flag counts that no longer matched what a scan produces (`curl — 12 flags`, against 257 actually found) and suggested a `cli.curl` call with no `url`, which cannot succeed. Its sample calls now run, and it states that Explorer prefills every schema property as a blank template that has to be trimmed before calling — an empty string is a value, not an omission, and `curl --output ""` fails on it.
+
+---
+
 ## [0.5.1] - 2026-07-28
 
 ### Fixed

@@ -13,7 +13,9 @@ use std::path::Path;
 
 use apcore::Executor;
 use apcore_toolkit::ScannedModule;
+use apexe::adapter::CliToolConverter;
 use apexe::mcp::McpServerBuilder;
+use apexe::models::ScannedCLITool;
 use apexe::module::{build_executor, ExecutorOptions};
 use apexe::output::YamlOutput;
 use serde_json::json;
@@ -58,6 +60,51 @@ fn build_test_executor(dir: &Path) -> Arc<Executor> {
     build_executor(&exec_opts(dir)).expect("executor should build from bindings")
 }
 
+/// Write a binding the way `apexe scan` actually produces one — through
+/// `CliToolConverter`, which runs the `DisplayResolver` that computes
+/// `metadata["display"]` (including the MCP alias).
+///
+/// `write_echo_binding` above builds a `ScannedModule` directly and therefore
+/// carries no display overlay at all, which is precisely why the earlier
+/// coverage could not see the alias/module_id mismatch: with no alias present,
+/// apcore-mcp always fell back to the `module_id` in tests while real scans
+/// shipped an alias that broke every call.
+fn write_converted_echo_binding(dir: &Path) -> String {
+    let tool = ScannedCLITool {
+        name: "echo".to_string(),
+        description: "Echo a message".to_string(),
+        binary_path: "/bin/echo".to_string(),
+        ..Default::default()
+    };
+    let modules = CliToolConverter::new().convert(&tool);
+    let module_id = modules[0].module_id.clone();
+    YamlOutput::without_verification()
+        .write(&modules, dir, false)
+        .expect("binding should be written");
+    module_id
+}
+
+/// Resolve the MCP tool name the way apcore-mcp's `build_tools` does:
+/// `descriptor.display`, falling back to `metadata["display"]`, then
+/// `.mcp.alias`; absent an alias the `module_id` is used verbatim.
+fn upstream_tool_name(executor: &Executor, module_id: &str) -> String {
+    let descriptor = executor
+        .registry()
+        .get_definition(module_id)
+        .expect("registry lookup should succeed")
+        .expect("module should be registered");
+
+    descriptor
+        .display
+        .as_ref()
+        .or_else(|| descriptor.metadata.get("display"))
+        .and_then(|v| v.get("mcp"))
+        .and_then(|d| d.get("alias"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| descriptor.module_id.clone())
+}
+
 #[test]
 fn test_mcp_server_builds_and_exposes_scanned_tools() {
     // The MCP server builds from on-disk bindings and exposes the scanned
@@ -74,10 +121,76 @@ fn test_mcp_server_builds_and_exposes_scanned_tools() {
         .modules_dir(dir.path())
         .export_openai_tools()
         .expect("tool export should succeed");
-    let blob = serde_json::to_string(&tools).unwrap();
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    // The OpenAI exporter normalizes dots to hyphens (`ModuleIDNormalizer`),
+    // so assert the exact normalized id rather than a substring: `contains
+    // ("echo")` was true for `cli-echo`, `cli.echo` and a bare `echo` alike,
+    // making the original assertion incapable of failing.
+    assert_eq!(
+        names,
+        vec!["cli-echo"],
+        "scanned echo module should be exported under its normalized module id"
+    );
+}
+
+#[tokio::test]
+async fn test_mcp_advertised_tool_name_is_callable() {
+    // Regression: apcore-mcp advertises `display.mcp.alias` as the MCP tool
+    // name, but routes an incoming tools/call by looking the received name up
+    // as a `module_id` — there is no alias-to-id reverse map on that path. The
+    // DisplayResolver sanitizes `.` to `_`, so a dotted module_id guaranteed
+    // alias != module_id and *every* advertised tool failed with
+    // ModuleNotFound. The name tools/list hands out must be the name
+    // tools/call accepts.
+    let dir = TempDir::new().unwrap();
+    let module_id = write_converted_echo_binding(dir.path());
+    let executor = build_test_executor(dir.path());
+
+    let advertised = upstream_tool_name(&executor, &module_id);
+    assert_eq!(
+        advertised, module_id,
+        "the advertised MCP tool name must equal the module_id apcore-mcp \
+         routes on, otherwise the tool lists but cannot be called"
+    );
+
+    // And the advertised name really does dispatch.
+    let result = executor
+        .call(&advertised, json!({}), None, None)
+        .await
+        .expect("the advertised tool name should be callable");
+    assert_eq!(result["exit_code"], 0);
+}
+
+#[test]
+fn test_mcp_display_overlay_keeps_description_after_alias_strip() {
+    // Only the *name* is load-bearing for routing, so the rest of the display
+    // overlay (description/guidance, and the A2A side entirely) must survive.
+    let dir = TempDir::new().unwrap();
+    let module_id = write_converted_echo_binding(dir.path());
+    let executor = build_test_executor(dir.path());
+
+    let descriptor = executor
+        .registry()
+        .get_definition(&module_id)
+        .unwrap()
+        .expect("module should be registered");
+    let display = descriptor
+        .display
+        .as_ref()
+        .or_else(|| descriptor.metadata.get("display"))
+        .expect("display overlay should still be present");
+
     assert!(
-        blob.contains("echo"),
-        "scanned echo module should be exposed as a tool: {blob}"
+        display["mcp"]["alias"].is_null(),
+        "the MCP alias must be stripped: {display}"
+    );
+    assert!(
+        display["a2a"]["alias"].is_string(),
+        "the A2A alias keeps id and display name in separate fields and must \
+         be left alone: {display}"
     );
 }
 
@@ -107,20 +220,49 @@ async fn test_mcp_tools_call_executes() {
 }
 
 #[tokio::test]
-async fn test_mcp_tools_call_injection_blocked() {
-    // A shell metacharacter in a client-supplied argument must be rejected on
-    // the request path (defense-in-depth: direct argv + injection filter).
+async fn test_mcp_tools_call_option_injection_blocked() {
+    // A client-supplied value that the wrapped command would parse as an
+    // option must be rejected on the request path. This is the injection that
+    // exists when argv goes to execve with no shell in between; shell
+    // metacharacters are inert there and are no longer filtered.
     let dir = TempDir::new().unwrap();
     write_echo_binding(dir.path());
     let executor = build_test_executor(dir.path());
 
     let result = executor
-        .call("cli.echo", json!({ "message": "ok; rm -rf /" }), None, None)
+        .call(
+            "cli.echo",
+            json!({ "message": "--output=/etc/passwd" }),
+            None,
+            None,
+        )
         .await;
 
     assert!(
         result.is_err(),
-        "shell metacharacters must be rejected, got: {result:?}"
+        "option-like values must be rejected, got: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_mcp_tools_call_passes_shell_metacharacters_through() {
+    // The counterpart: a payload full of shell metacharacters reaches the
+    // command intact. This is what makes `curl` able to POST a body and `jq`
+    // able to receive a filter.
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let executor = build_test_executor(dir.path());
+
+    let payload = r#"{"q":"a|b && c","n":$x}"#;
+    let result = executor
+        .call("cli.echo", json!({ "message": payload }), None, None)
+        .await
+        .expect("shell metacharacters are ordinary argv bytes and must pass");
+
+    let stdout = result["stdout"].as_str().unwrap_or_default();
+    assert!(
+        stdout.contains(payload),
+        "payload should reach the command unmodified: {result}"
     );
 }
 

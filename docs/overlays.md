@@ -243,9 +243,11 @@ recorded in two places instead:
 
 - `provenance.package` — `"coreutils"`, `"diffutils"`, ... so `tool_version:
   "9.7"` says what it is a version *of*.
-- `match.probe.output_contains` — where it actually has to be enforced. The 14
-  built-in GNU overlays keep `"output_contains": "GNU coreutils"`, so a GNU
-  `tar` cannot pick up a coreutils overlay even though both classify `gnu`.
+- `match.probe.output_contains` — where it actually has to be enforced. Each of
+  the 21 built-in GNU overlays names its own package: 17 keep `"output_contains":
+  "GNU coreutils"`, while `diff`, `grep`, `find` and `xargs` declare `GNU
+  diffutils`, `GNU grep` and `GNU findutils` respectively. So a GNU `tar` cannot
+  pick up a coreutils overlay even though both classify `gnu`.
 
 Overlays before this change were named `<tool>@gnu-coreutils.json` and declared
 `variant: gnu-coreutils`. Both are now `gnu`; a user overlay still using the old

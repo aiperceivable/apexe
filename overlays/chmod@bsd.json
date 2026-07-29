@@ -34,7 +34,7 @@
     { "short": "-N", "type": "boolean", "description": "Remove the ACL from the named files." }
   ],
   "positional_args": [
-    { "name": "mode", "type": "string", "required": true, "description": "The new mode, as an octal number or a symbolic mode string. ACL forms take an ACE here instead." },
+    { "name": "mode", "type": "string", "required": false, "description": "The new mode, as an octal number or a symbolic mode string. ACL forms take an ACE here instead. Required except in the second usage form, where an ACL option (-E, -C, -N, -i, -I) replaces it." },
     { "name": "file", "type": "path", "required": true, "variadic": true, "description": "Files whose mode or ACL is to be changed." }
   ],
   "annotations": {

@@ -60,6 +60,29 @@ fn apply_long_running(schema: &mut JsonValue, flag: &ScannedFlag) {
     }
 }
 
+/// Record the literal token this flag is spelled with on a command line.
+///
+/// A property key cannot be turned back into a flag by rule. The key is
+/// derived by [`ScannedFlag::canonical_name`], which strips leading dashes and
+/// folds `-` to `_` — a lossy mapping whose inverse is ambiguous in three ways
+/// that all occur in practice:
+///
+/// - `-l` and `--l` both yield the key `l`, and 45 of `ls`'s 47 properties are
+///   single-character short options that must be spelled with one dash.
+/// - BSD/GNU `find` spells multi-character options with a single dash
+///   (`-daystart`, `-regextype`); no "one character means one dash" heuristic
+///   recovers those.
+/// - A long flag containing an underscore round-trips to a hyphen.
+///
+/// Emitting the literal removes the guesswork: the renderer reproduces what the
+/// scan actually saw. Long form is preferred over short, matching
+/// `canonical_name`, so the key and the literal always describe the same flag.
+fn apply_flag_literal(schema: &mut JsonValue, flag: &ScannedFlag) {
+    if let Some(literal) = flag.long_name.as_deref().or(flag.short_name.as_deref()) {
+        schema["x-apexe-flag"] = json!(literal);
+    }
+}
+
 /// Convert a ScannedFlag into a JSON Schema property value.
 fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
     let base_type = value_type_to_json_schema(flag.value_type);
@@ -73,6 +96,7 @@ fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
             schema["description"] = json!(flag.description);
         }
         apply_long_running(&mut schema, flag);
+        apply_flag_literal(&mut schema, flag);
         return schema;
     }
 
@@ -100,23 +124,27 @@ fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
     }
 
     apply_long_running(&mut schema, flag);
+    apply_flag_literal(&mut schema, flag);
 
     schema
 }
 
 /// Convert a ScannedArg into a JSON Schema property value.
-fn arg_to_schema(arg: &ScannedArg) -> JsonValue {
+///
+/// `index` is the argument's position in the command's `positional_args`, and
+/// is recorded as `x-apexe-positional`. It carries two facts the property name
+/// alone cannot: that the value is passed bare rather than behind a flag, and
+/// what order it goes in. Order is not recoverable at call time — an input
+/// object has no inherent ordering, and `cp source target` inverts its meaning
+/// if the two are swapped.
+fn arg_to_schema(arg: &ScannedArg, index: usize) -> JsonValue {
     let base_type = value_type_to_json_schema(arg.value_type);
 
-    if arg.variadic {
-        let mut schema = json!({
+    let mut schema = if arg.variadic {
+        json!({
             "type": "array",
             "items": { "type": base_type },
-        });
-        if !arg.description.is_empty() {
-            schema["description"] = json!(arg.description);
-        }
-        schema
+        })
     } else {
         let mut schema = json!({ "type": base_type });
         match arg.value_type {
@@ -128,11 +156,15 @@ fn arg_to_schema(arg: &ScannedArg) -> JsonValue {
             }
             _ => {}
         }
-        if !arg.description.is_empty() {
-            schema["description"] = json!(arg.description);
-        }
         schema
+    };
+
+    if !arg.description.is_empty() {
+        schema["description"] = json!(arg.description);
     }
+    schema["x-apexe-positional"] = json!(index);
+
+    schema
 }
 
 /// Build a JSON Schema for command inputs, merging command flags with global flags.
@@ -165,12 +197,31 @@ pub fn build_input_schema(command: &ScannedCommand, global_flags: &[ScannedFlag]
         }
     }
 
-    // Positional args.
-    for arg in &command.positional_args {
+    // Positional args. A positional replaces a same-named flag rather than
+    // being skipped: a name that appears in the usage line as an operand is
+    // passed bare, and that is the form every tool accepts. `curl` is the case
+    // in point -- `curl [options...] <url>` and a `--url` option both exist,
+    // and only the operand form is universal.
+    //
+    // The flag's description is inherited when the positional has none, which
+    // is the common shape: usage lines carry no prose, so the description only
+    // exists on the flag. Overwriting outright used to discard it.
+    for (index, arg) in command.positional_args.iter().enumerate() {
         let prop_name = arg.name.to_lowercase().replace('-', "_");
-        let prop_schema = arg_to_schema(arg);
+        let mut prop_schema = arg_to_schema(arg, index);
+
+        if let Some(displaced) = properties.get(&prop_name) {
+            if prop_schema.get("description").is_none() {
+                if let Some(description) = displaced.get("description") {
+                    prop_schema["description"] = description.clone();
+                }
+            }
+        }
+
         properties.insert(prop_name.clone(), prop_schema);
-        if arg.required {
+        // A flag and a positional of the same name can both be required; the
+        // property is one entry, so it must not appear in `required` twice.
+        if arg.required && !required.contains(&prop_name) {
             required.push(prop_name);
         }
     }
