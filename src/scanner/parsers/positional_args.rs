@@ -16,14 +16,72 @@ use crate::models::{ScannedArg, ValueType};
 static ARG_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<([a-zA-Z_][\w -]*)>(\.\.\.)?").expect("valid static regex"));
 
-/// A bracketed variadic operand, e.g. `[file ...]` or `[file...]`.
+/// A bracketed operand: `[file ...]`, `[FILE]...`, `[path...]` or `[expression]`.
 ///
-/// The trailing `...` is required, and that is what stops this from swallowing
-/// `[options]`, `[-l]` or `[--color=when]`: a bracketed group is only read as an
-/// operand when it is explicitly repeatable. Mirrors the BSD parser's
-/// `OPERAND_RE`, which has carried the same restriction since it was written.
-static BRACKET_OPERAND_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[([a-z][\w-]*)\s*\.\.\.\]").expect("valid static regex"));
+/// Both ellipsis placements occur and mean the same thing. BSD writes it inside
+/// the brackets (`ls ... [file ...]`); GNU writes it outside (`ls [OPTION]...
+/// [FILE]...`), and every one of the 20 GNU tools with a built-in overlay uses
+/// the outer form. Group 2 captures the inner ellipsis and group 3 the outer, so
+/// either marks the operand variadic.
+static BRACKET_OPERAND_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[([A-Za-z][\w-]*)(\s*\.\.\.)?\](\.\.\.)?").expect("valid static regex")
+});
+
+/// A bare operand written in the GNU convention of an all-caps placeholder,
+/// e.g. `SOURCE`, `DEST`, `DIRECTORY...`, `PATTERNS`, `LINK_NAME`.
+///
+/// GNU spells required operands without brackets — `cp [OPTION]... [-T] SOURCE
+/// DEST` — so the bracketed pattern above never sees them. All-caps is what
+/// separates a placeholder from the surrounding prose; a lowercase bare word in
+/// a usage line is far more often descriptive text than an operand, so this
+/// deliberately does not match one.
+///
+/// The trailing `\b` is load-bearing: without it the pattern matches the `U` of
+/// `Usage:` — one capital followed by lowercase is not a placeholder, and the
+/// word boundary is what rejects it.
+static BARE_OPERAND_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b([A-Z][A-Z0-9_-]*)\b(\.\.\.)?").expect("valid static regex"));
+
+/// Usage-line placeholders that name the *option* group rather than an operand.
+///
+/// `cut OPTION... [FILE]...` and `ls [OPTION]... [FILE]...` would otherwise
+/// report an operand called `OPTION`, which no tool accepts.
+const OPTION_GROUP_WORDS: &[&str] = &["option", "options", "opts", "flag", "flags"];
+
+/// Whether `name` names the option group rather than an operand.
+fn is_option_group_word(name: &str) -> bool {
+    let lowered = name.to_ascii_lowercase();
+    OPTION_GROUP_WORDS.contains(&lowered.as_str())
+}
+
+/// Whether the token starting at `start` sits inside a bracketed group that
+/// begins with a dash, i.e. it belongs to an option rather than being an
+/// operand.
+///
+/// Checking only the immediately preceding character is not enough: BSD bundles
+/// every short option into one group, so `[-@ABCF]` puts `ABCF` behind a `@`
+/// rather than behind the dash. What marks the whole group as options is the
+/// dash right after the opening bracket, which also covers `[-T]`, `[-Olevel]`
+/// and `[-D debugopts]`.
+fn inside_option_group(line: &str, start: usize) -> bool {
+    let mut depth = 0i32;
+    let mut opening = None;
+    for (index, ch) in line[..start].char_indices().rev() {
+        match ch {
+            ']' => depth += 1,
+            '[' => {
+                if depth == 0 {
+                    opening = Some(index);
+                    break;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    // `[` is ASCII, so `index + 1` is a char boundary.
+    opening.is_some_and(|index| line[index + 1..].trim_start().starts_with('-'))
+}
 
 /// An option together with the value placeholder(s) it takes, e.g. `-C <path>`,
 /// `-c <name>=<value>`, `--git-dir=<path>`, or `--exec-path[=<path>]`.
@@ -82,9 +140,28 @@ pub fn extract_args_from_usage_line(line: &str) -> Vec<ScannedArg> {
     }
 
     for cap in BRACKET_OPERAND_RE.captures_iter(line) {
-        // INVARIANT: group 0 is the whole match, always present on a capture.
-        let Some(whole) = cap.get(0) else { continue };
-        let name = normalize_name(&cap[1]);
+        // INVARIANT: groups 0 and 1 are present on every capture of this pattern.
+        let (Some(whole), Some(name_match)) = (cap.get(0), cap.get(1)) else {
+            continue;
+        };
+        let name = normalize_name(name_match.as_str());
+        if inside_option_group(line, name_match.start()) || is_option_group_word(&name) {
+            continue;
+        }
+
+        let variadic = cap.get(2).is_some() || cap.get(3).is_some();
+        // A bracketed lowercase word with no ellipsis is not evidence enough.
+        // BSD writes optional operands lowercase and its required ones bare
+        // (`basename string [suffix]`), and bare lowercase is deliberately not
+        // matched below — so accepting `[suffix]` here would yield a contract
+        // holding only the optional half of the tool's arguments, which reads as
+        // "this is all it takes" and is worse than reporting none. An all-caps
+        // placeholder is GNU's explicit convention and carries no such doubt.
+        let is_placeholder_caps = !name.chars().any(|ch| ch.is_ascii_lowercase());
+        if !is_placeholder_caps && !variadic {
+            continue;
+        }
+
         if found.iter().any(|(_, arg)| arg.name == name) {
             continue;
         }
@@ -96,7 +173,39 @@ pub fn extract_args_from_usage_line(line: &str) -> Vec<ScannedArg> {
                 value_type: ValueType::String,
                 // Bracketed by construction, hence optional.
                 required: false,
-                variadic: true,
+                variadic,
+            },
+        ));
+    }
+
+    for cap in BARE_OPERAND_RE.captures_iter(line) {
+        // INVARIANT: groups 0 and 1 are present on every capture of this pattern.
+        let (Some(whole), Some(name_match)) = (cap.get(0), cap.get(1)) else {
+            continue;
+        };
+        let name = normalize_name(name_match.as_str());
+        if inside_option_group(line, name_match.start()) || is_option_group_word(&name) {
+            continue;
+        }
+        let is_option_value = option_value_ranges
+            .iter()
+            .any(|&(start, end)| whole.start() >= start && whole.start() < end);
+        if is_option_value {
+            continue;
+        }
+        // An all-caps word inside brackets was already taken by the bracketed
+        // pass, which knows the ellipsis placement; the name check catches it.
+        if found.iter().any(|(_, arg)| arg.name == name) {
+            continue;
+        }
+        found.push((
+            whole.start(),
+            ScannedArg {
+                name,
+                description: String::new(),
+                value_type: ValueType::String,
+                required: bracket_depth_before(line, whole.start()) <= 0,
+                variadic: cap.get(2).is_some(),
             },
         ));
     }
@@ -246,5 +355,171 @@ mod tests {
         let args = extract_args_from_usage_line("usage: tool <file> [file ...]");
         assert_eq!(args.len(), 1);
         assert_eq!(args[0].name, "file");
+    }
+
+    /// One operand as extracted from a usage line.
+    #[derive(Debug, PartialEq)]
+    struct Operand {
+        name: String,
+        required: bool,
+        variadic: bool,
+    }
+
+    /// One usage line and the operands it must yield.
+    struct UsageCase {
+        line: &'static str,
+        operands: Vec<Operand>,
+    }
+
+    fn operand(name: &str, required: bool, variadic: bool) -> Operand {
+        Operand {
+            name: name.to_string(),
+            required,
+            variadic,
+        }
+    }
+
+    fn extract(line: &str) -> Vec<Operand> {
+        extract_args_from_usage_line(line)
+            .into_iter()
+            .map(|a| operand(&a.name, a.required, a.variadic))
+            .collect()
+    }
+
+    fn names(line: &str) -> Vec<String> {
+        extract(line).into_iter().map(|o| o.name).collect()
+    }
+
+    #[test]
+    fn test_gnu_usage_lines_from_real_binaries() {
+        // Every line here was read off GNU coreutils 9.7 / grep 3.11 /
+        // diffutils 3.10 / findutils 4.10.0 in the digest-pinned image the
+        // overlays' provenance names. GNU puts the ellipsis *outside* the
+        // brackets and writes required operands bare and in caps -- neither
+        // form was matched before, so every one of these yielded nothing.
+        let cases = vec![
+            UsageCase {
+                line: "Usage: ls [OPTION]... [FILE]...",
+                operands: vec![operand("FILE", false, true)],
+            },
+            UsageCase {
+                line: "Usage: cp [OPTION]... [-T] SOURCE DEST",
+                operands: vec![operand("SOURCE", true, false), operand("DEST", true, false)],
+            },
+            UsageCase {
+                line: "Usage: cut OPTION... [FILE]...",
+                operands: vec![operand("FILE", false, true)],
+            },
+            UsageCase {
+                line: "Usage: uniq [OPTION]... [INPUT [OUTPUT]]",
+                operands: vec![
+                    operand("INPUT", false, false),
+                    operand("OUTPUT", false, false),
+                ],
+            },
+            UsageCase {
+                line: "Usage: mkdir [OPTION]... DIRECTORY...",
+                operands: vec![operand("DIRECTORY", true, true)],
+            },
+            UsageCase {
+                line: "Usage: touch [OPTION]... FILE...",
+                operands: vec![operand("FILE", true, true)],
+            },
+            UsageCase {
+                line: "Usage: ln [OPTION]... [-T] TARGET LINK_NAME",
+                operands: vec![
+                    operand("TARGET", true, false),
+                    operand("LINK_NAME", true, false),
+                ],
+            },
+            UsageCase {
+                line: "Usage: grep [OPTION]... PATTERNS [FILE]...",
+                operands: vec![
+                    operand("PATTERNS", true, false),
+                    operand("FILE", false, true),
+                ],
+            },
+            UsageCase {
+                line: "Usage: diff [OPTION]... FILES",
+                operands: vec![operand("FILES", true, false)],
+            },
+            UsageCase {
+                line: "Usage: xargs [OPTION]... COMMAND [INITIAL-ARGS]...",
+                operands: vec![
+                    operand("COMMAND", true, false),
+                    operand("INITIAL-ARGS", false, true),
+                ],
+            },
+        ];
+
+        for case in cases {
+            assert_eq!(
+                extract(case.line),
+                case.operands,
+                "mismatch for {:?}",
+                case.line
+            );
+        }
+    }
+
+    #[test]
+    fn test_gnu_option_group_placeholder_is_not_an_operand() {
+        // `[OPTION]...` and the bare `OPTION...` that `cut` uses both name the
+        // option group. Reporting an operand called OPTION would have an agent
+        // pass a value no tool accepts.
+        for line in [
+            "Usage: ls [OPTION]... [FILE]...",
+            "Usage: cut OPTION... [FILE]...",
+        ] {
+            let got = names(line);
+            assert!(
+                !got.iter().any(|n| n.eq_ignore_ascii_case("option")),
+                "OPTION must not be reported as an operand in {line:?}: {got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_dash_prefixed_bracket_group_is_not_an_operand() {
+        // `[-T]` is an option; its tail is a capital letter the bare-operand
+        // pattern would otherwise match.
+        assert_eq!(
+            names("Usage: cp [OPTION]... [-T] SOURCE DEST"),
+            vec!["SOURCE", "DEST"]
+        );
+    }
+
+    #[test]
+    fn test_bsd_short_option_bundle_is_not_an_operand() {
+        // BSD bundles every short option into one group, so the capitals sit
+        // behind a `@` rather than behind the dash -- only the dash after the
+        // opening bracket marks the whole group as options.
+        assert_eq!(
+            extract("usage: ls [-@ABCF] [--color=when] [-D format] [file ...]"),
+            vec![operand("file", false, true)]
+        );
+    }
+
+    #[test]
+    fn test_gnu_find_usage_line_mixes_option_and_operand_brackets() {
+        // `[-H] [-L] [-P] [-Olevel] [-D debugopts]` are all options and must not
+        // appear. `[path...]` is an operand by its ellipsis. `[expression]` is
+        // one too, but a bracketed lowercase word without an ellipsis is not
+        // distinguishable from prose, so it is deliberately left out -- find's
+        // predicate expression is not something this contract could express
+        // anyway.
+        assert_eq!(
+            extract("Usage: find [-H] [-L] [-P] [-Olevel] [-D debugopts] [path...] [expression]"),
+            vec![operand("path", false, true)]
+        );
+    }
+
+    #[test]
+    fn test_bracketed_lowercase_without_ellipsis_is_not_an_operand() {
+        // `basename string [suffix]` spells its required operand as a bare
+        // lowercase word, which is not matched. Taking `[suffix]` alone would
+        // describe the tool as accepting only its optional argument -- a
+        // contract that is confidently wrong rather than merely incomplete.
+        assert!(extract("usage: basename string [suffix]").is_empty());
     }
 }

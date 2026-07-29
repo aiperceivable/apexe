@@ -17,7 +17,7 @@
     "package": "coreutils",
     "source": "help",
     "checked_on": "2026-07-27",
-    "command": "docker run --rm debian:stable-slim cut --help",
+    "command": "docker run --rm debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd cut --help",
     "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
     "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention. A naive extraction over this --help reports a '-M' option; it is an artifact of the range legend line \"  -M    from first to M'th (included) byte, character or field\" and is not a flag -- 'cut -M 1' fails with \"invalid option -- 'M'\". conflicts_with: -b, -c and -f come from the --help sentence 'Use one, and only one of -b, -c or -f', and the binary diagnoses every pairing with 'cut: only one list may be specified'. -d against -b and -c comes from the binary's 'an input delimiter may be specified only when operating on fields'; -s against -b and -c from 'suppressing non-delimited lines makes sense only when operating on fields'. Four candidates were tested and rejected: -n is documented as '(ignored)' and is accepted alongside -b, -c and -f alike, so unlike BSD cut it carries no conflict; --output-delimiter and --complement are accepted with -b as well as -f. annotations: cut opens every operand read-only and has no option that names an output file, so readonly is true."
   },

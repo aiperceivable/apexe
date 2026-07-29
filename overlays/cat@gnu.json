@@ -17,7 +17,7 @@
     "package": "coreutils",
     "source": "help",
     "checked_on": "2026-07-27",
-    "command": "docker run --rm debian:stable-slim cat --help",
+    "command": "docker run --rm debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd cat --help",
     "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
     "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention. Every flag below is transcribed from that output; no flag was added from knowledge of the tool."
   },

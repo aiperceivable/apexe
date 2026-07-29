@@ -135,7 +135,7 @@ When a diff surprises you, check the extractor, then check the shell quoting, th
 }
 ```
 
-`command` should be re-runnable verbatim by someone else. `environment` should identify the exact reference build — an image digest, not a tag, since tags move. `package` is optional but expected on any `gnu` overlay, because the `gnu` variant spans several projects and `9.7` alone does not say which one it versions.
+`command` should be re-runnable verbatim by someone else. `environment` should identify the exact reference build — an image digest, not a tag, since tags move. When `command` names the image itself, it takes the digest too: a `command` reading `debian:stable-slim` beside an `environment` pinned by digest contradicts itself, and re-running it a year later reads a different build than the one that was checked. `package` is optional but expected on any `gnu` overlay, because the `gnu` variant spans several projects and `9.7` alone does not say which one it versions.
 
 `source` has exactly three values: `man-page`, `help`, `vendor-docs`. There is intentionally no variant meaning "I know this tool", because that is not evidence.
 
@@ -155,6 +155,45 @@ A tool can compare flag *names*. It cannot check any of the things that make an 
 `conflicts_with` is the sharpest case: it is the single biggest reason overlays exist, and no man page states it machine-readably. It can only come from reading prose and understanding the tool.
 
 This is why there is no `verify` subcommand. A green check that only covers the left column would be read as "this overlay is correct", and the right column is where the damage lives.
+
+### What `conflicts_with` means
+
+**Two flags that must not be sent together** — whether the binary rejects the
+pair outright or silently resolves it last-one-wins.
+
+Both belong there, and the reason is specific to how apexe is called. Its input
+is a JSON object, and an object has no ordering. For a last-one-wins group,
+*which* flag wins is decided by the order the caller happened to write the keys
+in — so `{"f": true, "i": true}` on `rm` is not "`-i` wins", it is
+**unpredictable**. A caller has exactly one correct move in both cases: send one
+or the other.
+
+The tempting narrower reading — record only what the binary diagnoses — is worse
+here than it looks. It marks an override pair as combinable, which tells an agent
+it may send both, and the outcome then depends on a JSON key order nobody
+intended as an interface.
+
+So: read the prose for the group, run the pair to learn *which* kind it is, and
+record it either way. Say which kind it is in `provenance.notes` — "diagnosed as
+`conflicting output style options`" and "accepted, last-one-wins" are both worth
+writing down, and the second is what stops a later reader from deleting the entry
+as a mistake.
+
+### What `source` does and does not cover
+
+`source` names the document the flag list and its descriptions were **read
+from**. It is not a record of how the overlay was *checked*.
+
+Running the binary is often the better check — it is how `ls@gnu`'s `-f` was
+caught describing behaviour coreutils dropped years ago, while `--help` had been
+right all along. But a probe establishes that a flag exists, what the binary
+prints when it rejects something, and whether a value must be attached; it does
+not establish what a flag **means**, which is exactly what a description asserts.
+A probe that contradicts the document is a reason to go re-read the document.
+
+That is why there is no `binary-probe` value, alongside there being none meaning
+"from knowledge". Put probe findings in `provenance.notes`, with the command that
+produced them, so the next reader can re-run it.
 
 ---
 

@@ -17,7 +17,7 @@
     "package": "coreutils",
     "source": "help",
     "checked_on": "2026-07-27",
-    "command": "docker run --rm debian:stable-slim wc --help",
+    "command": "docker run --rm debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd wc --help",
     "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
     "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention. Enum values for --total come from the same --help output. No flag carries a conflicts_with: --help states no mutual exclusion, and the binary accepts every pairing tested, including 'wc -c -m' and 'wc -c -l -w -L -m', which print all the requested counts side by side. This is a real divergence from BSD wc, whose page documents -c and -m as cancelling each other out; the descriptions and conflicts here were taken from GNU's own output only. The one exclusion GNU does enforce is not between two flags: --files0-from=F takes the place of the FILE operands, and 'wc --files0-from=F FILE' fails with \"extra operand\". That is recorded in the operand description because conflicts_with can only name flags. annotations: wc opens every operand read-only and has no option that names an output file, so readonly is true."
   },

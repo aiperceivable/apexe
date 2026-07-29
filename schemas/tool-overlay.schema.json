@@ -129,7 +129,7 @@
           "type": "string"
         },
         "source": {
-          "description": "Which document the flag list was read from. There is deliberately no value meaning \"from knowledge\".",
+          "description": "Which document the flag list and its descriptions were read from. There is deliberately no value meaning \"from knowledge\", and none meaning \"I ran the binary\" either: probing establishes that a flag exists, what the binary prints on rejection, and whether a value must be attached, but not what a flag MEANS -- which is what a description asserts and what this field attributes. A probe that contradicts the document is a reason to re-read the document, not a source of its own. Record probe findings in notes, with the command that produced them.",
           "enum": ["man-page", "help", "vendor-docs"]
         },
         "checked_on": {
@@ -236,7 +236,7 @@
         },
         "description": { "type": "string" },
         "conflicts_with": {
-          "description": "Flags that cannot be combined with this one. Only overlays can state this: no help or man page format expresses mutual exclusion in a machine-readable way.",
+          "description": "Flags that must not be given together with this one. Covers BOTH the flag the binary diagnoses as an error AND the flag it silently overrides on a last-one-wins basis. The two are one case for a caller: apexe's input is a JSON object, which carries no ordering, so for an override group WHICH flag wins is decided by the order the caller happened to write the keys in. Reporting such a pair as combinable would tell an agent it may send both, when the result is not predictable. Only overlays can state this: no help or man page format expresses mutual exclusion in a machine-readable way.",
           "type": "array",
           "items": { "type": "string" },
           "default": []

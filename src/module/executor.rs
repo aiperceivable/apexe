@@ -156,6 +156,70 @@ fn arg_form(schema: Option<&Value>, key: &str) -> ArgForm {
     ArgForm::Flag(format!("--{}", key.replace('_', "-")))
 }
 
+/// Whether a value will actually reach the command line.
+///
+/// `false` and null render nothing, so naming such a key is not "sending" the
+/// flag and must not trip the conflict check — `{"f": true, "i": false}` is a
+/// perfectly good way to say "force, not interactive".
+fn is_effective(value: &Value) -> bool {
+    !matches!(value, Value::Null | Value::Bool(false))
+}
+
+/// Reject inputs that name two flags the tool cannot take together.
+///
+/// Without this the pair is not an error but something worse: it renders, and
+/// which of the two wins is decided by the order the caller happened to write
+/// the JSON keys in. An object has no ordering anyone intended as an interface,
+/// so `{"f": true, "i": true}` on `rm` is not "interactive wins" — it is
+/// whichever key was typed last. Failing closed turns an unpredictable
+/// invocation into a message naming both flags.
+///
+/// Only curated overlays state mutual exclusion, so this fires only where a
+/// human recorded it; a schema without `x-apexe-conflicts-with` is unaffected.
+#[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+fn reject_conflicting_flags(
+    kwargs: &serde_json::Map<String, Value>,
+    input_schema: Option<&Value>,
+) -> Result<(), ModuleError> {
+    let Some(properties) = input_schema
+        .and_then(|s| s.get("properties"))
+        .and_then(Value::as_object)
+    else {
+        return Ok(());
+    };
+
+    for (key, value) in kwargs {
+        if !is_effective(value) {
+            continue;
+        }
+        let Some(conflicts) = properties
+            .get(key)
+            .and_then(|p| p.get("x-apexe-conflicts-with"))
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+
+        for other in conflicts.iter().filter_map(Value::as_str) {
+            // Report each pair once: the relation is declared on both flags.
+            if other <= key.as_str() {
+                continue;
+            }
+            if kwargs.get(other).is_some_and(is_effective) {
+                return Err(ModuleError::new(
+                    ErrorCode::GeneralInvalidInput,
+                    format!(
+                        "Parameters '{key}' and '{other}' cannot be used together; \
+                         send one or the other"
+                    ),
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Build CLI args from JSON kwargs, spelling each one the way `input_schema`
 /// says the wrapped tool accepts it.
 ///
@@ -170,6 +234,8 @@ pub fn build_arguments(
     kwargs: &serde_json::Map<String, Value>,
     input_schema: Option<&Value>,
 ) -> Result<Vec<String>, ModuleError> {
+    reject_conflicting_flags(kwargs, input_schema)?;
+
     let mut flags: Vec<String> = Vec::new();
     // (index, values) -- sorted before being appended, so operands land in the
     // order the usage line declared regardless of JSON key order.
@@ -204,6 +270,17 @@ pub fn build_arguments(
             let text = json_value_to_string(item);
             validate_argument_value(key, &text, item.is_number())?;
             match form {
+                // A long option carries its value with `=`, as one argv entry.
+                // Options whose value is *optional* accept no other spelling:
+                // GNU `ls --classify never` reads `never` as a file to list and
+                // fails, while `--classify=never` works. Options whose value is
+                // required accept both, so `=` is the one form that is always
+                // right, and the schema does not record which kind a flag is.
+                // Short options are the opposite -- `-I=PATTERN` passes a value
+                // that begins with `=` -- so they stay two entries.
+                ArgForm::Flag(ref literal) if literal.starts_with("--") => {
+                    rendered.push(format!("{literal}={text}"));
+                }
                 ArgForm::Flag(ref literal) => {
                     rendered.push(literal.clone());
                     rendered.push(text);
@@ -418,7 +495,7 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("file".to_string(), json!("test.txt"));
         let args = build_arguments(&kwargs, None).unwrap();
-        assert_eq!(args, vec!["--file", "test.txt"]);
+        assert_eq!(args, vec!["--file=test.txt"]);
     }
 
     #[test]
@@ -450,7 +527,7 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("include".to_string(), json!(["a", "b"]));
         let args = build_arguments(&kwargs, None).unwrap();
-        assert_eq!(args, vec!["--include", "a", "--include", "b"]);
+        assert_eq!(args, vec!["--include=a", "--include=b"]);
     }
 
     #[test]
@@ -466,7 +543,7 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("count".to_string(), json!(5));
         let args = build_arguments(&kwargs, None).unwrap();
-        assert_eq!(args, vec!["--count", "5"]);
+        assert_eq!(args, vec!["--count=5"]);
     }
 
     #[test]
@@ -501,17 +578,17 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("data".to_string(), json!(r#"{"name":"apexe"}"#));
         let args = build_arguments(&kwargs, None).expect("a JSON body must be passable");
-        assert_eq!(args, vec!["--data", r#"{"name":"apexe"}"#]);
+        assert_eq!(args, vec![r#"--data={"name":"apexe"}"#]);
 
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("data".to_string(), json!("name=apexe&lang=rust"));
         let args = build_arguments(&kwargs, None).expect("a form body must be passable");
-        assert_eq!(args, vec!["--data", "name=apexe&lang=rust"]);
+        assert_eq!(args, vec!["--data=name=apexe&lang=rust"]);
 
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("filter".to_string(), json!(r#".items[] | select(.n > $x)"#));
         let args = build_arguments(&kwargs, None).expect("a jq filter must be passable");
-        assert_eq!(args, vec!["--filter", r#".items[] | select(.n > $x)"#]);
+        assert_eq!(args, vec![r#"--filter=.items[] | select(.n > $x)"#]);
     }
 
     #[test]
@@ -535,7 +612,7 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("offset".to_string(), json!(-5));
         let args = build_arguments(&kwargs, None).unwrap();
-        assert_eq!(args, vec!["--offset", "-5"]);
+        assert_eq!(args, vec!["--offset=-5"]);
     }
 
     #[test]
@@ -567,6 +644,112 @@ mod tests {
 
         let args = build_arguments(&kwargs, Some(&schema)).unwrap();
         assert_eq!(args, vec!["-l", "-a"]);
+    }
+
+    #[test]
+    fn test_build_arguments_rejects_conflicting_flags() {
+        // Both would render, and which one the tool honours would come down to
+        // the order the caller wrote the keys in.
+        let schema = schema_with(json!({
+            "l": { "type": "boolean", "x-apexe-flag": "-l", "x-apexe-conflicts-with": ["1"] },
+            "1": { "type": "boolean", "x-apexe-flag": "-1", "x-apexe-conflicts-with": ["l"] },
+        }));
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("l".to_string(), json!(true));
+        kwargs.insert("1".to_string(), json!(true));
+
+        let err = build_arguments(&kwargs, Some(&schema)).unwrap_err();
+        assert_eq!(err.code, ErrorCode::GeneralInvalidInput);
+        assert!(
+            err.message.contains('l') && err.message.contains('1'),
+            "the error should name both flags: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_build_arguments_conflict_is_order_independent() {
+        // The rejection must not depend on which key came first -- that is the
+        // whole defect being closed.
+        let schema = schema_with(json!({
+            "l": { "type": "boolean", "x-apexe-flag": "-l", "x-apexe-conflicts-with": ["1"] },
+            "1": { "type": "boolean", "x-apexe-flag": "-1", "x-apexe-conflicts-with": ["l"] },
+        }));
+
+        for keys in [["l", "1"], ["1", "l"]] {
+            let mut kwargs = serde_json::Map::new();
+            for key in keys {
+                kwargs.insert(key.to_string(), json!(true));
+            }
+            assert!(
+                build_arguments(&kwargs, Some(&schema)).is_err(),
+                "order {keys:?} must be rejected too"
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_arguments_disabled_flag_is_not_a_conflict() {
+        // `false` renders nothing, so naming it is not sending it -- this is a
+        // legitimate way to say "long listing, not single-column".
+        let schema = schema_with(json!({
+            "l": { "type": "boolean", "x-apexe-flag": "-l", "x-apexe-conflicts-with": ["1"] },
+            "1": { "type": "boolean", "x-apexe-flag": "-1", "x-apexe-conflicts-with": ["l"] },
+        }));
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("l".to_string(), json!(true));
+        kwargs.insert("1".to_string(), json!(false));
+
+        assert_eq!(build_arguments(&kwargs, Some(&schema)).unwrap(), vec!["-l"]);
+    }
+
+    #[test]
+    fn test_build_arguments_without_conflict_annotations_is_unaffected() {
+        // Only curated overlays state mutual exclusion; a schema that says
+        // nothing must keep rendering exactly as before.
+        let schema = schema_with(json!({
+            "l": { "type": "boolean", "x-apexe-flag": "-l" },
+            "1": { "type": "boolean", "x-apexe-flag": "-1" },
+        }));
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("l".to_string(), json!(true));
+        kwargs.insert("1".to_string(), json!(true));
+
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            vec!["-l", "-1"]
+        );
+    }
+
+    #[test]
+    fn test_build_arguments_long_flag_value_uses_equals() {
+        // GNU `ls --classify never` lists a file called `never` and fails;
+        // only `--classify=never` works, because the option's value is
+        // optional. Options with a required value accept both spellings, and
+        // the schema does not say which kind a flag is, so `=` is the only
+        // form that is always correct.
+        let schema = schema_with(json!({
+            "classify": { "type": "string", "x-apexe-flag": "--classify" },
+        }));
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("classify".to_string(), json!("never"));
+
+        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        assert_eq!(args, vec!["--classify=never"]);
+    }
+
+    #[test]
+    fn test_build_arguments_short_flag_value_stays_separate() {
+        // The mirror image: `-I=PATTERN` would pass a value beginning with `=`,
+        // so short options keep the value as its own argv entry.
+        let schema = schema_with(json!({
+            "I": { "type": "string", "x-apexe-flag": "-I" },
+        }));
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("I".to_string(), json!("*.tmp"));
+
+        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        assert_eq!(args, vec!["-I", "*.tmp"]);
     }
 
     #[test]
@@ -676,7 +859,7 @@ mod tests {
         kwargs.insert("foo_bar".to_string(), json!("v"));
 
         let args = build_arguments(&kwargs, Some(&schema)).unwrap();
-        assert_eq!(args, vec!["--foo_bar", "v"]);
+        assert_eq!(args, vec!["--foo_bar=v"]);
     }
 
     #[test]

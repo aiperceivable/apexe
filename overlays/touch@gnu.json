@@ -17,7 +17,7 @@
     "package": "coreutils",
     "source": "help",
     "checked_on": "2026-07-27",
-    "command": "docker run --rm debian:stable-slim touch --help",
+    "command": "docker run --rm debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd touch --help",
     "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
     "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention. Enum values for --time come from the value list in the same --help output. conflicts_with was settled against the reference build because --help states no exclusion: 'touch -t ... -d ...' and 'touch -t ... -r FILE' both fail with 'touch: cannot specify times from more than one source', while 'touch -d ... -r FILE' exits 0, so -t is exclusive with -d and -r but -d and -r are not exclusive with each other. 'touch -a -m FILE' and 'touch --time=access -m FILE' both exit 0, so the access/modification selectors are combinable and carry no conflicts_with."
   },

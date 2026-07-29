@@ -17,7 +17,7 @@
     "package": "coreutils",
     "source": "help",
     "checked_on": "2026-07-27",
-    "command": "docker run --rm debian:stable-slim mkdir --help",
+    "command": "docker run --rm debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd mkdir --help",
     "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
     "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention. No conflicts_with: --help states no mutual exclusion, and 'mkdir -Z --context=x DIR' was run against the reference build and exited 0 (with a warning that --context needs an SELinux/SMACK-enabled kernel), so -Z and --context are not exclusive."
   },

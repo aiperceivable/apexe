@@ -184,6 +184,15 @@ pub struct OverlayFlag {
     pub value_name: Option<String>,
     #[serde(default)]
     pub description: String,
+    /// Flags that must not be given together with this one.
+    ///
+    /// Covers both kinds of incompatibility, deliberately: the pair the binary
+    /// rejects outright, and the pair it silently resolves last-one-wins. They
+    /// are one case for a caller, because apexe's input is a JSON object and an
+    /// object has no ordering — for an override group, *which* flag wins is
+    /// decided by the order the caller happened to write the keys in. Listing
+    /// such a pair as combinable would tell an agent it may send both, when the
+    /// outcome is not predictable.
     #[serde(default)]
     pub conflicts_with: Vec<String>,
     #[serde(default)]
@@ -219,11 +228,20 @@ pub struct OverlayArg {
     pub variadic: bool,
 }
 
-/// Which document an overlay's facts were read out of.
+/// Which document an overlay's flag list and descriptions were read out of.
 ///
 /// Deliberately narrow: these are the only three things a human can actually
 /// have consulted. "I know this tool" is not a source, and there is no variant
 /// of this enum that lets an author record it as one.
+///
+/// There is deliberately no variant for running the binary either, though a
+/// probe is often what *checked* an overlay. Probing answers a different
+/// question: it establishes that a flag exists, what the binary prints when it
+/// rejects something, and whether a value must be attached — but not what a
+/// flag *means*, which is what a description asserts and what this field
+/// attributes. A probe that contradicts the document is a reason to re-read the
+/// document, not a source in its own right. Record probe findings in
+/// [`OverlayProvenance::notes`] together with the command that produced them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EvidenceSource {

@@ -167,6 +167,51 @@ fn arg_to_schema(arg: &ScannedArg, index: usize) -> JsonValue {
     schema
 }
 
+/// Map each spelling of a flag (`-l`, `--long`) to its schema property name, so
+/// a `conflicts_with` entry — which names flags the way the command line does —
+/// can be rewritten into the property names a caller actually sends.
+fn property_names_by_literal(
+    command: &ScannedCommand,
+    global_flags: &[ScannedFlag],
+) -> std::collections::HashMap<String, String> {
+    let mut by_literal = std::collections::HashMap::new();
+    for flag in command.flags.iter().chain(global_flags) {
+        let prop_name = flag.canonical_name();
+        for literal in [flag.short_name.as_deref(), flag.long_name.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            by_literal
+                .entry(literal.to_string())
+                .or_insert_with(|| prop_name.clone());
+        }
+    }
+    by_literal
+}
+
+/// Record the flags that must not be sent together with this one.
+///
+/// Translated from command-line spellings into property names, because that is
+/// what a caller sends and what [`crate::module::executor`] checks. Entries
+/// naming a flag this command does not declare are dropped rather than passed
+/// through: the overlay loader already rejects those, so anything left here
+/// would be a flag filtered out after validation, and a dangling name in the
+/// contract is worse than a missing one.
+fn apply_conflicts(
+    schema: &mut JsonValue,
+    flag: &ScannedFlag,
+    by_literal: &std::collections::HashMap<String, String>,
+) {
+    let conflicts: Vec<String> = flag
+        .conflicts_with
+        .iter()
+        .filter_map(|literal| by_literal.get(literal).cloned())
+        .collect();
+    if !conflicts.is_empty() {
+        schema["x-apexe-conflicts-with"] = json!(conflicts);
+    }
+}
+
 /// Build a JSON Schema for command inputs, merging command flags with global flags.
 ///
 /// Command-level flags take precedence; global flags are included only when
@@ -174,11 +219,13 @@ fn arg_to_schema(arg: &ScannedArg, index: usize) -> JsonValue {
 pub fn build_input_schema(command: &ScannedCommand, global_flags: &[ScannedFlag]) -> JsonValue {
     let mut properties = serde_json::Map::new();
     let mut required: Vec<String> = Vec::new();
+    let by_literal = property_names_by_literal(command, global_flags);
 
     // Command flags first.
     for flag in &command.flags {
         let prop_name = flag.canonical_name();
-        let prop_schema = flag_to_schema(flag);
+        let mut prop_schema = flag_to_schema(flag);
+        apply_conflicts(&mut prop_schema, flag, &by_literal);
         properties.insert(prop_name.clone(), prop_schema);
         if flag.required {
             required.push(prop_name);
@@ -189,7 +236,8 @@ pub fn build_input_schema(command: &ScannedCommand, global_flags: &[ScannedFlag]
     for flag in global_flags {
         let prop_name = flag.canonical_name();
         if !properties.contains_key(&prop_name) {
-            let prop_schema = flag_to_schema(flag);
+            let mut prop_schema = flag_to_schema(flag);
+            apply_conflicts(&mut prop_schema, flag, &by_literal);
             properties.insert(prop_name.clone(), prop_schema);
             if flag.required {
                 required.push(prop_name);
