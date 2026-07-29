@@ -57,7 +57,7 @@ impl ManPageParser {
         // Same repair the parser pipeline applies to `--help` output: an option
         // whose value placeholder ended up at the head of its description takes
         // a value, and must not be typed boolean.
-        crate::scanner::parsers::value_placeholder::recover_values_from_descriptions(&mut flags);
+        crate::scanner::value_placeholder::recover_values_from_descriptions(&mut flags);
         let examples = extract_man_examples(&text, tool_name);
 
         if description.is_empty() && flags.is_empty() && examples.is_empty() {
@@ -385,7 +385,18 @@ fn flush_flag(
 ) {
     if let Some(mut flag) = current {
         flag.description = description_lines.join(" ").trim().to_string();
-        flags.push(flag);
+        // A parsed line that named no option must not become a property.
+        // `parse_flag_line` skips naming the bare `--` end-of-options marker,
+        // which several man pages document inside OPTIONS, but it still returns
+        // a flag; without this guard that flag reaches the schema under
+        // `canonical_name`'s `"unknown"` fallback, and the executor renders the
+        // result as `--unknown` — a token the tool rejects. Six of git's 142
+        // generated modules carried exactly that property. Dropping at the one
+        // point every parser path funnels through means no future spelling can
+        // reintroduce it.
+        if flag.long_name.is_some() || flag.short_name.is_some() {
+            flags.push(flag);
+        }
     }
     description_lines.clear();
 }
@@ -487,9 +498,7 @@ fn parse_flag_line(trimmed: &str) -> FlagLine {
     // sends. Inference is shared with the pipeline's placeholder-recovery pass
     // so both paths type the same wording the same way.
     let value_type = match value_name.as_deref() {
-        Some(placeholder) => {
-            crate::scanner::parsers::value_placeholder::infer_value_type(placeholder)
-        }
+        Some(placeholder) => crate::scanner::value_placeholder::infer_value_type(placeholder),
         None => ValueType::Boolean,
     };
 
@@ -976,13 +985,21 @@ ENVIRONMENT
         // become a flag whose property key was the empty string.
         let man_text = "OPTIONS\n       --\n              Do not interpret any more arguments as options.\n\n       --all\n              Everything.\n";
         let flags = extract_man_options(man_text);
-        let names: Vec<&str> = flags
-            .iter()
-            .filter_map(|f| f.long_name.as_deref())
-            .collect();
-        assert_eq!(names, vec!["--all"]);
+        // Asserting the COUNT is what makes this test load-bearing. The earlier
+        // version filtered on `long_name` and checked `canonical_name()` was
+        // non-empty — both of which a nameless flag satisfies through the
+        // `"unknown"` fallback — so it passed while six real git modules
+        // shipped a bogus `unknown` property that renders as `--unknown`.
+        assert_eq!(
+            flags.len(),
+            1,
+            "the end-of-options marker must not become a flag: {flags:?}"
+        );
+        assert_eq!(flags[0].long_name.as_deref(), Some("--all"));
         assert!(
-            flags.iter().all(|f| !f.canonical_name().is_empty()),
+            flags
+                .iter()
+                .all(|f| f.long_name.is_some() || f.short_name.is_some()),
             "a flag with no usable name must not reach the schema"
         );
     }

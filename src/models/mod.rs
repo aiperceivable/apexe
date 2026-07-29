@@ -119,6 +119,22 @@ pub struct ScannedFlag {
     /// before the field existed still load.
     #[serde(default)]
     pub value_optional: bool,
+    /// Whether this flag must be rendered *before* the command's operands.
+    ///
+    /// The companion to [`ScannedArg::before_flags`], and the reason placement
+    /// cannot be a single boolean on the operand: `find`'s grammar is
+    /// `find [-H|-L|-P] [-EXdsx] [-f path] path ... [expression]`, which puts
+    /// *two* classes of dash-token on opposite sides of the same operand. Its
+    /// true options must precede the paths (`find -L dir` works, `find dir -L`
+    /// is "unknown primary or operator"), while its primaries must follow them.
+    /// Marking only the operand moved both classes at once and broke the
+    /// options to fix the primaries.
+    ///
+    /// Like `before_flags`, this is not derivable from a scan — the usage line
+    /// does not say which of a tool's dash-tokens live in the trailing operand
+    /// slot — so only curated overlays populate it. Defaulted on deserialize.
+    #[serde(default)]
+    pub before_operands: bool,
     /// Whether this flag can make the command run until it is killed.
     ///
     /// The claim is "may not terminate on its own", not "always blocks":
@@ -401,6 +417,7 @@ mod tests {
             (HelpFormat::Argparse, "\"argparse\""),
             (HelpFormat::Cobra, "\"cobra\""),
             (HelpFormat::Clap, "\"clap\""),
+            (HelpFormat::Man, "\"man\""),
             (HelpFormat::Unknown, "\"unknown\""),
         ];
         for (variant, expected_json) in formats {

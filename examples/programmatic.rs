@@ -18,7 +18,14 @@ fn main() -> anyhow::Result<()> {
     // --- Step 1: Scan a CLI tool ---
     println!("=== Scanning 'echo' (a simple tool for demonstration) ===\n");
     let orchestrator = ScanOrchestrator::new(config.clone());
-    let tools = orchestrator.scan(&["echo".to_string()], true, 1)?;
+    // `scan` reports per-tool outcomes rather than aborting the batch, so a
+    // caller decides what a partial run means. Ignoring `failures` would
+    // silently under-report the surface.
+    let outcome = orchestrator.scan(&["echo".to_string()], true, 1);
+    for failure in &outcome.failures {
+        eprintln!("Could not scan {}: {}", failure.tool, failure.error);
+    }
+    let tools = outcome.tools;
 
     for tool in &tools {
         println!(

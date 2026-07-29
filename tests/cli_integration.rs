@@ -100,3 +100,63 @@ fn test_config_no_flags_succeeds() {
         .assert()
         .success();
 }
+
+/// Regression: one unscannable name used to abort the whole batch.
+///
+/// `apexe scan` propagated the first error, so a single bad name discarded
+/// every tool already scanned *and* every tool not yet reached — the command
+/// wrote no bindings at all and its message did not say which name failed.
+#[test]
+fn test_scan_writes_bindings_for_the_tools_that_succeeded() {
+    let out = tempfile::tempdir().unwrap();
+
+    let assert = Command::cargo_bin("apexe")
+        .unwrap()
+        .args(["scan", "echo", "zzz_no_such_tool_xyz", "ls"])
+        .args(["--no-cache", "--output-dir"])
+        .arg(out.path())
+        .assert()
+        // Partial success still exits non-zero: a pipeline must not read a
+        // short surface as the whole surface.
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("zzz_no_such_tool_xyz"),
+        "the failing tool must be named: {stderr}"
+    );
+    assert!(
+        stderr.contains("Scanned 2 of 3 tools"),
+        "the message must state both halves: {stderr}"
+    );
+
+    // The successes are on disk — including `ls`, which comes *after* the
+    // failure and so proves the batch continued.
+    let written: Vec<String> = std::fs::read_dir(out.path())
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+        .collect();
+    assert!(
+        written.iter().any(|n| n.contains("echo")),
+        "bindings written: {written:?}"
+    );
+    assert!(
+        written.iter().any(|n| n.contains("ls")),
+        "the tool after the failure must still be scanned: {written:?}"
+    );
+}
+
+/// When nothing scans there is no deliverable, so it is a plain failure.
+#[test]
+fn test_scan_fails_outright_when_no_tool_can_be_scanned() {
+    let out = tempfile::tempdir().unwrap();
+
+    Command::cargo_bin("apexe")
+        .unwrap()
+        .args(["scan", "zzz_no_such_tool_xyz", "zzz_also_missing_xyz"])
+        .args(["--no-cache", "--output-dir"])
+        .arg(out.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("No tool could be scanned"));
+}

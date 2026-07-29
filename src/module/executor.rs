@@ -129,10 +129,22 @@ enum OperandPlacement {
     BeforeFlags,
 }
 
+/// Where a flag sits relative to the command's operands.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FlagPlacement {
+    /// After the leading operands — the ordinary `tool [options] operands`
+    /// position, and the default.
+    Default,
+    /// Ahead of every operand. `find`'s true options (`-L`, `-s`, `-f path`)
+    /// must precede the paths even though its primaries must follow them.
+    BeforeOperands,
+}
+
 /// How a single input property is spelled on the command line.
 enum ArgForm {
-    /// Passed behind a flag token, e.g. `-l` or `--output FILE`.
-    Flag(String),
+    /// Passed behind a flag token, e.g. `-l` or `--output FILE`, on the stated
+    /// side of the operands.
+    Flag(String, FlagPlacement),
     /// Passed bare, at the given index among the command's operands, on the
     /// stated side of the flags.
     Positional(u64, OperandPlacement),
@@ -166,14 +178,23 @@ fn arg_form(schema: Option<&Value>, key: &str) -> ArgForm {
         return ArgForm::Positional(index, placement);
     }
 
+    let placement = match property
+        .and_then(|p| p.get("x-apexe-flag-position"))
+        .and_then(Value::as_str)
+    {
+        Some("before-operands") => FlagPlacement::BeforeOperands,
+        // Absent or unrecognized keeps the prior behaviour.
+        _ => FlagPlacement::Default,
+    };
+
     if let Some(literal) = property
         .and_then(|p| p.get("x-apexe-flag"))
         .and_then(Value::as_str)
     {
-        return ArgForm::Flag(literal.to_string());
+        return ArgForm::Flag(literal.to_string(), placement);
     }
 
-    ArgForm::Flag(format!("--{}", key.replace('_', "-")))
+    ArgForm::Flag(format!("--{}", key.replace('_', "-")), placement)
 }
 
 /// Whether a value will actually reach the command line.
@@ -293,11 +314,16 @@ fn reject_bare_flag_for_value_option(
 /// ordering of its own, so without that index `cp source target` would depend
 /// on the order the caller happened to write the JSON keys in.
 ///
-/// Operands go after the flags unless the schema says otherwise. It says
-/// otherwise for `find`, whose grammar is `find path ... [expression]`: its
-/// predicates are spelled like options but are evaluated per file, so
-/// `find -name '*.txt' dir` is rejected outright ("illegal option -- n") while
-/// `find dir -name '*.txt'` works. See `x-apexe-operand-position`.
+/// Placement is per-token, not one global rule, because a single grammar can
+/// put dash-tokens on both sides of the same operand. `find` is
+/// `find [-H|-L|-P] [-EXdsx] [-f path] path ... [expression]`: its true
+/// options must precede the paths (`find dir -L` is "unknown primary or
+/// operator") while its primaries must follow them (`find -name '*.txt' dir`
+/// is "illegal option -- n"). Four ordered groups are therefore emitted —
+/// leading flags, leading operands, trailing flags, trailing operands — each
+/// sorted by its own recorded index. A schema carrying neither marker yields
+/// the ordinary `tool [options] operands` shape, unchanged.
+/// See `x-apexe-flag-position` and `x-apexe-operand-position`.
 #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
 pub fn build_arguments(
     kwargs: &serde_json::Map<String, Value>,
@@ -305,7 +331,8 @@ pub fn build_arguments(
 ) -> Result<Vec<String>, ModuleError> {
     reject_conflicting_flags(kwargs, input_schema)?;
 
-    let mut flags: Vec<String> = Vec::new();
+    let mut leading_flags: Vec<String> = Vec::new();
+    let mut trailing_flags: Vec<String> = Vec::new();
     // (index, values) -- each list is sorted before being appended, so operands
     // land in the order the usage line declared regardless of JSON key order.
     let mut leading_operands: Vec<(u64, Vec<String>)> = Vec::new();
@@ -318,10 +345,13 @@ pub fn build_arguments(
         // `true` and no way to express `false`. Skipping is the only coherent
         // reading, and matches how `false` is treated for flags.
         if let Value::Bool(enabled) = value {
-            if let ArgForm::Flag(ref literal) = form {
+            if let ArgForm::Flag(ref literal, placement) = form {
                 if *enabled {
                     reject_bare_flag_for_value_option(input_schema, key, literal)?;
-                    flags.push(literal.clone());
+                    match placement {
+                        FlagPlacement::BeforeOperands => leading_flags.push(literal.clone()),
+                        FlagPlacement::Default => trailing_flags.push(literal.clone()),
+                    }
                 }
             }
             continue;
@@ -349,10 +379,10 @@ pub fn build_arguments(
                 // right, and the schema does not record which kind a flag is.
                 // Short options are the opposite -- `-I=PATTERN` passes a value
                 // that begins with `=` -- so they stay two entries.
-                ArgForm::Flag(ref literal) if literal.starts_with("--") => {
+                ArgForm::Flag(ref literal, _) if literal.starts_with("--") => {
                     rendered.push(format!("{literal}={text}"));
                 }
-                ArgForm::Flag(ref literal) => {
+                ArgForm::Flag(ref literal, _) => {
                     rendered.push(literal.clone());
                     rendered.push(text);
                 }
@@ -361,7 +391,8 @@ pub fn build_arguments(
         }
 
         match form {
-            ArgForm::Flag(_) => flags.extend(rendered),
+            ArgForm::Flag(_, FlagPlacement::BeforeOperands) => leading_flags.extend(rendered),
+            ArgForm::Flag(_, FlagPlacement::Default) => trailing_flags.extend(rendered),
             ArgForm::Positional(index, OperandPlacement::BeforeFlags) => {
                 leading_operands.push((index, rendered));
             }
@@ -374,11 +405,9 @@ pub fn build_arguments(
     leading_operands.sort_by_key(|(index, _)| *index);
     trailing_operands.sort_by_key(|(index, _)| *index);
 
-    let mut args: Vec<String> = leading_operands
-        .into_iter()
-        .flat_map(|(_, values)| values)
-        .collect();
-    args.extend(flags);
+    let mut args: Vec<String> = leading_flags;
+    args.extend(leading_operands.into_iter().flat_map(|(_, values)| values));
+    args.extend(trailing_flags);
     args.extend(trailing_operands.into_iter().flat_map(|(_, values)| values));
     Ok(args)
 }
@@ -621,6 +650,94 @@ mod tests {
         assert_eq!(
             build_arguments(&kwargs, Some(&schema)).unwrap(),
             vec!["sandbox", "-name", "*.txt"]
+        );
+    }
+
+    #[test]
+    fn test_build_arguments_places_marked_flags_before_operands() {
+        // Regression: `before_flags` alone was half a fix. `find`'s grammar is
+        // `find [-L] path ... [expression]` — its true options precede the
+        // paths while its primaries follow them, so marking only the operand
+        // dragged the options behind the path too, where BSD find answers
+        // "unknown primary or operator" and GNU "unknown predicate".
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "array",
+                    "x-apexe-positional": 0,
+                    "x-apexe-operand-position": "before-flags"
+                },
+                "L": {
+                    "type": "boolean",
+                    "x-apexe-flag": "-L",
+                    "x-apexe-flag-position": "before-operands"
+                },
+                "name": { "type": "string", "x-apexe-flag": "-name" },
+            }
+        });
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("name".to_string(), json!("*.txt"));
+        kwargs.insert("path".to_string(), json!(["sandbox"]));
+        kwargs.insert("L".to_string(), json!(true));
+
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            vec!["-L", "sandbox", "-name", "*.txt"],
+            "options precede the path, primaries follow it"
+        );
+    }
+
+    #[test]
+    fn test_build_arguments_places_a_marked_value_flag_before_operands() {
+        // `find -f path` carries a value and is still pre-operand.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "array",
+                    "x-apexe-positional": 0,
+                    "x-apexe-operand-position": "before-flags"
+                },
+                "f": {
+                    "type": "string",
+                    "x-apexe-flag": "-f",
+                    "x-apexe-flag-position": "before-operands"
+                },
+            }
+        });
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("path".to_string(), json!(["sandbox"]));
+        kwargs.insert("f".to_string(), json!("extra"));
+
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            vec!["-f", "extra", "sandbox"]
+        );
+    }
+
+    #[test]
+    fn test_build_arguments_keeps_unmarked_flags_after_leading_operands() {
+        // The default must not move: a tool that marks its operand but not its
+        // flags keeps every flag in the trailing group.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "array",
+                    "x-apexe-positional": 0,
+                    "x-apexe-operand-position": "before-flags"
+                },
+                "name": { "type": "string", "x-apexe-flag": "-name" },
+            }
+        });
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("name".to_string(), json!("*.txt"));
+        kwargs.insert("path".to_string(), json!(["dir"]));
+
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            vec!["dir", "-name", "*.txt"]
         );
     }
 

@@ -29,9 +29,9 @@ fn test_scan_git() {
     let (_tmp, config) = test_config();
     let orchestrator = ScanOrchestrator::new(config);
 
-    let results = orchestrator
-        .scan(&["git".into()], true, 2)
-        .expect("Failed to scan git");
+    let outcome = orchestrator.scan(&["git".into()], true, 2);
+    assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+    let results = outcome.tools;
 
     assert_eq!(results.len(), 1);
     let git = &results[0];
@@ -93,9 +93,9 @@ fn test_scan_docker() {
     let (_tmp, config) = test_config();
     let orchestrator = ScanOrchestrator::new(config);
 
-    let results = orchestrator
-        .scan(&["docker".into()], true, 2)
-        .expect("Failed to scan docker");
+    let outcome = orchestrator.scan(&["docker".into()], true, 2);
+    assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+    let results = outcome.tools;
 
     assert_eq!(results.len(), 1);
     let docker = &results[0];
@@ -125,15 +125,26 @@ fn test_scan_docker() {
 }
 
 /// Regression (#20): scan the real `find` on this host, build its module the
-/// way `apexe scan` does, and run it.
+/// way `apexe scan` does, and run it — for BOTH classes of dash-token.
 ///
-/// This is deliberately end to end. `find`'s predicates render correctly as
-/// strings under any ordering, so a string assertion on the argv proves
-/// nothing — the defect was that `find -name '*.txt' dir` is *rejected by the
-/// binary* ("illegal option -- n" on BSD, "paths must precede expression" on
-/// GNU). Only executing it can tell the two apart.
+/// This is deliberately end to end. `find`'s options and predicates render
+/// correctly as strings under any ordering, so a string assertion on the argv
+/// proves nothing — the defect is that the binary *rejects* the wrong order:
+/// `find -name '*.txt' dir` is "illegal option -- n" on BSD and "paths must
+/// precede expression" on GNU, while `find dir -L` is "unknown primary or
+/// operator" / "unknown predicate". Only executing it can tell them apart.
+///
+/// The option case is the one the first version of this test missed: it
+/// exercised only path+predicate, so the fix that moved the predicates behind
+/// the path also moved the options there — breaking them — undetected.
+///
+/// The environment precondition is explicit rather than assumed. Operand
+/// placement comes only from a curated overlay (docs/overlays.md states it is
+/// deliberately not derivable from a scan), so on a host whose `find` matches
+/// no shipped overlay — BusyBox, or a BSD other than macOS/FreeBSD — there is
+/// nothing to assert and the test reports that instead of blaming the renderer.
 #[tokio::test]
-async fn test_find_predicates_render_after_the_path() {
+async fn test_find_renders_options_before_the_path_and_predicates_after() {
     use apcore::Module;
     use apexe::adapter::CliToolConverter;
     use apexe::module::CliModule;
@@ -143,38 +154,104 @@ async fn test_find_predicates_render_after_the_path() {
     std::fs::create_dir_all(&sandbox).unwrap();
     std::fs::write(sandbox.join("wanted.txt"), b"x").unwrap();
     std::fs::write(sandbox.join("ignored.log"), b"x").unwrap();
+    let sandbox = sandbox.to_str().unwrap();
 
     let orchestrator = ScanOrchestrator::new(config);
-    let tools = orchestrator
-        .scan(&["find".into()], true, 1)
-        .expect("find should scan");
+    let outcome = orchestrator.scan(&["find".into()], true, 1);
+    if outcome.tools.is_empty() {
+        eprintln!("skipping: no `find` on PATH");
+        return;
+    }
+    let tools = outcome.tools;
+    let Some(overlay) = tools[0].overlay.clone() else {
+        eprintln!(
+            "skipping: this host's `find` matches no shipped overlay, and operand \
+             placement is overlay-supplied only"
+        );
+        return;
+    };
+
     let modules = CliToolConverter::new().convert(&tools[0]);
     let module = CliModule::from_scanned(&modules[0], 10_000).expect("binding should parse");
 
-    let result = module
+    // A predicate must follow the path.
+    let by_predicate = module
         .execute(
-            serde_json::json!({
-                "path": [sandbox.to_str().unwrap()],
-                "name": "*.txt",
-            }),
+            serde_json::json!({ "path": [sandbox], "name": "*.txt" }),
             &apcore::Context::anonymous(),
         )
         .await
         .expect("find should execute");
-
     assert_eq!(
-        result["exit_code"], 0,
-        "find rejected the rendered argv: {result}"
+        by_predicate["exit_code"], 0,
+        "{overlay}: find rejected the predicate ordering: {by_predicate}"
     );
-    let stdout = result["stdout"].as_str().unwrap_or_default();
+    let stdout = by_predicate["stdout"].as_str().unwrap_or_default();
     assert!(
-        stdout.contains("wanted.txt"),
-        "the predicate did not take effect: {result}"
+        stdout.contains("wanted.txt") && !stdout.contains("ignored.log"),
+        "{overlay}: the predicate did not take effect: {by_predicate}"
+    );
+
+    // A true option must PRECEDE the path. `-L` is spelled the same on both
+    // variants and is a plain boolean, so one input covers BSD and GNU.
+    let with_option = module
+        .execute(
+            serde_json::json!({ "path": [sandbox], "L": true, "name": "*.txt" }),
+            &apcore::Context::anonymous(),
+        )
+        .await
+        .expect("find should execute");
+    assert_eq!(
+        with_option["exit_code"], 0,
+        "{overlay}: find rejected `-L` — an option rendered after the path is \
+         'unknown primary or operator' (BSD) / 'unknown predicate' (GNU): {with_option}"
     );
     assert!(
-        !stdout.contains("ignored.log"),
-        "the predicate was not applied: {result}"
+        with_option["stdout"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("wanted.txt"),
+        "{overlay}: the predicate stopped working once an option was added: {with_option}"
     );
+}
+
+/// Regression (#20, GNU half): the shipped `find` overlays must carry the
+/// placement markers on both sides, asserted without needing a GNU host.
+///
+/// The end-to-end test above can only exercise whichever variant this machine
+/// has. Nothing else pinned `find@gnu`, so deleting its markers would have left
+/// the suite green on every host while every GNU predicate broke.
+#[test]
+fn test_shipped_find_overlays_declare_operand_and_flag_placement() {
+    for variant in ["bsd", "gnu"] {
+        let path = format!("overlays/find@{variant}.json");
+        let raw = std::fs::read_to_string(&path).expect("overlay should be readable");
+        let doc: serde_json::Value = serde_json::from_str(&raw).expect("overlay should parse");
+
+        let path_operand = doc["positional_args"]
+            .as_array()
+            .expect("positional_args")
+            .iter()
+            .find(|arg| arg["name"] == "path")
+            .unwrap_or_else(|| panic!("{path}: no `path` operand"));
+        assert_eq!(
+            path_operand["before_flags"], true,
+            "{path}: `path` must render before the predicates"
+        );
+
+        let pre_operand: Vec<&str> = doc["flags"]
+            .as_array()
+            .expect("flags")
+            .iter()
+            .filter(|f| f["before_operands"] == true)
+            .filter_map(|f| f["short"].as_str().or_else(|| f["long"].as_str()))
+            .collect();
+        // `-L` is the shared case; both variants reject it after the path.
+        assert!(
+            pre_operand.contains(&"-L"),
+            "{path}: find's true options must render before the path, got {pre_operand:?}"
+        );
+    }
 }
 
 // T46: Graceful degradation test
@@ -184,11 +261,11 @@ fn test_graceful_degradation() {
     let orchestrator = ScanOrchestrator::new(config);
 
     // 'true' is a tool that produces no help output
-    let results = orchestrator.scan(&["true".into()], true, 1);
+    let outcome = orchestrator.scan(&["true".into()], true, 1);
 
     // Should not panic or crash
-    assert!(results.is_ok());
-    let tools = results.unwrap();
+    assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+    let tools = outcome.tools;
     assert_eq!(tools.len(), 1);
 
     let tool = &tools[0];

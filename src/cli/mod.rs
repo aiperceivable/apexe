@@ -108,7 +108,16 @@ impl ScanArgs {
                 .load_overlay(overlay_path)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
         }
-        let results = orchestrator.scan(&self.tools, self.no_cache, self.depth)?;
+        let outcome = orchestrator.scan(&self.tools, self.no_cache, self.depth);
+
+        // Nothing scanned means there is nothing to write, and writing an empty
+        // ACL over a good one would be worse than doing nothing.
+        if outcome.is_total_failure() {
+            return Err(anyhow::anyhow!(
+                "No tool could be scanned:\n{}",
+                Self::render_failures(&outcome.failures)
+            ));
+        }
 
         let output_dir = self
             .output_dir
@@ -116,7 +125,7 @@ impl ScanArgs {
             .unwrap_or_else(|| config.modules_dir.clone());
 
         let converter = crate::adapter::CliToolConverter::new();
-        let modules = converter.convert_all(&results);
+        let modules = converter.convert_all(&outcome.tools);
 
         // These are the command's deliverables. A failed write must surface as
         // a non-zero exit, not a swallowed warning — otherwise `apexe scan`
@@ -124,9 +133,37 @@ impl ScanArgs {
         self.write_bindings(&modules, &output_dir)?;
         self.write_acl(&modules, config)?;
         self.write_skills(&modules)?;
-        self.print_results(results, &modules)?;
+        let scanned_count = outcome.tools.len();
+        self.print_results(outcome.tools, &modules)?;
+
+        // A partial run wrote real bindings, so the successes are reported
+        // above and kept on disk — but it also silently produced fewer modules
+        // than asked for, which is the failure mode this project has already
+        // been bitten by. Exiting non-zero is what stops a pipeline from
+        // treating a short surface as the whole surface; the message names both
+        // halves so the exit code is never the only information available.
+        if !outcome.failures.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Scanned {} of {} tools; bindings for the {} that succeeded were written to {}.\n\
+                 Failed:\n{}",
+                scanned_count,
+                self.tools.len(),
+                scanned_count,
+                output_dir.display(),
+                Self::render_failures(&outcome.failures)
+            ));
+        }
 
         Ok(())
+    }
+
+    /// One `  tool: reason` line per failure, in the order they were requested.
+    fn render_failures(failures: &[crate::scanner::ScanFailure]) -> String {
+        failures
+            .iter()
+            .map(|failure| format!("  {}: {}", failure.tool, failure.error))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn write_bindings(

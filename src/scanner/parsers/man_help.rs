@@ -25,6 +25,22 @@ use crate::scanner::parsers::gnu::detect_structured_output;
 use crate::scanner::parsers::positional_args::extract_args_from_usage_line;
 use crate::scanner::protocol::{CliParser, ParsedHelp};
 
+/// The bare command name, for a `tool_name` that may be an absolute path.
+///
+/// `extract_man_examples` accepts a bare invocation only when the line starts
+/// with the tool's own name, which is what separates a command from the prose
+/// around it. The scanner accepts a tool as either a bare name (`git`) or a
+/// path (`/usr/bin/git`) — AP Studio passes the latter — and forwards whichever
+/// it was given. Left unnormalized, scanning by path matched no EXAMPLES line
+/// at all, so the same tool yielded a different contract depending on how it
+/// was named. Tier 2 already normalizes; this brings Tier 1 in line.
+fn documentation_name(tool_name: &str) -> &str {
+    std::path::Path::new(tool_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(tool_name)
+}
+
 /// Tier 1 parser for man-page-shaped help output.
 pub struct ManHelpParser;
 
@@ -63,7 +79,7 @@ impl CliParser for ManHelpParser {
             // with the parsers that read a "Commands:" listing; a page's
             // cross-references in SEE ALSO are related commands, not children.
             subcommand_names: Vec::new(),
-            examples: extract_man_examples(help_text, tool_name),
+            examples: extract_man_examples(help_text, documentation_name(tool_name)),
             structured_output,
             help_format: HelpFormat::Man,
         })
@@ -165,6 +181,35 @@ GIT
     #[test]
     fn test_man_parser_reports_its_format() {
         assert_eq!(parse(GIT_LOG_MAN).help_format, HelpFormat::Man);
+    }
+
+    #[test]
+    fn test_man_parser_finds_examples_when_scanned_by_absolute_path() {
+        // Regression: the scanner forwards whatever it was given, and AP Studio
+        // passes an absolute path. `extract_man_examples` matches a bare
+        // invocation by prefix, so `/usr/bin/git` matched nothing and the same
+        // tool produced a different contract depending on how it was named.
+        const WITH_EXAMPLES: &str = "\
+GIT-LOG(1)                        Git Manual                        GIT-LOG(1)
+
+NAME
+       git-log - Show commit logs
+
+SYNOPSIS
+       git log [<options>] [<revision-range>] [[--] <path>...]
+
+EXAMPLES
+       git log --no-merges
+           Show the whole commit history, but skip any merges.
+";
+        let by_name = ManHelpParser.parse(WITH_EXAMPLES, "git").unwrap();
+        let by_path = ManHelpParser.parse(WITH_EXAMPLES, "/usr/bin/git").unwrap();
+
+        assert_eq!(by_name.examples, vec!["git log --no-merges"]);
+        assert_eq!(
+            by_path.examples, by_name.examples,
+            "a path and a bare name must yield the same contract"
+        );
     }
 
     #[test]

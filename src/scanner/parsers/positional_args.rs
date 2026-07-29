@@ -63,24 +63,41 @@ fn is_option_group_word(name: &str) -> bool {
 /// rather than behind the dash. What marks the whole group as options is the
 /// dash right after the opening bracket, which also covers `[-T]`, `[-Olevel]`
 /// and `[-D debugopts]`.
+///
+/// A leading `(` is skipped before that test. Man-page synopses spell an
+/// alias set as a parenthesised alternation — git writes
+/// `[(-m | --max-count) <num>]` and `[(-c | -C | --squash) <commit>]` — so the
+/// character after `[` is `(`, not `-`, and the group read as operands. That
+/// yielded `num`, `pager` and `o` as positionals on `cli.git.grep`, and on
+/// `cli.git.commit` an operand named `c` that displaced git's real `-c` option.
+/// Ordinary `--help` text never exposed this, because there git writes
+/// `[-C <path>]` and the dash is already first.
 fn inside_option_group(line: &str, start: usize) -> bool {
     let mut depth = 0i32;
-    let mut opening = None;
     for (index, ch) in line[..start].char_indices().rev() {
         match ch {
             ']' => depth += 1,
             '[' => {
-                if depth == 0 {
-                    opening = Some(index);
-                    break;
+                if depth > 0 {
+                    depth -= 1;
+                    continue;
                 }
-                depth -= 1;
+                // An enclosing group. Every one of them has to be examined, not
+                // just the innermost: git writes
+                // `[(-O | --open-files-in-pager) [<pager>]]`, where `<pager>`'s
+                // own bracket says nothing and the option marker lives one level
+                // out. Staying at depth 0 walks outward through the rest.
+                // `[` is ASCII, so `index + 1` is a char boundary.
+                let group = line[index + 1..].trim_start();
+                let group = group.strip_prefix('(').map_or(group, str::trim_start);
+                if group.starts_with('-') {
+                    return true;
+                }
             }
             _ => {}
         }
     }
-    // `[` is ASCII, so `index + 1` is a char boundary.
-    opening.is_some_and(|index| line[index + 1..].trim_start().starts_with('-'))
+    false
 }
 
 /// An option together with the value placeholder(s) it takes, e.g. `-C <path>`,
@@ -124,6 +141,16 @@ pub fn extract_args_from_usage_line(line: &str) -> Vec<ScannedArg> {
             .iter()
             .any(|&(start, end)| whole.start() >= start && whole.start() < end);
         if is_option_value {
+            continue;
+        }
+        // A placeholder sitting inside an option group is that option's value,
+        // not an operand. The other two passes have always checked this; the
+        // angle-bracket pass did not, which only became visible once man-page
+        // SYNOPSIS lines started reaching here — git's
+        // `[(-m | --max-count) <num>]` put `num` on `cli.git.grep` as a
+        // positional, so `{"num": 3}` rendered `git grep 3` and searched for
+        // the literal "3".
+        if inside_option_group(line, whole.start()) {
             continue;
         }
         let name = normalize_name(&cap[1]);
@@ -532,5 +559,40 @@ mod tests {
         // describe the tool as accepting only its optional argument -- a
         // contract that is confidently wrong rather than merely incomplete.
         assert!(extract("usage: basename string [suffix]").is_empty());
+    }
+
+    #[test]
+    fn test_parenthesised_alias_group_is_not_an_operand() {
+        // Regression: man-page SYNOPSIS lines spell an alias set as a
+        // parenthesised alternation, so the character after `[` is `(` rather
+        // than `-` and the whole group read as operands. Verbatim from
+        // git-grep(1) and git-commit(1).
+        let grep = extract(
+            "git grep [(-O | --open-files-in-pager) [<pager>]] [(-m | --max-count) <num>] \
+             [<pathspec>...]",
+        );
+        let names: Vec<&str> = grep.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["pathspec"],
+            "option letters and option values must not become operands: {names:?}"
+        );
+
+        let commit = extract("git commit [(-c | -C | --squash) <commit>] [--] [<pathspec>...]");
+        let names: Vec<&str> = commit.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            !names.contains(&"c") && !names.contains(&"commit"),
+            "an operand named `c` displaces git's real -c option: {names:?}"
+        );
+        assert_eq!(names, vec!["pathspec"]);
+    }
+
+    #[test]
+    fn test_optional_bracketed_operand_survives_the_option_group_check() {
+        // The guard must not swallow a genuine operand that happens to be
+        // bracketed: the group's content has no leading dash.
+        let args = extract("usage: git [--version] <command> [<args>]");
+        let names: Vec<&str> = args.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["command", "args"]);
     }
 }

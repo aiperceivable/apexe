@@ -242,10 +242,11 @@ apexe uses a three-tier deterministic scanning engine. No LLM is involved.
 
 ### Tier 1: `--help` Parsing
 
-Runs `<tool> --help` and auto-detects the help format. Five built-in parsers:
+Runs `<tool> --help` and auto-detects the help format. Six built-in parsers, tried in the order below:
 
 | Parser | Detects | Examples |
 |--------|---------|---------|
+| **Man** | A `--help` that is actually a man page (`NAME` + `SYNOPSIS` at column 0) | every `git <subcommand>` — `git log --help` runs `man git-log` |
 | **BSD Usage** | Single-line bundled usage (BSD/macOS built-ins that reject `--help`) | ls, cat, chmod, sort (macOS) |
 | **GNU** | Standard GNU-style help | ls, grep, curl, git (GNU/Linux) |
 | **Click** | Python Click / argparse | aws, pip |
@@ -452,7 +453,7 @@ Destructive modules (`annotations.destructive == true`) implement apcore's `Modu
 
 `build_executor` wires two middleware on by default (`--no-circuit-breaker`/`--no-retry` to disable, on both `apexe serve` and `apexe a2a`):
 
-- **`CircuitBreakerMiddleware`** — short-circuits calls to a `(module_id, caller)` pair after repeated failures (default: ≥5 samples, ≥50% error rate), instead of letting every caller keep hammering a hanging or broken CLI tool. Auto-recovers after a cooldown window via a single probe call.
+- **`HealthOnlyCircuitBreaker`** — short-circuits calls to a `(module_id, caller)` pair after repeated failures (default: ≥5 samples, ≥50% error rate), instead of letting every caller keep hammering a hanging or broken CLI tool. Auto-recovers after a cooldown window via a single probe call. Only outcomes that say the *wrapped binary* is unhealthy feed the window — spawn failure, timeout, signal death, internal error. Input-validation rejections, conflict refusals and governance decisions (ACL denial, approval denied/timeout/pending, cancellation, depth and frequency limits) do **not** count: the module was reachable and enforced its contract exactly as designed, and schema trial-and-error is the normal behaviour of an LLM caller. Counting those meant five malformed calls disabled a tool for every caller while a binary that failed every time kept its circuit closed.
 - **`RetryMiddleware`** — retries a call after a transient failure, but *only* when the error is explicitly marked `retryable`. `CliModule` marks a timeout `retryable` **only when the module is annotated `idempotent`** (§8) — a killed non-idempotent command (e.g. `rm -rf` timing out mid-delete) is never auto-retried, since it may have partially applied its side effect.
 
 ### 9.6 Pluggable Approval Store (Library Only)

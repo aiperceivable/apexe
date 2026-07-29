@@ -6,4 +6,3 @@ pub mod gnu;
 pub mod man_help;
 pub mod positional_args;
 pub mod structured_output;
-pub mod value_placeholder;

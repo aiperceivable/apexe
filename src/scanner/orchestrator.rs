@@ -13,7 +13,7 @@ use super::resolver::ToolResolver;
 use super::variant;
 use crate::adapter::overlay::{apply_overlay, MatchContext, ProbeOutcome};
 use crate::config::ApexeConfig;
-use crate::models::{FlagSource, ScannedCLITool, ScannedFlag, ToolVariant};
+use crate::models::{FlagSource, HelpFormat, ScannedCLITool, ScannedFlag, ToolVariant};
 
 /// Minimum description length treated as informative enough to keep as-is.
 const MIN_USEFUL_DESCRIPTION: usize = 10;
@@ -22,6 +22,52 @@ const MIN_USEFUL_DESCRIPTION: usize = 10;
 struct DetectedVariant {
     variant: ToolVariant,
     probes: Vec<ProbeOutcome>,
+}
+
+/// One tool in a batch that could not be scanned, and why.
+///
+/// The reason is kept as a rendered string rather than the source error: the
+/// causes are heterogeneous (`ApexeError::ScanPermission`, `ScanTimeout`, a
+/// resolver miss, an `io::Error`) and every consumer either prints it or
+/// serializes it, so keeping them typed would buy nothing and make the batch
+/// result harder to move across a boundary.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ScanFailure {
+    /// The tool as the caller named it, so the message matches what was typed.
+    pub tool: String,
+    /// Rendered cause, including the error chain.
+    pub error: String,
+}
+
+/// The result of scanning a batch: what succeeded, and what did not.
+///
+/// A batch has no single verdict, which is why this is not a `Result`. One
+/// unscannable tool used to abort the whole run through `?`, so
+/// `apexe scan git nonexistent` produced *no* bindings at all — the nine tools
+/// that scanned perfectly were discarded because of the tenth, and the only
+/// signal was one error line that did not say which name had failed.
+///
+/// Both halves are public and neither is optional to look at: this is the same
+/// failure mode as a scan reporting "142 module(s) found" while 63 of them
+/// could never be served. A caller that writes `outcome.tools` and ignores
+/// `outcome.failures` is choosing to under-report, and has to do so visibly.
+#[derive(Debug, Default)]
+pub struct ScanOutcome {
+    /// Tools that scanned, in the order they were requested.
+    pub tools: Vec<ScannedCLITool>,
+    /// Tools that did not, in the order they were requested.
+    pub failures: Vec<ScanFailure>,
+}
+
+impl ScanOutcome {
+    /// Whether every requested tool failed.
+    ///
+    /// Distinct from "some failed": a batch where nothing scanned produced no
+    /// deliverable at all, and a caller normally wants to treat that
+    /// differently from a partial run that still wrote most of its bindings.
+    pub fn is_total_failure(&self) -> bool {
+        self.tools.is_empty() && !self.failures.is_empty()
+    }
 }
 
 /// Top-level coordinator for the scanning process.
@@ -92,20 +138,34 @@ impl ScanOrchestrator {
     /// 5. Enrich with man pages (Tier 2) and completions (Tier 3)
     /// 6. Apply a matching curated overlay (Tier 4)
     /// 7. Cache the result
-    pub fn scan(
-        &self,
-        tool_names: &[String],
-        no_cache: bool,
-        depth: u32,
-    ) -> anyhow::Result<Vec<ScannedCLITool>> {
-        let mut results = Vec::new();
+    ///
+    /// One tool's failure does not end the batch. Scanning is per-tool work
+    /// with no shared state between iterations, so aborting on the first error
+    /// threw away every result already computed and every tool not yet reached
+    /// — `apexe scan git curl nonexistent` wrote nothing at all, and said only
+    /// that *a* tool was missing. Each failure is recorded against the name
+    /// that produced it and returned alongside the successes, so the caller
+    /// decides what a partial run means.
+    pub fn scan(&self, tool_names: &[String], no_cache: bool, depth: u32) -> ScanOutcome {
+        let mut outcome = ScanOutcome::default();
 
         for tool_name in tool_names {
-            let tool = self.scan_single(tool_name, no_cache, depth)?;
-            results.push(tool);
+            match self.scan_single(tool_name, no_cache, depth) {
+                Ok(tool) => outcome.tools.push(tool),
+                Err(error) => {
+                    // `{error:#}` renders the whole anyhow chain; the outermost
+                    // message alone is often just "No such file or directory".
+                    let rendered = format!("{error:#}");
+                    warn!(tool = %tool_name, error = %rendered, "Failed to scan tool");
+                    outcome.failures.push(ScanFailure {
+                        tool: tool_name.clone(),
+                        error: rendered,
+                    });
+                }
+            }
         }
 
-        Ok(results)
+        outcome
     }
 
     fn scan_single(
@@ -364,8 +424,19 @@ impl ScanOrchestrator {
             // (most BSD built-ins) has its error text — "ls: unrecognized
             // option `--help'" — parsed as if it were a description.
             tool.description.clone_from(&man_help.description);
+            // Padding a subcommand's own summary with the parent tool's
+            // DESCRIPTION only helps when that summary is a stub. It is not one
+            // when the subcommand's `--help` was itself a man page: its NAME
+            // line is the authoritative one-liner, and it is often short
+            // precisely because it is good. `git log` → "Show commit logs"
+            // became "Show commit logs — Git is a fast, scalable, distributed
+            // revision control system with an unusually rich command set…",
+            // where 84% of the text describes `git` rather than `git log` —
+            // the same "a description of git filed under the name of git log"
+            // that the man parser exists to fix, reappearing one field over.
             for cmd in &mut tool.subcommands {
-                if cmd.description.len() < 20 && !cmd.description.is_empty() {
+                let is_stub = cmd.help_format != HelpFormat::Man && cmd.description.len() < 20;
+                if is_stub && !cmd.description.is_empty() {
                     cmd.description = format!("{} — {}", cmd.description, man_help.description);
                 }
             }
@@ -525,7 +596,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let orchestrator = ScanOrchestrator::new(test_config(&tmp));
 
-        let tools = orchestrator.scan(&["ls".into()], true, 1).unwrap();
+        let tools = orchestrator.scan(&["ls".into()], true, 1).tools;
         if tools[0].scan_tier >= 2 {
             assert!(
                 !tools[0].description.contains("unrecognized option"),
@@ -543,7 +614,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let orchestrator = ScanOrchestrator::new(test_config(&tmp));
 
-        let by_path = orchestrator.scan(&["/bin/ls".into()], true, 1).unwrap();
+        let by_path = orchestrator.scan(&["/bin/ls".into()], true, 1).tools;
         assert_eq!(by_path[0].name, "ls");
         assert_eq!(by_path[0].binary_path, "/bin/ls");
     }
@@ -557,7 +628,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let orchestrator = ScanOrchestrator::new(test_config(&tmp));
 
-        let tools = orchestrator.scan(&["ls".into()], true, 1).unwrap();
+        let tools = orchestrator.scan(&["ls".into()], true, 1).tools;
         let tool = &tools[0];
 
         match tool.variant {
@@ -595,7 +666,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let orchestrator = ScanOrchestrator::new(test_config(&tmp));
 
-        let tools = orchestrator.scan(&["curl".into()], true, 1).unwrap();
+        let tools = orchestrator.scan(&["curl".into()], true, 1).tools;
         let tool = &tools[0];
         assert!(
             tool.global_flags
@@ -642,7 +713,7 @@ mod tests {
         orchestrator.load_overlay(&overlay_path).unwrap();
         assert_eq!(orchestrator.overlay_count(), before + 1);
 
-        let tools = orchestrator.scan(&["echo".into()], true, 1).unwrap();
+        let tools = orchestrator.scan(&["echo".into()], true, 1).tools;
         assert_eq!(tools[0].overlay.as_deref(), Some("echo@unknown"));
         assert_eq!(tools[0].description, "Curated echo.");
         assert_eq!(tools[0].global_flags.len(), 1);
@@ -808,9 +879,9 @@ mod tests {
         let config = test_config(&tmp);
         let orchestrator = ScanOrchestrator::new(config);
 
-        let result = orchestrator.scan(&["echo".into()], true, 1);
-        assert!(result.is_ok());
-        let tools = result.unwrap();
+        let outcome = orchestrator.scan(&["echo".into()], true, 1);
+        assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+        let tools = outcome.tools;
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "echo");
         assert!(!tools[0].binary_path.is_empty());
@@ -826,11 +897,11 @@ mod tests {
         let orchestrator = ScanOrchestrator::new(config);
 
         // First scan
-        let result1 = orchestrator.scan(&["echo".into()], false, 1).unwrap();
+        let result1 = orchestrator.scan(&["echo".into()], false, 1).tools;
         assert_eq!(result1.len(), 1);
 
         // Second scan should use cache
-        let result2 = orchestrator.scan(&["echo".into()], false, 1).unwrap();
+        let result2 = orchestrator.scan(&["echo".into()], false, 1).tools;
         assert_eq!(result2.len(), 1);
         assert_eq!(result2[0].name, "echo");
     }
@@ -842,11 +913,11 @@ mod tests {
         let orchestrator = ScanOrchestrator::new(config);
 
         // First scan
-        let result1 = orchestrator.scan(&["echo".into()], false, 1).unwrap();
+        let result1 = orchestrator.scan(&["echo".into()], false, 1).tools;
         assert_eq!(result1.len(), 1);
 
         // no_cache=true forces rescan
-        let result2 = orchestrator.scan(&["echo".into()], true, 1).unwrap();
+        let result2 = orchestrator.scan(&["echo".into()], true, 1).tools;
         assert_eq!(result2.len(), 1);
     }
 
@@ -857,20 +928,54 @@ mod tests {
         let config = test_config(&tmp);
         let orchestrator = ScanOrchestrator::new(config);
 
-        let result = orchestrator.scan(&["echo".into(), "ls".into()], true, 1);
-        assert!(result.is_ok());
-        let tools = result.unwrap();
-        assert_eq!(tools.len(), 2);
+        let outcome = orchestrator.scan(&["echo".into(), "ls".into()], true, 1);
+        assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+        assert_eq!(outcome.tools.len(), 2);
     }
 
     #[test]
-    fn test_scan_nonexistent_tool_errors() {
+    fn test_scan_nonexistent_tool_is_recorded_as_a_failure() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp);
         let orchestrator = ScanOrchestrator::new(config);
 
-        let result = orchestrator.scan(&["zzz_no_such_tool_xyz".into()], true, 1);
-        assert!(result.is_err());
+        let outcome = orchestrator.scan(&["zzz_no_such_tool_xyz".into()], true, 1);
+
+        assert!(outcome.tools.is_empty());
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(outcome.failures[0].tool, "zzz_no_such_tool_xyz");
+        assert!(
+            !outcome.failures[0].error.is_empty(),
+            "a failure must carry a reason a user can act on"
+        );
+        assert!(outcome.is_total_failure());
+    }
+
+    #[test]
+    fn test_scan_keeps_going_after_a_failed_tool() {
+        // Regression: `scan` propagated the first error with `?`, so one
+        // unscannable name threw away every tool already scanned AND every tool
+        // not yet reached. `apexe scan git curl nonexistent` wrote no bindings
+        // at all, and the message did not say which name had failed.
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+        let orchestrator = ScanOrchestrator::new(config);
+
+        let outcome = orchestrator.scan(
+            &["echo".into(), "zzz_no_such_tool_xyz".into(), "ls".into()],
+            true,
+            1,
+        );
+
+        // The tool AFTER the failure is the one that proves the batch continued.
+        let names: Vec<&str> = outcome.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["echo", "ls"]);
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(outcome.failures[0].tool, "zzz_no_such_tool_xyz");
+        assert!(
+            !outcome.is_total_failure(),
+            "a partial run is not a total failure"
+        );
     }
 
     // T42: Error handling
@@ -882,7 +987,7 @@ mod tests {
 
         // true (the tool) typically produces empty help with --help
         // We'll test with echo which will produce some output
-        let result = orchestrator.scan(&["echo".into()], true, 1).unwrap();
+        let result = orchestrator.scan(&["echo".into()], true, 1).tools;
         assert_eq!(result[0].name, "echo");
     }
 
@@ -893,7 +998,7 @@ mod tests {
         let config = test_config(&tmp);
         let orchestrator = ScanOrchestrator::new(config);
 
-        let result = orchestrator.scan(&["echo".into()], true, 1).unwrap();
+        let result = orchestrator.scan(&["echo".into()], true, 1).tools;
         assert!(result[0].scan_tier >= 1);
     }
 }

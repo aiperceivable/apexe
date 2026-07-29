@@ -17,7 +17,7 @@ Outside-In CLI-to-Agent Bridge — automatically wraps existing CLI tools into g
 
 ### Key capabilities
 
-- **Scan** — Three-tier deterministic engine (--help → man pages → shell completions) with 4 built-in parsers (GNU, Click, Cobra, Clap)
+- **Scan** — Three-tier deterministic engine (--help → man pages → shell completions) with 6 built-in parsers (Man, BSD Usage, GNU, Click, Cobra, Clap)
 - **Schema** — Generates JSON Schema with type mapping, format hints (`path`, `uri`), defaults, enums, and required fields
 - **Serve** — MCP server via [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) (stdio / streamable-http / SSE) with an Explorer UI, plus an A2A agent server via [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust). Servers bind localhost by default; transport authentication is available via the apcore library API
 - **Govern** — Behavioral annotations (readonly/destructive/idempotent), flag boosting (`--force` → requires_approval), **fail-closed** default-deny ACL, a JSONL audit trail of executions **and** ACL allow/deny decisions (input hashed, log `0o600`), `Module::preview()` dry-run for destructive commands

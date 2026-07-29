@@ -3,7 +3,8 @@
 //!
 //! ## Architecture
 //!
-//! - **Tier 1**: Parse `--help` output using format-specific parsers (GNU, Click, Cobra, Clap)
+//! - **Tier 1**: Parse `--help` output using format-specific parsers (Man, BSD Usage,
+//!   GNU, Click, Cobra, Clap)
 //! - **Tier 2**: Enrich with man page data
 //! - **Tier 3**: Enrich with shell completion scripts
 //! - **Tier 4**: Replace or refine the result with a curated overlay matched by
@@ -45,10 +46,11 @@ pub mod pipeline;
 pub mod plugins;
 pub mod protocol;
 pub mod resolver;
+pub mod value_placeholder;
 pub mod variant;
 
 // Re-export key types for convenient access
-pub use orchestrator::ScanOrchestrator;
+pub use orchestrator::{ScanFailure, ScanOrchestrator, ScanOutcome};
 pub use overlay_store::{OverlayError, OverlayStore};
 pub use pipeline::ParserPipeline;
 pub use protocol::{CliParser, ParsedHelp};

@@ -63,18 +63,40 @@ impl ScanCache {
     }
 }
 
+/// How this build parses a tool. Bump whenever a scanner change alters the
+/// result for an unchanged binary.
+///
+/// A cache entry records what apexe *understood*, not just what the tool is, so
+/// the key has to name both. Without this component an upgrade was invisible to
+/// the cache: every field added to the scanned model is `#[serde(default)]`, so
+/// a document written by an older build still deserializes and is returned
+/// before any parsing runs. A user who upgraded and re-ran `apexe scan git`
+/// got the pre-fix result — overstriked documentation, a flag named
+/// `--exec-path[`, a property keyed `unknown`, subcommands carrying the tool's
+/// global flags — at exit 0, with nothing saying the new scanner never ran.
+/// `--no-cache` was the only escape and nothing pointed at it.
+///
+/// History:
+/// - 1: 0.6.0 and earlier.
+/// - 2: man-page parsing at Tier 1, overstrike stripping at capture, option
+///   name/placeholder repairs, and operand/flag placement.
+const SCAN_FORMAT_VERSION: u32 = 2;
+
 /// Build the on-disk cache file name for one scan result.
 ///
 /// The variant is part of the key because a command name does not identify a
 /// program: a machine can hold BSD `/bin/ls` and Homebrew's GNU `ls` at the
 /// same version-less identity, and serving one's flags for the other would be
-/// worse than a cache miss.
+/// worse than a cache miss. [`SCAN_FORMAT_VERSION`] is part of it for the
+/// mirror-image reason: the same binary parsed by a different scanner is a
+/// different result.
 fn cache_key(tool_name: &str, variant: ToolVariant, tool_version: Option<&str>) -> String {
     format!(
-        "{}@{}_{}.scan.json",
+        "{}@{}_{}_v{}.scan.json",
         tool_name,
         variant.as_str(),
-        tool_version.unwrap_or("unknown")
+        tool_version.unwrap_or("unknown"),
+        SCAN_FORMAT_VERSION
     )
 }
 
@@ -279,14 +301,45 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_key_includes_command_variant_and_version() {
+    fn test_cache_key_includes_command_variant_version_and_scan_format() {
         assert_eq!(
             cache_key("ls", ToolVariant::Bsd, Some("9.4")),
-            "ls@bsd_9.4.scan.json"
+            format!("ls@bsd_9.4_v{SCAN_FORMAT_VERSION}.scan.json")
         );
         assert_eq!(
             cache_key("ls", ToolVariant::Unknown, None),
-            "ls@unknown_unknown.scan.json"
+            format!("ls@unknown_unknown_v{SCAN_FORMAT_VERSION}.scan.json")
+        );
+    }
+
+    #[test]
+    fn test_a_cache_entry_from_an_older_scanner_is_not_reused() {
+        // Regression: the key named only the tool, so an entry written by a
+        // build with different parsing was served unchanged. Every new model
+        // field is `#[serde(default)]`, so the stale document deserializes
+        // cleanly and the fixed scanner never runs — the user sees the old
+        // result at exit 0 with no warning.
+        let tmp = TempDir::new().unwrap();
+        let cache = ScanCache::new(tmp.path().to_path_buf());
+
+        // Write a document under the previous key shape, by hand.
+        let stale = tmp
+            .path()
+            .join(format!("ls@bsd_9.4_v{}.scan.json", SCAN_FORMAT_VERSION - 1));
+        std::fs::write(
+            &stale,
+            serde_json::to_string(&ScannedCLITool {
+                name: "ls".to_string(),
+                description: "stale".to_string(),
+                ..Default::default()
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            cache.get("ls", ToolVariant::Bsd, Some("9.4")).is_none(),
+            "an entry produced by a different scanner version must miss"
         );
     }
 }

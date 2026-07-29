@@ -63,7 +63,7 @@ impl ParserPipeline {
                         // regex does not anticipate, and a flag that takes a
                         // value but is typed boolean is unusable in both
                         // directions. See `value_placeholder`.
-                        super::parsers::value_placeholder::recover_values_from_descriptions(
+                        super::value_placeholder::recover_values_from_descriptions(
                             &mut result.flags,
                         );
                         return result;

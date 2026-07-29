@@ -217,6 +217,12 @@ pub struct OverlayFlag {
     /// See [`ScannedFlag::value_optional`].
     #[serde(default)]
     pub value_optional: bool,
+    /// Render this flag before the command's operands rather than after.
+    ///
+    /// The companion to [`OverlayArg::before_flags`]; see
+    /// [`ScannedFlag::before_operands`] for why `find` needs both.
+    #[serde(default)]
+    pub before_operands: bool,
 }
 
 /// A curated positional argument definition.
@@ -745,6 +751,7 @@ impl OverlayFlag {
             repeatable: self.repeatable,
             value_name: self.value_name.clone(),
             value_optional: self.value_optional,
+            before_operands: self.before_operands,
             long_running: self.long_running,
             conflicts_with: self.conflicts_with.clone(),
             sources: vec![FlagSource::Overlay],

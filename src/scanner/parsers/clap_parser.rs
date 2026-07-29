@@ -97,13 +97,8 @@ fn extract_clap_flags(help_text: &str) -> Vec<ScannedFlag> {
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
 
-        let value_type = match value_name.as_deref() {
-            None => ValueType::Boolean,
-            Some("FILE" | "PATH" | "DIR" | "DIRECTORY") => ValueType::Path,
-            Some("NUM" | "NUMBER" | "COUNT" | "N") => ValueType::Integer,
-            Some("URL" | "URI") => ValueType::Url,
-            _ => ValueType::String,
-        };
+        // One table for the whole scanner; see `scanner::value_placeholder`.
+        let value_type = crate::scanner::value_placeholder::flag_value_type(value_name.as_deref());
 
         let default = DEFAULT_RE
             .captures(&description)

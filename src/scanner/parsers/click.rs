@@ -132,14 +132,8 @@ fn extract_click_flags(help_text: &str) -> Vec<ScannedFlag> {
             }
         }
 
-        let value_type = match type_str {
-            Some("TEXT") | Some("text") => ValueType::String,
-            Some("INTEGER") | Some("integer") | Some("INT") => ValueType::Integer,
-            Some("FLOAT") | Some("float") => ValueType::Float,
-            Some("PATH") | Some("FILENAME") | Some("DIRECTORY") => ValueType::Path,
-            None => ValueType::Boolean,
-            _ => ValueType::String,
-        };
+        // One table for the whole scanner; see `scanner::value_placeholder`.
+        let value_type = crate::scanner::value_placeholder::flag_value_type(type_str);
 
         let default = DEFAULT_RE
             .captures(&description)

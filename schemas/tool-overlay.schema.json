@@ -243,6 +243,16 @@
         },
         "required": { "type": "boolean", "default": false },
         "repeatable": { "type": "boolean", "default": false },
+        "value_optional": {
+          "description": "Whether the value may be omitted, as in git's `--exec-path[=<path>]`. Such a flag has two legal spellings and they mean different things — `git --exec-path` prints the path while `git --exec-path=<p>` sets it — so the generated contract admits both (`\"type\": [T, \"boolean\"]`), with `true` selecting the bare form.",
+          "type": "boolean",
+          "default": false
+        },
+        "before_operands": {
+          "description": "Render this flag before the command's operands rather than after. The companion to positionalArg.before_flags, and the reason placement cannot be one boolean on the operand: `find` puts two classes of dash-token on opposite sides of the same operand. Its true options must precede the paths (`find dir -L` is \"unknown primary or operator\") while its primaries must follow them (`find -name '*.txt' dir` is \"illegal option -- n\"). Set it on the options only. Not derivable from a scan — the usage line does not say which of a tool's dash-tokens live in the trailing operand slot — so it is stated here or not at all.",
+          "type": "boolean",
+          "default": false
+        },
         "long_running": {
           "description": "Whether this flag can make the command run until it is killed. The claim is \"may not terminate on its own\", NOT \"always blocks\": tail -f follows a regular file indefinitely, yet the BSD man page states it returns immediately when its input is a pipe, so certainty here would be a false claim. An executor should read it as a reason to bound the timeout or refuse the invocation, never as a prediction that the process will hang. It belongs to the flag, not the command: `tail` is fine, `tail -f` is not. Reaches the emitted contract as the JSON Schema extension keyword \"x-apexe-long-running\" on the flag's property. Flags that merely change how long a follow lasts (GNU tail --retry, --sleep-interval, --pid, --max-unchanged-stats) are out of scope: they modify a duration rather than decide termination.",
           "type": "boolean",

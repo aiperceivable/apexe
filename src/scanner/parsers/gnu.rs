@@ -175,14 +175,8 @@ fn build_flag(
     description: String,
     value_name: Option<String>,
 ) -> ScannedFlag {
-    let value_type = match value_name.as_deref() {
-        None => ValueType::Boolean,
-        Some("FILE" | "PATH" | "DIR" | "DIRECTORY" | "FILENAME") => ValueType::Path,
-        Some("NUM" | "NUMBER" | "COUNT" | "N" | "PORT" | "INT") => ValueType::Integer,
-        Some("FLOAT" | "DECIMAL") => ValueType::Float,
-        Some("URL" | "URI") => ValueType::Url,
-        _ => ValueType::String,
-    };
+    // One table for the whole scanner; see `scanner::value_placeholder`.
+    let value_type = crate::scanner::value_placeholder::flag_value_type(value_name.as_deref());
 
     let default = DEFAULT_RE
         .captures(&description)

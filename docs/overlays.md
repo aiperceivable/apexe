@@ -402,6 +402,33 @@ tool you have not checked.
 
 ---
 
+## Optional-value flags
+
+`git --exec-path` prints the path to git's core programs; `git --exec-path=<p>`
+sets it. One flag, two legal spellings, two different meanings — and the only
+thing in the help text that says so is the bracket in `--exec-path[=<path>]`.
+A flag therefore carries a boolean:
+
+```json
+{ "long": "--exec-path", "type": "path", "value_name": "path", "value_optional": true, "description": "..." }
+```
+
+It reaches `ScannedFlag.value_optional` and then the emitted contract as
+`x-apexe-value-optional`, alongside a union type — `"type": ["string", "boolean"]`
+— so both spellings are expressible: `true` selects the bare form and a string
+supplies a value. Without the union one of the two is unreachable, which is what
+makes this a correctness field rather than a documentation one.
+
+Two rules for setting it:
+
+- **Check both spellings against the binary.** Run the bare form and the
+  `=value` form and confirm they do different things. A flag whose value is
+  *required* is not this: it rejects the bare form outright.
+- **It is about arity, not about the value's type.** `value_name` and `type`
+  still describe the value when one is given.
+
+---
+
 ## Operand placement
 
 Almost every tool's grammar is `tool [options] operands`, and the renderer

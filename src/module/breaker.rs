@@ -140,9 +140,46 @@ impl Middleware for HealthOnlyCircuitBreaker {
                 error_code = ?error.code,
                 "Not counting caller-fault error against the circuit breaker"
             );
+            self.release_probe_slot(module_id, ctx);
             return Ok(None);
         }
         self.inner.on_error(module_id, inputs, error, ctx).await
+    }
+}
+
+impl HealthOnlyCircuitBreaker {
+    /// Hand back the HALF_OPEN probe slot that a suppressed call was holding.
+    ///
+    /// Not counting an error is not the same as the call never happening. In
+    /// HALF_OPEN, apcore admits exactly one probe and sets `probe_in_flight`
+    /// (`before`), then clears it in exactly two places: `after` on success,
+    /// and the `on_error`-that-opens branch — which in HALF_OPEN is *every*
+    /// `on_error`. Returning early from `on_error` therefore skips the only
+    /// release path this call had, and the slot stays held until apcore's
+    /// stale-probe reclaim fires a full recovery window later.
+    ///
+    /// That reintroduces the defect this whole type exists to remove, just
+    /// moved from CLOSED into HALF_OPEN: apcore runs middleware `before`
+    /// *ahead of* input validation, so a caller sending an invalid argument
+    /// object is admitted as the probe and then rejected, and every other
+    /// caller is refused with `CircuitBreakerOpen` for the next 30 seconds.
+    ///
+    /// Forcing the state back to HALF_OPEN clears `probe_in_flight` and
+    /// `probe_started_at` while leaving the rolling window untouched, so the
+    /// next call is admitted as a fresh probe and the circuit's health record
+    /// still reflects only real dependency outcomes.
+    fn release_probe_slot(&self, module_id: &str, ctx: &Context<serde_json::Value>) {
+        let caller_id = ctx.caller_id.clone().unwrap_or_default();
+        if self.inner.state(module_id, &caller_id) != CircuitBreakerState::HalfOpen {
+            return;
+        }
+        tracing::debug!(
+            module_id,
+            caller_id = %caller_id,
+            "Releasing the half-open probe slot held by a suppressed caller-fault error"
+        );
+        self.inner
+            .force_state(module_id, &caller_id, CircuitBreakerState::HalfOpen, None);
     }
 }
 
@@ -182,6 +219,104 @@ mod tests {
             .before("cli.ls", json!({}), &context())
             .await
             .is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_suppressed_error_releases_the_half_open_probe_slot() {
+        // Regression: filtering the error out of the breaker's window is only
+        // half the job. In HALF_OPEN, apcore's ONLY release path for the single
+        // probe slot is the `on_error`-that-opens branch, which is exactly what
+        // suppression skips — so one invalid call during a probe window pinned
+        // the module closed to every other caller for a full recovery window.
+        // That is the same defect as #22, moved from CLOSED into HALF_OPEN.
+        let breaker = HealthOnlyCircuitBreaker::new(
+            CircuitBreakerMiddleware::builder()
+                .recovery_window_ms(60_000) // long, so no stale-probe reclaim can mask the fix
+                .build(),
+        );
+
+        // Open it with real dependency failures, then hand-drive it to HALF_OPEN
+        // rather than sleeping out the recovery window.
+        report_errors(&breaker, ErrorCode::ModuleTimeout, 10).await;
+        assert_eq!(breaker.state("cli.ls", ""), CircuitBreakerState::Open);
+        breaker
+            .inner
+            .force_state("cli.ls", "", CircuitBreakerState::HalfOpen, None);
+
+        // The probe is admitted, and it is a caller-fault failure.
+        breaker
+            .before("cli.ls", json!({}), &context())
+            .await
+            .expect("half-open admits one probe");
+        let refusal = ModuleError::new(ErrorCode::GeneralInvalidInput, "bad args".to_string());
+        breaker
+            .on_error("cli.ls", json!({}), &refusal, &context())
+            .await
+            .expect("on_error never fails");
+
+        // The next caller must be admitted as a fresh probe, not refused.
+        breaker
+            .before("cli.ls", json!({}), &context())
+            .await
+            .expect(
+                "a suppressed caller-fault error must hand the probe slot back, \
+             otherwise it disables the module for every other caller",
+            );
+    }
+
+    #[tokio::test]
+    async fn test_releasing_the_probe_slot_does_not_erase_the_failure_history() {
+        // The slot is handed back, but the circuit stays HALF_OPEN and the
+        // rolling window keeps the real failures — a caller mistake must not
+        // launder a genuinely unhealthy dependency back to CLOSED.
+        let breaker = HealthOnlyCircuitBreaker::with_defaults();
+        report_errors(&breaker, ErrorCode::ModuleTimeout, 10).await;
+        breaker
+            .inner
+            .force_state("cli.ls", "", CircuitBreakerState::HalfOpen, None);
+        breaker
+            .before("cli.ls", json!({}), &context())
+            .await
+            .expect("half-open admits one probe");
+
+        let refusal = ModuleError::new(ErrorCode::GeneralInvalidInput, "bad args".to_string());
+        breaker
+            .on_error("cli.ls", json!({}), &refusal, &context())
+            .await
+            .expect("on_error never fails");
+
+        assert_eq!(
+            breaker.state("cli.ls", ""),
+            CircuitBreakerState::HalfOpen,
+            "suppression must not close a circuit that real failures opened"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_a_real_failure_during_a_probe_still_reopens_the_circuit() {
+        // The protective direction must survive the release path: an unhealthy
+        // outcome on the probe goes to the inner breaker unchanged.
+        let breaker = HealthOnlyCircuitBreaker::with_defaults();
+        report_errors(&breaker, ErrorCode::ModuleTimeout, 10).await;
+        breaker
+            .inner
+            .force_state("cli.ls", "", CircuitBreakerState::HalfOpen, None);
+        breaker
+            .before("cli.ls", json!({}), &context())
+            .await
+            .expect("half-open admits one probe");
+
+        report_errors(&breaker, ErrorCode::ModuleTimeout, 1).await;
+
+        assert_eq!(breaker.state("cli.ls", ""), CircuitBreakerState::Open);
+        assert_eq!(
+            breaker
+                .before("cli.ls", json!({}), &context())
+                .await
+                .expect_err("an open circuit rejects")
+                .code,
+            ErrorCode::CircuitBreakerOpen
+        );
     }
 
     #[tokio::test]

@@ -83,6 +83,39 @@ fn apply_flag_literal(schema: &mut JsonValue, flag: &ScannedFlag) {
     }
 }
 
+/// The JSON Schema `format` a value type implies, if any.
+///
+/// Exists so the hint is attached from one place. It used to be an inline
+/// `match` on the scalar branch of each builder, which meant the array branches
+/// silently dropped it — and arrays are the common case for exactly the types
+/// that need it: 36 of the shipped overlays' variadic operands and 7 of their
+/// repeatable flags are paths or URLs, so the hint reached almost none of the
+/// values it was written for.
+fn format_hint(value_type: ValueType) -> Option<&'static str> {
+    match value_type {
+        // Path and Url both serialize as `string`, so without this an agent
+        // cannot tell either from free text.
+        ValueType::Path => Some("path"),
+        ValueType::Url => Some("uri"),
+        _ => None,
+    }
+}
+
+/// Attach the format hint to an array schema's `items`, where it describes each
+/// element rather than the array.
+fn apply_items_format(schema: &mut JsonValue, value_type: ValueType) {
+    if let Some(format) = format_hint(value_type) {
+        schema["items"]["format"] = json!(format);
+    }
+}
+
+/// Attach the format hint to a scalar schema.
+fn apply_format(schema: &mut JsonValue, value_type: ValueType) {
+    if let Some(format) = format_hint(value_type) {
+        schema["format"] = json!(format);
+    }
+}
+
 /// Convert a ScannedFlag into a JSON Schema property value.
 fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
     let base_type = value_type_to_json_schema(flag.value_type);
@@ -92,11 +125,17 @@ fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
             "type": "array",
             "items": { "type": base_type },
         });
+        // On `items`, not on the array: it is each element that is a path.
+        apply_items_format(&mut schema, flag.value_type);
         if !flag.description.is_empty() {
             schema["description"] = json!(flag.description);
         }
         apply_long_running(&mut schema, flag);
         apply_flag_literal(&mut schema, flag);
+        // Placement is orthogonal to arity — `find -f path` is pre-operand and
+        // could legitimately repeat — so it must be emitted on this branch too,
+        // not only on the scalar one below.
+        apply_flag_placement(&mut schema, flag);
         return schema;
     }
 
@@ -113,15 +152,7 @@ fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
     };
 
     // Add format hints so AI agents can distinguish path/URI from plain strings
-    match flag.value_type {
-        ValueType::Path => {
-            schema["format"] = json!("path");
-        }
-        ValueType::Url => {
-            schema["format"] = json!("uri");
-        }
-        _ => {}
-    }
+    apply_format(&mut schema, flag.value_type);
 
     if !flag.description.is_empty() {
         schema["description"] = json!(flag.description);
@@ -135,8 +166,22 @@ fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
 
     apply_long_running(&mut schema, flag);
     apply_flag_literal(&mut schema, flag);
+    apply_flag_placement(&mut schema, flag);
 
     schema
+}
+
+/// Record that this flag belongs ahead of the command's operands.
+///
+/// Emitted only for the minority of flags that need it, and deliberately as a
+/// separate keyword from `x-apexe-operand-position` rather than a shared
+/// "ordering" field: `find` puts its options before the paths and its primaries
+/// after them, so the two sides are set independently and a single knob cannot
+/// express the grammar. See [`ScannedFlag::before_operands`].
+fn apply_flag_placement(schema: &mut JsonValue, flag: &ScannedFlag) {
+    if flag.before_operands {
+        schema["x-apexe-flag-position"] = json!("before-operands");
+    }
 }
 
 /// Convert a ScannedArg into a JSON Schema property value.
@@ -157,21 +202,16 @@ fn arg_to_schema(arg: &ScannedArg, index: usize) -> JsonValue {
     let base_type = value_type_to_json_schema(arg.value_type);
 
     let mut schema = if arg.variadic {
-        json!({
+        let mut schema = json!({
             "type": "array",
             "items": { "type": base_type },
-        })
+        });
+        // On `items`, not on the array: it is each element that is a path.
+        apply_items_format(&mut schema, arg.value_type);
+        schema
     } else {
         let mut schema = json!({ "type": base_type });
-        match arg.value_type {
-            ValueType::Path => {
-                schema["format"] = json!("path");
-            }
-            ValueType::Url => {
-                schema["format"] = json!("uri");
-            }
-            _ => {}
-        }
+        apply_format(&mut schema, arg.value_type);
         schema
     };
 
@@ -231,6 +271,27 @@ fn apply_conflicts(
     }
 }
 
+/// Pick a free property key for a flag displaced by a same-named operand.
+///
+/// `_option` is the natural suffix but it is not automatically free: git
+/// already ships `--strategy` *and* `--strategy-option`, so a tool could hold
+/// both `foo` and `foo_option` before any rescue happens. The numbered forms
+/// are the fallback; `None` means every candidate was taken, and the caller
+/// then keeps the pre-existing behaviour of letting the operand win outright
+/// rather than clobbering an unrelated property.
+fn free_rescue_key(
+    prop_name: &str,
+    properties: &serde_json::Map<String, JsonValue>,
+) -> Option<String> {
+    let preferred = format!("{prop_name}_option");
+    if !properties.contains_key(&preferred) {
+        return Some(preferred);
+    }
+    (2..=9)
+        .map(|n| format!("{prop_name}_option_{n}"))
+        .find(|candidate| !properties.contains_key(candidate))
+}
+
 /// Build a JSON Schema for command inputs, merging command flags with global flags.
 ///
 /// Command-level flags take precedence; global flags are included only when
@@ -273,14 +334,37 @@ pub fn build_input_schema(command: &ScannedCommand, global_flags: &[ScannedFlag]
     // The flag's description is inherited when the positional has none, which
     // is the common shape: usage lines carry no prose, so the description only
     // exists on the flag. Overwriting outright used to discard it.
+    //
+    // The displaced flag is *re-keyed* rather than dropped. "Operand wins" is
+    // right for `curl`, where `--url` and `<url>` are the same thing, but the
+    // premise fails whenever the two merely share a name: `find -path PATTERN`
+    // is a glob predicate and has nothing to do with the `path` operand naming
+    // the roots of the walk, and `grep --file=FILE` reads patterns from a file
+    // while the `file` operand names the files to search. Overwriting removed
+    // those options from the contract entirely — no property rendered `-path`
+    // or `-f`, so an agent could not invoke them at all. The executor spells a
+    // flag from `x-apexe-flag`, never from the property key, so a suffixed key
+    // renders exactly the same command line.
     for (index, arg) in command.positional_args.iter().enumerate() {
         let prop_name = arg.name.to_lowercase().replace('-', "_");
         let mut prop_schema = arg_to_schema(arg, index);
 
-        if let Some(displaced) = properties.get(&prop_name) {
+        if let Some(displaced) = properties.get(&prop_name).cloned() {
             if prop_schema.get("description").is_none() {
                 if let Some(description) = displaced.get("description") {
                     prop_schema["description"] = description.clone();
+                }
+            }
+            // Only a real flag needs rescuing; a duplicate operand name has
+            // nothing to preserve.
+            if displaced.get("x-apexe-flag").is_some() {
+                if let Some(rescued) = free_rescue_key(&prop_name, &properties) {
+                    properties.insert(rescued.clone(), displaced);
+                    // `required` named the old key, which now belongs to the
+                    // operand; point it at the flag's new home.
+                    if let Some(slot) = required.iter_mut().find(|name| **name == prop_name) {
+                        slot.clone_from(&rescued);
+                    }
                 }
             }
         }
@@ -555,6 +639,148 @@ mod tests {
         assert_eq!(schema["properties"]["file"]["type"], "string");
         let required = schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("file")));
+    }
+
+    #[test]
+    fn test_schema_variadic_operand_carries_the_format_hint_on_items() {
+        // Regression: the format hint was applied only on the scalar branch, so
+        // the array branches dropped it — and arrays are the common case for
+        // exactly the types that need it. 36 of the shipped overlays' variadic
+        // operands are paths or URLs, so the hint reached almost none of them
+        // and an agent could not tell a path from free text.
+        let arg = ScannedArg {
+            name: "file".to_string(),
+            description: "Files to read.".to_string(),
+            value_type: ValueType::Path,
+            required: false,
+            variadic: true,
+            before_flags: false,
+        };
+        let cmd = make_command(vec![], vec![arg]);
+        let schema = build_input_schema(&cmd, &[]);
+        let property = &schema["properties"]["file"];
+
+        assert_eq!(property["type"], "array");
+        // On `items`, because it is each element that is a path — not the array.
+        assert_eq!(property["items"]["format"], "path");
+        assert!(
+            property["format"].is_null(),
+            "the array itself has no format: {property}"
+        );
+    }
+
+    #[test]
+    fn test_schema_repeatable_path_flag_carries_the_format_hint_on_items() {
+        let flag = ScannedFlag {
+            long_name: Some("--include".to_string()),
+            description: "Include a path.".to_string(),
+            value_type: ValueType::Path,
+            repeatable: true,
+            ..Default::default()
+        };
+        let cmd = make_command(vec![flag], vec![]);
+        let schema = build_input_schema(&cmd, &[]);
+        let property = &schema["properties"]["include"];
+
+        assert_eq!(property["type"], "array");
+        assert_eq!(property["items"]["format"], "path");
+    }
+
+    #[test]
+    fn test_schema_url_operand_uses_the_uri_format() {
+        // The other half of the hint, on both arities.
+        let scalar = ScannedArg {
+            name: "url".to_string(),
+            description: String::new(),
+            value_type: ValueType::Url,
+            required: true,
+            variadic: false,
+            before_flags: false,
+        };
+        let variadic = ScannedArg {
+            name: "mirror".to_string(),
+            description: String::new(),
+            value_type: ValueType::Url,
+            required: false,
+            variadic: true,
+            before_flags: false,
+        };
+        let cmd = make_command(vec![], vec![scalar, variadic]);
+        let schema = build_input_schema(&cmd, &[]);
+
+        assert_eq!(schema["properties"]["url"]["format"], "uri");
+        assert_eq!(schema["properties"]["mirror"]["items"]["format"], "uri");
+    }
+
+    #[test]
+    fn test_schema_non_path_types_carry_no_format_hint() {
+        // The hint is only meaningful for the types that serialize as `string`
+        // but are not free text; emitting it elsewhere would be noise.
+        let arg = ScannedArg {
+            name: "pattern".to_string(),
+            description: String::new(),
+            value_type: ValueType::String,
+            required: true,
+            variadic: true,
+            before_flags: false,
+        };
+        let cmd = make_command(vec![], vec![arg]);
+        let schema = build_input_schema(&cmd, &[]);
+        let property = &schema["properties"]["pattern"];
+
+        assert!(property["items"]["format"].is_null(), "{property}");
+        assert!(property["format"].is_null(), "{property}");
+    }
+
+    #[test]
+    fn test_schema_rescues_a_flag_displaced_by_a_same_named_operand() {
+        // Regression: "operand wins" is right for `curl`, where `--url` and
+        // `<url>` are the same thing, but `find -path PATTERN` is a glob
+        // predicate unrelated to the `path` operand, and `grep --file=FILE`
+        // reads patterns from a file while the `file` operand names what to
+        // search. Overwriting removed those options from the contract entirely.
+        let flag = ScannedFlag {
+            short_name: Some("-path".to_string()),
+            description: "True if the pathname matches pattern.".to_string(),
+            value_type: ValueType::String,
+            required: true,
+            ..Default::default()
+        };
+        let arg = ScannedArg {
+            name: "path".to_string(),
+            description: "Roots of the walk.".to_string(),
+            value_type: ValueType::Path,
+            required: true,
+            variadic: true,
+            before_flags: true,
+        };
+        let cmd = make_command(vec![flag], vec![arg]);
+        let schema = build_input_schema(&cmd, &[]);
+        let properties = &schema["properties"];
+
+        // The operand keeps the plain key...
+        assert_eq!(properties["path"]["x-apexe-positional"], 0);
+        // ...and the flag survives under a suffixed one, still spelled `-path`.
+        assert_eq!(properties["path_option"]["x-apexe-flag"], "-path");
+        assert_eq!(
+            properties["path_option"]["description"],
+            "True if the pathname matches pattern."
+        );
+
+        // `required` must follow the flag to its new key, not dangle on the
+        // operand's.
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(required.contains(&"path_option"), "{required:?}");
+        assert_eq!(
+            required.iter().filter(|n| **n == "path").count(),
+            1,
+            "the operand's own requirement is recorded once: {required:?}"
+        );
     }
 
     #[test]

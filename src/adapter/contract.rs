@@ -73,7 +73,7 @@ impl CommandContract {
     fn from_module(module: &ScannedModule) -> Self {
         Self {
             id: module.module_id.clone(),
-            command: command_from_module_id(&module.module_id),
+            command: invocation_form(module),
             description: module.description.clone(),
             risk: risk_from_annotations(module.annotations.as_ref()),
             input_schema: module.input_schema.clone(),
@@ -92,9 +92,39 @@ impl CommandContract {
     }
 }
 
-/// Recover the invocation form from a namespaced module id.
+/// The command line a caller would actually type for this module.
 ///
-/// `cli.git.commit` becomes `git commit`.
+/// Read from `metadata["command_path"]` when the converter recorded it, and
+/// only otherwise reconstructed from the id.
+///
+/// The id is **not** a reliable source: it is folded into apcore's registration
+/// charset, which maps `-` to `_`, lower-cases, and replaces anything else with
+/// `_`. Reversing that fold yields `git cat_file` and `docker_compose` — strings
+/// the tool rejects — and 63 of git's 142 subcommands are hyphenated, so this
+/// was wrong for 44% of them. The converter keeps the unfolded segments in
+/// `command_path` precisely so this field does not have to guess.
+fn invocation_form(module: &ScannedModule) -> String {
+    let from_metadata = module
+        .metadata
+        .get("command_path")
+        .and_then(|value| value.as_array())
+        .map(|segments| {
+            segments
+                .iter()
+                .filter_map(|segment| segment.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|command| !command.is_empty());
+
+    from_metadata.unwrap_or_else(|| command_from_module_id(&module.module_id))
+}
+
+/// Reconstruct the invocation form from a namespaced module id.
+///
+/// `cli.git.commit` becomes `git commit`. Lossy for any name the id fold
+/// touched, which is why [`invocation_form`] prefers `metadata["command_path"]`
+/// and falls back here only for bindings generated before that key existed.
 fn command_from_module_id(module_id: &str) -> String {
     module_id
         .split_once('.')
@@ -163,6 +193,43 @@ mod tests {
     #[test]
     fn test_command_from_module_id_root_command() {
         assert_eq!(command_from_module_id("cli.ls"), "ls");
+    }
+
+    #[test]
+    fn test_invocation_form_prefers_the_recorded_command_path() {
+        // Regression: `command` was reverse-derived from the module id, which
+        // the id-charset fold makes lossy. `apexe scan --format json` reported
+        // `git cat_file` for 68 of git's 142 commands — a string git rejects
+        // with "'cat_file' is not a git command".
+        let mut module = ScannedModule::new(
+            "cli.git.cat_file".to_string(),
+            "Provide contents of repository objects".to_string(),
+            serde_json::json!({}),
+            serde_json::json!({}),
+            vec![],
+            "exec:///usr/bin/git cat-file".to_string(),
+        );
+        module.metadata.insert(
+            "command_path".to_string(),
+            serde_json::json!(["git", "cat-file"]),
+        );
+
+        assert_eq!(invocation_form(&module), "git cat-file");
+    }
+
+    #[test]
+    fn test_invocation_form_falls_back_when_command_path_is_absent() {
+        // Bindings generated before `command_path` existed must keep working.
+        let module = ScannedModule::new(
+            "cli.git.commit".to_string(),
+            "Record changes".to_string(),
+            serde_json::json!({}),
+            serde_json::json!({}),
+            vec![],
+            "exec:///usr/bin/git commit".to_string(),
+        );
+
+        assert_eq!(invocation_form(&module), "git commit");
     }
 
     #[test]
