@@ -182,7 +182,15 @@ impl CliToolConverter {
             };
             CommandFields {
                 description,
-                input_schema: schema::build_input_schema(command, &tool.global_flags),
+                // Reached only through `collect_leaves`, which runs only when the
+                // tool has subcommands and always pushes a non-empty path — so a
+                // `Some(command)` here is always behind at least one subcommand
+                // token, and the module target always carries it.
+                input_schema: schema::build_input_schema(
+                    command,
+                    &tool.global_flags,
+                    schema::CommandPosition::Subcommand,
+                ),
                 output_schema: schema::build_output_schema(command),
                 annotations: apply_annotation_overrides(annotations::infer(command), tool),
                 documentation,
@@ -201,7 +209,13 @@ impl CliToolConverter {
             };
             CommandFields {
                 description,
-                input_schema: schema::build_input_schema(&synth, &tool.global_flags),
+                // The synthesized root has no subcommand token, so its global
+                // flags are ordinary flags and must keep their default placement.
+                input_schema: schema::build_input_schema(
+                    &synth,
+                    &tool.global_flags,
+                    schema::CommandPosition::Root,
+                ),
                 output_schema: schema::build_output_schema(&synth),
                 annotations: apply_annotation_overrides(annotations::infer(&synth), tool),
                 documentation,

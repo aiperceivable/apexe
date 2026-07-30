@@ -26,6 +26,18 @@ apexe serve --show-config claude-desktop
 
 Copy the output into `~/Library/Application Support/Claude/claude_desktop_config.json`, then restart Claude Desktop.
 
+The snippet reproduces whatever else you put on that command line, so pass the
+flags you intend to serve with — above all `--modules-dir` if you scanned
+somewhere other than `~/.apexe/modules`, since a client that launches `apexe
+serve` without it finds no tools:
+
+```bash
+apexe serve --show-config claude-desktop --modules-dir /srv/apexe/modules --acl ~/.apexe/acl.yaml
+```
+
+Credentials (`--auth-token`, `--jwt-secret`) are never written into the
+snippet — set those on the client side.
+
 ## Cursor Integration
 
 ```bash

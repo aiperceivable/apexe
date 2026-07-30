@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use apcore::{ACLRule, ErrorCode, ModuleError, ACL};
+use apcore::{match_pattern, ACLRule, ErrorCode, ModuleError, ACL};
 use apcore_toolkit::ScannedModule;
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +12,25 @@ struct AclConfig {
 }
 
 /// Manages access control for CLI modules using apcore's ACL system.
+///
+/// # Rule ordering is first-match-wins, not most-specific-wins
+///
+/// apcore's `ACL::check` walks the rule list in order and returns the effect of
+/// the *first* rule whose `callers` and `targets` both match; it never scores
+/// rules by specificity. So
+///
+/// ```yaml
+/// rules:
+///   - { callers: ["*"], targets: ["cli.*"], effect: allow }
+///   - { callers: ["*"], targets: ["cli.cp"], effect: deny }   # never reached
+/// ```
+///
+/// lets `cli.cp` through — the broad `allow` wins because it comes first. This
+/// is the opposite of the "most specific rule wins" convention that firewall-
+/// and IAM-style rule lists usually follow, and it is deliberate on apcore's
+/// side (documented as "first-match-wins evaluation"), so apexe does not
+/// reorder or re-rank the rules it loads. Write exceptions *above* the broad
+/// rule they carve out of.
 pub struct AclManager {
     acl: ACL,
     /// Cached default_effect so we can serialize without needing an accessor on ACL.
@@ -122,6 +141,303 @@ impl AclManager {
             .and_then(|v| v.get("default_effect")?.as_str().map(String::from))
             .unwrap_or_else(|| "deny".to_string())
     }
+}
+
+/// Compound-operator sentinels apcore recognises as the FIRST element of a
+/// `callers`/`targets` list. `$or` consumes every following pattern; `$not`
+/// consumes exactly one.
+const OR_SENTINEL: &str = "$or";
+const NOT_SENTINEL: &str = "$not";
+
+/// Maximum number of near-miss module ids named in one diagnostic.
+const MAX_SUGGESTIONS: usize = 3;
+
+/// A `callers` or `targets` list apcore's matcher can never satisfy, so the
+/// rule carrying it is dead weight no matter which modules are registered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InertRule {
+    /// Index of the rule in the ACL file's `rules` list.
+    pub rule_index: usize,
+    /// Which list is inert: `"callers"` or `"targets"`.
+    pub field: String,
+    /// The rule's declared effect, so the diagnostic can say what was lost.
+    pub effect: String,
+    /// Why apcore's matcher can never satisfy this list.
+    pub reason: String,
+}
+
+/// A target pattern that matches none of the module ids actually registered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnmatchedTarget {
+    /// Index of the rule in the ACL file's `rules` list.
+    pub rule_index: usize,
+    /// The rule's declared effect.
+    pub effect: String,
+    /// The literal pattern as written in the ACL file.
+    pub pattern: String,
+    /// Registered module ids that differ from `pattern` only in separator,
+    /// case, or leading segments — i.e. the spelling the operator probably
+    /// meant. Empty when nothing close is registered.
+    pub suggestions: Vec<String>,
+}
+
+impl UnmatchedTarget {
+    /// Whether a registered module is a near-identical spelling of this
+    /// pattern. A near miss proves the module *is* present under a different
+    /// spelling, which makes the pattern a typo rather than a forward-looking
+    /// rule for a module that does not exist here yet.
+    pub fn is_near_miss(&self) -> bool {
+        !self.suggestions.is_empty()
+    }
+}
+
+/// Outcome of checking a loaded ACL against the registry it will guard.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AclValidationReport {
+    /// Rules whose caller or target list can never match anything.
+    pub inert_rules: Vec<InertRule>,
+    /// Target patterns that match no registered module id.
+    pub unmatched_targets: Vec<UnmatchedTarget>,
+}
+
+impl AclValidationReport {
+    /// Whether the findings warrant refusing to start. See
+    /// [`validate_acl_rules`] for the refuse-vs-warn split.
+    pub fn is_fatal(&self) -> bool {
+        !self.inert_rules.is_empty()
+            || self
+                .unmatched_targets
+                .iter()
+                .any(UnmatchedTarget::is_near_miss)
+    }
+
+    /// Log the non-fatal findings — target patterns that match nothing today
+    /// but are not typos of anything registered.
+    pub fn emit_warnings(&self) {
+        for target in self.unmatched_targets.iter().filter(|t| !t.is_near_miss()) {
+            tracing::warn!(
+                rule_index = target.rule_index,
+                effect = %target.effect,
+                pattern = %target.pattern,
+                "ACL target matches no registered module — this rule currently \
+                 protects nothing. Harmless if the pattern anticipates a module \
+                 this server does not serve (a glob, or an ACL shared with a \
+                 differently filtered server); a typo otherwise."
+            );
+        }
+    }
+
+    /// Build the refusal error for the fatal findings, or `None` when there
+    /// are none.
+    pub fn fatal_error(&self, acl_path: &Path) -> Option<ModuleError> {
+        if !self.is_fatal() {
+            return None;
+        }
+        let mut lines: Vec<String> = self.inert_rules.iter().map(describe_inert).collect();
+        lines.extend(
+            self.unmatched_targets
+                .iter()
+                .filter(|t| t.is_near_miss())
+                .map(describe_near_miss),
+        );
+        Some(
+            ModuleError::new(
+                ErrorCode::GeneralInvalidInput,
+                format!(
+                    "ACL '{}' contains {} rule(s) that protect nothing:\n{}\n\
+                     Refusing to start: an operator who asked for access control must not \
+                     silently get less of it than they wrote.",
+                    acl_path.display(),
+                    lines.len(),
+                    lines.join("\n")
+                ),
+            )
+            .with_retryable(false),
+        )
+    }
+}
+
+/// One human-readable line describing an inert rule.
+fn describe_inert(rule: &InertRule) -> String {
+    format!(
+        "  - rule {} ({}): `{}` is {}",
+        rule.rule_index, rule.effect, rule.field, rule.reason
+    )
+}
+
+/// One human-readable line describing a target that is a typo of a registered
+/// module id.
+fn describe_near_miss(target: &UnmatchedTarget) -> String {
+    format!(
+        "  - rule {} ({}): target '{}' matches no registered module; did you mean {}?",
+        target.rule_index,
+        target.effect,
+        target.pattern,
+        target.suggestions.join(" or ")
+    )
+}
+
+/// Check a loaded ACL's rules against the module ids that are actually
+/// registered on this server.
+///
+/// # Why this cannot live in [`AclManager::from_config`]
+///
+/// The ACL is loaded before anything knows which modules exist.
+/// `crate::module::build_executor` populates the `Registry` first and
+/// constructs the ACL second, so it is the only place where both sets are in
+/// hand — and the ids must come from the registry rather than from the
+/// modules directory, because `ModuleFilter` deliberately drops modules at
+/// registration time.
+///
+/// # Refuse vs. warn
+///
+/// **Refuse** on a structurally inert rule (`targets: []`, `callers: []`, a
+/// bare `$not`/`$or`). apcore's `match_patterns` returns `false` for an empty
+/// pattern list, so such a rule can never fire against *any* registry, present
+/// or future. apcore already rejects an *omitted* `callers`/`targets` key for
+/// exactly this reason; accepting the empty list leaves the same hole one
+/// character away. This is the posture `--acl` already takes on a missing or
+/// malformed file.
+///
+/// **Refuse** on a target that matches nothing while a registered module id
+/// differs from it only in separator, case, or leading segments
+/// (`cli.git.cat-file` vs. the registered `cli.git.cat_file`; `cp` vs.
+/// `cli.cp`). The near miss is proof the module is present under another
+/// spelling, so the rule is a typo whose subject is live and unguarded.
+///
+/// **Warn** on any other target that matches nothing. A glob is forward-
+/// looking by design (`cli.*.status` may match a module tomorrow's scan adds),
+/// and one ACL file is meant to be shared across servers whose registries
+/// differ (`--prefix`, `--tags`, different scans). A target naming a module
+/// that is not registered also cannot itself let anything through: the
+/// registry has nothing to serve under that name. Refusing here would turn a
+/// portable policy file into a per-host one, which is a worse failure than the
+/// warning.
+///
+/// The target check is skipped entirely when the registry is empty — there is
+/// nothing to validate against, and every pattern would be reported.
+pub fn validate_acl_rules(rules: &[ACLRule], registered_ids: &[String]) -> AclValidationReport {
+    let mut report = AclValidationReport::default();
+    for (rule_index, rule) in rules.iter().enumerate() {
+        collect_inert(rule_index, rule, &mut report);
+        if registered_ids.is_empty() {
+            continue;
+        }
+        collect_unmatched_targets(rule_index, rule, registered_ids, &mut report);
+    }
+    report
+}
+
+/// Record the rule's `callers`/`targets` lists that apcore can never satisfy.
+fn collect_inert(rule_index: usize, rule: &ACLRule, report: &mut AclValidationReport) {
+    for (field, patterns) in [("callers", &rule.callers), ("targets", &rule.targets)] {
+        if let Some(reason) = never_matches(patterns) {
+            report.inert_rules.push(InertRule {
+                rule_index,
+                field: field.to_string(),
+                effect: rule.effect.clone(),
+                reason,
+            });
+        }
+    }
+}
+
+/// Record the rule's target patterns that match no registered module id.
+fn collect_unmatched_targets(
+    rule_index: usize,
+    rule: &ACLRule,
+    registered_ids: &[String],
+    report: &mut AclValidationReport,
+) {
+    for pattern in target_patterns(&rule.targets) {
+        if registered_ids.iter().any(|id| match_pattern(pattern, id)) {
+            continue;
+        }
+        report.unmatched_targets.push(UnmatchedTarget {
+            rule_index,
+            effect: rule.effect.clone(),
+            pattern: pattern.to_string(),
+            suggestions: suggest_similar(pattern, registered_ids),
+        });
+    }
+}
+
+/// Why apcore's `match_patterns` can never return `true` for this list, or
+/// `None` when it can.
+fn never_matches(patterns: &[String]) -> Option<String> {
+    if patterns.is_empty() {
+        return Some(
+            "an empty list — apcore's matcher returns `false` for an empty pattern list, so \
+             this rule can never fire"
+                .to_string(),
+        );
+    }
+    match patterns[0].as_str() {
+        NOT_SENTINEL if patterns.len() < 2 => {
+            Some("`$not` with no operand, which apcore's matcher rejects outright".to_string())
+        }
+        OR_SENTINEL if patterns.len() < 2 => {
+            Some("`$or` with no operands, so there is nothing to match".to_string())
+        }
+        _ => None,
+    }
+}
+
+/// The concrete module-id patterns in a `targets` list, with apcore's compound
+/// sentinels stripped.
+///
+/// Mirrors `ACL::match_patterns`: a leading `$or` makes every following entry a
+/// pattern, and a leading `$not` consumes exactly *one*. Anything after a
+/// `$not` operand is never consulted by the matcher, so it is not reported —
+/// flagging it would be a false alarm about a pattern that has no effect either
+/// way.
+fn target_patterns(targets: &[String]) -> Vec<&str> {
+    match targets.first().map(String::as_str) {
+        Some(OR_SENTINEL) => targets[1..].iter().map(String::as_str).collect(),
+        Some(NOT_SENTINEL) => targets.get(1).map(String::as_str).into_iter().collect(),
+        _ => targets.iter().map(String::as_str).collect(),
+    }
+}
+
+/// Registered ids that differ from `pattern` only in separator, case, or
+/// leading segments.
+///
+/// Deliberately not a general edit distance: the spellings operators actually
+/// reach for are the pre-#19 hyphenated id (`cli.git.cat-file`), the bare
+/// command (`cp`), and the shell invocation (`git log`). Normalising every
+/// separator to `.` and testing for equality or a trailing-segment match names
+/// exactly those without inventing matches between unrelated modules.
+fn suggest_similar(pattern: &str, registered_ids: &[String]) -> Vec<String> {
+    let needle = normalize_id(pattern);
+    if needle.is_empty() || needle.contains('*') {
+        return vec![];
+    }
+    let suffix = format!(".{needle}");
+    let mut hits: Vec<String> = registered_ids
+        .iter()
+        .filter(|id| {
+            let normalized = normalize_id(id);
+            normalized == needle || normalized.ends_with(&suffix)
+        })
+        .cloned()
+        .collect();
+    hits.truncate(MAX_SUGGESTIONS);
+    hits
+}
+
+/// Fold the spellings that differ only in separator or case into one form.
+fn normalize_id(id: &str) -> String {
+    id.trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| {
+            if c == '-' || c == '_' || c == '/' || c.is_whitespace() {
+                '.'
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -236,6 +552,213 @@ mod tests {
         let loaded = AclManager::from_config(&path).unwrap();
         assert_eq!(loaded.acl.rules().len(), 2);
         assert_eq!(loaded.default_effect, "deny");
+    }
+
+    fn rule(targets: &[&str], effect: &str) -> ACLRule {
+        ACLRule {
+            callers: vec!["*".to_string()],
+            targets: targets.iter().map(|t| (*t).to_string()).collect(),
+            effect: effect.to_string(),
+            description: None,
+            conditions: None,
+        }
+    }
+
+    fn registered(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| (*id).to_string()).collect()
+    }
+
+    #[test]
+    fn test_validate_acl_rules_accepts_exact_registered_target() {
+        let report = validate_acl_rules(
+            &[rule(&["cli.cp"], "deny")],
+            &registered(&["cli.cp", "cli.ls"]),
+        );
+        assert_eq!(report, AclValidationReport::default());
+        assert!(!report.is_fatal());
+    }
+
+    #[test]
+    fn test_validate_acl_rules_flags_empty_target_list_as_inert() {
+        // #39 item 5(b): apcore rejects an OMITTED `targets` key but accepts
+        // `targets: []`, and its matcher returns false for an empty pattern
+        // list — so the deny rule never fires and the module runs.
+        let report = validate_acl_rules(&[rule(&[], "deny")], &registered(&["cli.cp"]));
+        assert_eq!(report.inert_rules.len(), 1);
+        assert_eq!(report.inert_rules[0].field, "targets");
+        assert_eq!(report.inert_rules[0].effect, "deny");
+        assert!(report.is_fatal());
+    }
+
+    #[test]
+    fn test_validate_acl_rules_flags_empty_caller_list_as_inert() {
+        // `callers` goes through the same `match_patterns`, so an empty caller
+        // list is inert for exactly the same reason.
+        let mut inert = rule(&["cli.cp"], "deny");
+        inert.callers = vec![];
+        let report = validate_acl_rules(&[inert], &registered(&["cli.cp"]));
+        assert_eq!(report.inert_rules.len(), 1);
+        assert_eq!(report.inert_rules[0].field, "callers");
+    }
+
+    #[test]
+    fn test_validate_acl_rules_flags_bare_compound_sentinels_as_inert() {
+        let report = validate_acl_rules(
+            &[rule(&["$not"], "deny"), rule(&["$or"], "allow")],
+            &registered(&["cli.cp"]),
+        );
+        assert_eq!(report.inert_rules.len(), 2);
+        assert!(report.inert_rules[0].reason.contains("$not"));
+        assert!(report.inert_rules[1].reason.contains("$or"));
+    }
+
+    #[test]
+    fn test_validate_acl_rules_flags_hyphenated_id_as_near_miss() {
+        // #39 item 5(a): the pre-#19 hyphenated id. The module is registered
+        // under `cli.git.cat_file`, so this deny protects nothing.
+        let report = validate_acl_rules(
+            &[rule(&["cli.git.cat-file"], "deny")],
+            &registered(&["cli.git.cat_file"]),
+        );
+        assert_eq!(report.unmatched_targets.len(), 1);
+        assert_eq!(
+            report.unmatched_targets[0].suggestions,
+            vec!["cli.git.cat_file".to_string()]
+        );
+        assert!(report.unmatched_targets[0].is_near_miss());
+        assert!(report.is_fatal());
+    }
+
+    #[test]
+    fn test_validate_acl_rules_flags_bare_command_names_as_near_miss() {
+        // The other three spellings from #39 item 5(a): `cp`, `ls`, `git log`.
+        for (pattern, expected) in [
+            ("cp", "cli.cp"),
+            ("ls", "cli.ls"),
+            ("git log", "cli.git.log"),
+        ] {
+            let report = validate_acl_rules(
+                &[rule(&[pattern], "deny")],
+                &registered(&["cli.cp", "cli.ls", "cli.git.log"]),
+            );
+            assert_eq!(
+                report.unmatched_targets[0].suggestions,
+                vec![expected.to_string()],
+                "'{pattern}' should point at '{expected}'"
+            );
+            assert!(report.is_fatal(), "'{pattern}' should refuse to start");
+        }
+    }
+
+    #[test]
+    fn test_validate_acl_rules_warns_but_does_not_refuse_on_unknown_target() {
+        // A target naming nothing close to a registered module is the shared-
+        // ACL / not-yet-scanned case: report it, but do not refuse — the
+        // registry has nothing to serve under that name anyway.
+        let report = validate_acl_rules(
+            &[rule(&["cli.kubectl.apply"], "deny")],
+            &registered(&["cli.cp", "cli.ls"]),
+        );
+        assert_eq!(report.unmatched_targets.len(), 1);
+        assert!(report.unmatched_targets[0].suggestions.is_empty());
+        assert!(!report.is_fatal());
+    }
+
+    #[test]
+    fn test_validate_acl_rules_accepts_working_globs() {
+        // `cli.c*`, `*.log` and `cli.*.status` are verified working in #39 and
+        // must not produce a finding — a validator that cries wolf on a
+        // functioning rule is worse than no validator.
+        let report = validate_acl_rules(
+            &[
+                rule(&["cli.c*"], "deny"),
+                rule(&["*.log"], "allow"),
+                rule(&["cli.*.status"], "allow"),
+                rule(&["*"], "deny"),
+            ],
+            &registered(&["cli.cp", "cli.git.log", "cli.git.status"]),
+        );
+        assert_eq!(report, AclValidationReport::default());
+    }
+
+    #[test]
+    fn test_validate_acl_rules_warns_on_glob_matching_nothing() {
+        // A glob that matches nothing today may match a module added tomorrow,
+        // so it is reported without refusing to start.
+        let report = validate_acl_rules(&[rule(&["cli.z*"], "deny")], &registered(&["cli.cp"]));
+        assert_eq!(report.unmatched_targets.len(), 1);
+        assert!(!report.is_fatal());
+    }
+
+    #[test]
+    fn test_validate_acl_rules_understands_compound_targets() {
+        // `$or` makes every following entry a target; `$not` consumes exactly
+        // one, so entries past the first are never consulted by apcore's
+        // matcher and must not be reported.
+        let report = validate_acl_rules(
+            &[
+                rule(&["$or", "cli.cp", "cli.ls"], "deny"),
+                rule(&["$not", "cli.cp", "never.consulted"], "allow"),
+            ],
+            &registered(&["cli.cp", "cli.ls"]),
+        );
+        assert_eq!(report, AclValidationReport::default());
+    }
+
+    #[test]
+    fn test_validate_acl_rules_flags_unmatched_operand_inside_compound() {
+        let report = validate_acl_rules(
+            &[rule(&["$or", "cli.cp", "cli.git.cat-file"], "deny")],
+            &registered(&["cli.cp", "cli.git.cat_file"]),
+        );
+        assert_eq!(report.unmatched_targets.len(), 1);
+        assert_eq!(report.unmatched_targets[0].pattern, "cli.git.cat-file");
+        assert!(report.is_fatal());
+    }
+
+    #[test]
+    fn test_validate_acl_rules_skips_target_check_on_empty_registry() {
+        // Nothing to validate against — reporting every pattern would be noise.
+        // Structural findings still stand.
+        let report = validate_acl_rules(&[rule(&["cli.cp"], "deny"), rule(&[], "deny")], &[]);
+        assert!(report.unmatched_targets.is_empty());
+        assert_eq!(report.inert_rules.len(), 1);
+    }
+
+    #[test]
+    fn test_acl_validation_report_fatal_error_names_the_findings() {
+        let report = validate_acl_rules(
+            &[rule(&["cli.git.cat-file"], "deny"), rule(&[], "deny")],
+            &registered(&["cli.git.cat_file"]),
+        );
+        let err = report
+            .fatal_error(Path::new("/etc/apexe/acl.yaml"))
+            .expect("report should be fatal");
+        assert_eq!(err.code, ErrorCode::GeneralInvalidInput);
+        assert!(err.message.contains("/etc/apexe/acl.yaml"));
+        assert!(err.message.contains("cli.git.cat_file"));
+        assert!(err.message.contains("empty list"));
+    }
+
+    #[test]
+    fn test_acl_validation_report_fatal_error_none_when_clean() {
+        let report = validate_acl_rules(&[rule(&["cli.cp"], "deny")], &registered(&["cli.cp"]));
+        assert!(report.fatal_error(Path::new("/tmp/acl.yaml")).is_none());
+    }
+
+    #[test]
+    fn test_normalize_id_folds_separators_and_case() {
+        assert_eq!(normalize_id("cli.git.cat-file"), "cli.git.cat.file");
+        assert_eq!(normalize_id("CLI_GIT_LOG"), "cli.git.log");
+        assert_eq!(normalize_id("  git log  "), "git.log");
+    }
+
+    #[test]
+    fn test_suggest_similar_does_not_guess_across_unrelated_modules() {
+        // A trailing-segment match is the whole heuristic; unrelated ids that
+        // merely share letters must not be offered as "did you mean".
+        assert!(suggest_similar("clip", &registered(&["cli.cp"])).is_empty());
+        assert!(suggest_similar("cli.c*", &registered(&["cli.cp"])).is_empty());
     }
 
     #[test]

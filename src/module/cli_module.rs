@@ -128,6 +128,23 @@ impl CliModule {
     pub fn module_id(&self) -> &str {
         &self.module_id
     }
+
+    /// Interleave the rendered arguments with this module's subcommand tokens.
+    ///
+    /// The subcommand path lives in `command_parts`, parsed out of the module
+    /// target (`exec:///usr/bin/git cat-file`), so this is the only place in the
+    /// pipeline that can put a token *ahead* of it. That is why
+    /// [`executor::build_argv`] reports its `before_subcommand` group separately
+    /// rather than emitting it: a tool's global options belong to the tool's own
+    /// parser, which has already dispatched by the time the subcommand token is
+    /// read. `git -C <dir> cat-file` honours `-C`; `git cat-file -C <dir>` hands
+    /// it to a parser that reads `-C` as something else entirely.
+    fn assemble_arguments(&self, rendered: executor::RenderedArgv) -> Vec<String> {
+        let mut args = rendered.before_subcommand;
+        args.extend(self.command_parts.iter().cloned());
+        args.extend(rendered.after_subcommand);
+        args
+    }
 }
 
 #[async_trait]
@@ -181,12 +198,11 @@ impl Module for CliModule {
         change.target = self.binary_path.clone();
         change.summary = match inputs.as_object() {
             None => "Cannot preview: input must be a JSON object.".to_string(),
-            Some(kwargs) => match executor::build_arguments(kwargs, Some(&self.input_schema)) {
+            Some(kwargs) => match executor::build_argv(kwargs, Some(&self.input_schema)) {
                 Err(e) => format!("Cannot preview: invalid arguments ({}).", e.message),
                 Ok(user_args) => {
                     let mut full_command = vec![self.binary_path.clone()];
-                    full_command.extend(self.command_parts.clone());
-                    full_command.extend(user_args);
+                    full_command.extend(self.assemble_arguments(user_args));
                     format!(
                         "This will run: {}. Destructive command — apexe cannot statically \
                          predict the exact effects of an arbitrary CLI tool.",
@@ -218,9 +234,8 @@ impl Module for CliModule {
 
         let start = std::time::Instant::now();
 
-        let mut args: Vec<String> = self.command_parts.clone();
-        let user_args = executor::build_arguments(kwargs, Some(&self.input_schema))?;
-        args.extend(user_args);
+        let user_args = executor::build_argv(kwargs, Some(&self.input_schema))?;
+        let args: Vec<String> = self.assemble_arguments(user_args);
 
         let output = match executor::execute_subprocess(
             &self.binary_path,

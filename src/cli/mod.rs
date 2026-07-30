@@ -295,8 +295,11 @@ pub struct ServeArgs {
     #[arg(long, default_value = "apexe")]
     pub name: String,
 
-    /// Print integration config snippet (claude-desktop, cursor)
-    #[arg(long)]
+    /// Print integration config snippet and exit. The snippet reproduces the
+    /// rest of this invocation (`--modules-dir`, `--tags`, `--prefix`,
+    /// `--acl`, the governance toggles) so the configured client serves the
+    /// same surface. Credentials are never included.
+    #[arg(long, value_parser = config_gen::ConfigFormat::VALUES)]
     pub show_config: Option<String>,
 
     /// Restrict the served tools to those carrying every listed tag
@@ -366,25 +369,23 @@ pub struct ServeArgs {
     /// (HTTP/SSE transports only)
     #[arg(long)]
     pub metrics: bool,
-
-    /// Skip input validation against tool schemas
-    #[arg(long)]
-    pub skip_validation: bool,
+    // Note: no `--skip-validation` flag. It advertised "skip input validation
+    // against tool schemas" and skipped nothing: every schema check runs in
+    // apcore's `input_validation` pipeline step, which apexe never removes,
+    // while the flag toggled apcore-mcp's separate pre-dispatch validation --
+    // a hook that only fires if the executor adapter implements
+    // `McpExecutor::validate`, and `ApcoreExecutorAdapter` does not. Removing
+    // it is the honest end state: apcore does expose
+    // `ExecutionStrategy::remove("input_validation")`, but a CLI flag whose
+    // only effect is to unvalidate the input of a process spawner is a
+    // liability, not a feature.
 }
 
 impl ServeArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
         if let Some(ref format) = self.show_config {
-            println!(
-                "{}",
-                config_gen::generate_config(
-                    format,
-                    &self.name,
-                    &self.transport,
-                    &self.host,
-                    self.port,
-                )
-            );
+            let snippet = config_gen::generate_config(format, &self.invocation())?;
+            println!("{snippet}");
             return Ok(());
         }
 
@@ -393,6 +394,28 @@ impl ServeArgs {
         server
             .serve_with_options(opts)
             .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    /// Describe this invocation for `--show-config`.
+    ///
+    /// `--auth-token` / `--jwt-secret` are intentionally absent: a snippet is
+    /// pasted into a config file that is shared and often committed.
+    fn invocation(&self) -> config_gen::ServeInvocation {
+        config_gen::ServeInvocation {
+            name: self.name.clone(),
+            transport: self.transport.clone(),
+            host: self.host.clone(),
+            port: self.port,
+            modules_dir: self.modules_dir.clone(),
+            tags: self.tags.clone(),
+            prefix: self.prefix.clone(),
+            acl: self.acl.clone(),
+            enable_approval: self.enable_approval,
+            no_logging: self.no_logging,
+            no_log_arguments: self.no_log_arguments,
+            no_circuit_breaker: self.no_circuit_breaker,
+            no_retry: self.no_retry,
+        }
     }
 
     fn build_server(&self, config: &ApexeConfig) -> anyhow::Result<apcore_mcp::APCoreMCP> {
@@ -414,7 +437,6 @@ impl ServeArgs {
             .enable_circuit_breaker(!self.no_circuit_breaker)
             .enable_retry(!self.no_retry)
             .enable_metrics(self.metrics)
-            .validate_inputs(!self.skip_validation)
             .auth(self.auth_options()?)
             .allow_deprecated_sse(self.allow_deprecated_sse)
             .audit_path(config.audit_log.clone());
@@ -965,6 +987,82 @@ mod tests {
         let opts = args.auth_options().unwrap();
         assert!(opts.mode.is_none());
         assert!(!opts.allow_unauthenticated_bind);
+    }
+
+    #[test]
+    fn test_serve_rejects_removed_skip_validation_flag() {
+        // `--skip-validation` skipped nothing: schema validation lives in
+        // apcore's `input_validation` pipeline step, which apexe never
+        // removes. Failing at parse is louder than accepting a no-op that
+        // reads as "validation is off".
+        let result = Cli::try_parse_from(["apexe", "serve", "--skip-validation"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_serve_show_config_rejects_unknown_format() {
+        // `--show-config vscode` used to print a sentence to stdout and exit
+        // 0, so `> mcp.json` wrote that sentence as the file body.
+        let result = Cli::try_parse_from(["apexe", "serve", "--show-config", "vscode"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_serve_invocation_carries_every_surface_flag() {
+        let cli = Cli::try_parse_from([
+            "apexe",
+            "serve",
+            "--modules-dir",
+            "/srv/modules",
+            "--tags",
+            "readonly",
+            "--prefix",
+            "cli.git",
+            "--acl",
+            "/etc/apexe/acl.yaml",
+            "--enable-approval",
+            "--no-retry",
+            "--name",
+            "mytools",
+        ])
+        .unwrap();
+        let Commands::Serve(args) = cli.command else {
+            panic!("expected Commands::Serve");
+        };
+        let invocation = args.invocation();
+        assert_eq!(invocation.name, "mytools");
+        assert_eq!(invocation.modules_dir, Some(PathBuf::from("/srv/modules")));
+        assert_eq!(invocation.tags.as_deref(), Some("readonly"));
+        assert_eq!(invocation.prefix.as_deref(), Some("cli.git"));
+        assert_eq!(invocation.acl, Some(PathBuf::from("/etc/apexe/acl.yaml")));
+        assert!(invocation.enable_approval);
+        assert!(invocation.no_retry);
+        assert!(!invocation.no_logging);
+    }
+
+    #[test]
+    fn test_serve_invocation_omits_credentials() {
+        // ServeInvocation has no credential field at all; this pins that the
+        // rendered snippet cannot carry one.
+        let cli = Cli::try_parse_from([
+            "apexe",
+            "serve",
+            "--transport",
+            "http",
+            "--auth",
+            "token",
+            "--auth-token",
+            "super-secret-value",
+        ])
+        .unwrap();
+        let Commands::Serve(args) = cli.command else {
+            panic!("expected Commands::Serve");
+        };
+        let snippet = config_gen::generate_config("claude-desktop", &args.invocation()).unwrap();
+        assert!(
+            !snippet.contains("super-secret-value"),
+            "snippet leaked the bearer token: {snippet}"
+        );
     }
 
     // A2aArgs validation tests

@@ -437,3 +437,140 @@ async fn test_mcp_tools_call_unknown_module_errors() {
 
     assert!(result.is_err(), "unknown module should error");
 }
+
+/// Drive one JSON-RPC request through a real `apexe serve --transport stdio`
+/// process and return the parsed response.
+///
+/// Closing stdin after the request gives the transport its EOF, so the child
+/// answers and exits on its own — no port binding and no timeout juggling.
+/// Logs go to stderr (`src/main.rs` pins the subscriber writer), so stdout is
+/// pure JSON-RPC.
+fn stdio_jsonrpc_roundtrip(modules_dir: &Path, request: &serde_json::Value) -> serde_json::Value {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_apexe"))
+        .args(["serve", "--transport", "stdio", "--modules-dir"])
+        .arg(modules_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("apexe serve should start");
+
+    {
+        let stdin = child.stdin.as_mut().expect("stdin should be piped");
+        writeln!(stdin, "{request}").expect("request should be written");
+    }
+    // Dropping stdin closes it, which is the transport's shutdown signal.
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().expect("child should exit");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|value| value.get("result").is_some() || value.get("error").is_some())
+        .unwrap_or_else(|| panic!("no JSON-RPC response on stdout: {stdout}"))
+}
+
+#[test]
+fn test_mcp_initialize_reports_the_apexe_version() {
+    // #35 item 4: `serverInfo.version` reported 0.17.2 — apcore-mcp's crate
+    // version — so a client could not learn which apexe it was talking to.
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+
+    let response = stdio_jsonrpc_roundtrip(
+        dir.path(),
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": { "name": "apexe-test", "version": "0" }
+            }
+        }),
+    );
+
+    let server_info = &response["result"]["serverInfo"];
+    assert_eq!(
+        server_info["version"].as_str(),
+        Some(apexe::VERSION),
+        "serverInfo.version must be apexe's version: {response}"
+    );
+    assert_eq!(server_info["name"].as_str(), Some("apexe"));
+}
+
+/// Write an ACL file whose single rule carries the given target list.
+fn write_acl_with_targets(dir: &Path, targets: &str) -> std::path::PathBuf {
+    let path = dir.join("acl.yaml");
+    std::fs::write(
+        &path,
+        format!("default_effect: deny\nrules:\n  - callers: [\"*\"]\n    targets: {targets}\n    effect: deny\n"),
+    )
+    .expect("acl should be written");
+    path
+}
+
+#[test]
+fn test_mcp_serve_refuses_acl_whose_target_misspells_a_registered_module() {
+    // #39 item 5(a): `cli.echo` is registered, the rule names `echo`, and the
+    // deny protected nothing. Refuse to build the server rather than serve an
+    // ACL the operator wrote and did not get.
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let acl_path = write_acl_with_targets(dir.path(), "[\"echo\"]");
+
+    let err = McpServerBuilder::new()
+        .modules_dir(dir.path())
+        .acl_path(&acl_path)
+        .build()
+        .err()
+        .expect("a near-miss ACL target must refuse to start");
+    assert!(
+        err.message.contains("cli.echo"),
+        "error should name the spelling that works: {}",
+        err.message
+    );
+}
+
+#[test]
+fn test_mcp_serve_refuses_acl_with_an_empty_target_list() {
+    // #39 item 5(b): apcore accepts `targets: []` and its matcher returns false
+    // for an empty pattern list, so the rule is inert.
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let acl_path = write_acl_with_targets(dir.path(), "[]");
+
+    let err = McpServerBuilder::new()
+        .modules_dir(dir.path())
+        .acl_path(&acl_path)
+        .build()
+        .err()
+        .expect("an inert ACL rule must refuse to start");
+    assert!(
+        err.message.contains("empty list"),
+        "error should name the defect: {}",
+        err.message
+    );
+}
+
+#[test]
+fn test_mcp_serve_accepts_acl_targeting_the_registered_module() {
+    // The validator must not cry wolf on a rule that works.
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let acl_path = write_acl_with_targets(dir.path(), "[\"cli.echo\"]");
+
+    assert!(
+        McpServerBuilder::new()
+            .modules_dir(dir.path())
+            .acl_path(&acl_path)
+            .build()
+            .is_ok(),
+        "a correct ACL must load"
+    );
+}

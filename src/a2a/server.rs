@@ -250,6 +250,13 @@ impl A2aServerBuilder {
         let config = APCoreA2AConfig {
             name: self.name.clone(),
             description: format!("apexe A2A agent '{}'", self.name),
+            // The agent card's `version` describes THIS agent, not the
+            // framework serving it. `APCoreA2AConfig::default()` fills it from
+            // `apcore_a2a::VERSION`, which is a hard-coded constant in that
+            // crate and is stale besides ("0.4.1" on apcore-a2a 0.4.4), so a
+            // client reading the card learned neither which apexe nor which
+            // apcore-a2a it was talking to. Set it explicitly.
+            version: crate::VERSION.to_string(),
             url: self.url.clone(),
             execution_timeout: self.execution_timeout,
             explorer: self.explorer,
@@ -319,6 +326,22 @@ mod tests {
         let builder = A2aServerBuilder::new();
         assert!(builder.enable_logging);
         assert!(!builder.enable_approval);
+    }
+
+    #[test]
+    fn test_a2a_prepare_sets_apexe_version_on_the_agent_card() {
+        // #35 item 4: the card reported apcore-a2a's `VERSION` constant
+        // ("0.4.1", itself stale on apcore-a2a 0.4.4) because `config.version`
+        // was never set. `prepare` must stamp apexe's own version.
+        let builder = A2aServerBuilder::new();
+        let (_executor, config) = builder.prepare().expect("prepare should succeed");
+        assert_eq!(config.version, crate::VERSION);
+        assert_eq!(config.version, env!("CARGO_PKG_VERSION"));
+        assert_ne!(
+            config.version,
+            APCoreA2AConfig::default().version,
+            "the card must not report the framework's version as its own"
+        );
     }
 
     #[tokio::test]

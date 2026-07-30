@@ -26,6 +26,9 @@ fn exempt_paths() -> HashSet<String> {
 /// resulting [`Executor`] to apcore-mcp's [`APCoreMCP`] server.
 pub struct McpServerBuilder {
     name: String,
+    /// Value reported as `serverInfo.version` in the `initialize` response.
+    /// Defaults to [`crate::VERSION`]; see [`Self::version`].
+    version: String,
     transport: String,
     host: String,
     port: u16,
@@ -74,6 +77,7 @@ impl McpServerBuilder {
     pub fn new() -> Self {
         Self {
             name: "apexe".to_string(),
+            version: crate::VERSION.to_string(),
             transport: "stdio".to_string(),
             host: "127.0.0.1".to_string(),
             port: 8000,
@@ -100,6 +104,16 @@ impl McpServerBuilder {
     /// Set the MCP server name.
     pub fn name(mut self, name: &str) -> Self {
         self.name = name.to_string();
+        self
+    }
+
+    /// Set the version reported as `serverInfo.version`.
+    ///
+    /// Defaults to [`crate::VERSION`]. Left unset, apcore-mcp fills the field
+    /// from its own crate version, so `initialize` told a client the apcore-mcp
+    /// release rather than which apexe it was talking to.
+    pub fn version(mut self, version: &str) -> Self {
+        self.version = version.to_string();
         self
     }
 
@@ -331,6 +345,7 @@ impl McpServerBuilder {
         let mut builder = APCoreMCP::builder()
             .backend(BackendSource::Executor(executor))
             .name(&self.name)
+            .version(&self.version)
             .transport(transport)
             .host(&self.host)
             .port(self.port)
@@ -468,6 +483,22 @@ mod tests {
         assert!(builder.validate_inputs);
         assert!(builder.modules_dir.is_none());
         assert_eq!(builder.timeout_ms, 30_000);
+    }
+
+    #[test]
+    fn test_mcp_server_builder_reports_apexe_version_by_default() {
+        // #35 item 4: `serverInfo.version` used to report apcore-mcp's crate
+        // version (0.17.2), so an MCP client had no way to learn which apexe it
+        // was talking to.
+        let builder = McpServerBuilder::new();
+        assert_eq!(builder.version, crate::VERSION);
+        assert_eq!(builder.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn test_mcp_server_builder_version_override() {
+        let builder = McpServerBuilder::new().version("9.9.9");
+        assert_eq!(builder.version, "9.9.9");
     }
 
     #[test]

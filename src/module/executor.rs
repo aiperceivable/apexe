@@ -31,7 +31,26 @@ const BINDING_INJECTION_CHARS: &[char] = &[
 /// - `\0` — `Command` rejects it anyway; catching it here gives a better error.
 /// - `\n` / `\r` — not an execve risk, but they corrupt the audit log's line
 ///   framing and any line-oriented protocol the wrapped tool speaks.
-const CONTROL_CHARS: &[char] = &['\0', '\n', '\r'];
+/// - U+2028 LINE SEPARATOR, U+2029 PARAGRAPH SEPARATOR and U+0085 NEL — the
+///   same framing argument, for the consumers that split on them (issue #39).
+///   The default-on logging middleware writes an input value into the log
+///   verbatim, so a caller that can plant one of these decides where a log
+///   reader sees a line boundary: the same 62-physical-line audit trail is 71
+///   lines under the Unicode-aware line splitting that JavaScript, Java and
+///   many log processors apply. A rejection is worth more than the value, for
+///   the same reason `\n` is rejected — nothing legitimate puts a line
+///   terminator in a command-line argument.
+///
+/// What is deliberately *not* here: `\t`, VT (U+000B), FF (U+000C) and the ANSI
+/// escape introducer (U+001B). They are the other half of the "control
+/// character in a log" family, and they are already neutralised on the way out:
+/// `tracing` renders a field through `Debug`, which escapes them as `\t` and
+/// `\u{1b}` rather than emitting them raw, so none can start an escape sequence
+/// or move a cursor in a consumer's terminal. Nor do they mean anything to a
+/// line splitter. The three added above are in the set precisely because the
+/// reported log line shows them arriving raw. Rejecting the rest would cost
+/// real values — a tab-separated `--data` body — for no gain.
+const CONTROL_CHARS: &[char] = &['\0', '\n', '\r', '\u{2028}', '\u{2029}', '\u{0085}'];
 
 /// Default cap on captured stdout/stderr per stream, matching apcore-cli's
 /// `Sandbox::with_max_output_bytes` default. Prevents a runaway CLI tool
@@ -176,6 +195,16 @@ enum FlagPlacement {
     /// Ahead of every operand. `find`'s true options (`-L`, `-s`, `-f path`)
     /// must precede the paths even though its primaries must follow them.
     BeforeOperands,
+    /// Ahead of the subcommand token itself, which is a step further out than
+    /// [`FlagPlacement::BeforeOperands`]: a subcommand is not an operand, and
+    /// the tokens naming it do not come from the input object at all — they
+    /// come from the module's `exec://` target. The renderer therefore cannot
+    /// place these itself; it reports them separately in
+    /// [`RenderedArgv::before_subcommand`] and the module assembles the three
+    /// pieces. `git -C <dir> cat-file` is the shape; `git cat-file -C <dir>`
+    /// is what the scanner used to emit, where `-C` belongs to a parser that
+    /// never sees it.
+    BeforeSubcommand,
 }
 
 /// How a single input property is spelled on the command line.
@@ -221,6 +250,7 @@ fn arg_form(schema: Option<&Value>, key: &str) -> ArgForm {
         .and_then(Value::as_str)
     {
         Some("before-operands") => FlagPlacement::BeforeOperands,
+        Some("before-subcommand") => FlagPlacement::BeforeSubcommand,
         // Absent or unrecognized keeps the prior behaviour.
         _ => FlagPlacement::Default,
     };
@@ -408,6 +438,51 @@ fn reject_bare_flag_for_value_option(
     Ok(())
 }
 
+/// One invocation's caller-supplied argv, split at the subcommand tokens.
+///
+/// The two halves cannot be a single list because the tokens that separate them
+/// are not the renderer's to produce: `cli.git.cat_file` names its subcommand in
+/// the module target (`exec:///usr/bin/git cat-file`), and only
+/// [`crate::module::cli_module::CliModule`] holds those. The renderer therefore
+/// reports where each group belongs and the module interleaves.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RenderedArgv {
+    /// Tokens that must precede the subcommand path, because the tool's *own*
+    /// parser reads them before it dispatches — `git -C <dir>` in
+    /// `git -C <dir> cat-file`.
+    pub before_subcommand: Vec<String>,
+    /// Everything else, already in the order the command's grammar wants.
+    pub after_subcommand: Vec<String>,
+}
+
+impl RenderedArgv {
+    /// Concatenate both halves into one list.
+    ///
+    /// Correct only where there is no subcommand token to sit between them —
+    /// a root module, or any call whose schema marks no flag
+    /// `before-subcommand`. Anything holding `command_parts` must interleave
+    /// instead.
+    pub fn into_flat(self) -> Vec<String> {
+        let mut args = self.before_subcommand;
+        args.extend(self.after_subcommand);
+        args
+    }
+}
+
+/// Build CLI args from JSON kwargs, spelling each one the way `input_schema`
+/// says the wrapped tool accepts it, and flatten the result.
+///
+/// See [`build_argv`], which this wraps: use that wherever the module's
+/// subcommand tokens have to be interleaved. Flattening is what every
+/// subcommand-less tool wants, and it is what the argv-shape tests assert.
+#[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+pub fn build_arguments(
+    kwargs: &serde_json::Map<String, Value>,
+    input_schema: Option<&Value>,
+) -> Result<Vec<String>, ModuleError> {
+    Ok(build_argv(kwargs, input_schema)?.into_flat())
+}
+
 /// Build CLI args from JSON kwargs, spelling each one the way `input_schema`
 /// says the wrapped tool accepts it.
 ///
@@ -428,16 +503,21 @@ fn reject_bare_flag_for_value_option(
 /// the ordinary `tool [options] operands` shape, unchanged.
 /// See `x-apexe-flag-position` and `x-apexe-operand-position`.
 ///
+/// A fifth group sits outside all four: a flag marked
+/// `x-apexe-flag-position: "before-subcommand"` is reported in
+/// [`RenderedArgv::before_subcommand`] rather than emitted here, because the
+/// subcommand tokens it has to precede are not part of this function's output.
+///
 /// A tool whose schema carries `x-apexe-end-of-options` additionally gets a
 /// `--` separator inserted at the point its parser stops reading options, as
 /// soon as any value begins with `-`. That is what makes such a value legal
 /// rather than refused; see [`validate_argument_value`] and
 /// [`operands_precede_flags`].
 #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
-pub fn build_arguments(
+pub fn build_argv(
     kwargs: &serde_json::Map<String, Value>,
     input_schema: Option<&Value>,
-) -> Result<Vec<String>, ModuleError> {
+) -> Result<RenderedArgv, ModuleError> {
     reject_conflicting_flags(kwargs, input_schema)?;
 
     let honours_separator = honours_end_of_options(input_schema);
@@ -447,6 +527,7 @@ pub fn build_arguments(
     // of the few that need it.
     let mut saw_dash_leading_value = false;
 
+    let mut before_subcommand: Vec<String> = Vec::new();
     let mut leading_flags: Vec<String> = Vec::new();
     let mut trailing_flags: Vec<String> = Vec::new();
     // (index, values) -- each list is sorted before being appended, so operands
@@ -465,6 +546,9 @@ pub fn build_arguments(
                 if *enabled {
                     reject_bare_flag_for_value_option(input_schema, key, literal)?;
                     match placement {
+                        FlagPlacement::BeforeSubcommand => {
+                            before_subcommand.push(literal.clone());
+                        }
                         FlagPlacement::BeforeOperands => leading_flags.push(literal.clone()),
                         FlagPlacement::Default => trailing_flags.push(literal.clone()),
                     }
@@ -524,6 +608,9 @@ pub fn build_arguments(
         }
 
         match form {
+            ArgForm::Flag(_, FlagPlacement::BeforeSubcommand) => {
+                before_subcommand.extend(rendered);
+            }
             ArgForm::Flag(_, FlagPlacement::BeforeOperands) => leading_flags.extend(rendered),
             ArgForm::Flag(_, FlagPlacement::Default) => trailing_flags.extend(rendered),
             ArgForm::Positional(index, OperandPlacement::BeforeFlags) => {
@@ -565,7 +652,10 @@ pub fn build_arguments(
         args.push(END_OF_OPTIONS.to_string());
     }
     args.extend(trailing_operands.into_iter().flat_map(|(_, values)| values));
-    Ok(args)
+    Ok(RenderedArgv {
+        before_subcommand,
+        after_subcommand: args,
+    })
 }
 
 /// Output from a subprocess execution.
@@ -1079,6 +1169,157 @@ mod tests {
             );
             assert_eq!(result.unwrap_err().code, ErrorCode::GeneralInvalidInput);
         }
+    }
+
+    #[test]
+    fn test_build_arguments_rejects_unicode_line_terminators() {
+        // Regression (#39): U+2028, U+2029 and U+0085 passed the guard and
+        // reached the default-on logging middleware verbatim, so a caller could
+        // decide where a log consumer sees a line boundary — the same audit
+        // trail read as 62 lines by a `\n` splitter and 71 by a Unicode-aware
+        // one. Same framing argument that already justifies rejecting `\n`.
+        for bad in [
+            "/tmp\u{2028}INJECTED",
+            "/tmp\u{2029}INJECTED",
+            "/tmp\u{0085}INJECTED",
+        ] {
+            let mut kwargs = serde_json::Map::new();
+            kwargs.insert("msg".to_string(), json!(bad));
+            let err = build_arguments(&kwargs, None)
+                .expect_err("a Unicode line terminator must be rejected");
+            assert_eq!(err.code, ErrorCode::GeneralInvalidInput);
+            assert!(
+                err.message.contains("prohibited control characters"),
+                "the message must name the rule: {}",
+                err.message
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_arguments_allows_the_escaped_control_characters() {
+        // The negative half, and the reason the set stops where it does: `\t`,
+        // VT, FF and the ANSI escape introducer are rendered escaped by the
+        // logging path, so rejecting them would cost real values (a
+        // tab-separated `--data` body) for no framing gain.
+        for allowed in ["a\tb", "a\u{000b}b", "a\u{000c}b", "a\u{001b}[31mb"] {
+            let mut kwargs = serde_json::Map::new();
+            kwargs.insert("data".to_string(), json!(allowed));
+            assert!(
+                build_arguments(&kwargs, None).is_ok(),
+                "{allowed:?} must still be passable"
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_argv_reports_global_flags_before_the_subcommand() {
+        // Regression (#39): `cli.git.cat_file {"C": "/repo"}` rendered
+        // `git cat-file -C /repo`, where `-C` reaches git-cat-file's parser
+        // rather than git's own. The subcommand tokens are not this function's
+        // to emit, so the group is reported separately.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "C": {
+                    "type": "string",
+                    "x-apexe-flag": "-C",
+                    "x-apexe-flag-position": "before-subcommand"
+                },
+                "paginate": {
+                    "type": "boolean",
+                    "x-apexe-flag": "--paginate",
+                    "x-apexe-flag-position": "before-subcommand"
+                },
+                "oneline": { "type": "boolean", "x-apexe-flag": "--oneline" },
+            }
+        });
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("C".to_string(), json!("/repo"));
+        kwargs.insert("paginate".to_string(), json!(true));
+        kwargs.insert("oneline".to_string(), json!(true));
+
+        let argv = build_argv(&kwargs, Some(&schema)).unwrap();
+        assert_eq!(argv.before_subcommand, vec!["-C", "/repo", "--paginate"]);
+        assert_eq!(argv.after_subcommand, vec!["--oneline"]);
+    }
+
+    #[test]
+    fn test_build_argv_keeps_unmarked_flags_after_the_subcommand() {
+        // The default must not move: a schema with no `before-subcommand`
+        // marker renders exactly as it did, with an empty leading group.
+        let schema = json!({
+            "type": "object",
+            "properties": { "oneline": { "type": "boolean", "x-apexe-flag": "--oneline" } }
+        });
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("oneline".to_string(), json!(true));
+
+        let argv = build_argv(&kwargs, Some(&schema)).unwrap();
+        assert!(argv.before_subcommand.is_empty());
+        assert_eq!(argv.after_subcommand, vec!["--oneline"]);
+    }
+
+    #[test]
+    fn test_build_argv_keeps_the_three_flag_groups_apart() {
+        // `before-subcommand` is a third position, not a rename of
+        // `before-operands`: a subcommand token is not an operand, so a grammar
+        // can need both at once and the two groups must not merge.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "C": {
+                    "type": "string",
+                    "x-apexe-flag": "-C",
+                    "x-apexe-flag-position": "before-subcommand"
+                },
+                "f": {
+                    "type": "string",
+                    "x-apexe-flag": "-f",
+                    "x-apexe-flag-position": "before-operands"
+                },
+                "path": { "type": "array", "x-apexe-positional": 0,
+                          "x-apexe-operand-position": "before-flags" },
+                "name": { "type": "string", "x-apexe-flag": "-name" },
+            }
+        });
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("C".to_string(), json!("/repo"));
+        kwargs.insert("f".to_string(), json!("dir"));
+        kwargs.insert("path".to_string(), json!(["root"]));
+        kwargs.insert("name".to_string(), json!("*.txt"));
+
+        let argv = build_argv(&kwargs, Some(&schema)).unwrap();
+        assert_eq!(argv.before_subcommand, vec!["-C", "/repo"]);
+        assert_eq!(
+            argv.after_subcommand,
+            vec!["-f", "dir", "root", "-name", "*.txt"]
+        );
+    }
+
+    #[test]
+    fn test_build_arguments_flattens_the_leading_group_first() {
+        // The flat form is what a subcommand-less tool wants, and the leading
+        // group still has to come first — flattening must not silently reorder.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "C": {
+                    "type": "string",
+                    "x-apexe-flag": "-C",
+                    "x-apexe-flag-position": "before-subcommand"
+                },
+                "oneline": { "type": "boolean", "x-apexe-flag": "--oneline" },
+            }
+        });
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("oneline".to_string(), json!(true));
+        kwargs.insert("C".to_string(), json!("/repo"));
+
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            vec!["-C", "/repo", "--oneline"]
+        );
     }
 
     #[test]

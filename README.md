@@ -118,6 +118,11 @@ apexe serve --show-config claude-desktop
 # Restart Claude Desktop — git commands appear as MCP tools
 ```
 
+The snippet carries the rest of the command line (`--modules-dir`, `--prefix`,
+`--tags`, `--acl`, `--name`, the governance toggles), so pass the flags you
+intend to serve with. `--auth-token` / `--jwt-secret` are deliberately never
+included.
+
 ### Cursor integration
 
 ```bash
@@ -229,7 +234,7 @@ apexe serve                                         # stdio (default)
 apexe serve --transport http --port 8000             # HTTP
 apexe serve --transport http --port 8000 --explorer  # HTTP + browser UI
 apexe serve --transport sse --allow-deprecated-sse   # Server-Sent Events (deprecated, unsafe with >1 client)
-apexe serve --show-config claude-desktop             # Print integration config
+apexe serve --show-config claude-desktop             # Print integration config (carries the other flags; never a credential)
 apexe serve --name my-tools                          # Custom server name
 apexe serve --transport http --metrics                # + /metrics (Prometheus) and /usage
 apexe serve --no-circuit-breaker --no-retry           # Disable resilience middleware

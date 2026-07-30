@@ -248,29 +248,59 @@ fn apply_flag_literal(schema: &mut JsonValue, flag: &ScannedFlag) {
 /// that need it: 36 of the shipped overlays' variadic operands and 7 of their
 /// repeatable flags are paths or URLs, so the hint reached almost none of the
 /// values it was written for.
+///
+/// Only `uri` is emitted. `ValueType::Path` used to produce `format: "path"`,
+/// which is the one thing `format` may not be: `path` is not in the JSON Schema
+/// format registry, so a validator meeting it has no definition to check
+/// against and is free to treat the whole property as unsatisfiable. apcore-js
+/// does exactly that (issue #32), and because the affected properties are the
+/// path *operands* — `find`'s `path`, `cp`'s and `ls`'s — that made those
+/// modules uncallable from a JS consumer rather than merely under-described.
+/// The fact is kept, as [`apply_path_marker`]; see [`is_path_valued`].
 fn format_hint(value_type: ValueType) -> Option<&'static str> {
     match value_type {
-        // Path and Url both serialize as `string`, so without this an agent
-        // cannot tell either from free text.
-        ValueType::Path => Some("path"),
+        // Url serializes as `string`, so without this an agent cannot tell it
+        // from free text. `uri` is registered, and is unaffected.
         ValueType::Url => Some("uri"),
         _ => None,
     }
 }
 
-/// Attach the format hint to an array schema's `items`, where it describes each
-/// element rather than the array.
-fn apply_items_format(schema: &mut JsonValue, value_type: ValueType) {
-    if let Some(format) = format_hint(value_type) {
-        schema["items"]["format"] = json!(format);
+/// Whether a value type says "this string names a filesystem path".
+fn is_path_valued(value_type: ValueType) -> bool {
+    value_type == ValueType::Path
+}
+
+/// Record that a value names a filesystem path, as an extension keyword.
+///
+/// `x-apexe-path: true`, following `x-apexe-flag` and the placement keywords:
+/// an `x-` name is unambiguously an annotation, so no validator can read it as
+/// a constraint the value has to satisfy, and none can reject the property for
+/// not recognising it. That is the whole difference from the `format: "path"`
+/// this replaces — the information is the same and it was already advisory;
+/// only the keyword claiming to be a registered format was wrong.
+fn apply_path_marker(schema: &mut JsonValue, value_type: ValueType) {
+    if is_path_valued(value_type) {
+        schema["x-apexe-path"] = json!(true);
     }
 }
 
-/// Attach the format hint to a scalar schema.
-fn apply_format(schema: &mut JsonValue, value_type: ValueType) {
+/// Attach the value-type hints to an array schema's `items`, where they describe
+/// each element rather than the array — it is each element that is a path, not
+/// the list of them.
+fn apply_items_type_hints(schema: &mut JsonValue, value_type: ValueType) {
+    if let Some(format) = format_hint(value_type) {
+        schema["items"]["format"] = json!(format);
+    }
+    apply_path_marker(&mut schema["items"], value_type);
+}
+
+/// Attach the value-type hints to a scalar schema.
+fn apply_scalar_type_hints(schema: &mut JsonValue, value_type: ValueType) {
     if let Some(format) = format_hint(value_type) {
         schema["format"] = json!(format);
     }
+    apply_path_marker(schema, value_type);
 }
 
 /// Convert a ScannedFlag into a JSON Schema property value.
@@ -283,7 +313,7 @@ fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
             "items": { "type": base_type },
         });
         // On `items`, not on the array: it is each element that is a path.
-        apply_items_format(&mut schema, flag.value_type);
+        apply_items_type_hints(&mut schema, flag.value_type);
         if !flag.description.is_empty() {
             schema["description"] = json!(flag.description);
         }
@@ -314,7 +344,7 @@ fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
     };
 
     // Add format hints so AI agents can distinguish path/URI from plain strings
-    apply_format(&mut schema, flag.value_type);
+    apply_scalar_type_hints(&mut schema, flag.value_type);
 
     if !flag.description.is_empty() {
         schema["description"] = json!(flag.description);
@@ -370,11 +400,11 @@ fn arg_to_schema(arg: &ScannedArg, index: usize) -> JsonValue {
             "items": { "type": base_type },
         });
         // On `items`, not on the array: it is each element that is a path.
-        apply_items_format(&mut schema, arg.value_type);
+        apply_items_type_hints(&mut schema, arg.value_type);
         schema
     } else {
         let mut schema = json!({ "type": base_type });
-        apply_format(&mut schema, arg.value_type);
+        apply_scalar_type_hints(&mut schema, arg.value_type);
         schema
     };
 
@@ -456,11 +486,64 @@ fn free_rescue_key(
         .find(|candidate| !properties.contains_key(candidate))
 }
 
+/// Where the command being described sits in the tool's own grammar.
+///
+/// Decides whether the tool's global flags are ordinary flags or options that
+/// have to precede a subcommand token; see [`apply_global_flag_placement`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandPosition {
+    /// The tool's own invocation — `ls`, `curl`, or the synthesized root of a
+    /// tool that has subcommands. There is no subcommand token, so a global
+    /// flag is just a flag and must not be moved.
+    Root,
+    /// A leaf reached through one or more subcommand tokens (`git cat-file`),
+    /// which the module target carries and the renderer emits between the two
+    /// argument groups.
+    Subcommand,
+}
+
+/// Mark a tool-level global flag as belonging ahead of the subcommand token.
+///
+/// Applied to exactly the flags merged in by the "global flags" loop of
+/// [`build_input_schema`], and only for a [`CommandPosition::Subcommand`]. Those
+/// are the options the tool documents in its *own* help — the ones its own
+/// parser consumes before it dispatches — so after the subcommand token they
+/// reach a parser that never agreed to accept them. Verified against the real
+/// binaries: `git cat-file -C <dir>` is `fatal: not a git repository`,
+/// `git log --paginate` is `fatal: unrecognized argument`, `git status
+/// --exec-path` is ``error: unknown option `exec-path'``, and `docker version
+/// --log-level error` is `unknown flag`. Tools whose subcommand parser also
+/// accepts them (`cargo`, `kubectl`, `npm`) are unharmed, because the
+/// pre-subcommand position is the one every such tool accepts — `go` is the
+/// sharpest case, taking `-C` in both positions but only as the *first* flag
+/// after the subcommand, so moving it out is strictly safer than leaving it.
+///
+/// Two things it deliberately does not touch:
+///
+/// - A root command's flags. The synthesized root of `git` renders as `git
+///   --version` with nothing to precede, and moving them would be meaningless.
+/// - A flag that already carries a placement. `x-apexe-flag-position:
+///   "before-operands"` is a curated assertion about this specific flag; a rule
+///   derived from where the flag was *parsed* must not overwrite one a human
+///   stated.
+fn apply_global_flag_placement(schema: &mut JsonValue, position: CommandPosition) {
+    if position == CommandPosition::Subcommand && schema.get("x-apexe-flag-position").is_none() {
+        schema["x-apexe-flag-position"] = json!("before-subcommand");
+    }
+}
+
 /// Build a JSON Schema for command inputs, merging command flags with global flags.
 ///
 /// Command-level flags take precedence; global flags are included only when
-/// their canonical name does not collide with a command-level flag.
-pub fn build_input_schema(command: &ScannedCommand, global_flags: &[ScannedFlag]) -> JsonValue {
+/// their canonical name does not collide with a command-level flag. For a
+/// subcommand, those surviving global flags are additionally marked
+/// `before-subcommand` — see [`apply_global_flag_placement`].
+pub fn build_input_schema(
+    command: &ScannedCommand,
+    global_flags: &[ScannedFlag],
+    position: CommandPosition,
+) -> JsonValue {
     let mut properties = serde_json::Map::new();
     let mut required: Vec<String> = Vec::new();
     let by_literal = property_names_by_literal(command, global_flags);
@@ -476,12 +559,15 @@ pub fn build_input_schema(command: &ScannedCommand, global_flags: &[ScannedFlag]
         }
     }
 
-    // Global flags, skipping collisions.
+    // Global flags, skipping collisions. A flag that survives this loop is one
+    // the tool's own parser owns and the subcommand's does not, which is exactly
+    // the set that has to precede the subcommand token.
     for flag in global_flags {
         let prop_name = flag.canonical_name();
         if !properties.contains_key(&prop_name) {
             let mut prop_schema = flag_to_schema(flag);
             apply_conflicts(&mut prop_schema, flag, &by_literal);
+            apply_global_flag_placement(&mut prop_schema, position);
             properties.insert(prop_name.clone(), prop_schema);
             if flag.required {
                 required.push(prop_name);
@@ -666,7 +752,7 @@ mod tests {
             false,
         );
         let cmd = make_command(vec![flag], vec![]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
 
         assert_eq!(schema["properties"]["output"]["type"], "string");
         assert_eq!(schema["properties"]["output"]["description"], "Output file");
@@ -684,7 +770,7 @@ mod tests {
             false,
         );
         let cmd = make_command(vec![flag], vec![]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
 
         assert_eq!(schema["properties"]["verbose"]["type"], "boolean");
         assert_eq!(schema["properties"]["verbose"]["default"], false);
@@ -702,7 +788,7 @@ mod tests {
             false,
         );
         let cmd = make_command(vec![flag], vec![]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
 
         assert_eq!(schema["properties"]["format"]["type"], "string");
         let enum_vals = schema["properties"]["format"]["enum"].as_array().unwrap();
@@ -721,7 +807,7 @@ mod tests {
             false,
         );
         let cmd = make_command(vec![flag], vec![]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
 
         let required = schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("name")));
@@ -739,7 +825,7 @@ mod tests {
             true,
         );
         let cmd = make_command(vec![flag], vec![]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
 
         assert_eq!(schema["properties"]["include"]["type"], "array");
         assert_eq!(schema["properties"]["include"]["items"]["type"], "string");
@@ -760,7 +846,7 @@ mod tests {
         );
         flag.long_running = true;
         let cmd = make_command(vec![flag], vec![]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
 
         assert_eq!(schema["properties"]["follow"]["x-apexe-long-running"], true);
     }
@@ -780,7 +866,7 @@ mod tests {
         );
         flag.long_running = true;
         let cmd = make_command(vec![flag], vec![]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
 
         assert_eq!(schema["properties"]["watch"]["type"], "array");
         assert_eq!(schema["properties"]["watch"]["x-apexe-long-running"], true);
@@ -799,7 +885,7 @@ mod tests {
             false,
         );
         let cmd = make_command(vec![flag], vec![]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
 
         assert!(schema["properties"]["lines"]["x-apexe-long-running"].is_null());
     }
@@ -907,7 +993,7 @@ mod tests {
             false,
         );
         let cmd = make_command(vec![flag], vec![]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
 
         assert_eq!(schema["properties"]["user"]["x-sensitive"], true);
     }
@@ -928,7 +1014,7 @@ mod tests {
             true,
         );
         let cmd = make_command(vec![flag], vec![]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
         let property = &schema["properties"]["header"];
 
         assert_eq!(property["type"], "array");
@@ -948,7 +1034,7 @@ mod tests {
             ..Default::default()
         };
         let cmd = make_command(vec![flag], vec![]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
 
         assert_eq!(schema["properties"]["i"]["x-sensitive"], true);
     }
@@ -973,7 +1059,7 @@ mod tests {
             );
             let key = flag.canonical_name();
             let cmd = make_command(vec![flag], vec![]);
-            let schema = build_input_schema(&cmd, &[]);
+            let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
 
             assert!(
                 schema["properties"][&key]["x-sensitive"].is_null(),
@@ -997,7 +1083,7 @@ mod tests {
             false,
         );
         let cmd = make_command(vec![flag], vec![]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
 
         assert_eq!(schema["properties"]["netrc"]["type"], "boolean");
         assert!(schema["properties"]["netrc"]["x-sensitive"].is_null());
@@ -1015,7 +1101,7 @@ mod tests {
             before_flags: false,
         };
         let cmd = make_command(vec![], vec![arg]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
 
         assert_eq!(schema["properties"]["password"]["x-sensitive"], true);
     }
@@ -1042,7 +1128,7 @@ mod tests {
             before_flags: false,
         };
         let cmd = make_command(vec![flag], vec![arg]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
 
         assert_eq!(schema["properties"]["secret"]["x-apexe-positional"], 0);
         assert_eq!(schema["properties"]["secret"]["x-sensitive"], true);
@@ -1060,7 +1146,7 @@ mod tests {
             before_flags: false,
         };
         let cmd = make_command(vec![], vec![arg]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
 
         assert_eq!(schema["properties"]["file"]["type"], "string");
         let required = schema["required"].as_array().unwrap();
@@ -1068,9 +1154,9 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_variadic_operand_carries_the_format_hint_on_items() {
-        // Regression: the format hint was applied only on the scalar branch, so
-        // the array branches dropped it — and arrays are the common case for
+    fn test_schema_variadic_operand_carries_the_path_marker_on_items() {
+        // Regression: the hint was applied only on the scalar branch, so the
+        // array branches dropped it — and arrays are the common case for
         // exactly the types that need it. 36 of the shipped overlays' variadic
         // operands are paths or URLs, so the hint reached almost none of them
         // and an agent could not tell a path from free text.
@@ -1083,20 +1169,20 @@ mod tests {
             before_flags: false,
         };
         let cmd = make_command(vec![], vec![arg]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
         let property = &schema["properties"]["file"];
 
         assert_eq!(property["type"], "array");
         // On `items`, because it is each element that is a path — not the array.
-        assert_eq!(property["items"]["format"], "path");
+        assert_eq!(property["items"]["x-apexe-path"], true);
         assert!(
-            property["format"].is_null(),
-            "the array itself has no format: {property}"
+            property["x-apexe-path"].is_null(),
+            "the array itself is not a path: {property}"
         );
     }
 
     #[test]
-    fn test_schema_repeatable_path_flag_carries_the_format_hint_on_items() {
+    fn test_schema_repeatable_path_flag_carries_the_path_marker_on_items() {
         let flag = ScannedFlag {
             long_name: Some("--include".to_string()),
             description: "Include a path.".to_string(),
@@ -1105,11 +1191,66 @@ mod tests {
             ..Default::default()
         };
         let cmd = make_command(vec![flag], vec![]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
         let property = &schema["properties"]["include"];
 
         assert_eq!(property["type"], "array");
-        assert_eq!(property["items"]["format"], "path");
+        assert_eq!(property["items"]["x-apexe-path"], true);
+    }
+
+    #[test]
+    fn test_schema_never_emits_the_unregistered_path_format() {
+        // Regression (#32): `format: "path"` is not in the JSON Schema format
+        // registry. apcore-js rejects any call passing a property that carries
+        // one, and the affected properties are the path *operands* — the
+        // parameters a file tool cannot be called without — so `cli.find`,
+        // `cli.cp` and `cli.ls` had no callable form at all from a JS consumer.
+        // Asserted on both arities and on both a flag and an operand, which are
+        // four separate code paths.
+        let flag = ScannedFlag {
+            long_name: Some("--config".to_string()),
+            value_type: ValueType::Path,
+            ..Default::default()
+        };
+        let repeatable = ScannedFlag {
+            long_name: Some("--include".to_string()),
+            value_type: ValueType::Path,
+            repeatable: true,
+            ..Default::default()
+        };
+        let scalar_operand = ScannedArg {
+            name: "target".to_string(),
+            description: String::new(),
+            value_type: ValueType::Path,
+            required: true,
+            variadic: false,
+            before_flags: false,
+        };
+        let variadic_operand = ScannedArg {
+            name: "source".to_string(),
+            description: String::new(),
+            value_type: ValueType::Path,
+            required: true,
+            variadic: true,
+            before_flags: false,
+        };
+        let cmd = make_command(
+            vec![flag, repeatable],
+            vec![scalar_operand, variadic_operand],
+        );
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
+
+        let rendered = serde_json::to_string(&schema).expect("the schema serializes");
+        assert!(
+            !rendered.contains(r#""format":"path""#),
+            "no `format: \"path\"` may survive anywhere in the contract: {rendered}"
+        );
+        // The information itself is not lost, on any of the four paths.
+        let properties = &schema["properties"];
+        assert_eq!(properties["config"]["x-apexe-path"], true);
+        assert_eq!(properties["target"]["x-apexe-path"], true);
+        assert_eq!(properties["include"]["items"]["x-apexe-path"], true);
+        assert_eq!(properties["source"]["items"]["x-apexe-path"], true);
     }
 
     #[test]
@@ -1132,7 +1273,7 @@ mod tests {
             before_flags: false,
         };
         let cmd = make_command(vec![], vec![scalar, variadic]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
 
         assert_eq!(schema["properties"]["url"]["format"], "uri");
         assert_eq!(schema["properties"]["mirror"]["items"]["format"], "uri");
@@ -1151,11 +1292,13 @@ mod tests {
             before_flags: false,
         };
         let cmd = make_command(vec![], vec![arg]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
         let property = &schema["properties"]["pattern"];
 
         assert!(property["items"]["format"].is_null(), "{property}");
         assert!(property["format"].is_null(), "{property}");
+        assert!(property["items"]["x-apexe-path"].is_null(), "{property}");
+        assert!(property["x-apexe-path"].is_null(), "{property}");
     }
 
     #[test]
@@ -1181,7 +1324,7 @@ mod tests {
             before_flags: true,
         };
         let cmd = make_command(vec![flag], vec![arg]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
         let properties = &schema["properties"];
 
         // The operand keeps the plain key...
@@ -1220,7 +1363,7 @@ mod tests {
             before_flags: false,
         };
         let cmd = make_command(vec![], vec![arg]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
 
         assert_eq!(schema["properties"]["files"]["type"], "array");
         assert_eq!(schema["properties"]["files"]["items"]["type"], "string");
@@ -1257,12 +1400,137 @@ mod tests {
             false,
         );
         let cmd = make_command(vec![cmd_flag], vec![]);
-        let schema = build_input_schema(&cmd, &[global_flag, global_collision]);
+        let schema = build_input_schema(
+            &cmd,
+            &[global_flag, global_collision],
+            CommandPosition::Root,
+        );
 
         // Global --verbose should be included.
         assert_eq!(schema["properties"]["verbose"]["type"], "boolean");
         // --local should be the command version (boolean), not the global one (string).
         assert_eq!(schema["properties"]["local"]["type"], "boolean");
+    }
+
+    /// A stand-in for `git`'s tool-level options: two of the eleven `cli.git.log`
+    /// carries, one valued and one bare.
+    fn git_global_flags() -> Vec<ScannedFlag> {
+        vec![
+            ScannedFlag {
+                short_name: Some("-C".to_string()),
+                description: "Run as if git was started in <path>.".to_string(),
+                value_type: ValueType::Path,
+                ..Default::default()
+            },
+            ScannedFlag {
+                long_name: Some("--paginate".to_string()),
+                description: "Pipe all output into less.".to_string(),
+                value_type: ValueType::Boolean,
+                ..Default::default()
+            },
+        ]
+    }
+
+    #[test]
+    fn test_schema_marks_a_subcommands_global_flags_before_the_subcommand() {
+        // Regression (#39): `cli.git.cat_file {"C": "…"}` rendered
+        // `git cat-file -C …`, where `-C` reaches git-cat-file's parser instead
+        // of git's own and is inert or means something else. The subcommand's
+        // own flags are untouched — only the ones merged in from the tool level.
+        let own = make_flag(
+            Some("--oneline"),
+            "Compact output.",
+            ValueType::Boolean,
+            false,
+            None,
+            None,
+            false,
+        );
+        let cmd = make_command(vec![own], vec![]);
+        let schema = build_input_schema(&cmd, &git_global_flags(), CommandPosition::Subcommand);
+        let properties = &schema["properties"];
+
+        assert_eq!(
+            properties["C"]["x-apexe-flag-position"],
+            "before-subcommand"
+        );
+        assert_eq!(
+            properties["paginate"]["x-apexe-flag-position"],
+            "before-subcommand"
+        );
+        assert!(
+            properties["oneline"]["x-apexe-flag-position"].is_null(),
+            "a subcommand's own flag belongs where it always did: {properties}"
+        );
+    }
+
+    #[test]
+    fn test_schema_leaves_a_root_commands_global_flags_in_place() {
+        // The synthesized root has no subcommand token to precede, so its global
+        // flags are ordinary flags. Marking them would move tokens for no reason
+        // and, for a tool with leading operands, into the wrong group.
+        let cmd = make_command(vec![], vec![]);
+        let schema = build_input_schema(&cmd, &git_global_flags(), CommandPosition::Root);
+        let properties = &schema["properties"];
+
+        assert!(properties["C"]["x-apexe-flag-position"].is_null());
+        assert!(properties["paginate"]["x-apexe-flag-position"].is_null());
+    }
+
+    #[test]
+    fn test_schema_keeps_a_curated_flag_placement_over_the_derived_one() {
+        // `before-operands` is a human assertion about one specific flag; the
+        // subcommand rule is derived from where the flag happened to be parsed.
+        // The stated one wins.
+        let mut global = ScannedFlag {
+            short_name: Some("-f".to_string()),
+            description: "Name a path that would otherwise parse as an option.".to_string(),
+            value_type: ValueType::Path,
+            ..Default::default()
+        };
+        global.before_operands = true;
+        let cmd = make_command(vec![], vec![]);
+        let schema = build_input_schema(&cmd, &[global], CommandPosition::Subcommand);
+
+        assert_eq!(
+            schema["properties"]["f"]["x-apexe-flag-position"],
+            "before-operands"
+        );
+    }
+
+    #[test]
+    fn test_schema_omits_the_placement_for_a_colliding_global_flag() {
+        // A global flag whose canonical name collides with one of the
+        // subcommand's own is skipped entirely, so the property that survives
+        // belongs to the subcommand's parser and must not be moved. This is the
+        // whole reason the marker is applied in the global loop rather than
+        // afterwards over the merged map.
+        let own = make_flag(
+            Some("--verbose"),
+            "Subcommand verbosity.",
+            ValueType::Boolean,
+            false,
+            None,
+            None,
+            false,
+        );
+        let global = make_flag(
+            Some("--verbose"),
+            "Tool verbosity.",
+            ValueType::Boolean,
+            false,
+            None,
+            None,
+            false,
+        );
+        let cmd = make_command(vec![own], vec![]);
+        let schema = build_input_schema(&cmd, &[global], CommandPosition::Subcommand);
+
+        assert_eq!(
+            schema["properties"]["verbose"]["description"],
+            "Subcommand verbosity."
+        );
+        assert!(schema["properties"]["verbose"]["x-apexe-flag-position"].is_null());
     }
 
     #[test]
@@ -1307,7 +1575,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_path_flag_has_format() {
+    fn test_schema_path_flag_carries_the_path_marker() {
         let flag = make_flag(
             Some("--config"),
             "Config file",
@@ -1318,9 +1586,11 @@ mod tests {
             false,
         );
         let cmd = make_command(vec![flag], vec![]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
         assert_eq!(schema["properties"]["config"]["type"], "string");
-        assert_eq!(schema["properties"]["config"]["format"], "path");
+        // `x-apexe-path`, not `format: "path"`: see `apply_path_marker`.
+        assert_eq!(schema["properties"]["config"]["x-apexe-path"], true);
+        assert!(schema["properties"]["config"]["format"].is_null());
     }
 
     #[test]
@@ -1335,7 +1605,7 @@ mod tests {
             false,
         );
         let cmd = make_command(vec![flag], vec![]);
-        let schema = build_input_schema(&cmd, &[]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
         assert_eq!(schema["properties"]["url"]["type"], "string");
         assert_eq!(schema["properties"]["url"]["format"], "uri");
     }

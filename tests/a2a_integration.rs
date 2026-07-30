@@ -61,6 +61,59 @@ async fn test_a2a_agent_card_exposes_scanned_skill() {
 }
 
 #[tokio::test]
+async fn test_a2a_agent_card_reports_the_apexe_version() {
+    // #35 item 4: the card reported "0.4.1" (apcore-a2a's stale VERSION
+    // constant) while running apexe 0.6.0, because `config.version` was never
+    // set. A client reading the card must learn which apexe it is talking to.
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+
+    let card = A2aServerBuilder::new()
+        .name("apexe-test")
+        .modules_dir(dir.path())
+        .agent_card()
+        .await
+        .expect("agent card should build from bindings");
+
+    assert_eq!(
+        card.get("version").and_then(serde_json::Value::as_str),
+        Some(apexe::VERSION),
+        "agent card must advertise apexe's version: {card}"
+    );
+    assert_eq!(
+        card.get("name").and_then(serde_json::Value::as_str),
+        Some("apexe-test"),
+        "agent card must advertise the configured agent name: {card}"
+    );
+}
+
+#[tokio::test]
+async fn test_a2a_agent_card_skill_id_is_the_module_id() {
+    // The card's contents were previously only asserted via string-contains,
+    // which cannot tell a skill id from a description. Routing keys on
+    // `skill.id` alone, so pin it to the `module_id` exactly.
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+
+    let card = A2aServerBuilder::new()
+        .modules_dir(dir.path())
+        .agent_card()
+        .await
+        .expect("agent card should build from bindings");
+
+    let skills = card
+        .get("skills")
+        .and_then(serde_json::Value::as_array)
+        .expect("card should carry a skills array");
+    assert_eq!(skills.len(), 1, "one binding -> one skill: {card}");
+    assert_eq!(
+        skills[0].get("id").and_then(serde_json::Value::as_str),
+        Some("cli.echo"),
+        "skill id must be the module_id verbatim: {card}"
+    );
+}
+
+#[tokio::test]
 async fn test_a2a_empty_registry_errors() {
     // No bindings -> the A2A app cannot be assembled (empty registry) and the
     // serve assembly surfaces an error rather than standing up an empty agent.

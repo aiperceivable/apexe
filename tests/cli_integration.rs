@@ -146,6 +146,202 @@ fn test_scan_writes_bindings_for_the_tools_that_succeeded() {
     );
 }
 
+// --------------------------------------------------------------------------
+// `serve --show-config` (issue #37.3)
+// --------------------------------------------------------------------------
+
+/// Run `apexe serve --show-config …` and parse stdout as JSON.
+fn show_config(extra: &[&str]) -> serde_json::Value {
+    let output = Command::cargo_bin("apexe")
+        .unwrap()
+        .args(["serve", "--show-config"])
+        .args(extra)
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout).to_string();
+    serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("stdout is not JSON ({e}): {stdout}"))
+}
+
+fn args_of(config: &serde_json::Value, name: &str) -> Vec<String> {
+    config["mcpServers"][name]["args"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no args in {config}"))
+        .iter()
+        .map(|v| v.as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// Regression for issue #37.3: the stdio snippet emitted a fixed
+/// `["serve","--transport","stdio"]` no matter what else was on the command
+/// line, so a user who scanned into a non-default directory got a config that
+/// launched a server with no tools at all.
+#[test]
+fn test_show_config_stdio_carries_every_surface_flag() {
+    let config = show_config(&[
+        "claude-desktop",
+        "--modules-dir",
+        "/srv/apexe/modules",
+        "--prefix",
+        "cli.git",
+        "--tags",
+        "readonly",
+        "--acl",
+        "/etc/apexe/acl.yaml",
+        "--enable-approval",
+    ]);
+    let args = args_of(&config, "apexe");
+
+    assert_eq!(config["mcpServers"]["apexe"]["command"], "apexe");
+    for pair in [
+        ["--modules-dir", "/srv/apexe/modules"],
+        ["--prefix", "cli.git"],
+        ["--tags", "readonly"],
+        ["--acl", "/etc/apexe/acl.yaml"],
+    ] {
+        assert!(
+            args.windows(2).any(|w| w == pair),
+            "{pair:?} missing from {args:?}"
+        );
+    }
+    assert!(args.iter().any(|a| a == "--enable-approval"));
+}
+
+/// `("cursor", _)` ignored `--transport` entirely, so `--transport http`
+/// still emitted a stdio command block that launched a second server.
+#[test]
+fn test_show_config_cursor_honours_http_transport() {
+    let config = show_config(&["cursor", "--transport", "http", "--port", "9111"]);
+    assert_eq!(
+        config["mcpServers"]["apexe"]["url"],
+        "http://127.0.0.1:9111/mcp"
+    );
+    assert!(config["mcpServers"]["apexe"]["command"].is_null());
+}
+
+/// An unknown target used to print `Unknown config format: vscode` to stdout
+/// and exit 0, so `--show-config vscode > mcp.json` wrote that sentence as the
+/// config file's body.
+#[test]
+fn test_show_config_unknown_format_fails_without_writing_stdout() {
+    let assert = Command::cargo_bin("apexe")
+        .unwrap()
+        .args(["serve", "--show-config", "vscode"])
+        .assert()
+        .failure();
+    let output = assert.get_output();
+    assert!(
+        output.stdout.is_empty(),
+        "nothing may reach stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("vscode"), "stderr: {stderr}");
+    assert!(stderr.contains("claude-desktop"), "stderr: {stderr}");
+}
+
+/// A snippet is pasted into a config file that is shared and often committed,
+/// so no credential may appear in one.
+#[test]
+fn test_show_config_never_echoes_credentials() {
+    for extra in [
+        vec![
+            "claude-desktop",
+            "--transport",
+            "http",
+            "--auth",
+            "token",
+            "--auth-token",
+            "s3cret-bearer-value",
+        ],
+        vec![
+            "cursor",
+            "--auth-token",
+            "s3cret-bearer-value",
+            "--jwt-secret",
+            "s3cret-signing-key",
+        ],
+    ] {
+        let rendered = show_config(&extra).to_string();
+        for forbidden in ["s3cret-bearer-value", "s3cret-signing-key", "--auth-token"] {
+            assert!(
+                !rendered.contains(forbidden),
+                "{extra:?} leaked {forbidden}: {rendered}"
+            );
+        }
+    }
+}
+
+/// `--skip-validation` claimed to skip schema validation and skipped nothing.
+/// It is gone; passing it must fail loudly rather than be accepted as a no-op.
+#[test]
+fn test_serve_rejects_removed_skip_validation_flag() {
+    Command::cargo_bin("apexe")
+        .unwrap()
+        .args(["serve", "--skip-validation"])
+        .assert()
+        .failure()
+        .code(2);
+}
+
+// --------------------------------------------------------------------------
+// The ACL example in docs/user-manual.md §9.1 (issue #37.1)
+// --------------------------------------------------------------------------
+
+/// The manual's §9.1 deny rule used to carry `conditions: {require_approval:
+/// true}` — not a registered apcore condition key, so the rule matched nothing
+/// and the destructive module ran. The corrected example is unconditional;
+/// this pins that it denies **on its own merits** by loading it under
+/// `default_effect: allow`, where a non-matching rule would let the call
+/// through.
+#[test]
+fn test_manual_acl_example_denies_the_destructive_module() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("acl.yaml");
+    // Copied from docs/user-manual.md §9.1, with default_effect flipped to
+    // `allow` so only a genuinely matching rule can produce a denial.
+    std::fs::write(
+        &path,
+        "default_effect: allow\n\
+         rules:\n\
+         \x20 - callers: [\"*\"]\n\
+         \x20   targets: [\"cli.git.status\", \"cli.git.log\", \"cli.git.diff\"]\n\
+         \x20   effect: allow\n\
+         \x20   description: \"Auto-allow readonly git commands\"\n\
+         \x20 - callers: [\"*\"]\n\
+         \x20   targets: [\"cli.git.push\"]\n\
+         \x20   effect: deny\n\
+         \x20   description: \"Block destructive git commands\"\n",
+    )
+    .unwrap();
+
+    let acl = apexe::governance::AclManager::from_config(&path)
+        .expect("the manual's example must be a loadable ACL")
+        .into_inner();
+
+    assert!(
+        !acl.check(None, "cli.git.push", None),
+        "the manual's deny rule must deny without relying on default_effect"
+    );
+    assert!(
+        acl.check(None, "cli.git.status", None),
+        "the manual's allow rule must still allow readonly commands"
+    );
+}
+
+/// The condition key that made the old example inert must not come back.
+#[test]
+fn test_manual_acl_example_carries_no_unregistered_condition() {
+    let manual = include_str!("../docs/user-manual.md");
+    for line in manual.lines() {
+        assert!(
+            !line.trim_start().starts_with("require_approval:"),
+            "docs/user-manual.md still shows `require_approval` as an ACL \
+             condition; apcore registers only identity_types, roles, \
+             max_call_depth, $or and $not, so such a rule can never match: {line}"
+        );
+    }
+}
+
 /// When nothing scans there is no deliverable, so it is a plain failure.
 #[test]
 fn test_scan_fails_outright_when_no_tool_can_be_scanned() {

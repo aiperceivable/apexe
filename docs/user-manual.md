@@ -118,7 +118,7 @@ apexe serve [OPTIONS]
 | `--explorer` | off | Enable browser-based Tool Explorer UI (HTTP only) |
 | `--modules-dir <DIR>` | `~/.apexe/modules/` | Directory containing binding files |
 | `--name <NAME>` | `apexe` | MCP server name |
-| `--show-config <TARGET>` | - | Print config snippet: `claude-desktop` or `cursor` |
+| `--show-config <TARGET>` | - | Print an integration snippet for `claude-desktop` or `cursor` and exit — see [§12](#12-integrating-with-ai-agents). Any other value is an error on stderr with a non-zero exit |
 | `--prefix <PREFIX>` | - | Serve only modules whose id starts with `<PREFIX>` — excluded modules are not callable either |
 | `--tags <TAGS>` | - | Serve only modules carrying every listed tag (comma-separated, AND) |
 | `--acl <PATH>` | - | Path to ACL policy YAML file (the per-caller boundary) |
@@ -412,7 +412,7 @@ Risk is derived from annotations plus an `open_world` signal — the executable 
 | Module type | Default rule |
 |-------------|-------------|
 | Readonly modules | `effect: allow` |
-| Destructive modules | `effect: deny` with `require_approval: true` |
+| Destructive modules | `effect: deny`, unconditional (no `conditions:` key) |
 | All others | Default deny (no explicit rule) |
 
 ACL format (editable):
@@ -428,9 +428,28 @@ rules:
     targets: ["cli.git.push"]
     effect: deny
     description: "Block destructive git commands"
-    conditions:
-      require_approval: true
 ```
+
+> **A deny rule must be unconditional to deny.** apcore registers exactly five
+> condition keys — `identity_types`, `roles`, `max_call_depth`, `$or`, `$not`.
+> Any other key is treated as *unsatisfied*, so the rule never matches and the
+> call falls through to the next rule or to `default_effect`. Earlier versions
+> of this manual showed the destructive-deny rule carrying
+> `conditions: {require_approval: true}`; copied verbatim under
+> `default_effect: allow`, that rule denies nothing and the destructive command
+> runs. apexe logs the reason when it happens:
+>
+> ```
+> WARN apcore::acl: Unknown ACL condition 'require_approval' — treated as unsatisfied
+> ```
+>
+> The `~/.apexe/acl.yaml` that `apexe scan` generates has always been correct;
+> only the manual was wrong. There is **no ACL condition that means "ask a
+> human first"** — approval is a separate layer (§9.6), not an ACL condition.
+
+Rule ordering is **first match wins**, not most-specific-wins: an
+`allow` rule for `cli.*` placed before a `deny` rule for `cli.rm` lets `cli.rm`
+through. Put the narrow denials above the broad allows.
 
 ### 9.2 Audit Trail
 
@@ -646,9 +665,10 @@ let tools = McpServerBuilder::new()
 their `Executor` through the same `apexe::module::build_executor()`, so an
 `--acl` policy, the logging middleware, the audit trail, and the always-on
 subprocess isolation behave identically regardless of which transport a caller
-uses. Human-in-the-loop **approval** is the one exception: `apexe serve` offers
-`--enable-approval` (MCP elicitation), but A2A has no elicitation transport, so
-approval on A2A is library-only (supply an `ApprovalStore` to `A2aServerBuilder`).
+uses. **Approval** is the one exception: `apexe serve` offers
+`--enable-approval`, which is an unconditional deny gate rather than a prompt
+(§9.6), while `apexe a2a` has no such flag at all — approval on A2A is
+library-only (supply an `ApprovalStore` to `A2aServerBuilder`).
 Transport authentication (§10) is likewise `apexe serve` only.
 
 ```bash
@@ -688,6 +708,46 @@ the `Executor`.
 
 ## 12. Integrating with AI Agents
 
+### `--show-config` reproduces the invocation you type
+
+`--show-config` renders the *rest of the command line* into the snippet, so add
+every flag you intend to serve with:
+
+```bash
+apexe serve --show-config claude-desktop \
+  --modules-dir /srv/apexe/modules --prefix cli.git --acl /etc/apexe/acl.yaml
+```
+
+```json
+{
+  "mcpServers": {
+    "apexe": {
+      "command": "apexe",
+      "args": ["serve", "--transport", "stdio",
+               "--modules-dir", "/srv/apexe/modules",
+               "--prefix", "cli.git",
+               "--acl", "/etc/apexe/acl.yaml"]
+    }
+  }
+}
+```
+
+`--modules-dir`, `--tags`, `--prefix`, `--acl`, `--name`, `--enable-approval`,
+`--no-logging`, `--no-log-arguments`, `--no-circuit-breaker` and `--no-retry`
+are all carried through. `--modules-dir` matters most: a client launching
+`apexe serve` without it reads the default `~/.apexe/modules`, so anyone who
+scanned elsewhere would get a server with **no tools at all**.
+
+> **Credentials are never written into a snippet.** `--auth-token` and
+> `--jwt-secret` are excluded by construction, because a config file is shared
+> and often committed. For an HTTP server behind `--auth token`, the snippet
+> carries only the URL — configure the `Authorization: Bearer` header in the
+> client, from your own secret store.
+
+An unrecognised target (`--show-config vscode`) is rejected on **stderr** with
+a non-zero exit, so `apexe serve --show-config … > mcp.json` cannot write an
+error message into the config file.
+
 ### Claude Desktop
 
 ```bash
@@ -707,15 +767,19 @@ Restart Claude Desktop. Scanned tools appear as MCP tools.
 apexe serve --show-config cursor
 ```
 
-Add the JSON to Cursor's MCP settings.
+Add the JSON to Cursor's MCP settings. `cursor` honours `--transport`: with
+`--transport http` it emits the `url` form rather than a command block.
 
 ### HTTP Mode (Remote Agents)
 
 ```bash
 apexe serve --transport http --host 0.0.0.0 --port 8000
+apexe serve --show-config claude-desktop --transport http --port 8000
 ```
 
-The MCP endpoint is at `POST /mcp`.
+The MCP endpoint is at `POST /mcp` (the deprecated SSE transport is served at
+`GET /sse` instead, and the generated snippet uses whichever path matches
+`--transport`).
 
 ### Display Names
 
@@ -747,6 +811,55 @@ Additionally, each execution response includes:
 - `trace_id` for end-to-end correlation
 - `duration_ms` for performance tracking
 - `exit_code` for programmatic error detection
+
+### A non-zero exit is **not** an MCP error — key on `exit_code`
+
+A wrapped command that runs and exits non-zero comes back as an ordinary,
+successful tool result: **`isError: false`**, with `exit_code`, `stdout`,
+`stderr` and `ai_guidance` in the payload.
+
+```json
+{
+  "isError": false,
+  "exit_code": 2,
+  "stdout": "",
+  "stderr": "curl: option --max-time=1: is unknown",
+  "ai_guidance": "Command 'cli.curl' exited with code 2. stderr: ..."
+}
+```
+
+This is deliberate and will not change. In a CLI bridge, a non-zero exit is
+frequently the *answer*, not a failure:
+
+| Command | Exit 1 means |
+|---------|--------------|
+| `grep pattern file` | no match found |
+| `diff a b` | the files differ |
+| `test -f path` | the predicate is false |
+
+Setting `isError: true` on a non-zero exit would report all three as failed
+tool calls, and an agent would retry or abandon a tool that answered its
+question correctly.
+
+`isError: true` is reserved for **the call never reaching the binary**:
+
+- schema validation rejected the arguments,
+- the ACL denied the caller,
+- `--enable-approval` blocked a `requires_approval` module,
+- the circuit breaker was open, the timeout killed the process, or the binary
+  could not be spawned at all.
+
+**So: an MCP client must not treat `isError: false` as "the command
+succeeded".** Read `exit_code` from the result payload (it is `required` in
+every generated output schema, alongside `stdout` and `stderr`) and apply the
+wrapped tool's own convention.
+
+The A2A surface follows the same split: a non-zero exit yields
+`TASK_STATE_COMPLETED` with the `exit_code` inside the artifact, while a
+governance or validation refusal yields `TASK_STATE_FAILED` (or
+`TASK_STATE_INPUT_REQUIRED` when an approval is pending, and
+`TASK_STATE_CANCELED` on cancellation). There too, the task state answers "did
+the command run", not "did it succeed".
 
 ---
 

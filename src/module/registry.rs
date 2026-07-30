@@ -154,6 +154,11 @@ pub fn build_executor(opts: &ExecutorOptions<'_>) -> Result<Arc<Executor>, Modul
     let registry = Registry::new();
     register_modules(&admitted, &registry, opts.timeout_ms, audit.clone());
     tracing::info!(count = registry.count(), "Registered CLI modules");
+    // Snapshot the ids that survived registration (a module whose `CliModule`
+    // failed to build is logged and skipped), taken before the registry moves
+    // into the `Executor`. `include_hidden` is true because a module annotated
+    // `discoverable: false` is still callable by id and so still needs an ACL.
+    let registered_ids: Vec<String> = registry.module_ids_full(true);
 
     let mut executor = Executor::new(registry, Config::default());
 
@@ -197,6 +202,17 @@ pub fn build_executor(opts: &ExecutorOptions<'_>) -> Result<Arc<Executor>, Modul
         }
         let acl_mgr = crate::governance::AclManager::from_config(acl_path)?;
         let mut acl = acl_mgr.into_inner();
+        // A rule whose target names nothing registered, or whose target list is
+        // empty, enforces nothing — and until now said nothing about it either.
+        // The registry is populated by this point (and already narrowed by
+        // `ModuleFilter`), so this is the first and only place both the policy
+        // and the surface it guards exist together. See `validate_acl_rules`
+        // for the refuse-vs-warn split.
+        let report = crate::governance::validate_acl_rules(acl.rules(), &registered_ids);
+        report.emit_warnings();
+        if let Some(error) = report.fatal_error(acl_path) {
+            return Err(error);
+        }
         // Record every allow/deny decision to the audit trail (F5).
         if let Some(ref audit) = audit {
             let audit = audit.clone();
@@ -549,6 +565,96 @@ mod tests {
         assert!(
             result.is_err(),
             "build_executor must fail when --acl file is malformed"
+        );
+    }
+
+    /// Write an ACL file with the given rule bodies (YAML fragments).
+    fn write_acl(dir: &Path, rules_yaml: &str) -> std::path::PathBuf {
+        let path = dir.join("acl.yaml");
+        std::fs::write(&path, format!("default_effect: deny\nrules:\n{rules_yaml}")).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_build_executor_fails_closed_on_empty_acl_target_list() {
+        // #39 item 5(b): apcore accepts `targets: []` (only an OMITTED key is
+        // rejected) and its matcher returns false for an empty pattern list, so
+        // the deny never fires and the module runs. Refuse to start.
+        let dir = TempDir::new().unwrap();
+        write_two_modules(dir.path());
+        let acl_path = write_acl(
+            dir.path(),
+            "  - callers: [\"*\"]\n    targets: []\n    effect: deny\n",
+        );
+
+        let mut opts = opts(Some(dir.path()));
+        opts.acl_path = Some(&acl_path);
+        let err = build_executor(&opts).expect_err("an inert deny rule must refuse to start");
+        assert_eq!(err.code, ErrorCode::GeneralInvalidInput);
+        assert!(
+            err.message.contains("empty list"),
+            "error should name the defect: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_build_executor_fails_closed_on_misspelled_acl_target() {
+        // #39 item 5(a): `cli.cp` is registered but the rule names `cp`, so the
+        // deny protects nothing while the module it meant stays callable.
+        let dir = TempDir::new().unwrap();
+        write_two_modules(dir.path());
+        let acl_path = write_acl(
+            dir.path(),
+            "  - callers: [\"*\"]\n    targets: [\"cp\"]\n    effect: deny\n",
+        );
+
+        let mut opts = opts(Some(dir.path()));
+        opts.acl_path = Some(&acl_path);
+        let err = build_executor(&opts).expect_err("a near-miss target must refuse to start");
+        assert!(
+            err.message.contains("cli.cp"),
+            "error should name the spelling that works: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_build_executor_accepts_acl_targeting_registered_modules() {
+        let dir = TempDir::new().unwrap();
+        write_two_modules(dir.path());
+        let acl_path = write_acl(
+            dir.path(),
+            "  - callers: [\"*\"]\n    targets: [\"cli.cp\"]\n    effect: deny\n  \
+             - callers: [\"*\"]\n    targets: [\"cli.git.*\"]\n    effect: allow\n",
+        );
+
+        let mut opts = opts(Some(dir.path()));
+        opts.acl_path = Some(&acl_path);
+        assert!(build_executor(&opts).is_ok(), "a correct ACL must load");
+    }
+
+    #[test]
+    fn test_build_executor_tolerates_acl_target_for_filtered_out_module() {
+        // One ACL file is meant to be shared across servers whose registries
+        // differ. `cli.cp` is excluded by --prefix here, so its rule matches
+        // nothing — that is a warning, not a refusal.
+        let dir = TempDir::new().unwrap();
+        write_two_modules(dir.path());
+        let acl_path = write_acl(
+            dir.path(),
+            "  - callers: [\"*\"]\n    targets: [\"cli.cp\"]\n    effect: deny\n",
+        );
+
+        let mut opts = opts(Some(dir.path()));
+        opts.acl_path = Some(&acl_path);
+        opts.filter = ModuleFilter {
+            prefix: Some("cli.git".to_string()),
+            tags: None,
+        };
+        assert!(
+            build_executor(&opts).is_ok(),
+            "a target excluded by the module filter must warn, not refuse"
         );
     }
 
