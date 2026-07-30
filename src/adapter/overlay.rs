@@ -341,6 +341,11 @@ pub struct ToolOverlay {
     pub positional_args: Vec<OverlayArg>,
     #[serde(default)]
     pub annotations: AnnotationOverrides,
+    /// Whether the command's own parser honours `--` as an end-of-options
+    /// separator, so a value beginning with `-` can be passed through instead
+    /// of refused. See [`ScannedCommand::end_of_options`](crate::models::ScannedCommand::end_of_options).
+    #[serde(default)]
+    pub end_of_options: bool,
 }
 
 impl Default for ToolOverlay {
@@ -358,6 +363,7 @@ impl Default for ToolOverlay {
             flags: Vec::new(),
             positional_args: Vec::new(),
             annotations: AnnotationOverrides::default(),
+            end_of_options: false,
         }
     }
 }
@@ -818,7 +824,21 @@ pub fn apply_overlay(tool: &mut ScannedCLITool, overlay: &ToolOverlay) {
     if !overlay.annotations.is_empty() {
         tool.annotation_overrides = overlay.annotations.clone();
     }
+    // A `--` separator is a property of the tool's argv parser, so it holds for
+    // the root invocation and for every subcommand reached through it.
+    if overlay.end_of_options {
+        tool.end_of_options = true;
+        set_end_of_options(&mut tool.subcommands);
+    }
     tool.overlay = Some(overlay.id());
+}
+
+/// Mark every command in `commands`, and their subcommands, as honouring `--`.
+fn set_end_of_options(commands: &mut [crate::models::ScannedCommand]) {
+    for command in commands {
+        command.end_of_options = true;
+        set_end_of_options(&mut command.subcommands);
+    }
 }
 
 /// Override matching flags with their curated form and append the rest.
@@ -893,6 +913,7 @@ mod tests {
                 readonly: Some(true),
                 ..Default::default()
             },
+            end_of_options: false,
             // The fixture claims `Verified`, so it must carry provenance for the
             // same reason a real overlay must: a verified claim nobody can
             // re-check is indistinguishable from a guess.
@@ -1177,6 +1198,7 @@ mod tests {
                 examples: vec![],
                 help_format: crate::models::HelpFormat::Unknown,
                 structured_output: crate::models::StructuredOutputInfo::default(),
+                end_of_options: false,
                 raw_help: String::new(),
             }],
             ..Default::default()

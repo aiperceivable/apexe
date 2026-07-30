@@ -81,8 +81,8 @@ apexe scan git --depth 3
 # HTTP server for remote agents
 apexe serve --transport http --port 8000
 
-# SSE transport
-apexe serve --transport sse --port 8000
+# SSE transport (deprecated: cross-client response delivery -- see user manual)
+apexe serve --transport sse --port 8000 --allow-deprecated-sse
 
 # Also generate Claude Skills (.claude/skills/<id>/SKILL.md) per module
 apexe scan git --skills-dir ./out

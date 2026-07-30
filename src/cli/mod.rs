@@ -269,7 +269,9 @@ impl ScanArgs {
 /// Start MCP server for scanned CLI tools.
 #[derive(Debug, clap::Args)]
 pub struct ServeArgs {
-    /// MCP transport type
+    /// MCP transport type. `sse` is deprecated and refused unless
+    /// `--allow-deprecated-sse` is passed: with more than one concurrent
+    /// connection it delivers one client's tool output to another.
     #[arg(long, default_value = "stdio", value_parser = ["stdio", "http", "sse"])]
     pub transport: String,
 
@@ -297,11 +299,13 @@ pub struct ServeArgs {
     #[arg(long)]
     pub show_config: Option<String>,
 
-    /// Filter exposed tools by tags (comma-separated, AND logic)
+    /// Restrict the served tools to those carrying every listed tag
+    /// (comma-separated). Excluded modules are neither listed nor callable.
     #[arg(long)]
     pub tags: Option<String>,
 
-    /// Filter exposed tools by module ID prefix
+    /// Restrict the served tools to those whose module ID starts with this
+    /// prefix. Excluded modules are neither listed nor callable.
     #[arg(long)]
     pub prefix: Option<String>,
 
@@ -309,13 +313,46 @@ pub struct ServeArgs {
     #[arg(long)]
     pub acl: Option<PathBuf>,
 
-    /// Enable approval handler for destructive commands
+    /// Deny every call to a module marked `requires_approval`. Interactive
+    /// approval is not available on a CLI-launched server, so this is an
+    /// unconditional block rather than a prompt -- use `--acl` for a
+    /// per-caller boundary.
     #[arg(long)]
     pub enable_approval: bool,
+
+    /// Credential required on the HTTP transports: `token` (default), `jwt`,
+    /// or `none`. Ignored for stdio.
+    #[arg(long, value_parser = ["token", "jwt", "none"])]
+    pub auth: Option<String>,
+
+    /// Bearer token for `--auth token`. Falls back to APEXE_AUTH_TOKEN; one is
+    /// generated and printed at startup if neither is set.
+    #[arg(long, env = "APEXE_AUTH_TOKEN", hide_env_values = true)]
+    pub auth_token: Option<String>,
+
+    /// Signing secret for `--auth jwt`. Falls back to APEXE_JWT_SECRET.
+    #[arg(long, env = "APEXE_JWT_SECRET", hide_env_values = true)]
+    pub jwt_secret: Option<String>,
+
+    /// Acknowledge serving with `--auth none` on a non-loopback bind, which
+    /// exposes every wrapped binary to the network with no credential.
+    #[arg(long)]
+    pub allow_unauthenticated_bind: bool,
+
+    /// Permit the deprecated SSE transport despite its cross-client response
+    /// delivery defect. Safe only with a single concurrent connection.
+    #[arg(long)]
+    pub allow_deprecated_sse: bool,
 
     /// Disable structured logging middleware
     #[arg(long)]
     pub no_logging: bool,
+
+    /// Keep operational logging but drop call arguments and output from it.
+    /// Credentials passed as tool arguments are otherwise logged at INFO
+    /// unless the scanner recognized the option as sensitive.
+    #[arg(long)]
+    pub no_log_arguments: bool,
 
     /// Disable circuit breaker (short-circuits a hanging/broken tool)
     #[arg(long)]
@@ -372,11 +409,14 @@ impl ServeArgs {
             .modules_dir(modules_dir)
             .timeout_ms(config.default_timeout * 1000)
             .enable_logging(!self.no_logging)
+            .log_arguments(!self.no_log_arguments)
             .enable_approval(self.enable_approval)
             .enable_circuit_breaker(!self.no_circuit_breaker)
             .enable_retry(!self.no_retry)
             .enable_metrics(self.metrics)
             .validate_inputs(!self.skip_validation)
+            .auth(self.auth_options()?)
+            .allow_deprecated_sse(self.allow_deprecated_sse)
             .audit_path(config.audit_log.clone());
 
         // Only load ACL when explicitly specified via --acl flag.
@@ -394,6 +434,26 @@ impl ServeArgs {
         }
 
         builder.build().map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    /// Translate the `--auth*` flags into [`AuthOptions`].
+    ///
+    /// The per-transport default lives in [`crate::auth::resolve_auth`], not
+    /// here: what the operator typed and what the bind address implies are two
+    /// separate decisions, and only the latter can refuse to start.
+    fn auth_options(&self) -> anyhow::Result<crate::auth::AuthOptions> {
+        let mode = match self.auth {
+            Some(ref value) => Some(crate::auth::AuthMode::parse(value).ok_or_else(|| {
+                anyhow::anyhow!("Unknown --auth mode '{value}' (expected token, jwt or none)")
+            })?),
+            None => None,
+        };
+        Ok(crate::auth::AuthOptions {
+            mode,
+            token: self.auth_token.clone(),
+            jwt_secret: self.jwt_secret.clone(),
+            allow_unauthenticated_bind: self.allow_unauthenticated_bind,
+        })
     }
 
     fn serve_options(&self) -> apcore_mcp::ServeOptions {
@@ -440,6 +500,12 @@ pub struct A2aArgs {
     #[arg(long)]
     pub no_logging: bool,
 
+    /// Keep operational logging but drop call arguments and output from it.
+    /// Credentials passed as tool arguments are otherwise logged at INFO
+    /// unless the scanner recognized the option as sensitive.
+    #[arg(long)]
+    pub no_log_arguments: bool,
+
     /// Disable circuit breaker (short-circuits a hanging/broken tool)
     #[arg(long)]
     pub no_circuit_breaker: bool,
@@ -478,6 +544,7 @@ impl A2aArgs {
             .modules_dir(modules_dir)
             .timeout_ms(config.default_timeout * 1000)
             .enable_logging(!self.no_logging)
+            .log_arguments(!self.no_log_arguments)
             .enable_circuit_breaker(!self.no_circuit_breaker)
             .enable_retry(!self.no_retry)
             .execution_timeout(self.execution_timeout)
@@ -845,6 +912,59 @@ mod tests {
         } else {
             panic!("expected Commands::Serve");
         }
+    }
+
+    #[test]
+    fn test_serve_auth_defaults_to_unset() {
+        // Unset means "per-transport default", resolved in crate::auth —
+        // not "no auth".
+        let cli = Cli::try_parse_from(["apexe", "serve"]).unwrap();
+        if let Commands::Serve(args) = cli.command {
+            assert!(args.auth.is_none());
+            assert!(!args.allow_unauthenticated_bind);
+            assert!(!args.allow_deprecated_sse);
+            assert!(!args.no_log_arguments);
+        } else {
+            panic!("expected Commands::Serve");
+        }
+    }
+
+    #[test]
+    fn test_serve_auth_rejects_unknown_mode() {
+        let result = Cli::try_parse_from(["apexe", "serve", "--auth", "basic"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_serve_auth_options_maps_flags() {
+        let cli = Cli::try_parse_from([
+            "apexe",
+            "serve",
+            "--auth",
+            "token",
+            "--auth-token",
+            "s3cret",
+            "--allow-unauthenticated-bind",
+        ])
+        .unwrap();
+        let Commands::Serve(args) = cli.command else {
+            panic!("expected Commands::Serve");
+        };
+        let opts = args.auth_options().unwrap();
+        assert_eq!(opts.mode, Some(crate::auth::AuthMode::Token));
+        assert_eq!(opts.token.as_deref(), Some("s3cret"));
+        assert!(opts.allow_unauthenticated_bind);
+    }
+
+    #[test]
+    fn test_serve_auth_options_defaults_to_no_explicit_mode() {
+        let cli = Cli::try_parse_from(["apexe", "serve"]).unwrap();
+        let Commands::Serve(args) = cli.command else {
+            panic!("expected Commands::Serve");
+        };
+        let opts = args.auth_options().unwrap();
+        assert!(opts.mode.is_none());
+        assert!(!opts.allow_unauthenticated_bind);
     }
 
     // A2aArgs validation tests

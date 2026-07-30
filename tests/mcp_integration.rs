@@ -47,8 +47,10 @@ fn exec_opts(dir: &Path) -> ExecutorOptions<'_> {
         modules_dir: Some(dir),
         timeout_ms: 5_000,
         acl_path: None,
+        filter: apexe::module::ModuleFilter::default(),
         audit_path: None,
         enable_logging: false,
+        log_arguments: false,
         enable_approval: false,
         enable_circuit_breaker: false,
         enable_retry: false,
@@ -238,6 +240,7 @@ fn write_converted_subcommand_binding(dir: &Path, subcommand: &str) -> String {
             examples: vec![],
             help_format: apexe::models::HelpFormat::Gnu,
             structured_output: apexe::models::StructuredOutputInfo::default(),
+            end_of_options: false,
             raw_help: String::new(),
         }],
         ..Default::default()

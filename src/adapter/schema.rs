@@ -60,6 +60,163 @@ fn apply_long_running(schema: &mut JsonValue, flag: &ScannedFlag) {
     }
 }
 
+/// Option-name words that identify the value as a credential.
+///
+/// Matched as whole `-`/`_`-separated words rather than as substrings, because
+/// every one of them is also a syllable of an unrelated word: `key` is inside
+/// `keyword`, `auth` inside `author` (`ls --author`), `pass` inside `bypass`.
+const CREDENTIAL_NAME_WORDS: &[&str] = &[
+    "auth",
+    "cert",
+    "certificate",
+    "cred",
+    "creds",
+    "header",
+    "identity",
+    "jwt",
+    "key",
+    "keyfile",
+    "login",
+    "pass",
+];
+
+/// Option-name fragments that identify a credential even when run together
+/// with other words inside a single token, as `--tlspassword`, `--cookiejar`
+/// and `--oauth2-bearer` are.
+///
+/// Every entry has to stay unambiguous *as a substring* of a flag name; that
+/// is exactly why `key`, `auth` and `pass` live in [`CREDENTIAL_NAME_WORDS`]
+/// instead of here. `user` is here rather than there because curl spells the
+/// TLS-SRP credential `--tlsuser`, and an option name containing those four
+/// letters is about a user in every case worth naming.
+const CREDENTIAL_NAME_FRAGMENTS: &[&str] = &[
+    "apikey",
+    "bearer",
+    "cookie",
+    "credential",
+    "netrc",
+    "oauth",
+    "passphrase",
+    "passwd",
+    "password",
+    "secret",
+    "sigv4",
+    "token",
+    "user",
+];
+
+/// Help-text phrases that identify the value as a credential.
+///
+/// Each is a noun phrase naming the secret itself, never a bare word that
+/// could turn up in an unrelated sentence — `bearer token` rather than
+/// `token`, which appears in prose like "the expression is composed of
+/// tokens".
+const CREDENTIAL_HELP_PHRASES: &[&str] = &[
+    "access key",
+    "access token",
+    "api key",
+    "api token",
+    "auth token",
+    "authentication token",
+    "bearer token",
+    "credential",
+    "identity file",
+    "netrc",
+    "pass phrase",
+    "passphrase",
+    "passwd",
+    "password",
+    "private key",
+    "secret",
+    "session token",
+    "ssh key",
+    "user name",
+    "username",
+];
+
+/// Whether an option name matches one of the two name rules.
+fn name_identifies_credential(name: &str) -> bool {
+    let name = name.trim_start_matches('-').to_lowercase();
+    name.split(['-', '_', '.'])
+        .any(|word| CREDENTIAL_NAME_WORDS.contains(&word))
+        || CREDENTIAL_NAME_FRAGMENTS
+            .iter()
+            .any(|fragment| name.contains(fragment))
+}
+
+/// Whether a help text matches the phrase rule.
+fn help_identifies_credential(description: &str) -> bool {
+    let description = description.to_lowercase();
+    CREDENTIAL_HELP_PHRASES
+        .iter()
+        .any(|phrase| description.contains(phrase))
+}
+
+/// Whether this option's value is a credential that must not reach a log.
+///
+/// apcore's `redact_sensitive` masks a property only when its schema carries
+/// `x-sensitive: true`, and nothing else in the pipeline decides what a secret
+/// is — so emitting that keyword is the whole of the protection (issue #30).
+/// The judgement has to be made from what a scan actually holds: the option's
+/// spelling and its help text. Three rules, in descending order of certainty:
+///
+/// 1. A `-`/`_`-separated word of the name is in [`CREDENTIAL_NAME_WORDS`] —
+///    `--user`, `--proxy-user`, `--key`, `--cert`, `--header`.
+/// 2. The name contains a [`CREDENTIAL_NAME_FRAGMENTS`] entry anywhere, which
+///    reaches the run-together spellings — `--oauth2-bearer`, `--tlspassword`,
+///    `--netrc-file`, `--aws-sigv4`.
+/// 3. The help text contains a [`CREDENTIAL_HELP_PHRASES`] entry. This covers
+///    the short-only options no name rule can reach: ssh's `-i` has no long
+///    form, and is described as the file holding "the identity (private key)".
+///
+/// The rules are deliberately loose, because the two errors are not
+/// symmetric. A masked `--user-agent` costs a log line some detail; an
+/// unmasked `--user` writes `admin:hunter2` to the process log at INFO.
+/// `--header` is marked for the same reason even though it carries ordinary
+/// headers at least as often as `Authorization:` — the value cannot be split,
+/// so masking all of it is the safe reading.
+///
+/// What it deliberately does *not* claim: that an unmarked option is safe.
+/// A request body (`--data`) or a URL with the key in its query string still
+/// carries secrets no name or help text announces, and neither is reachable
+/// from a property-level marker.
+fn is_credential_bearing(names: &[&str], description: &str) -> bool {
+    names.iter().any(|name| name_identifies_credential(name))
+        || help_identifies_credential(description)
+}
+
+/// Mark a flag's property sensitive so the logging middleware redacts it.
+///
+/// Boolean flags are skipped: they carry no value, so the marker could only
+/// ever mask the literal `true` while adding noise to the contract for every
+/// authentication *selector* a tool offers (curl's `--basic`, `--digest`,
+/// `--negotiate`, `--ntlm`, `--netrc` are all bare switches).
+fn apply_sensitive_flag(schema: &mut JsonValue, flag: &ScannedFlag) {
+    if flag.value_type == ValueType::Boolean {
+        return;
+    }
+    let names: Vec<&str> = [flag.long_name.as_deref(), flag.short_name.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect();
+    if is_credential_bearing(&names, &flag.description) {
+        // On the property itself, not on `items`: apcore checks the property
+        // first and replaces the whole array, which is what "mask the whole
+        // value" means for a repeatable `--header`.
+        schema["x-sensitive"] = json!(true);
+    }
+}
+
+/// Mark an operand's property sensitive, by the same rules as a flag's.
+///
+/// Operands are covered too because the credential is not always behind a
+/// flag: `htpasswd user password` and `mysql -p` style tools pass one bare.
+fn apply_sensitive_arg(schema: &mut JsonValue, arg: &ScannedArg) {
+    if is_credential_bearing(&[&arg.name], &arg.description) {
+        schema["x-sensitive"] = json!(true);
+    }
+}
+
 /// Record the literal token this flag is spelled with on a command line.
 ///
 /// A property key cannot be turned back into a flag by rule. The key is
@@ -132,6 +289,11 @@ fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
         }
         apply_long_running(&mut schema, flag);
         apply_flag_literal(&mut schema, flag);
+        // Repeatable is the common arity for the credential options that
+        // matter most: curl's `--header` and `--cookie` both repeat, so
+        // skipping this branch would leave `Authorization: Bearer …` in the
+        // log.
+        apply_sensitive_flag(&mut schema, flag);
         // Placement is orthogonal to arity — `find -f path` is pre-operand and
         // could legitimately repeat — so it must be emitted on this branch too,
         // not only on the scalar one below.
@@ -167,6 +329,7 @@ fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
     apply_long_running(&mut schema, flag);
     apply_flag_literal(&mut schema, flag);
     apply_flag_placement(&mut schema, flag);
+    apply_sensitive_flag(&mut schema, flag);
 
     schema
 }
@@ -222,6 +385,7 @@ fn arg_to_schema(arg: &ScannedArg, index: usize) -> JsonValue {
     if arg.before_flags {
         schema["x-apexe-operand-position"] = json!("before-flags");
     }
+    apply_sensitive_arg(&mut schema, arg);
 
     schema
 }
@@ -355,6 +519,14 @@ pub fn build_input_schema(command: &ScannedCommand, global_flags: &[ScannedFlag]
                     prop_schema["description"] = description.clone();
                 }
             }
+            // A same-named flag and operand are usually two spellings of one
+            // option (`curl --url` and `<url>`), so a credential judgement made
+            // on the flag has to survive the operand taking its key — the
+            // operand's own name and (often empty) description may not carry
+            // the evidence the flag's help text did.
+            if displaced.get("x-sensitive").is_some() {
+                prop_schema["x-sensitive"] = json!(true);
+            }
             // Only a real flag needs rescuing; a duplicate operand name has
             // nothing to preserve.
             if displaced.get("x-apexe-flag").is_some() {
@@ -385,6 +557,14 @@ pub fn build_input_schema(command: &ScannedCommand, global_flags: &[ScannedFlag]
 
     if !required.is_empty() {
         schema["required"] = json!(required);
+    }
+
+    // A schema-root marker rather than a per-property one: `--` separates
+    // options from operands for the whole invocation, so it says nothing about
+    // any individual property. The executor reads it to decide both whether a
+    // `-`-leading value may be passed through and where the separator goes.
+    if command.end_of_options {
+        schema["x-apexe-end-of-options"] = json!(true);
     }
 
     schema
@@ -469,6 +649,7 @@ mod tests {
             examples: vec![],
             help_format: HelpFormat::Gnu,
             structured_output: StructuredOutputInfo::default(),
+            end_of_options: false,
             raw_help: String::new(),
         }
     }
@@ -621,6 +802,251 @@ mod tests {
         let schema = build_input_schema(&cmd, &[]);
 
         assert!(schema["properties"]["lines"]["x-apexe-long-running"].is_null());
+    }
+
+    #[test]
+    fn test_is_credential_bearing_matches_name_words() {
+        // Rule 1: a whole `-`/`_`-separated word of the option name.
+        for name in [
+            "--key",
+            "--key-type",
+            "--cert",
+            "--header",
+            "--proxy-header",
+            "--login-path",
+            "--client-cert",
+            "--identity-file",
+            "--pass",
+        ] {
+            assert!(
+                is_credential_bearing(&[name], ""),
+                "{name} names a credential"
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_credential_bearing_matches_name_fragments() {
+        // Rule 2: the run-together spellings a whole-word match cannot reach.
+        for name in [
+            "--user",
+            "--proxy-user",
+            "--oauth2-bearer",
+            "--tlspassword",
+            "--tlsuser",
+            "--netrc-file",
+            "--aws-sigv4",
+            "--cookiejar",
+            "--apikey",
+            "--service-account-token",
+        ] {
+            assert!(
+                is_credential_bearing(&[name], ""),
+                "{name} names a credential"
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_credential_bearing_matches_help_phrases() {
+        // Rule 3: the only rule that can reach a short-only option. ssh's `-i`
+        // has no long form, so its help text is the entire evidence.
+        assert!(is_credential_bearing(
+            &["-i"],
+            "Selects a file from which the identity (private key) for public key authentication is read."
+        ));
+        assert!(is_credential_bearing(
+            &["-p"],
+            "The password to use when connecting to the server."
+        ));
+        assert!(is_credential_bearing(
+            &["-t"],
+            "Send this bearer token with every request."
+        ));
+    }
+
+    #[test]
+    fn test_is_credential_bearing_rejects_ordinary_options() {
+        // The negative half. `--author` and `--keyword` are the reason the name
+        // rules split into whole-word and substring lists, and the help texts
+        // here are the "a word turned up in an unrelated sentence" case the
+        // phrase list is written to avoid.
+        let ordinary: &[(&str, &str)] = &[
+            ("--max-time", "Maximum time allowed for the transfer."),
+            ("--output", "Write to file instead of stdout."),
+            ("--silent", "Silent mode."),
+            ("--author", "With -l, print the author of each file."),
+            ("--keyword", "Search the manual page names for the keyword."),
+            ("--bypass", "Skip the intermediate stage."),
+            ("--verbose", "Make the operation more talkative."),
+            ("--retry", "Retry request if transient problems occur."),
+            (
+                "-exec",
+                "The expression is composed of tokens separated by whitespace.",
+            ),
+        ];
+        for (name, description) in ordinary {
+            assert!(
+                !is_credential_bearing(&[name], description),
+                "{name} is not a credential"
+            );
+        }
+    }
+
+    #[test]
+    fn test_schema_credential_flag_is_marked_sensitive() {
+        // The reported leak: apcore redacts a property only when it carries
+        // `x-sensitive: true`, and no binding had ever emitted one (issue #30).
+        let flag = make_flag(
+            Some("--user"),
+            "<user:password> Server user and password",
+            ValueType::String,
+            false,
+            None,
+            None,
+            false,
+        );
+        let cmd = make_command(vec![flag], vec![]);
+        let schema = build_input_schema(&cmd, &[]);
+
+        assert_eq!(schema["properties"]["user"]["x-sensitive"], true);
+    }
+
+    #[test]
+    fn test_schema_repeatable_header_flag_is_marked_sensitive() {
+        // `--header` carries ordinary headers as often as `Authorization:`, and
+        // the value cannot be split, so the whole of it is masked. It is also
+        // repeatable, which returns early from `flag_to_schema` — the branch
+        // where the marker is easiest to drop.
+        let flag = make_flag(
+            Some("--header"),
+            "<header/@file> Pass custom header(s) to server",
+            ValueType::String,
+            false,
+            None,
+            None,
+            true,
+        );
+        let cmd = make_command(vec![flag], vec![]);
+        let schema = build_input_schema(&cmd, &[]);
+        let property = &schema["properties"]["header"];
+
+        assert_eq!(property["type"], "array");
+        // On the property, not on `items`: apcore checks the property first and
+        // masks the array whole.
+        assert_eq!(property["x-sensitive"], true);
+    }
+
+    #[test]
+    fn test_schema_short_only_flag_is_marked_from_its_help_text() {
+        // ssh `-i` has no long form; the help text is the only evidence.
+        let flag = ScannedFlag {
+            short_name: Some("-i".to_string()),
+            description: "Selects a file from which the identity (private key) is read."
+                .to_string(),
+            value_type: ValueType::Path,
+            ..Default::default()
+        };
+        let cmd = make_command(vec![flag], vec![]);
+        let schema = build_input_schema(&cmd, &[]);
+
+        assert_eq!(schema["properties"]["i"]["x-sensitive"], true);
+    }
+
+    #[test]
+    fn test_schema_omits_sensitive_for_ordinary_flags() {
+        // Absent, not `false` — an ordinary option makes no claim either way,
+        // matching how the other `x-` keywords are emitted.
+        for (name, description) in [
+            ("--max-time", "Maximum time allowed for the transfer."),
+            ("--output", "Write to file instead of stdout."),
+            ("--silent", "Silent mode."),
+        ] {
+            let flag = make_flag(
+                Some(name),
+                description,
+                ValueType::String,
+                false,
+                None,
+                None,
+                false,
+            );
+            let key = flag.canonical_name();
+            let cmd = make_command(vec![flag], vec![]);
+            let schema = build_input_schema(&cmd, &[]);
+
+            assert!(
+                schema["properties"][&key]["x-sensitive"].is_null(),
+                "{name} must not be marked sensitive"
+            );
+        }
+    }
+
+    #[test]
+    fn test_schema_omits_sensitive_for_boolean_auth_selectors() {
+        // A bare switch carries no value, so the marker could only mask the
+        // literal `true`. curl's `--basic`, `--digest` and `--netrc` are all of
+        // this shape, and marking them would be pure contract noise.
+        let flag = make_flag(
+            Some("--netrc"),
+            "Must read .netrc for user name and password",
+            ValueType::Boolean,
+            false,
+            None,
+            None,
+            false,
+        );
+        let cmd = make_command(vec![flag], vec![]);
+        let schema = build_input_schema(&cmd, &[]);
+
+        assert_eq!(schema["properties"]["netrc"]["type"], "boolean");
+        assert!(schema["properties"]["netrc"]["x-sensitive"].is_null());
+    }
+
+    #[test]
+    fn test_schema_credential_operand_is_marked_sensitive() {
+        // The credential is not always behind a flag.
+        let arg = ScannedArg {
+            name: "password".to_string(),
+            description: String::new(),
+            value_type: ValueType::String,
+            required: true,
+            variadic: false,
+            before_flags: false,
+        };
+        let cmd = make_command(vec![], vec![arg]);
+        let schema = build_input_schema(&cmd, &[]);
+
+        assert_eq!(schema["properties"]["password"]["x-sensitive"], true);
+    }
+
+    #[test]
+    fn test_schema_sensitive_survives_an_operand_displacing_the_flag() {
+        // The operand takes the flag's key, and its own name carries none of
+        // the evidence the flag's help text did.
+        let flag = make_flag(
+            Some("--secret"),
+            "The shared secret to authenticate with.",
+            ValueType::String,
+            false,
+            None,
+            None,
+            false,
+        );
+        let arg = ScannedArg {
+            name: "secret".to_string(),
+            description: String::new(),
+            value_type: ValueType::String,
+            required: true,
+            variadic: false,
+            before_flags: false,
+        };
+        let cmd = make_command(vec![flag], vec![arg]);
+        let schema = build_input_schema(&cmd, &[]);
+
+        assert_eq!(schema["properties"]["secret"]["x-apexe-positional"], 0);
+        assert_eq!(schema["properties"]["secret"]["x-sensitive"], true);
+        assert_eq!(schema["properties"]["secret_option"]["x-sensitive"], true);
     }
 
     #[test]

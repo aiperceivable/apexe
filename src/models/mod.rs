@@ -252,6 +252,22 @@ pub struct ScannedCommand {
     pub help_format: HelpFormat,
     /// Structured output capability info.
     pub structured_output: StructuredOutputInfo,
+    /// Whether this command's own parser honours `--` as an end-of-options
+    /// separator.
+    ///
+    /// Lets a value that legitimately begins with `-` reach the command
+    /// instead of being refused: every one of `find`'s expression primaries
+    /// starts with a dash, and `-f` exists precisely to introduce a path that
+    /// would otherwise parse as one. Like [`ScannedArg::before_flags`] this is
+    /// a fact about the command's argv parser that neither help text nor man
+    /// page states machine-readably, and getting it wrong produces an
+    /// invocation that fails rather than one that is refused — so it comes
+    /// from a curated overlay or not at all, and defaults to `false`.
+    ///
+    /// Defaulted on deserialize so scan caches written before this field
+    /// existed still load.
+    #[serde(default)]
+    pub end_of_options: bool,
     /// Original help text (preserved for debugging).
     pub raw_help: String,
 }
@@ -304,6 +320,10 @@ pub struct ScannedCLITool {
     /// Behavioral annotations asserted by an overlay, overriding inference.
     #[serde(default)]
     pub annotation_overrides: AnnotationOverrides,
+    /// Whether the tool honours `--`; propagated to every command it owns.
+    /// See [`ScannedCommand::end_of_options`].
+    #[serde(default)]
+    pub end_of_options: bool,
     /// Highest tier used during scanning (1=help, 2=man, 3=completion).
     pub scan_tier: u32,
     /// Non-fatal issues encountered during scanning.
@@ -704,6 +724,7 @@ mod tests {
             examples: vec![],
             help_format: HelpFormat::Cobra,
             structured_output: StructuredOutputInfo::default(),
+            end_of_options: false,
             raw_help: String::new(),
         };
         let mid = ScannedCommand {
@@ -716,6 +737,7 @@ mod tests {
             examples: vec![],
             help_format: HelpFormat::Cobra,
             structured_output: StructuredOutputInfo::default(),
+            end_of_options: false,
             raw_help: String::new(),
         };
         let json = serde_json::to_string(&mid).unwrap();
@@ -737,6 +759,7 @@ mod tests {
             examples: vec![],
             help_format: HelpFormat::Gnu,
             structured_output: StructuredOutputInfo::default(),
+            end_of_options: false,
             raw_help: String::new(),
         };
         let json = serde_json::to_string(&cmd).unwrap();
@@ -773,6 +796,7 @@ mod tests {
                 examples: vec![],
                 help_format: HelpFormat::Gnu,
                 structured_output: StructuredOutputInfo::default(),
+                end_of_options: false,
                 raw_help: String::new(),
             }],
             global_flags: vec![ScannedFlag {

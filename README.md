@@ -228,12 +228,20 @@ Start MCP server for scanned tools.
 apexe serve                                         # stdio (default)
 apexe serve --transport http --port 8000             # HTTP
 apexe serve --transport http --port 8000 --explorer  # HTTP + browser UI
-apexe serve --transport sse --port 8000              # Server-Sent Events
+apexe serve --transport sse --allow-deprecated-sse   # Server-Sent Events (deprecated, unsafe with >1 client)
 apexe serve --show-config claude-desktop             # Print integration config
 apexe serve --name my-tools                          # Custom server name
 apexe serve --transport http --metrics                # + /metrics (Prometheus) and /usage
 apexe serve --no-circuit-breaker --no-retry           # Disable resilience middleware
+apexe serve --transport http --auth-token "$TOKEN"    # Pin the bearer token (else one is generated)
+apexe serve --prefix cli.git                          # Serve only git tools (not listed AND not callable)
+apexe serve --no-log-arguments                        # Keep operational logs, drop argument payloads
 ```
+
+> HTTP/SSE transports require a bearer token by default; a token is generated
+> and printed at startup on a loopback bind. `--auth none` on a non-loopback
+> bind refuses to start without `--allow-unauthenticated-bind`. stdio is
+> unaffected. See [`docs/user-manual.md`](docs/user-manual.md).
 
 ### `apexe a2a`
 

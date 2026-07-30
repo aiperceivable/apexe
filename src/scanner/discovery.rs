@@ -74,6 +74,7 @@ impl<'a> SubcommandDiscovery<'a> {
                 examples: parsed.examples,
                 help_format: parsed.help_format,
                 structured_output: parsed.structured_output,
+                end_of_options: false,
                 raw_help: help_text,
             });
         }

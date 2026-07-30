@@ -85,6 +85,11 @@
     "annotations": {
       "description": "Behavioral assertions that override the adapter's name-and-flag based inference. Every field is optional; an absent field leaves the inferred value alone.",
       "$ref": "#/$defs/annotations"
+    },
+    "end_of_options": {
+      "type": "boolean",
+      "default": false,
+      "description": "This command's own parser honours `--` as an end-of-options separator. Set it and a value that legitimately begins with `-` is passed through behind `--` instead of being refused: every one of find's expression primaries starts with a dash, and `-f` exists precisely to introduce a path that would otherwise parse as one. Leave it unset and such a value is still refused, which is the right answer for a command nobody has checked — `--` in the wrong position produces an invocation that fails rather than one that is merely rejected (`find . -- -name '*.txt'` is \"unknown primary or operator\" on BSD and \"unknown predicate `--'\" on GNU). Not derivable from a scan; verify on a real installation by running `tool -- <operand>` and `tool <operand> -- <rest>` and record both outcomes in provenance.notes. Note that `--` protects the operand slot from being read as options; it does not rescue an operand whose own value begins with `-` if the command re-parses operands in a second pass, as find does."
     }
   },
   "$defs": {

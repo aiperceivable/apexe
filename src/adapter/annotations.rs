@@ -170,6 +170,7 @@ mod tests {
             examples: vec![],
             help_format: HelpFormat::Gnu,
             structured_output: StructuredOutputInfo::default(),
+            end_of_options: false,
             raw_help: String::new(),
         }
     }

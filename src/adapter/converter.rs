@@ -296,6 +296,7 @@ fn synthesize_root_command(tool: &ScannedCLITool) -> ScannedCommand {
         examples: tool.examples.clone(),
         help_format: HelpFormat::Unknown,
         structured_output: tool.structured_output.clone(),
+        end_of_options: tool.end_of_options,
         raw_help: String::new(),
     }
 }
@@ -390,6 +391,7 @@ mod tests {
             examples: vec![],
             help_format: HelpFormat::Gnu,
             structured_output: StructuredOutputInfo::default(),
+            end_of_options: false,
             raw_help: String::new(),
         }
     }

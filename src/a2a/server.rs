@@ -24,7 +24,11 @@ pub struct A2aServerBuilder {
     audit_path: Option<std::path::PathBuf>,
     /// Enable LoggingMiddleware for structured execution logging.
     enable_logging: bool,
-    /// Enable ElicitationApprovalHandler for destructive command approval.
+    /// Include call arguments and output in the structured log. See
+    /// [`ExecutorOptions::log_arguments`](crate::module::ExecutorOptions::log_arguments).
+    log_arguments: bool,
+    /// Deny calls to modules annotated `requires_approval`. See
+    /// [`DenyApprovalHandler`](crate::module::DenyApprovalHandler).
     enable_approval: bool,
     /// Enable CircuitBreakerMiddleware (short-circuit a hanging/broken tool).
     enable_circuit_breaker: bool,
@@ -55,6 +59,7 @@ impl A2aServerBuilder {
             acl_path: None,
             audit_path: None,
             enable_logging: true,
+            log_arguments: true,
             enable_approval: false,
             enable_circuit_breaker: true,
             enable_retry: true,
@@ -111,6 +116,14 @@ impl A2aServerBuilder {
         self
     }
 
+    /// Include call arguments and output in the structured log (default:
+    /// enabled). Turning this off keeps the operational record and drops the
+    /// payload, which is where a wrapped tool's credential options end up.
+    pub fn log_arguments(mut self, enabled: bool) -> Self {
+        self.log_arguments = enabled;
+        self
+    }
+
     /// Enable ElicitationApprovalHandler for destructive commands.
     pub fn enable_approval(mut self, enabled: bool) -> Self {
         self.enable_approval = enabled;
@@ -155,8 +168,12 @@ impl A2aServerBuilder {
             modules_dir: self.modules_dir.as_deref(),
             timeout_ms: self.timeout_ms,
             acl_path: self.acl_path.as_deref(),
+            // A2A has no `--prefix`/`--tags` surface of its own; the default
+            // filter admits every scanned module.
+            filter: crate::module::ModuleFilter::default(),
             audit_path: self.audit_path.as_deref(),
             enable_logging: self.enable_logging,
+            log_arguments: self.log_arguments,
             enable_approval: self.enable_approval,
             enable_circuit_breaker: self.enable_circuit_breaker,
             enable_retry: self.enable_retry,

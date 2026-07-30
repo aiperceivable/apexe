@@ -475,6 +475,53 @@ Set today on exactly two operands, both verified against the real binaries:
 and `sudo` all place an operand before a trailing command and may need the same
 treatment — do not guess at a tool you have not checked.
 
+### `end_of_options` — passing a value that begins with `-`
+
+apexe refuses any caller-supplied value starting with `-`, because the wrapped
+tool's parser cannot distinguish it from an option the caller was never granted.
+That is the right default, and it is wrong for the parameters that exist for
+exactly this case: every one of `find`'s expression primaries begins with a
+dash, and `-f` is documented as the way to name a path that would otherwise
+parse as one.
+
+`--` is what the tools themselves provide, and it is the stronger guarantee —
+after the separator the wrapped parser *cannot* read the value as an option,
+whereas refusing only establishes that the value did not look like one. So the
+overlay states it at the root:
+
+```json
+{ "command": "find", "variant": "bsd", "end_of_options": true }
+```
+
+It reaches `ScannedCommand.end_of_options` and then the contract, as
+`x-apexe-end-of-options: true` at the **schema root** — it describes the whole
+invocation, not any one property. The executor then permits a `-`-leading value
+and emits `--` at the point the command stops reading options: ahead of the
+operands for a `before_flags` grammar like `find`, after every flag otherwise.
+The separator is emitted only when some value actually needs it, so no existing
+invocation is rewritten.
+
+Three rules for setting it:
+
+- **Verify the position, not just the support.** `--` works in exactly one
+  place. Run both: `find -- . -name '*.txt'` exits 0 on BSD and GNU alike,
+  while `find . -- -name '*.txt'` is `find: --: unknown primary or operator`
+  (BSD) and ``find: unknown predicate `--'`` (GNU). Record both outcomes in
+  `provenance.notes`.
+- **Absent means refuse, and that is safe.** A tool nobody has checked keeps
+  the rejection. A wrong guess would instead produce an invocation that *runs
+  and fails*, which is worse than one that is refused with a message.
+- **`--` protects the expression, not the paths.** A command that re-parses
+  operands in a second pass still reads a leading `-` there as its own syntax:
+  `find -- -weird-dir` is a usage error on BSD and "unknown predicate" on GNU.
+  For `find` the documented route is `-f`, which the marker is what makes
+  usable (`find -f ./-weird-dir -- -name '*.txt'` works; without `--` it is
+  `illegal option -- n`). If a tool has this shape, say so in the operand's
+  description rather than implying the separator covers it.
+
+Set today on exactly two commands, both verified against the real binaries:
+`find@bsd` and `find@gnu`.
+
 ---
 
 ## Open design questions

@@ -58,6 +58,30 @@ pub fn validate_no_injection(param_name: &str, value: &str) -> Result<(), Module
     Ok(())
 }
 
+/// Where one caller-supplied value sits in the input object.
+///
+/// Carried into the error message so a rejection names the token that caused
+/// it. An array property scans every element but used to report as though the
+/// first one were at fault: `{"expression": ["(", "-name", "*.txt", ")"]}` was
+/// refused with "Parameter 'expression' starts with '-'", and `"("` does not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ValueLocation<'a> {
+    /// Property key the value arrived under.
+    pub param_name: &'a str,
+    /// Position within the property's array, or `None` for a scalar property.
+    pub index: Option<usize>,
+}
+
+impl ValueLocation<'_> {
+    /// Render this location as the subject of a sentence.
+    fn describe(&self) -> String {
+        match self.index {
+            Some(index) => format!("Element {index} of parameter '{}'", self.param_name),
+            None => format!("Parameter '{}'", self.param_name),
+        }
+    }
+}
+
 /// Validate a caller-supplied parameter value before it becomes one argv entry.
 ///
 /// Two checks, both about what a value can do *as an argument* rather than what
@@ -77,11 +101,23 @@ pub fn validate_no_injection(param_name: &str, value: &str) -> Result<(), Module
 /// legitimate negative number still works. A *string* `"-1"` is still rejected:
 /// the caller asked for text, and honoring a leading `-` in text is exactly the
 /// ambiguity being closed.
+///
+/// `separator_available` exempts check 2 as well, and is set by
+/// [`build_arguments`] only
+/// for a tool whose overlay states that it honours the `--` end-of-options
+/// separator. Refusing was one way to keep a value from being read as an
+/// option; `--` is the other, and it is the stronger of the two — after the
+/// separator the wrapped parser *cannot* read the value as an option, whereas
+/// refusing only establishes that the value did not look like one. It also
+/// unblocks the parameters that exist for this exact case: every one of
+/// `find`'s expression primaries begins with `-`, so the operand documented as
+/// carrying them could not carry any legal value at all.
 #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
 pub fn validate_argument_value(
-    param_name: &str,
+    location: ValueLocation<'_>,
     value: &str,
     numeric: bool,
+    separator_available: bool,
 ) -> Result<(), ModuleError> {
     let found: Vec<char> = value
         .chars()
@@ -91,18 +127,20 @@ pub fn validate_argument_value(
         return Err(ModuleError::new(
             ErrorCode::GeneralInvalidInput,
             format!(
-                "Parameter '{}' contains prohibited control characters: {:?}",
-                param_name, found
+                "{} contains prohibited control characters: {:?}",
+                location.describe(),
+                found
             ),
         ));
     }
 
-    if !numeric && value.starts_with('-') {
+    if !numeric && !separator_available && value.starts_with('-') {
         return Err(ModuleError::new(
             ErrorCode::GeneralInvalidInput,
             format!(
-                "Parameter '{param_name}' starts with '-', which the wrapped \
-                 command would parse as an option rather than a value"
+                "{} is '{value}', which starts with '-'; the wrapped command \
+                 would parse it as an option rather than a value",
+                location.describe()
             ),
         ));
     }
@@ -195,6 +233,71 @@ fn arg_form(schema: Option<&Value>, key: &str) -> ArgForm {
     }
 
     ArgForm::Flag(format!("--{}", key.replace('_', "-")), placement)
+}
+
+/// The literal `--` end-of-options separator.
+const END_OF_OPTIONS: &str = "--";
+
+/// Whether the wrapped tool honours `--` as an end-of-options separator.
+///
+/// Read from the schema root, where a curated overlay's `end_of_options` lands.
+/// Like `x-apexe-operand-position` and `x-apexe-flag-position` this is a
+/// per-tool fact about the command's own argv parser that no help text or man
+/// page states machine-readably, so it is asserted by a human or not at all.
+/// Absent, [`build_arguments`] keeps refusing a value that begins with `-`,
+/// which is the right answer for a tool nobody has checked: `find . -- -name
+/// '*.txt'` is "unknown primary or operator" on BSD and "unknown predicate
+/// `--'" on GNU, so an unverified guess at where the separator goes would
+/// produce an invocation that fails instead of one that is merely refused.
+fn honours_end_of_options(input_schema: Option<&Value>) -> bool {
+    input_schema
+        .and_then(|s| s.get("x-apexe-end-of-options"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Whether this grammar puts its operands ahead of the flags.
+///
+/// This is what decides where `--` goes, because option parsing stops at the
+/// first operand: the separator has to sit at the point the tool stops reading
+/// options, and that point is *before* the operands. For
+/// `find [-f path] path ... [expression]` that is after the pre-operand options
+/// and ahead of the paths — `find -- . -name '*.txt'` works on BSD and GNU
+/// alike, while `find . -- -name '*.txt'` is rejected by both. For the ordinary
+/// `tool [options] operands` grammar it is after every flag instead.
+///
+/// Answered from the schema rather than from the values in hand, because a
+/// `find` call that supplies its paths through `-f` alone renders no leading
+/// operand at all and the separator still belongs at the same place:
+/// `find -f dir -- -name x` works where `find -f dir -name x` is
+/// "illegal option -- n".
+fn operands_precede_flags(input_schema: Option<&Value>) -> bool {
+    input_schema
+        .and_then(|s| s.get("properties"))
+        .and_then(Value::as_object)
+        .is_some_and(|properties| {
+            properties.values().any(|property| {
+                property
+                    .get("x-apexe-operand-position")
+                    .and_then(Value::as_str)
+                    == Some("before-flags")
+            })
+        })
+}
+
+/// Whether this property's value must be attached to its flag token with `=`.
+///
+/// True for exactly the options whose value is *optional*, which the scanner
+/// marks with `x-apexe-value-optional`. Those accept no other spelling: GNU
+/// `ls --classify never` reads `never` as a file to list and fails, while
+/// `--classify=never` works.
+fn value_must_be_attached(input_schema: Option<&Value>, key: &str) -> bool {
+    input_schema
+        .and_then(|s| s.get("properties"))
+        .and_then(|p| p.get(key))
+        .and_then(|p| p.get("x-apexe-value-optional"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// Whether a value will actually reach the command line.
@@ -324,12 +427,25 @@ fn reject_bare_flag_for_value_option(
 /// sorted by its own recorded index. A schema carrying neither marker yields
 /// the ordinary `tool [options] operands` shape, unchanged.
 /// See `x-apexe-flag-position` and `x-apexe-operand-position`.
+///
+/// A tool whose schema carries `x-apexe-end-of-options` additionally gets a
+/// `--` separator inserted at the point its parser stops reading options, as
+/// soon as any value begins with `-`. That is what makes such a value legal
+/// rather than refused; see [`validate_argument_value`] and
+/// [`operands_precede_flags`].
 #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
 pub fn build_arguments(
     kwargs: &serde_json::Map<String, Value>,
     input_schema: Option<&Value>,
 ) -> Result<Vec<String>, ModuleError> {
     reject_conflicting_flags(kwargs, input_schema)?;
+
+    let honours_separator = honours_end_of_options(input_schema);
+    // Set as soon as a value that needs the separator's protection is rendered.
+    // Emitting `--` unconditionally would be legal for a tool that declares the
+    // marker, but it would rewrite every invocation of that tool for the sake
+    // of the few that need it.
+    let mut saw_dash_leading_value = false;
 
     let mut leading_flags: Vec<String> = Vec::new();
     let mut trailing_flags: Vec<String> = Vec::new();
@@ -361,25 +477,42 @@ pub fn build_arguments(
             continue;
         }
 
-        let items: Vec<&Value> = match value {
-            Value::Array(items) => items.iter().collect(),
-            other => vec![other],
+        let attached = value_must_be_attached(input_schema, key);
+        let (items, indexed): (Vec<&Value>, bool) = match value {
+            Value::Array(items) => (items.iter().collect(), true),
+            other => (vec![other], false),
         };
 
         let mut rendered: Vec<String> = Vec::new();
-        for item in items {
+        for (position, item) in items.into_iter().enumerate() {
             let text = json_value_to_string(item);
-            validate_argument_value(key, &text, item.is_number())?;
+            let location = ValueLocation {
+                param_name: key,
+                index: indexed.then_some(position),
+            };
+            validate_argument_value(location, &text, item.is_number(), honours_separator)?;
+            if honours_separator && text.starts_with('-') {
+                saw_dash_leading_value = true;
+            }
             match form {
-                // A long option carries its value with `=`, as one argv entry.
-                // Options whose value is *optional* accept no other spelling:
-                // GNU `ls --classify never` reads `never` as a file to list and
-                // fails, while `--classify=never` works. Options whose value is
-                // required accept both, so `=` is the one form that is always
-                // right, and the schema does not record which kind a flag is.
-                // Short options are the opposite -- `-I=PATTERN` passes a value
-                // that begins with `=` -- so they stay two entries.
-                ArgForm::Flag(ref literal, _) if literal.starts_with("--") => {
+                // An option whose value is *optional* accepts only the attached
+                // spelling, so it is the one case `=` is required for, and
+                // `x-apexe-value-optional` marks exactly those options.
+                //
+                // Everything else takes two argv entries. `--flag=value` is a
+                // GNU convention rather than a universal one, so the previous
+                // premise -- that an option with a required value accepts both
+                // spellings -- is simply false: `curl` implements its own
+                // parser and accepts NO long option in `=` form, answering
+                // `--max-time=1` with "option --max-time=1: is unknown". That
+                // made 134 of cli.curl's 258 properties unusable. The separated
+                // form is the one the help text shows (`-m, --max-time
+                // <seconds>`) and GNU accepts it as well as `=`.
+                //
+                // Short options were never attachable -- `-I=PATTERN` would
+                // pass a value beginning with `=` -- so they fall through here
+                // unchanged.
+                ArgForm::Flag(ref literal, _) if attached && literal.starts_with("--") => {
                     rendered.push(format!("{literal}={text}"));
                 }
                 ArgForm::Flag(ref literal, _) => {
@@ -405,9 +538,32 @@ pub fn build_arguments(
     leading_operands.sort_by_key(|(index, _)| *index);
     trailing_operands.sort_by_key(|(index, _)| *index);
 
+    // The separator marks where the tool stops reading options, which is ahead
+    // of whichever operand group its grammar puts first.
+    let separator_precedes_operands = operands_precede_flags(input_schema);
+
+    // In an operands-first grammar it is the first *operand* that stops the
+    // tool reading options, so a call that renders none leaves the trailing
+    // tokens exposed to the option parser even though nothing in it begins
+    // with a dash: `find -f dir -name '*.txt'` is "illegal option -- n", while
+    // `find -f dir -- -name '*.txt'` works. This is reachable precisely because
+    // `-f` supplies the paths in place of the operand, which is the case the
+    // operand's own description points at.
+    let nothing_stops_option_parsing = separator_precedes_operands
+        && leading_operands.is_empty()
+        && !(trailing_flags.is_empty() && trailing_operands.is_empty());
+    let needs_separator =
+        honours_separator && (saw_dash_leading_value || nothing_stops_option_parsing);
+
     let mut args: Vec<String> = leading_flags;
+    if needs_separator && separator_precedes_operands {
+        args.push(END_OF_OPTIONS.to_string());
+    }
     args.extend(leading_operands.into_iter().flat_map(|(_, values)| values));
     args.extend(trailing_flags);
+    if needs_separator && !separator_precedes_operands {
+        args.push(END_OF_OPTIONS.to_string());
+    }
     args.extend(trailing_operands.into_iter().flat_map(|(_, values)| values));
     Ok(args)
 }
@@ -606,7 +762,7 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("file".to_string(), json!("test.txt"));
         let args = build_arguments(&kwargs, None).unwrap();
-        assert_eq!(args, vec!["--file=test.txt"]);
+        assert_eq!(args, vec!["--file", "test.txt"]);
     }
 
     #[test]
@@ -847,7 +1003,7 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("include".to_string(), json!(["a", "b"]));
         let args = build_arguments(&kwargs, None).unwrap();
-        assert_eq!(args, vec!["--include=a", "--include=b"]);
+        assert_eq!(args, vec!["--include", "a", "--include", "b"]);
     }
 
     #[test]
@@ -863,7 +1019,7 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("count".to_string(), json!(5));
         let args = build_arguments(&kwargs, None).unwrap();
-        assert_eq!(args, vec!["--count=5"]);
+        assert_eq!(args, vec!["--count", "5"]);
     }
 
     #[test]
@@ -898,17 +1054,17 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("data".to_string(), json!(r#"{"name":"apexe"}"#));
         let args = build_arguments(&kwargs, None).expect("a JSON body must be passable");
-        assert_eq!(args, vec![r#"--data={"name":"apexe"}"#]);
+        assert_eq!(args, vec!["--data", r#"{"name":"apexe"}"#]);
 
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("data".to_string(), json!("name=apexe&lang=rust"));
         let args = build_arguments(&kwargs, None).expect("a form body must be passable");
-        assert_eq!(args, vec!["--data=name=apexe&lang=rust"]);
+        assert_eq!(args, vec!["--data", "name=apexe&lang=rust"]);
 
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("filter".to_string(), json!(r#".items[] | select(.n > $x)"#));
         let args = build_arguments(&kwargs, None).expect("a jq filter must be passable");
-        assert_eq!(args, vec![r#"--filter=.items[] | select(.n > $x)"#]);
+        assert_eq!(args, vec!["--filter", r#".items[] | select(.n > $x)"#]);
     }
 
     #[test]
@@ -932,7 +1088,7 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("offset".to_string(), json!(-5));
         let args = build_arguments(&kwargs, None).unwrap();
-        assert_eq!(args, vec!["--offset=-5"]);
+        assert_eq!(args, vec!["--offset", "-5"]);
     }
 
     #[test]
@@ -1042,20 +1198,298 @@ mod tests {
     }
 
     #[test]
-    fn test_build_arguments_long_flag_value_uses_equals() {
+    fn test_build_arguments_optional_value_long_flag_uses_equals() {
         // GNU `ls --classify never` lists a file called `never` and fails;
         // only `--classify=never` works, because the option's value is
-        // optional. Options with a required value accept both spellings, and
-        // the schema does not say which kind a flag is, so `=` is the only
-        // form that is always correct.
+        // optional. `x-apexe-value-optional` marks exactly those options.
         let schema = schema_with(json!({
-            "classify": { "type": "string", "x-apexe-flag": "--classify" },
+            "classify": {
+                "type": ["string", "boolean"],
+                "x-apexe-flag": "--classify",
+                "x-apexe-value-optional": true,
+            },
         }));
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("classify".to_string(), json!("never"));
 
         let args = build_arguments(&kwargs, Some(&schema)).unwrap();
         assert_eq!(args, vec!["--classify=never"]);
+    }
+
+    #[test]
+    fn test_build_arguments_required_value_long_flag_stays_separate() {
+        // Regression (#24): every long option used to render `--flag=value`,
+        // on the premise that an option with a *required* value accepts both
+        // spellings. That is a GNU convention, not a universal one. `curl`
+        // implements its own parser and accepts no long option in `=` form --
+        // `curl --max-time=1` is "option --max-time=1: is unknown" -- which
+        // made 134 of cli.curl's 258 properties unusable.
+        let schema = schema_with(json!({
+            "max_time": { "type": "number", "x-apexe-flag": "--max-time" },
+            "user_agent": { "type": "string", "x-apexe-flag": "--user-agent" },
+        }));
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("max_time".to_string(), json!(1));
+        kwargs.insert("user_agent".to_string(), json!("apexe"));
+
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            vec!["--max-time", "1", "--user-agent", "apexe"]
+        );
+    }
+
+    #[test]
+    fn test_build_arguments_optional_value_short_flag_stays_separate() {
+        // The `=` spelling is a long-option form only: `-I=PATTERN` would pass
+        // a value that begins with `=`, so a short option keeps two entries
+        // even when its value is optional.
+        let schema = schema_with(json!({
+            "I": {
+                "type": ["string", "boolean"],
+                "x-apexe-flag": "-I",
+                "x-apexe-value-optional": true,
+            },
+        }));
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("I".to_string(), json!("*.tmp"));
+
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            vec!["-I", "*.tmp"]
+        );
+    }
+
+    #[test]
+    fn test_build_arguments_optional_value_flag_still_renders_bare_for_true() {
+        // The other half of an optional value: `true` selects the bare form,
+        // and must not be caught by the "takes a value" backstop.
+        let schema = schema_with(json!({
+            "exec_path": {
+                "type": ["string", "boolean"],
+                "x-apexe-flag": "--exec-path",
+                "x-apexe-value-optional": true,
+            },
+        }));
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("exec_path".to_string(), json!(true));
+
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            vec!["--exec-path"]
+        );
+    }
+
+    /// A schema shaped like `find`'s: paths before the flags, true options
+    /// before the paths, primaries and the expression trailing, and `--`
+    /// declared as an accepted separator.
+    fn find_schema() -> Value {
+        json!({
+            "type": "object",
+            "x-apexe-end-of-options": true,
+            "properties": {
+                "path": {
+                    "type": "array",
+                    "x-apexe-positional": 0,
+                    "x-apexe-operand-position": "before-flags"
+                },
+                "expression": { "type": "array", "x-apexe-positional": 1 },
+                "f": {
+                    "type": "array",
+                    "x-apexe-flag": "-f",
+                    "x-apexe-flag-position": "before-operands"
+                },
+                "L": {
+                    "type": "boolean",
+                    "x-apexe-flag": "-L",
+                    "x-apexe-flag-position": "before-operands"
+                },
+                "name": { "type": "string", "x-apexe-flag": "-name" },
+            }
+        })
+    }
+
+    #[test]
+    fn test_build_arguments_emits_end_of_options_before_the_operands() {
+        // Regression (#25): every `find` expression primary begins with `-`,
+        // so the operand documented as carrying them could not carry any legal
+        // value. `--` is where it belongs for this grammar: verified against
+        // /usr/bin/find (BSD) and findutils 4.10.0, `find -- . -name '*.txt'`
+        // works on both while `find . -- -name '*.txt'` is "unknown primary or
+        // operator" / "unknown predicate `--'".
+        let schema = find_schema();
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("path".to_string(), json!(["sandbox"]));
+        kwargs.insert("expression".to_string(), json!(["-name", "*.txt"]));
+
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            vec!["--", "sandbox", "-name", "*.txt"]
+        );
+    }
+
+    #[test]
+    fn test_build_arguments_end_of_options_follows_the_pre_operand_flags() {
+        // `-f` supplies the paths itself, and option parsing continues past its
+        // value: `find -f dir -name x` is "illegal option -- n", while
+        // `find -f dir -- -name x` works. The separator therefore sits after
+        // the pre-operand flags even when no operand renders at all.
+        let schema = find_schema();
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("f".to_string(), json!(["-weird-dir"]));
+        kwargs.insert("name".to_string(), json!("*.txt"));
+
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            vec!["-f", "-weird-dir", "--", "-name", "*.txt"]
+        );
+    }
+
+    #[test]
+    fn test_build_arguments_end_of_options_follows_every_flag_by_default() {
+        // For the ordinary `tool [options] operands` grammar the separator goes
+        // after the flags instead, because that is where the tool stops reading
+        // options.
+        let schema = json!({
+            "type": "object",
+            "x-apexe-end-of-options": true,
+            "properties": {
+                "file": { "type": "array", "x-apexe-positional": 0 },
+                "i": { "type": "boolean", "x-apexe-flag": "-i" },
+            }
+        });
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("file".to_string(), json!(["-weird-name"]));
+        kwargs.insert("i".to_string(), json!(true));
+
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            vec!["-i", "--", "-weird-name"]
+        );
+    }
+
+    #[test]
+    fn test_build_arguments_emits_end_of_options_when_no_operand_stops_parsing() {
+        // `find -f dir -name '*.txt'` is "illegal option -- n": with the paths
+        // supplied by `-f` instead of by the operand, nothing stops the option
+        // parser before the predicates. No value here begins with `-`, so the
+        // dash-leading rule alone would not fire.
+        let schema = json!({
+            "type": "object",
+            "x-apexe-end-of-options": true,
+            "properties": {
+                "f": {"type": "array", "x-apexe-flag": "-f", "x-apexe-flag-position": "before-operands"},
+                "path": {"type": "array", "x-apexe-positional": 0, "x-apexe-operand-position": "before-flags"},
+                "name": {"type": "string", "x-apexe-flag": "-name"},
+            }
+        });
+        let kwargs = json!({"f": ["sandbox"], "name": "*.txt"})
+            .as_object()
+            .expect("object literal")
+            .clone();
+
+        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        assert_eq!(args, vec!["-f", "sandbox", "--", "-name", "*.txt"]);
+    }
+
+    #[test]
+    fn test_build_arguments_omits_end_of_options_when_an_operand_stops_parsing() {
+        // A bare path operand already terminates option parsing, so the
+        // separator would be noise.
+        let schema = json!({
+            "type": "object",
+            "x-apexe-end-of-options": true,
+            "properties": {
+                "path": {"type": "array", "x-apexe-positional": 0, "x-apexe-operand-position": "before-flags"},
+                "name": {"type": "string", "x-apexe-flag": "-name"},
+            }
+        });
+        let kwargs = json!({"path": ["sandbox"], "name": "*.txt"})
+            .as_object()
+            .expect("object literal")
+            .clone();
+
+        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        assert_eq!(args, vec!["sandbox", "-name", "*.txt"]);
+    }
+
+    #[test]
+    fn test_build_arguments_omits_end_of_options_when_nothing_needs_it() {
+        // Emitting `--` unconditionally would be legal but would rewrite every
+        // invocation of a marked tool for the sake of the few that need it.
+        let schema = find_schema();
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("path".to_string(), json!(["sandbox"]));
+        kwargs.insert("name".to_string(), json!("*.txt"));
+
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            vec!["sandbox", "-name", "*.txt"]
+        );
+    }
+
+    #[test]
+    fn test_build_arguments_still_rejects_option_like_values_without_the_marker() {
+        // The default is unchanged: a tool nobody has checked for `--` support
+        // keeps refusing, because guessing where the separator goes would turn
+        // a refusal into a failing invocation.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "array",
+                    "x-apexe-positional": 0,
+                    "x-apexe-operand-position": "before-flags"
+                },
+                "expression": { "type": "array", "x-apexe-positional": 1 },
+            }
+        });
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("path".to_string(), json!(["sandbox"]));
+        kwargs.insert("expression".to_string(), json!(["-name", "*.txt"]));
+
+        let err = build_arguments(&kwargs, Some(&schema))
+            .expect_err("without the marker the guard must still refuse");
+        assert_eq!(err.code, ErrorCode::GeneralInvalidInput);
+    }
+
+    #[test]
+    fn test_validate_argument_value_names_the_offending_array_element() {
+        // Regression (#25b): the check scans every element but reported as
+        // though the first one were at fault -- `{"expression": ["(", "-name",
+        // "*.txt", ")"]}` was refused with "Parameter 'expression' starts with
+        // '-'", and `"("` does not.
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert(
+            "expression".to_string(),
+            json!(["(", "-name", "*.txt", ")"]),
+        );
+
+        let err = build_arguments(&kwargs, None).expect_err("the element must be refused");
+        assert!(
+            err.message.contains("Element 1 of parameter 'expression'"),
+            "the message must name the element and its index: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("'-name'"),
+            "the message must quote the offending value: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_validate_argument_value_names_a_scalar_without_an_index() {
+        // A scalar property has no index to report, and inventing `0` for one
+        // would read as an array.
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("data".to_string(), json!("--output=/etc/passwd"));
+
+        let err = build_arguments(&kwargs, None).expect_err("the value must be refused");
+        assert!(
+            err.message.starts_with("Parameter 'data' is"),
+            "a scalar names no index: {}",
+            err.message
+        );
     }
 
     #[test]
@@ -1179,7 +1613,7 @@ mod tests {
         kwargs.insert("foo_bar".to_string(), json!("v"));
 
         let args = build_arguments(&kwargs, Some(&schema)).unwrap();
-        assert_eq!(args, vec!["--foo_bar=v"]);
+        assert_eq!(args, vec!["--foo_bar", "v"]);
     }
 
     #[test]
@@ -1202,7 +1636,11 @@ mod tests {
     fn test_validate_argument_value_trust_classes_differ() {
         // The same string is fine as a runtime parameter and rejected as a
         // binding value -- that asymmetry is the point.
-        assert!(validate_argument_value("data", "a;b|c", false).is_ok());
+        let location = ValueLocation {
+            param_name: "data",
+            index: None,
+        };
+        assert!(validate_argument_value(location, "a;b|c", false, false).is_ok());
         assert!(validate_no_injection("json_flag", "a;b|c").is_err());
     }
 

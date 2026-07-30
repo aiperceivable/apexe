@@ -94,3 +94,83 @@ fn user_manual_names_the_wired_circuit_breaker() {
         "docs/user-manual.md still documents the replaced middleware as the wired one"
     );
 }
+
+/// The manual must not promise an approval prompt that cannot happen.
+///
+/// §9.6 previously said `--enable-approval` "blocks until the connected MCP
+/// client's user responds to an elicitation prompt". No such path exists from
+/// a CLI-launched server: the flag denies every gated call. An operator who
+/// reads the old text enables it, finds every destructive tool bricked, and
+/// turns it back off — landing on the ungoverned default.
+#[test]
+fn user_manual_describes_approval_as_a_deny_gate() {
+    let manual = include_str!("../docs/user-manual.md");
+
+    assert!(
+        manual.contains("DenyApprovalHandler"),
+        "docs/user-manual.md must name the approval handler that is actually wired"
+    );
+    assert!(
+        !manual.contains("blocks until the connected MCP client's user responds"),
+        "docs/user-manual.md still promises an elicitation prompt that cannot be delivered"
+    );
+    assert!(
+        !manual.contains("Sends approval request to MCP client"),
+        "docs/user-manual.md's middleware table still promises an approval prompt"
+    );
+}
+
+/// SSE is refused by default, so no document may present it as an ordinary
+/// option: with two clients connected, one receives the other's tool output.
+#[test]
+fn every_document_marks_sse_as_deprecated() {
+    for (name, text) in [
+        (
+            "docs/user-manual.md",
+            include_str!("../docs/user-manual.md"),
+        ),
+        ("docs/quickstart.md", include_str!("../docs/quickstart.md")),
+        ("README.md", include_str!("../README.md")),
+    ] {
+        for line in text.lines().filter(|l| l.contains("--transport sse")) {
+            assert!(
+                line.contains("--allow-deprecated-sse") || line.contains("deprecated"),
+                "{name} presents `--transport sse` without its caveat: {line}"
+            );
+        }
+    }
+}
+
+/// `--prefix` / `--tags` gate execution, not just listing. The v0.2.0 CHANGELOG
+/// introduced them as "access control" while they filtered `tools/list` alone;
+/// the manual must not reintroduce the weaker claim.
+#[test]
+fn user_manual_states_that_filters_gate_execution() {
+    let manual = include_str!("../docs/user-manual.md");
+    assert!(
+        manual.contains("registration"),
+        "docs/user-manual.md must say the tool filter is applied at registration"
+    );
+    assert!(
+        manual.contains("ModuleNotFound"),
+        "docs/user-manual.md must state what a filtered-out module returns"
+    );
+}
+
+/// The manual must document the per-transport authentication defaults, since
+/// turning auth on by default is a breaking change for existing HTTP setups.
+#[test]
+fn user_manual_documents_transport_authentication() {
+    let manual = include_str!("../docs/user-manual.md");
+    for expected in [
+        "--auth-token",
+        "--allow-unauthenticated-bind",
+        "APEXE_AUTH_TOKEN",
+        "Authorization: Bearer",
+    ] {
+        assert!(
+            manual.contains(expected),
+            "docs/user-manual.md must document `{expected}`"
+        );
+    }
+}

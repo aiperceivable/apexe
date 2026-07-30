@@ -15,10 +15,12 @@
 //! - [`a2a`] — `A2aServerBuilder`: build and start A2A agent servers
 //! - [`module`] — `CliModule`: apcore Module trait for CLI execution
 //! - [`governance`] — `AclManager`, `AuditManager`
+//! - [`auth`] — Transport authentication for the HTTP-family MCP transports
 //! - [`models`] — Scanner data types (ScannedCLITool, ScannedCommand, etc.)
 
 pub mod a2a;
 pub mod adapter;
+pub mod auth;
 pub mod cli;
 pub mod config;
 pub mod errors;

@@ -112,13 +112,24 @@ apexe serve [OPTIONS]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--transport <TYPE>` | `stdio` | Transport: `stdio`, `http`, or `sse` |
+| `--transport <TYPE>` | `stdio` | Transport: `stdio`, `http`, or `sse` (`sse` needs `--allow-deprecated-sse`) |
 | `--host <HOST>` | `127.0.0.1` | Host for HTTP/SSE transports |
 | `--port <PORT>` | `8000` | Port for HTTP/SSE transports (1-65535) |
 | `--explorer` | off | Enable browser-based Tool Explorer UI (HTTP only) |
 | `--modules-dir <DIR>` | `~/.apexe/modules/` | Directory containing binding files |
 | `--name <NAME>` | `apexe` | MCP server name |
 | `--show-config <TARGET>` | - | Print config snippet: `claude-desktop` or `cursor` |
+| `--prefix <PREFIX>` | - | Serve only modules whose id starts with `<PREFIX>` — excluded modules are not callable either |
+| `--tags <TAGS>` | - | Serve only modules carrying every listed tag (comma-separated, AND) |
+| `--acl <PATH>` | - | Path to ACL policy YAML file (the per-caller boundary) |
+| `--auth <MODE>` | per-transport | `token` (default for HTTP/SSE), `jwt`, or `none`. Ignored for stdio |
+| `--auth-token <VALUE>` | `APEXE_AUTH_TOKEN` | Bearer token for `--auth token`; one is generated and printed if unset |
+| `--jwt-secret <VALUE>` | `APEXE_JWT_SECRET` | Signing secret for `--auth jwt` |
+| `--allow-unauthenticated-bind` | off | Acknowledge `--auth none` on a non-loopback bind (otherwise refused) |
+| `--allow-deprecated-sse` | off | Permit `--transport sse` despite its cross-client delivery defect |
+| `--enable-approval` | off | **Deny** every call to a `requires_approval` module — see §9.6 |
+| `--no-logging` | off | Disable structured logging middleware entirely |
+| `--no-log-arguments` | off | Keep operational logging, drop `inputs`/`output` from it |
 | `--no-circuit-breaker` | off | Disable CircuitBreakerMiddleware (on by default) |
 | `--no-retry` | off | Disable RetryMiddleware (on by default; only ever retries idempotent timeouts) |
 | `--metrics` | off | Enable `/metrics` (Prometheus) + `/usage` (JSON) — HTTP/SSE only |
@@ -147,7 +158,8 @@ apexe a2a [OPTIONS]
 | `--name <NAME>` | `apexe` | A2A agent name |
 | `--explorer` | off | Enable browser-based Explorer UI |
 | `--acl <PATH>` | - | Path to ACL policy YAML file |
-| `--no-logging` | off | Disable structured logging middleware |
+| `--no-logging` | off | Disable structured logging middleware entirely |
+| `--no-log-arguments` | off | Keep operational logging, drop `inputs`/`output` from it |
 | `--no-circuit-breaker` | off | Disable CircuitBreakerMiddleware (on by default) |
 | `--no-retry` | off | Disable RetryMiddleware (on by default; only ever retries idempotent timeouts) |
 | `--execution-timeout <SECS>` | `300` | Per-task execution timeout in seconds |
@@ -156,7 +168,13 @@ apexe a2a [OPTIONS]
 > **No `--enable-approval` on `apexe a2a`.** A2A has no interactive elicitation
 > transport, so an approval prompt can never be resolved over it; the flag would
 > only ever error. Approval on A2A is a library-only feature — construct
-> `A2aServerBuilder` with an `ApprovalStore`. `apexe serve` keeps `--enable-approval`.
+> `A2aServerBuilder` with an `ApprovalStore`. `apexe serve` keeps
+> `--enable-approval`, but note that there it is an unconditional **deny** gate
+> rather than a prompt — see §9.6.
+
+> **`apexe a2a` has no transport authentication.** The `--auth*` flags are
+> `apexe serve` only. Bind A2A to loopback, or put it behind a reverse proxy
+> that authenticates.
 
 ```bash
 apexe a2a                                       # http://127.0.0.1:8000
@@ -456,9 +474,37 @@ Destructive modules (`annotations.destructive == true`) implement apcore's `Modu
 - **`HealthOnlyCircuitBreaker`** — short-circuits calls to a `(module_id, caller)` pair after repeated failures (default: ≥5 samples, ≥50% error rate), instead of letting every caller keep hammering a hanging or broken CLI tool. Auto-recovers after a cooldown window via a single probe call. Only outcomes that say the *wrapped binary* is unhealthy feed the window — spawn failure, timeout, signal death, internal error. Input-validation rejections, conflict refusals and governance decisions (ACL denial, approval denied/timeout/pending, cancellation, depth and frequency limits) do **not** count: the module was reachable and enforced its contract exactly as designed, and schema trial-and-error is the normal behaviour of an LLM caller. Counting those meant five malformed calls disabled a tool for every caller while a binary that failed every time kept its circuit closed.
 - **`RetryMiddleware`** — retries a call after a transient failure, but *only* when the error is explicitly marked `retryable`. `CliModule` marks a timeout `retryable` **only when the module is annotated `idempotent`** (§8) — a killed non-idempotent command (e.g. `rm -rf` timing out mid-delete) is never auto-retried, since it may have partially applied its side effect.
 
-### 9.6 Pluggable Approval Store (Library Only)
+### 9.6 Approval: `--enable-approval` is a deny gate, not a prompt
 
-By default, `--enable-approval` uses apcore-mcp's `ElicitationApprovalHandler`: a call to a `requires_approval` module blocks until the connected MCP client's user responds to an elicitation prompt. For approval flows where the approver isn't in the MCP session (e.g. a Slack bot), `apexe`'s `ExecutorOptions`/`McpServerBuilder`/`A2aServerBuilder` accept an `Arc<dyn apcore_mcp::ApprovalStore>` — when set, approvals become non-blocking (`StorageBackedApprovalHandler`): the call returns an `ApprovalPending` error immediately, and a separate mechanism you build resolves the decision later via `ApprovalStore::resolve`.
+On a CLI-launched server, `--enable-approval` **denies every call to a module
+annotated `requires_approval`**. It does not prompt anyone. Read that before
+turning it on: enabling it bricks every gated tool.
+
+Why: apcore-mcp's `ElicitationApprovalHandler` needs an `ElicitCallback`, and
+that callback only exists inside apcore-mcp's own router, in a side-channel map
+of `Box<dyn Any>`. The `ApprovalRequest` that reaches an externally-constructed
+`ApprovalHandler` carries only the JSON `Context`, which holds the string
+`"available"` rather than the callback itself — apcore-mcp documents this as a
+Rust-specific limitation. There is no path from a handler apexe can build to the
+transport, so no interactive approval is possible from `apexe serve`.
+
+apexe therefore installs its own `DenyApprovalHandler`, which says exactly that
+in the rejection reason and logs a warning at startup, rather than returning an
+opaque "No elicitation callback available". For a real per-caller boundary, use
+`--acl` (§9.2), which is enforced on `tools/call`.
+
+For approval flows where the approver isn't in the session (e.g. a Slack bot),
+`apexe`'s `ExecutorOptions`/`McpServerBuilder`/`A2aServerBuilder` accept an
+`Arc<dyn apcore_mcp::ApprovalStore>` — when set, approvals become non-blocking
+(`StorageBackedApprovalHandler`): the call returns an `ApprovalPending` error
+immediately, and a separate mechanism you build resolves the decision later via
+`ApprovalStore::resolve`.
+
+> **Known limitation.** `requires_approval` is derived from whether a tool's
+> *help text* mentions a flag in `APPROVAL_FLAGS`, not from the arguments a
+> caller actually sent. So `cli.git.log` is gated (because `git log` accepts
+> `--all`) while `cli.ssh` and `cli.curl` are not. Evaluating the gate against
+> the rendered argv is tracked separately.
 
 There is no CLI flag for this — `apcore-mcp`'s `InMemoryApprovalStore` is documented as unsuitable for production (state isn't shared across process invocations, so a hypothetical `apexe approval resolve` command couldn't reach a running server's store anyway). Embed apexe as a library and supply your own persistent store (Redis, a database, etc.) to use this for real.
 
@@ -472,16 +518,71 @@ There is no CLI flag for this — `apcore-mcp`'s `InMemoryApprovalStore` is docu
 |-----------|----------|---------|
 | **stdio** | Claude Desktop, Cursor (default) | `apexe serve` |
 | **streamable-http** | Remote agents, browser UI | `apexe serve --transport http --port 8000` |
-| **sse** | Server-Sent Events transport | `apexe serve --transport sse --port 8000` |
+| **sse** | ⚠️ Deprecated, refused by default | `apexe serve --transport sse --allow-deprecated-sse` |
+
+> **`--transport sse` is refused unless you pass `--allow-deprecated-sse`.**
+> apcore-mcp's SSE handler shares one process-global channel across every
+> connection, so responses are delivered round-robin to whichever stream is
+> next: with two clients connected, **one client receives the other's tool
+> output**. It also silently drops one queued message per past disconnect
+> (while still answering `202 Accepted`), and never emits the `event: endpoint`
+> a spec-compliant MCP SSE client waits for. Streamable HTTP
+> (`--transport http`) is unaffected — verified with 50 concurrent
+> `tools/call`s and zero id mismatches. Use SSE only with a single concurrent
+> connection, if at all.
+
+### Transport Authentication
+
+The three transports have different trust boundaries, so they get different
+defaults:
+
+| Transport / bind | Default | Why |
+|---|---|---|
+| **stdio** | no auth | The boundary is the parent/child process relationship — whatever can spawn apexe already holds your privileges. A token adds nothing and would break every Claude Desktop / Cursor config. |
+| **HTTP/SSE on `127.0.0.1`** | bearer token, **generated and printed at startup** | Any local process can reach the port, including a page in your browser. You should not have to manage a secret for a local dev server. |
+| **HTTP/SSE on any other host** | authentication required | apexe wraps arbitrary local binaries. An unauthenticated non-loopback bind is a remote-execution entry point for every executable on the host. |
+
+```bash
+apexe serve --transport http                              # token generated + printed
+apexe serve --transport http --auth-token "$MY_TOKEN"     # or APEXE_AUTH_TOKEN
+apexe serve --transport http --auth jwt --jwt-secret "$S" # or APEXE_JWT_SECRET
+apexe serve --transport http --auth none                  # loopback only
+apexe serve --transport http --host 0.0.0.0 --auth none \
+            --allow-unauthenticated-bind                  # states that you mean it
+```
+
+Clients send `Authorization: Bearer <token>`. The Explorer UI's `Authorization`
+field is wired to this — browsing (GET) is open, execution (POST, including
+`POST /explorer/tools/{tool}/call`) requires the credential.
+
+`/health` is exempt so container and load-balancer probes work. `/metrics` is
+**not** exempt: its `module_id` labels and per-module call volumes are
+reconnaissance about what this host wraps and what actually gets used.
+
+`--auth none` on a non-loopback bind refuses to start without the separate
+`--allow-unauthenticated-bind` acknowledgement — a `--disable-*` flag gets
+copied out of a tutorial once and then lives in everyone's startup script
+forever.
 
 ### Built-in Middleware
 
 | Middleware | Status | Effect |
 |-----------|--------|--------|
-| **LoggingMiddleware** | Enabled by default | Structured logging of inputs/outputs with sensitive field redaction |
+| **LoggingMiddleware** | Enabled by default | Structured logging of inputs/outputs, redacting properties the scanner marked `x-sensitive` — see below |
 | **CircuitBreakerMiddleware** | Enabled by default (`--no-circuit-breaker`) | Short-circuits a hanging/broken tool — see §9.5 |
 | **RetryMiddleware** | Enabled by default (`--no-retry`) | Retries idempotent timeouts only — see §9.5 |
-| **ElicitationApprovalHandler** | Opt-in (`--enable-approval`) | Sends approval request to MCP client for destructive commands |
+| **DenyApprovalHandler** | Opt-in (`--enable-approval`) | Denies every call to a `requires_approval` module — see §9.6 |
+
+> **Credentials in tool arguments.** The logging middleware records each call's
+> `inputs` and `output` at INFO. Redaction is schema-driven: the scanner marks
+> credential-bearing options (`curl --user`, `--oauth2-bearer`, `--header`, key
+> and certificate paths, and their equivalents) with `x-sensitive: true`, and
+> those values are replaced before anything is written. A heuristic cannot be
+> exhaustive over every wrapped tool's option set, so if you pass secrets
+> through options apexe may not recognize, run with `--no-log-arguments`: it
+> keeps the operational record (module, caller, duration, error) and drops the
+> payload entirely. `--no-logging` remains available to drop logging altogether.
+> The `audit.jsonl` trail records no raw argument values in any case.
 
 ### Observability
 
@@ -494,7 +595,16 @@ There is no CLI flag for this — `apcore-mcp`'s `InMemoryApprovalStore` is docu
 
 ### Tool Filtering
 
-The `McpServerBuilder` API supports filtering which tools are exposed:
+`--tags` and `--prefix` (and their `McpServerBuilder` equivalents) restrict
+which scanned modules the server exposes. The filter is applied at
+**registration** time, so an excluded module is not merely absent from
+`tools/list` — it does not exist on this server at all, and `tools/call`,
+`resources/list` and `resources/read` all return `ModuleNotFound` for it.
+
+```bash
+apexe serve --prefix cli.git            # a git-only server
+apexe serve --tags readonly             # every listed tag must match (AND)
+```
 
 ```rust
 McpServerBuilder::new()
@@ -502,6 +612,9 @@ McpServerBuilder::new()
     .prefix("cli.git")                       // only expose git tools
     .build()?;
 ```
+
+This is coarse-grained: it selects a subset of the tool surface for everyone.
+For per-caller rules, use `--acl` (§9.2).
 
 ### Explorer UI
 
@@ -536,6 +649,7 @@ subprocess isolation behave identically regardless of which transport a caller
 uses. Human-in-the-loop **approval** is the one exception: `apexe serve` offers
 `--enable-approval` (MCP elicitation), but A2A has no elicitation transport, so
 approval on A2A is library-only (supply an `ApprovalStore` to `A2aServerBuilder`).
+Transport authentication (§10) is likewise `apexe serve` only.
 
 ```bash
 apexe a2a                                       # http://127.0.0.1:8000

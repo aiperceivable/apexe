@@ -476,6 +476,7 @@ impl ScanOrchestrator {
                         examples: vec![],
                         help_format: crate::models::HelpFormat::Unknown,
                         structured_output: crate::models::StructuredOutputInfo::default(),
+                        end_of_options: false,
                         raw_help: String::new(),
                     });
                     tool.warnings.push(format!(

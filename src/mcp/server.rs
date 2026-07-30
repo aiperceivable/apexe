@@ -1,10 +1,22 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use apcore::{ErrorCode, Executor, ModuleError};
 use apcore_mcp::{APCoreMCP, ApprovalStore, BackendSource};
 use serde_json::Value;
 
-use crate::module::{build_executor, ExecutorOptions};
+use crate::auth::{resolve_auth, AuthOptions, ResolvedAuth};
+use crate::module::{build_executor, ExecutorOptions, ModuleFilter};
+
+/// Paths served without a credential when authentication is on.
+///
+/// Only `/health`: container and load-balancer probes need it and it reveals
+/// nothing. `/metrics` is deliberately absent — apcore-mcp's middleware exempts
+/// it by default, but its `module_id` labels and per-module call volumes are
+/// reconnaissance about what this host wraps and what actually gets used.
+fn exempt_paths() -> HashSet<String> {
+    HashSet::from(["/health".to_string()])
+}
 
 /// Builder for creating an MCP server from apexe's scanned CLI modules.
 ///
@@ -31,8 +43,17 @@ pub struct McpServerBuilder {
     audit_path: Option<std::path::PathBuf>,
     /// Enable LoggingMiddleware for structured execution logging.
     enable_logging: bool,
-    /// Enable ElicitationApprovalHandler for destructive command approval.
+    /// Include call arguments and output in the structured log. See
+    /// [`ExecutorOptions::log_arguments`](crate::module::ExecutorOptions::log_arguments).
+    log_arguments: bool,
+    /// Deny calls to modules annotated `requires_approval`. See
+    /// [`DenyApprovalHandler`](crate::module::DenyApprovalHandler).
     enable_approval: bool,
+    /// Credential required on the HTTP-family transports. See [`crate::auth`].
+    auth: AuthOptions,
+    /// Permit the deprecated SSE transport despite its known cross-client
+    /// response delivery defect. See [`Self::resolve_transport`].
+    allow_deprecated_sse: bool,
     /// Enable CircuitBreakerMiddleware (short-circuit a hanging/broken tool).
     enable_circuit_breaker: bool,
     /// Enable RetryMiddleware (retries only ever fire on idempotent timeouts).
@@ -65,7 +86,10 @@ impl McpServerBuilder {
             acl_path: None,
             audit_path: None,
             enable_logging: true,
+            log_arguments: true,
             enable_approval: false,
+            auth: AuthOptions::default(),
+            allow_deprecated_sse: false,
             enable_circuit_breaker: true,
             enable_retry: true,
             enable_metrics: false,
@@ -151,9 +175,32 @@ impl McpServerBuilder {
         self
     }
 
-    /// Enable ElicitationApprovalHandler for destructive commands.
+    /// Include call arguments and output in the structured log (default:
+    /// enabled). Turning this off keeps the operational record and drops the
+    /// payload, which is where a wrapped tool's credential options end up.
+    pub fn log_arguments(mut self, enabled: bool) -> Self {
+        self.log_arguments = enabled;
+        self
+    }
+
+    /// Deny every call to a module annotated `requires_approval` (default:
+    /// disabled). Interactive approval is not reachable from a CLI-launched
+    /// server; see [`DenyApprovalHandler`](crate::module::DenyApprovalHandler).
     pub fn enable_approval(mut self, enabled: bool) -> Self {
         self.enable_approval = enabled;
+        self
+    }
+
+    /// Set the credential required on the HTTP-family transports. Ignored for
+    /// stdio. See [`crate::auth`] for the per-transport defaults.
+    pub fn auth(mut self, options: AuthOptions) -> Self {
+        self.auth = options;
+        self
+    }
+
+    /// Permit `--transport sse` despite its known defects (default: refused).
+    pub fn allow_deprecated_sse(mut self, allowed: bool) -> Self {
+        self.allow_deprecated_sse = allowed;
         self
     }
 
@@ -204,8 +251,16 @@ impl McpServerBuilder {
             modules_dir: self.modules_dir.as_deref(),
             timeout_ms: self.timeout_ms,
             acl_path: self.acl_path.as_deref(),
+            // The filter is applied at registration rather than being handed to
+            // apcore-mcp, which only applies it to `tools/list`. See
+            // [`ModuleFilter`].
+            filter: ModuleFilter {
+                prefix: self.prefix.clone(),
+                tags: self.tags.clone(),
+            },
             audit_path: self.audit_path.as_deref(),
             enable_logging: self.enable_logging,
+            log_arguments: self.log_arguments,
             enable_approval: self.enable_approval,
             enable_circuit_breaker: self.enable_circuit_breaker,
             enable_retry: self.enable_retry,
@@ -214,12 +269,39 @@ impl McpServerBuilder {
     }
 
     /// Map the user-facing transport name to the apcore-mcp transport string.
+    ///
+    /// `sse` is refused unless explicitly permitted. apcore-mcp's SSE handler
+    /// shares one process-global channel across every connection, so responses
+    /// are delivered round-robin to whichever stream is next: with two clients
+    /// connected, one receives the other's tool output. It also drops one
+    /// queued message per past disconnect while still answering
+    /// `202 Accepted`, and never emits the `event: endpoint` a spec-compliant
+    /// MCP SSE client waits for. The framework itself logs
+    /// `SSE transport is deprecated` at startup; given the confidentiality
+    /// impact, refusing by default is the honest reading of that. Streamable
+    /// HTTP (`--transport http`) is unaffected.
     #[allow(clippy::result_large_err)]
     fn resolve_transport(&self) -> Result<&'static str, ModuleError> {
         match self.transport.as_str() {
             "stdio" => Ok("stdio"),
             "http" => Ok("streamable-http"),
-            "sse" => Ok("sse"),
+            "sse" if self.allow_deprecated_sse => {
+                tracing::warn!(
+                    "SSE transport enabled despite a known confidentiality defect: with more \
+                     than one concurrent connection, one client receives another client's tool \
+                     output. Use a single connection only, or switch to --transport http."
+                );
+                Ok("sse")
+            }
+            "sse" => Err(ModuleError::new(
+                ErrorCode::GeneralInvalidInput,
+                "The SSE transport is deprecated and unsafe with more than one concurrent \
+                 connection: responses are delivered round-robin across every open stream, so \
+                 one client receives another client's tool output. Use `--transport http` \
+                 (streamable HTTP), which is unaffected. If you accept the risk on a \
+                 single-client server, pass `--allow-deprecated-sse`."
+                    .to_string(),
+            )),
             other => Err(ModuleError::new(
                 ErrorCode::GeneralInvalidInput,
                 format!("Unsupported transport: {other}"),
@@ -243,6 +325,8 @@ impl McpServerBuilder {
 
         let effective_approval_store =
             Self::effective_approval_store(self.enable_approval, &self.approval_store);
+        let auth = resolve_auth(&self.transport, &self.host, &self.auth)?;
+        Self::announce_auth(&auth, &self.host, self.port);
 
         let mut builder = APCoreMCP::builder()
             .backend(BackendSource::Executor(executor))
@@ -251,11 +335,20 @@ impl McpServerBuilder {
             .host(&self.host)
             .port(self.port)
             .validate_inputs(self.validate_inputs)
+            .require_auth(auth.require_auth())
+            .exempt_paths(exempt_paths())
             .observability(self.enable_metrics && transport != "stdio");
 
+        if let Some(authenticator) = auth.authenticator() {
+            builder = builder.authenticator_arc(authenticator);
+        }
         if self.explorer {
             builder = builder.include_explorer(true);
         }
+        // The filter is already enforced in the registry (see
+        // `executor_options`), so nothing excluded reaches apcore-mcp at all.
+        // Handing it the same values keeps its own listing path consistent with
+        // ours rather than relying on the registry being pre-filtered.
         if let Some(tags) = self.tags {
             builder = builder.tags(tags);
         }
@@ -278,6 +371,34 @@ impl McpServerBuilder {
                 format!("Failed to build MCP server: {e}"),
             )
         })
+    }
+
+    /// Tell the operator what credential the server expects.
+    ///
+    /// A generated token is only useful if it is visible, so it is emitted at
+    /// `info` — the level a server run at defaults actually prints. A token
+    /// supplied by the operator is never echoed back.
+    fn announce_auth(auth: &ResolvedAuth, host: &str, port: u16) {
+        match auth {
+            ResolvedAuth::Disabled => {}
+            ResolvedAuth::Token {
+                token, generated, ..
+            } => {
+                if *generated {
+                    tracing::info!(
+                        "Bearer token authentication enabled. Connect to http://{host}:{port} \
+                         with header:\n    Authorization: Bearer {token}\n\
+                         Pass --auth-token or set APEXE_AUTH_TOKEN to pin your own value, or \
+                         --auth none to disable."
+                    );
+                } else {
+                    tracing::info!("Bearer token authentication enabled (token supplied)");
+                }
+            }
+            ResolvedAuth::Jwt { .. } => {
+                tracing::info!("JWT authentication enabled");
+            }
+        }
     }
 
     /// Whether `approval_store` should actually be threaded into
@@ -515,6 +636,75 @@ mod tests {
         // silently ignored rather than producing an inconsistent server.
         let result = McpServerBuilder::new().approval_store(store).build();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_mcp_server_builder_refuses_sse_by_default() {
+        // Regression for #27: SSE shares one process-global channel across
+        // every connection, so one client receives another's tool output.
+        let result = McpServerBuilder::new().transport("sse").build();
+        let err = result.err().expect("sse must be refused by default");
+        assert_eq!(err.code, ErrorCode::GeneralInvalidInput);
+        assert!(
+            err.message.contains("--allow-deprecated-sse"),
+            "error should name the opt-out: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn test_mcp_server_builder_allows_sse_when_acknowledged() {
+        let result = McpServerBuilder::new()
+            .transport("sse")
+            .allow_deprecated_sse(true)
+            .build();
+        assert!(
+            result.is_ok(),
+            "acknowledged sse should build: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_mcp_server_builder_refuses_unauthenticated_public_bind() {
+        // Regression for #31: an unauthenticated non-loopback bind exposes
+        // every wrapped binary on the host.
+        use crate::auth::{AuthMode, AuthOptions};
+        let result = McpServerBuilder::new()
+            .transport("http")
+            .host("0.0.0.0")
+            .auth(AuthOptions {
+                mode: Some(AuthMode::None),
+                ..AuthOptions::default()
+            })
+            .build();
+        assert!(
+            result.is_err(),
+            "--auth none on a public bind must refuse to start"
+        );
+    }
+
+    #[test]
+    fn test_mcp_server_builder_stdio_needs_no_auth() {
+        // stdio's boundary is the parent/child process relationship; requiring
+        // a token there would break every desktop MCP client config.
+        let result = McpServerBuilder::new().transport("stdio").build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_exempt_paths_covers_health_but_not_metrics() {
+        let paths = exempt_paths();
+        assert!(paths.contains("/health"));
+        assert!(
+            !paths.contains("/metrics"),
+            "/metrics exposes module_id labels and call volumes"
+        );
+    }
+
+    #[test]
+    fn test_mcp_server_builder_log_arguments_default_enabled() {
+        assert!(McpServerBuilder::new().log_arguments);
     }
 
     #[test]
