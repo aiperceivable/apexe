@@ -117,8 +117,10 @@ impl A2aServerBuilder {
     }
 
     /// Include call arguments and output in the structured log (default:
-    /// enabled). Turning this off keeps the operational record and drops the
-    /// payload, which is where a wrapped tool's credential options end up.
+    /// enabled). Turning this off drops the payload from every log event, the
+    /// error record included, and swaps in a payload-free failure record so a
+    /// refused call is still announced. See
+    /// [`ExecutorOptions::log_arguments`](crate::module::ExecutorOptions::log_arguments).
     pub fn log_arguments(mut self, enabled: bool) -> Self {
         self.log_arguments = enabled;
         self

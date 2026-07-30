@@ -240,7 +240,7 @@ apexe serve --transport http --metrics                # + /metrics (Prometheus) 
 apexe serve --no-circuit-breaker --no-retry           # Disable resilience middleware
 apexe serve --transport http --auth-token "$TOKEN"    # Pin the bearer token (else one is generated)
 apexe serve --prefix cli.git                          # Serve only git tools (not listed AND not callable)
-apexe serve --no-log-arguments                        # Keep operational logs, drop argument payloads
+apexe serve --no-log-arguments                        # Drop argument payloads from every log event, errors included
 ```
 
 > HTTP/SSE transports require a bearer token by default; a token is generated

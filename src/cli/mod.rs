@@ -351,9 +351,12 @@ pub struct ServeArgs {
     #[arg(long)]
     pub no_logging: bool,
 
-    /// Keep operational logging but drop call arguments and output from it.
-    /// Credentials passed as tool arguments are otherwise logged at INFO
-    /// unless the scanner recognized the option as sensitive.
+    /// Drop call arguments and output from every log event, error records
+    /// included. Credentials passed as tool arguments are otherwise logged at
+    /// INFO unless the scanner recognized the option as sensitive, and the
+    /// schema-driven redaction cannot cover a `--data` body or a key in a URL.
+    /// A failed call still produces one ERROR record naming the module, caller,
+    /// error code and duration -- it just carries nothing the caller sent.
     #[arg(long)]
     pub no_log_arguments: bool,
 
@@ -522,9 +525,12 @@ pub struct A2aArgs {
     #[arg(long)]
     pub no_logging: bool,
 
-    /// Keep operational logging but drop call arguments and output from it.
-    /// Credentials passed as tool arguments are otherwise logged at INFO
-    /// unless the scanner recognized the option as sensitive.
+    /// Drop call arguments and output from every log event, error records
+    /// included. Credentials passed as tool arguments are otherwise logged at
+    /// INFO unless the scanner recognized the option as sensitive, and the
+    /// schema-driven redaction cannot cover a `--data` body or a key in a URL.
+    /// A failed call still produces one ERROR record naming the module, caller,
+    /// error code and duration -- it just carries nothing the caller sent.
     #[arg(long)]
     pub no_log_arguments: bool,
 

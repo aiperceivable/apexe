@@ -129,7 +129,7 @@ apexe serve [OPTIONS]
 | `--allow-deprecated-sse` | off | Permit `--transport sse` despite its cross-client delivery defect |
 | `--enable-approval` | off | **Deny** every call to a `requires_approval` module — see §9.6 |
 | `--no-logging` | off | Disable structured logging middleware entirely |
-| `--no-log-arguments` | off | Keep operational logging, drop `inputs`/`output` from it |
+| `--no-log-arguments` | off | Drop `inputs`/`output` from every log event, error records included; failures keep a payload-free record |
 | `--no-circuit-breaker` | off | Disable CircuitBreakerMiddleware (on by default) |
 | `--no-retry` | off | Disable RetryMiddleware (on by default; only ever retries idempotent timeouts) |
 | `--metrics` | off | Enable `/metrics` (Prometheus) + `/usage` (JSON) — HTTP/SSE only |
@@ -159,7 +159,7 @@ apexe a2a [OPTIONS]
 | `--explorer` | off | Enable browser-based Explorer UI |
 | `--acl <PATH>` | - | Path to ACL policy YAML file |
 | `--no-logging` | off | Disable structured logging middleware entirely |
-| `--no-log-arguments` | off | Keep operational logging, drop `inputs`/`output` from it |
+| `--no-log-arguments` | off | Drop `inputs`/`output` from every log event, error records included; failures keep a payload-free record |
 | `--no-circuit-breaker` | off | Disable CircuitBreakerMiddleware (on by default) |
 | `--no-retry` | off | Disable RetryMiddleware (on by default; only ever retries idempotent timeouts) |
 | `--execution-timeout <SECS>` | `300` | Per-task execution timeout in seconds |
@@ -588,6 +588,7 @@ forever.
 | Middleware | Status | Effect |
 |-----------|--------|--------|
 | **LoggingMiddleware** | Enabled by default | Structured logging of inputs/outputs, redacting properties the scanner marked `x-sensitive` — see below |
+| **FailureLogMiddleware** | Automatic with `--no-log-arguments` | One payload-free `ERROR` record per failed call — see below |
 | **CircuitBreakerMiddleware** | Enabled by default (`--no-circuit-breaker`) | Short-circuits a hanging/broken tool — see §9.5 |
 | **RetryMiddleware** | Enabled by default (`--no-retry`) | Retries idempotent timeouts only — see §9.5 |
 | **DenyApprovalHandler** | Opt-in (`--enable-approval`) | Denies every call to a `requires_approval` module — see §9.6 |
@@ -597,11 +598,24 @@ forever.
 > credential-bearing options (`curl --user`, `--oauth2-bearer`, `--header`, key
 > and certificate paths, and their equivalents) with `x-sensitive: true`, and
 > those values are replaced before anything is written. A heuristic cannot be
-> exhaustive over every wrapped tool's option set, so if you pass secrets
-> through options apexe may not recognize, run with `--no-log-arguments`: it
-> keeps the operational record (module, caller, duration, error) and drops the
-> payload entirely. `--no-logging` remains available to drop logging altogether.
-> The `audit.jsonl` trail records no raw argument values in any case.
+> exhaustive over every wrapped tool's option set — a request body (`curl
+> --data`) and a key sitting in a URL's query string announce themselves in no
+> schema — so if you pass secrets through options apexe may not recognize, run
+> with `--no-log-arguments`.
+>
+> `--no-log-arguments` drops the payload from **every** log event, the error
+> record included. That matters because apcore's error record renders the same
+> partially-redacted argument object as the `START` line, so a call rejected by
+> schema validation used to print the body a successful call would have hidden.
+> The operational record survives in a different shape: apexe installs its own
+> `FailureLogMiddleware`, which emits one `ERROR` per failed call carrying
+> `module_id`, `trace_id`, `caller_id`, `error_code` and `duration_ms` — and
+> nothing the caller sent, not even the error message, since a validation
+> message quotes the value it rejected. So a refusal is still visible, and
+> `error_code` is what an alert keys on.
+>
+> `--no-logging` remains available to drop logging altogether, failure records
+> included. The `audit.jsonl` trail records no raw argument values in any case.
 
 ### Observability
 

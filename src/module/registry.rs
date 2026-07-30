@@ -14,7 +14,9 @@ use apcore::{Config, ErrorCode, Executor, ModuleError, Registry};
 use apcore_mcp::{ApprovalStore, StorageBackedApprovalHandler};
 use apcore_toolkit::ScannedModule;
 
-use crate::module::{CliModule, DenyApprovalHandler, HealthOnlyCircuitBreaker};
+use crate::module::{
+    CliModule, DenyApprovalHandler, FailureLogMiddleware, HealthOnlyCircuitBreaker,
+};
 use crate::output::load_modules_from_dir;
 
 /// Which subset of the scanned modules a server exposes.
@@ -84,13 +86,20 @@ pub struct ExecutorOptions<'a> {
     /// option set, and neither a request body (`curl --data`) nor a key in a
     /// URL's query string announces itself in any schema.
     ///
-    /// Turning this off drops the payload without losing the operational
-    /// record: `CliModule` emits its own per-call `tracing` events carrying
-    /// `module_id`, `trace_id`, caller, `exit_code` and `duration_ms`, and the
-    /// audit trail is unaffected (it never held raw argument values). What is
-    /// lost is apcore's `START`/`Completed` pair, which exists to carry
-    /// `inputs=`/`output=`. So an operator no longer has to choose between
-    /// logging credentials and logging nothing.
+    /// Turning this off suppresses every apcore log event that carries a
+    /// payload — the `START`/`END` pair *and* the `ERROR` record, whose
+    /// `inputs=` field is the same partially-redacted argument object and was
+    /// therefore the same leak. What replaces the error record is
+    /// [`FailureLogMiddleware`], which states `module_id`, `trace_id`,
+    /// `caller_id`, `error_code` and `duration_ms` and can carry nothing the
+    /// caller sent. A refused call — an ACL denial, a schema rejection, a
+    /// timeout — still produces exactly one `ERROR`-level record either way.
+    ///
+    /// The rest of the operational picture is unaffected: `CliModule` emits its
+    /// own per-call `tracing` events carrying `module_id`, `trace_id`, caller,
+    /// `exit_code` and `duration_ms`, and the audit trail never held raw
+    /// argument values in the first place. So an operator does not have to
+    /// choose between logging credentials and logging nothing.
     pub log_arguments: bool,
     pub enable_approval: bool,
     /// Short-circuit calls to a (module, caller) pair after repeated
@@ -163,12 +172,7 @@ pub fn build_executor(opts: &ExecutorOptions<'_>) -> Result<Arc<Executor>, Modul
     let mut executor = Executor::new(registry, Config::default());
 
     if opts.enable_logging {
-        // (log_inputs, log_outputs, log_errors) — errors always logged; the
-        // payload is what `log_arguments` governs. See `log_arguments`.
-        let logging = LoggingMiddleware::new(opts.log_arguments, opts.log_arguments, true);
-        if let Err(e) = executor.use_middleware(Box::new(logging)) {
-            tracing::warn!(error = %e, "Failed to add LoggingMiddleware");
-        }
+        install_logging_middleware(&executor, opts.log_arguments);
     }
 
     if opts.enable_circuit_breaker {
@@ -250,6 +254,40 @@ pub fn build_executor(opts: &ExecutorOptions<'_>) -> Result<Arc<Executor>, Modul
     }
 
     Ok(Arc::new(executor))
+}
+
+/// Install the structured-logging middleware appropriate to `log_arguments`.
+///
+/// `log_arguments` governs all three of apcore's flags, error logging included.
+/// Its `on_error` hook renders `inputs = ?redacted_inputs`, and that redaction
+/// is schema-driven: it masks the properties the scanner marked `x-sensitive`
+/// and nothing else, so a `curl --data` body or a key in a URL query string
+/// survives it intact. Leaving that hook on when the operator asked for the
+/// payload to be dropped meant `--no-log-arguments` mitigated the leak on the
+/// success path and not on the error path — which is where a rejected call
+/// carrying a malformed secret lands.
+///
+/// Suppressing it alone would have cost the operational record: apcore's
+/// `on_error` is the only thing that announces a call refused by the ACL, the
+/// approval gate or schema validation, none of which reach `CliModule` at all.
+/// [`FailureLogMiddleware`] takes that job over with a field set that cannot
+/// carry a payload, so the two configurations differ in what the `ERROR` record
+/// contains and never in whether there is one.
+fn install_logging_middleware(executor: &Executor, log_arguments: bool) {
+    // (log_inputs, log_outputs, log_errors) — all three are the payload.
+    let logging = LoggingMiddleware::new(log_arguments, log_arguments, log_arguments);
+    if let Err(e) = executor.use_middleware(Box::new(logging)) {
+        tracing::warn!(error = %e, "Failed to add LoggingMiddleware");
+    }
+    if log_arguments {
+        return;
+    }
+    if let Err(e) = executor.use_middleware(Box::new(FailureLogMiddleware::new())) {
+        tracing::warn!(
+            error = %e,
+            "Failed to add FailureLogMiddleware; failed calls will not be logged"
+        );
+    }
 }
 
 /// Load `ScannedModule`s from the configured modules directory.
@@ -409,6 +447,53 @@ mod tests {
         YamlOutput::without_verification()
             .write(&[git, cp], dir, false)
             .unwrap();
+    }
+
+    #[test]
+    fn test_log_arguments_off_swaps_in_the_payload_free_failure_log() {
+        // Regression: `log_errors` was hardcoded `true`, so apcore's on_error
+        // kept rendering `inputs = ?redacted_inputs` — the whole argument
+        // object with only `x-sensitive` properties masked — after the operator
+        // passed --no-log-arguments. The payload-bearing middleware has to go
+        // silent and the payload-free one has to take over, in one step.
+        let executor = Executor::new(Registry::new(), Config::default());
+        install_logging_middleware(&executor, false);
+
+        let installed = executor.middlewares();
+        assert!(
+            installed.iter().any(|name| name == "apexe_failure_log"),
+            "a refused call must still produce an ERROR record; got {installed:?}"
+        );
+    }
+
+    #[test]
+    fn test_log_arguments_on_keeps_apcores_record_and_adds_no_second_one() {
+        // The default configuration must not log two ERROR lines per failure.
+        let executor = Executor::new(Registry::new(), Config::default());
+        install_logging_middleware(&executor, true);
+
+        let installed = executor.middlewares();
+        assert!(installed.iter().any(|name| name == "logging"));
+        assert!(
+            !installed.iter().any(|name| name == "apexe_failure_log"),
+            "apcore already logs the failure here; got {installed:?}"
+        );
+    }
+
+    #[test]
+    fn test_no_logging_installs_neither_logging_middleware() {
+        // `--no-logging` means no logging middleware at all, including the
+        // failure record — that is what the flag has always advertised.
+        let dir = TempDir::new().unwrap();
+        write_two_modules(dir.path());
+        let mut options = opts(Some(dir.path()));
+        options.enable_logging = false;
+        options.log_arguments = false;
+        let executor = build_executor(&options).unwrap();
+
+        let installed = executor.middlewares();
+        assert!(!installed.iter().any(|name| name == "logging"));
+        assert!(!installed.iter().any(|name| name == "apexe_failure_log"));
     }
 
     #[test]
