@@ -175,6 +175,9 @@ pub struct UnmatchedTarget {
     pub effect: String,
     /// The literal pattern as written in the ACL file.
     pub pattern: String,
+    /// `true` when `pattern` is the operand of a `$not`, which inverts what
+    /// "matches nothing" means for the rule — see [`TargetPattern`].
+    pub negated: bool,
     /// Registered module ids that differ from `pattern` only in separator,
     /// case, or leading segments — i.e. the spelling the operator probably
     /// meant. Empty when nothing close is registered.
@@ -215,15 +218,29 @@ impl AclValidationReport {
     /// but are not typos of anything registered.
     pub fn emit_warnings(&self) {
         for target in self.unmatched_targets.iter().filter(|t| !t.is_near_miss()) {
-            tracing::warn!(
-                rule_index = target.rule_index,
-                effect = %target.effect,
-                pattern = %target.pattern,
-                "ACL target matches no registered module — this rule currently \
-                 protects nothing. Harmless if the pattern anticipates a module \
-                 this server does not serve (a glob, or an ACL shared with a \
-                 differently filtered server); a typo otherwise."
-            );
+            if target.negated {
+                tracing::warn!(
+                    rule_index = target.rule_index,
+                    effect = %target.effect,
+                    pattern = %target.pattern,
+                    "ACL `$not` operand matches no registered module, so apcore matches \
+                     this rule against EVERY module rather than none. Under \
+                     first-match-wins an `allow` here nullifies every rule below it. \
+                     Harmless if the operand anticipates a module this server does not \
+                     serve (a glob, or an ACL shared with a differently filtered \
+                     server); a typo otherwise."
+                );
+            } else {
+                tracing::warn!(
+                    rule_index = target.rule_index,
+                    effect = %target.effect,
+                    pattern = %target.pattern,
+                    "ACL target matches no registered module — this rule currently \
+                     protects nothing. Harmless if the pattern anticipates a module \
+                     this server does not serve (a glob, or an ACL shared with a \
+                     differently filtered server); a typo otherwise."
+                );
+            }
         }
     }
 
@@ -268,6 +285,16 @@ fn describe_inert(rule: &InertRule) -> String {
 /// One human-readable line describing a target that is a typo of a registered
 /// module id.
 fn describe_near_miss(target: &UnmatchedTarget) -> String {
+    if target.negated {
+        return format!(
+            "  - rule {} ({}): `$not` operand '{}' matches no registered module, so this rule \
+             applies to every module instead of excluding one; did you mean {}?",
+            target.rule_index,
+            target.effect,
+            target.pattern,
+            target.suggestions.join(" or ")
+        );
+    }
     format!(
         "  - rule {} ({}): target '{}' matches no registered module; did you mean {}?",
         target.rule_index,
@@ -349,15 +376,19 @@ fn collect_unmatched_targets(
     registered_ids: &[String],
     report: &mut AclValidationReport,
 ) {
-    for pattern in target_patterns(&rule.targets) {
-        if registered_ids.iter().any(|id| match_pattern(pattern, id)) {
+    for target in target_patterns(&rule.targets) {
+        if registered_ids
+            .iter()
+            .any(|id| match_pattern(target.pattern, id))
+        {
             continue;
         }
         report.unmatched_targets.push(UnmatchedTarget {
             rule_index,
             effect: rule.effect.clone(),
-            pattern: pattern.to_string(),
-            suggestions: suggest_similar(pattern, registered_ids),
+            pattern: target.pattern.to_string(),
+            negated: target.negated,
+            suggestions: suggest_similar(target.pattern, registered_ids),
         });
     }
 }
@@ -383,6 +414,24 @@ fn never_matches(patterns: &[String]) -> Option<String> {
     }
 }
 
+/// One entry of a `targets` list, with apcore's `$not` sentinel resolved into
+/// the polarity it gives the pattern.
+///
+/// The polarity is not cosmetic: it inverts what "this pattern matches nothing
+/// registered" *means*. Positively, the rule fires for no module and protects
+/// nothing. Under `$not`, apcore evaluates `!match(operand, module_id)`, so an
+/// operand matching nothing makes the rule fire for **every** module — and
+/// under first-match-wins a blanket `allow` there nullifies every deny below
+/// it. Reporting the two the same way told the operator the opposite of what
+/// was happening.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TargetPattern<'a> {
+    /// The module-id pattern, sentinel stripped.
+    pattern: &'a str,
+    /// `true` when `pattern` is the operand of a leading `$not`.
+    negated: bool,
+}
+
 /// The concrete module-id patterns in a `targets` list, with apcore's compound
 /// sentinels stripped.
 ///
@@ -391,11 +440,28 @@ fn never_matches(patterns: &[String]) -> Option<String> {
 /// `$not` operand is never consulted by the matcher, so it is not reported —
 /// flagging it would be a false alarm about a pattern that has no effect either
 /// way.
-fn target_patterns(targets: &[String]) -> Vec<&str> {
+fn target_patterns(targets: &[String]) -> Vec<TargetPattern<'_>> {
+    fn positive(pattern: &str) -> TargetPattern<'_> {
+        TargetPattern {
+            pattern,
+            negated: false,
+        }
+    }
     match targets.first().map(String::as_str) {
-        Some(OR_SENTINEL) => targets[1..].iter().map(String::as_str).collect(),
-        Some(NOT_SENTINEL) => targets.get(1).map(String::as_str).into_iter().collect(),
-        _ => targets.iter().map(String::as_str).collect(),
+        Some(OR_SENTINEL) => targets[1..]
+            .iter()
+            .map(String::as_str)
+            .map(positive)
+            .collect(),
+        Some(NOT_SENTINEL) => targets
+            .get(1)
+            .map(|pattern| TargetPattern {
+                pattern: pattern.as_str(),
+                negated: true,
+            })
+            .into_iter()
+            .collect(),
+        _ => targets.iter().map(String::as_str).map(positive).collect(),
     }
 }
 
@@ -714,6 +780,52 @@ mod tests {
         assert_eq!(report.unmatched_targets.len(), 1);
         assert_eq!(report.unmatched_targets[0].pattern, "cli.git.cat-file");
         assert!(report.is_fatal());
+    }
+
+    #[test]
+    fn test_validate_acl_rules_reports_a_not_operand_as_covering_everything() {
+        // apcore evaluates `$not` as `!match(operand, module_id)`, so an
+        // operand matching nothing makes the rule match EVERY module. The old
+        // diagnostic stripped the sentinel and said "this rule currently
+        // protects nothing" — the exact opposite, about a blanket allow that
+        // under first-match-wins nullifies every deny below it.
+        let report = validate_acl_rules(
+            &[rule(&["$not", "cli.kubectl.apply"], "allow")],
+            &registered(&["cli.cp", "cli.ls"]),
+        );
+        assert_eq!(report.unmatched_targets.len(), 1);
+        let finding = &report.unmatched_targets[0];
+        assert!(finding.negated, "the $not polarity must be carried through");
+        assert_eq!(finding.pattern, "cli.kubectl.apply");
+        // Not a typo of anything registered, so it warns rather than refuses —
+        // the same shared-ACL allowance the positive case gets.
+        assert!(!finding.is_near_miss());
+        assert!(!report.is_fatal());
+    }
+
+    #[test]
+    fn test_validate_acl_rules_refuses_a_near_miss_not_operand() {
+        // The operator meant "every module except cli.git.cat_file" and wrote
+        // the pre-#19 hyphenated spelling, so the one module the rule was
+        // written to carve out is the one it now covers.
+        let report = validate_acl_rules(
+            &[rule(&["$not", "cli.git.cat-file"], "allow")],
+            &registered(&["cli.git.cat_file", "cli.cp"]),
+        );
+        assert_eq!(report.unmatched_targets.len(), 1);
+        assert!(report.unmatched_targets[0].negated);
+        assert!(report.is_fatal());
+
+        let message = report
+            .fatal_error(Path::new("/etc/apexe/acl.yaml"))
+            .expect("a near-miss $not operand must refuse to start")
+            .message;
+        assert!(message.contains("$not"), "{message}");
+        assert!(
+            message.contains("applies to every module"),
+            "the diagnostic must not claim the rule protects nothing: {message}"
+        );
+        assert!(message.contains("cli.git.cat_file"), "{message}");
     }
 
     #[test]
