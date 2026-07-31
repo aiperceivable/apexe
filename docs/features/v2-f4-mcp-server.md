@@ -139,6 +139,11 @@ impl ServeArgs {
             .transport(transport)
             .host(&self.host)
             .port(self.port)
+            // Always true, with no apexe-side toggle: this gates apcore-mcp's
+            // pre-dispatch hook, which calls `McpExecutor::validate` --
+            // unimplemented by `ApcoreExecutorAdapter`, so it never fires.
+            // Real schema validation runs in apcore's `input_validation`
+            // pipeline step inside `Executor::call`.
             .validate_inputs(true);
 
         if self.explorer {

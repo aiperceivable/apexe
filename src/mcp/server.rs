@@ -25,6 +25,16 @@ fn exempt_paths() -> HashSet<String> {
 /// [`build_executor`](crate::module::build_executor), which wraps each as a
 /// `CliModule`, registers them into an apcore `Registry`, and hands the
 /// resulting [`Executor`] to apcore-mcp's [`APCoreMCP`] server.
+///
+/// # There is no `validate_inputs` toggle
+///
+/// Input validation is always on and cannot be turned off — it runs in
+/// apcore's `input_validation` pipeline step inside `Executor::call`, which
+/// apexe never removes. The builder used to expose a `validate_inputs(bool)`
+/// method that forwarded to apcore-mcp's separate pre-dispatch hook; that hook
+/// calls `McpExecutor::validate`, which `ApcoreExecutorAdapter` does not
+/// implement, so the method toggled nothing. `apexe serve --skip-validation`
+/// was deleted for the same reason and the library twin is now gone too.
 pub struct McpServerBuilder {
     name: String,
     /// Value reported as `serverInfo.version` in the `initialize` response.
@@ -34,7 +44,6 @@ pub struct McpServerBuilder {
     host: String,
     port: u16,
     explorer: bool,
-    validate_inputs: bool,
     modules_dir: Option<std::path::PathBuf>,
     timeout_ms: u64,
     /// Filter exposed tools by tags (AND logic).
@@ -83,7 +92,6 @@ impl McpServerBuilder {
             host: "127.0.0.1".to_string(),
             port: 8000,
             explorer: false,
-            validate_inputs: true,
             modules_dir: None,
             timeout_ms: 30_000,
             tags: None,
@@ -139,13 +147,6 @@ impl McpServerBuilder {
     /// Enable or disable the built-in tool explorer UI.
     pub fn explorer(mut self, enabled: bool) -> Self {
         self.explorer = enabled;
-        self
-    }
-
-    /// Enable or disable authentication requirement.
-    /// Enable or disable input validation against tool schemas.
-    pub fn validate_inputs(mut self, enabled: bool) -> Self {
-        self.validate_inputs = enabled;
         self
     }
 
@@ -352,7 +353,17 @@ impl McpServerBuilder {
             .transport(transport)
             .host(&self.host)
             .port(self.port)
-            .validate_inputs(self.validate_inputs)
+            // Left on unconditionally, with no builder method to turn it off.
+            // The hook it gates calls `McpExecutor::validate`, which
+            // apcore-mcp's `ApcoreExecutorAdapter` does not implement, so it
+            // never fires for apexe's backend and there is nothing here for a
+            // caller to toggle. `apexe serve --skip-validation` was deleted
+            // for exactly this reason. Actual schema validation is unaffected:
+            // it runs in apcore's `input_validation` pipeline step inside
+            // `Executor::call`, which apexe never removes. Passing `true`
+            // keeps the safe behaviour in place if a future adapter does
+            // implement the hook.
+            .validate_inputs(true)
             .require_auth(auth.require_auth())
             .exempt_paths(exempt_paths())
             .observability(self.enable_metrics && transport != "stdio");
@@ -510,8 +521,6 @@ mod tests {
         assert_eq!(builder.host, "127.0.0.1");
         assert_eq!(builder.port, 8000);
         assert!(!builder.explorer);
-
-        assert!(builder.validate_inputs);
         assert!(builder.modules_dir.is_none());
         assert_eq!(builder.timeout_ms, 30_000);
     }
@@ -540,7 +549,6 @@ mod tests {
             .host("0.0.0.0")
             .port(9090)
             .explorer(true)
-            .validate_inputs(false)
             .modules_dir("/tmp/modules")
             .timeout_ms(60_000);
 
@@ -549,7 +557,6 @@ mod tests {
         assert_eq!(builder.host, "0.0.0.0");
         assert_eq!(builder.port, 9090);
         assert!(builder.explorer);
-        assert!(!builder.validate_inputs);
         assert_eq!(
             builder.modules_dir,
             Some(std::path::PathBuf::from("/tmp/modules"))

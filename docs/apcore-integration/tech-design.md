@@ -395,6 +395,10 @@ let server = APCoreMCP::builder()
     .transport(&self.transport)
     .host(&self.host)
     .port(self.port)
+    // Always true; apexe exposes no toggle. It gates apcore-mcp's
+    // pre-dispatch hook (`McpExecutor::validate`), which
+    // `ApcoreExecutorAdapter` does not implement. Schema validation
+    // itself lives in apcore's `input_validation` pipeline step.
     .validate_inputs(true)
     .include_explorer(self.explorer)
     .build()?;
