@@ -254,7 +254,7 @@ Start an A2A agent server for scanned tools. Shares governance (ACL, logging, au
 
 ```bash
 apexe a2a                                       # http://127.0.0.1:8000 (default)
-apexe a2a --url http://0.0.0.0:9000 --explorer  # Custom bind address + browser UI
+apexe a2a --url http://127.0.0.1:9000 --explorer  # Custom port + browser UI
 apexe a2a --acl ~/.apexe/acl.yaml               # Governed by an ACL policy
 apexe a2a --cors-origin https://example.com     # Allow a browser origin
 ```

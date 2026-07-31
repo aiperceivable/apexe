@@ -1271,6 +1271,70 @@ mod tests {
         assert!(!flag.long_running);
     }
 
+    /// A `ScannedCommand` carrying `name`, with `children` nested under it.
+    fn command_with_subcommands(
+        name: &str,
+        children: Vec<crate::models::ScannedCommand>,
+    ) -> crate::models::ScannedCommand {
+        crate::models::ScannedCommand {
+            name: name.to_string(),
+            full_command: name.to_string(),
+            description: String::new(),
+            flags: vec![],
+            positional_args: vec![],
+            subcommands: children,
+            examples: vec![],
+            help_format: crate::models::HelpFormat::Unknown,
+            structured_output: crate::models::StructuredOutputInfo::default(),
+            end_of_options: false,
+            raw_help: String::new(),
+        }
+    }
+
+    #[test]
+    fn test_apply_overlay_propagates_end_of_options_to_nested_subcommands() {
+        // `--` is a property of the tool's argv parser, so it holds for every
+        // command reached through it — not just the root. The recursion had no
+        // test, so a non-recursive `set_end_of_options` would have left every
+        // nested subcommand refusing a `-`-leading value with the whole suite
+        // green.
+        let mut overlay = overlay(OverlayMode::Merge);
+        overlay.end_of_options = true;
+
+        let mut tool = ScannedCLITool {
+            name: "tool".to_string(),
+            subcommands: vec![command_with_subcommands(
+                "outer",
+                vec![command_with_subcommands("inner", vec![])],
+            )],
+            ..Default::default()
+        };
+        apply_overlay(&mut tool, &overlay);
+
+        assert!(tool.end_of_options, "the root invocation must be marked");
+        let outer = &tool.subcommands[0];
+        assert!(outer.end_of_options, "depth 1 must be marked");
+        assert!(
+            outer.subcommands[0].end_of_options,
+            "depth 2 must be marked — the propagation is recursive"
+        );
+    }
+
+    #[test]
+    fn test_apply_overlay_leaves_end_of_options_unset_when_the_overlay_is_silent() {
+        // Absent means "keep refusing", so an overlay that says nothing must
+        // never turn the relaxation on.
+        let mut tool = ScannedCLITool {
+            name: "tool".to_string(),
+            subcommands: vec![command_with_subcommands("outer", vec![])],
+            ..Default::default()
+        };
+        apply_overlay(&mut tool, &overlay(OverlayMode::Merge));
+
+        assert!(!tool.end_of_options);
+        assert!(!tool.subcommands[0].end_of_options);
+    }
+
     #[test]
     fn test_overlay_arg_before_flags_reaches_the_scanned_arg() {
         // `find`'s paths must render ahead of its predicates. The claim is

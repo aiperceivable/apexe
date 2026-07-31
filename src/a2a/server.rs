@@ -45,6 +45,156 @@ pub struct A2aServerBuilder {
     execution_timeout: u64,
     /// Allowed CORS origins. Empty = no CORS layer.
     cors_origins: Vec<String>,
+    /// Acknowledge binding A2A to a non-loopback address. A2A has no
+    /// authenticator at all, so this is the `apexe serve --auth none`
+    /// configuration with no way to opt back in — see [`validate_bind_url`].
+    allow_unauthenticated_bind: bool,
+}
+
+/// The address `apcore_a2a::async_serve` will actually listen on.
+#[derive(Debug, PartialEq, Eq)]
+struct BindAddress {
+    host: String,
+    port: u16,
+}
+
+/// The default `--url`, and the only value that needs no acknowledgement.
+const DEFAULT_A2A_URL: &str = "http://127.0.0.1:8000";
+
+/// Parse `--url` into the address apcore-a2a will bind, refusing anything whose
+/// listener would not be the one the operator described.
+///
+/// apcore-a2a derives its socket as `url.split("://").nth(1)` with a fallback of
+/// `"0.0.0.0:8000"`, and hands the result straight to `TcpListener::bind`. Three
+/// consequences, all silent:
+///
+/// * A scheme-less value takes the fallback. `apexe a2a --url 127.0.0.1:18999`
+///   listens on **every interface, on port 8000**, and serves the full agent
+///   card to any host. An operator typing a loopback address got the exact
+///   opposite of what they asked for.
+/// * A trailing path or slash is passed through to `bind`, which fails with an
+///   address-parse error that names neither the URL nor the slash.
+/// * A missing port does the same.
+///
+/// None of that can be fixed downstream, so it is refused here. The `https`
+/// case is refused for the same reason rather than a different one: apcore-a2a
+/// serves plain HTTP and derives the bind address from this same field, so a
+/// TLS URL describes neither the listener nor a reachable endpoint.
+#[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
+fn parse_bind_url(url: &str) -> Result<BindAddress, ModuleError> {
+    let refuse = |detail: String| {
+        ModuleError::new(
+            ErrorCode::GeneralInvalidInput,
+            format!(
+                "Refusing to start: --url '{url}' {detail} Give a full \
+                 `http://<host>:<port>` with no path, for example `{DEFAULT_A2A_URL}`."
+            ),
+        )
+    };
+
+    let Some((scheme, authority)) = url.split_once("://") else {
+        return Err(refuse(
+            "has no scheme, and the A2A server derives its listen address by \
+             splitting on '://' — with no scheme it falls back to 0.0.0.0:8000 and \
+             serves every wrapped binary on every interface, unauthenticated."
+                .to_string(),
+        ));
+    };
+    if scheme != "http" {
+        return Err(refuse(format!(
+            "uses the '{scheme}' scheme, but the A2A server both serves plain HTTP \
+             and derives its listen address from this value, so '{scheme}' describes \
+             neither the listener nor a reachable endpoint."
+        )));
+    }
+    if authority.contains(['/', '?', '#']) {
+        return Err(refuse(
+            "carries a path, query or fragment. Everything after '://' is passed \
+             verbatim to the socket bind, so it would fail to start."
+                .to_string(),
+        ));
+    }
+
+    let (host, port) = split_host_port(authority).ok_or_else(|| {
+        refuse(
+            "names no port. The whole authority is passed verbatim to the socket \
+             bind, which needs an explicit `host:port`."
+                .to_string(),
+        )
+    })?;
+    if host.is_empty() {
+        return Err(refuse("names no host.".to_string()));
+    }
+    let port: u16 = port
+        .parse()
+        .map_err(|_| refuse(format!("has '{port}' where a port number belongs.")))?;
+    if port == 0 {
+        return Err(refuse(
+            "asks for port 0, which binds an arbitrary port the agent card \
+             would then misreport."
+                .to_string(),
+        ));
+    }
+
+    Ok(BindAddress {
+        host: host.to_string(),
+        port,
+    })
+}
+
+/// Split an authority into host and port, keeping a bracketed IPv6 literal
+/// whole. Returns `None` when no port is present.
+fn split_host_port(authority: &str) -> Option<(&str, &str)> {
+    if let Some(rest) = authority.strip_prefix('[') {
+        let (host, after) = rest.split_once(']')?;
+        return after.strip_prefix(':').map(|port| (host, port));
+    }
+    let (host, port) = authority.rsplit_once(':')?;
+    // An unbracketed IPv6 literal has several colons; `rsplit_once` would take
+    // the last hextet for a port. Refuse rather than guess.
+    if host.contains(':') {
+        return None;
+    }
+    Some((host, port))
+}
+
+/// Refuse a non-loopback bind unless it was explicitly acknowledged.
+///
+/// `apexe serve` already applies this to `--auth none`, on the grounds that
+/// apexe wraps arbitrary local binaries and an unauthenticated non-loopback
+/// bind is a remote-execution entry point rather than an open API. A2A is that
+/// configuration with no way out of it: apcore-a2a has no `Authenticator`, so
+/// there is no `--auth token` to reach for, and an unauthenticated
+/// `GET /.well-known/agent-card.json` returns the full skill list with
+/// `securitySchemes: {}` while an unauthenticated `POST /` reaches the JSON-RPC
+/// handler. Applying the weaker rule to the weaker transport would be backwards,
+/// so the same acknowledgement flag governs both.
+#[allow(clippy::result_large_err)]
+fn validate_bind_url(url: &str, acknowledged: bool) -> Result<BindAddress, ModuleError> {
+    let bind = parse_bind_url(url)?;
+    if crate::auth::is_loopback_host(&bind.host) {
+        return Ok(bind);
+    }
+    if !acknowledged {
+        return Err(ModuleError::new(
+            ErrorCode::GeneralInvalidInput,
+            format!(
+                "Refusing to start: --url '{url}' binds the non-loopback host '{}', and \
+                 the A2A server has no transport authentication of any kind — the agent \
+                 card and every wrapped binary would be reachable from the network with \
+                 no credential. Bind to loopback (`{DEFAULT_A2A_URL}`) and put a \
+                 reverse proxy that authenticates in front, or pass \
+                 `--allow-unauthenticated-bind` to state that you mean it.",
+                bind.host
+            ),
+        ));
+    }
+    tracing::warn!(
+        host = %bind.host,
+        port = bind.port,
+        "Serving A2A with NO authentication on a non-loopback bind, as explicitly acknowledged"
+    );
+    Ok(bind)
 }
 
 impl A2aServerBuilder {
@@ -52,7 +202,7 @@ impl A2aServerBuilder {
     pub fn new() -> Self {
         Self {
             name: "apexe".to_string(),
-            url: "http://127.0.0.1:8000".to_string(),
+            url: DEFAULT_A2A_URL.to_string(),
             explorer: false,
             modules_dir: None,
             timeout_ms: 30_000,
@@ -66,6 +216,7 @@ impl A2aServerBuilder {
             approval_store: None,
             execution_timeout: 300,
             cors_origins: vec![],
+            allow_unauthenticated_bind: false,
         }
     }
 
@@ -75,9 +226,22 @@ impl A2aServerBuilder {
         self
     }
 
-    /// Set the base URL to bind the A2A server to (e.g. `http://0.0.0.0:8000`).
+    /// Set the base URL to bind the A2A server to.
+    ///
+    /// Must be a full `http://<host>:<port>` with no path — see
+    /// [`validate_bind_url`] for why a scheme-less or path-bearing value is
+    /// refused rather than normalized. A non-loopback host additionally needs
+    /// [`Self::allow_unauthenticated_bind`]. Both are checked when the server
+    /// is prepared, not here, so the builder stays infallible.
     pub fn url(mut self, url: &str) -> Self {
         self.url = url.to_string();
+        self
+    }
+
+    /// Acknowledge binding to a non-loopback address despite A2A having no
+    /// transport authentication.
+    pub fn allow_unauthenticated_bind(mut self, acknowledged: bool) -> Self {
+        self.allow_unauthenticated_bind = acknowledged;
         self
     }
 
@@ -232,6 +396,10 @@ impl A2aServerBuilder {
     /// precondition, build the governed executor, and construct the A2A config.
     #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
     fn prepare(&self) -> Result<(Arc<Executor>, APCoreA2AConfig), ModuleError> {
+        // Before anything else: a bad `--url` is the one failure that would
+        // otherwise succeed loudly on the wrong socket.
+        validate_bind_url(&self.url, self.allow_unauthenticated_bind)?;
+
         if self.enable_approval && self.approval_store.is_none() {
             return Err(ModuleError::new(
                 ErrorCode::GeneralInvalidInput,

@@ -549,6 +549,14 @@ pub struct A2aArgs {
     /// Allowed CORS origin (repeatable)
     #[arg(long)]
     pub cors_origin: Vec<String>,
+
+    /// Acknowledge binding A2A to a non-loopback address. A2A has no
+    /// authenticator at all, so every wrapped binary is reachable from the
+    /// network with no credential -- there is no `--auth token` to opt back
+    /// into, which is why the acknowledgement is mandatory rather than a
+    /// warning.
+    #[arg(long)]
+    pub allow_unauthenticated_bind: bool,
 }
 
 impl A2aArgs {
@@ -577,6 +585,7 @@ impl A2aArgs {
             .enable_retry(!self.no_retry)
             .execution_timeout(self.execution_timeout)
             .cors_origins(self.cors_origin.clone())
+            .allow_unauthenticated_bind(self.allow_unauthenticated_bind)
             .audit_path(config.audit_log.clone());
 
         // Only load ACL when explicitly specified via --acl flag.

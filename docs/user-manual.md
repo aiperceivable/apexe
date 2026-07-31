@@ -164,6 +164,7 @@ apexe a2a [OPTIONS]
 | `--no-retry` | off | Disable RetryMiddleware (on by default; only ever retries idempotent timeouts) |
 | `--execution-timeout <SECS>` | `300` | Per-task execution timeout in seconds |
 | `--cors-origin <ORIGIN>` | - | Allowed CORS origin (repeatable) |
+| `--allow-unauthenticated-bind` | off | Acknowledge a non-loopback `--url` (otherwise refused). A2A has no authenticator, so there is no credential to opt into |
 
 > **No `--enable-approval` on `apexe a2a`.** A2A has no interactive elicitation
 > transport, so an approval prompt can never be resolved over it; the flag would
@@ -178,7 +179,9 @@ apexe a2a [OPTIONS]
 
 ```bash
 apexe a2a                                       # http://127.0.0.1:8000
-apexe a2a --url http://0.0.0.0:9000 --explorer  # custom bind address + browser UI
+apexe a2a --url http://127.0.0.1:9000 --explorer  # custom port + browser UI
+# A non-loopback bind needs the acknowledgement, because A2A has no authenticator:
+apexe a2a --url http://0.0.0.0:9000 --allow-unauthenticated-bind
 apexe a2a --acl ~/.apexe/acl.yaml               # governed by an ACL policy
 ```
 
@@ -687,7 +690,9 @@ Transport authentication (§10) is likewise `apexe serve` only.
 
 ```bash
 apexe a2a                                       # http://127.0.0.1:8000
-apexe a2a --url http://0.0.0.0:9000 --explorer  # custom bind address + browser UI
+apexe a2a --url http://127.0.0.1:9000 --explorer  # custom port + browser UI
+# A non-loopback bind needs the acknowledgement, because A2A has no authenticator:
+apexe a2a --url http://0.0.0.0:9000 --allow-unauthenticated-bind
 apexe a2a --acl ~/.apexe/acl.yaml               # governed by an ACL policy
 ```
 

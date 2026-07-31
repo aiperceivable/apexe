@@ -741,6 +741,32 @@ mod tests {
     }
 
     #[test]
+    fn test_build_input_schema_emits_the_end_of_options_marker() {
+        // The renderer reads `x-apexe-end-of-options` off the schema root to
+        // decide whether a `-`-leading value may be passed through behind `--`.
+        // Nothing else writes that keyword, so without this test the whole
+        // chain from the overlay to the emitted contract could be deleted and
+        // the suite would stay green while issue #25 reopened.
+        let mut command = make_command(vec![], vec![]);
+        command.end_of_options = true;
+
+        let schema = build_input_schema(&command, &[], CommandPosition::Root);
+        assert_eq!(schema["x-apexe-end-of-options"], true);
+    }
+
+    #[test]
+    fn test_build_input_schema_omits_the_end_of_options_marker_by_default() {
+        // Absent means "refuse a `-`-leading value", which is the right answer
+        // for a tool nobody has verified — so the marker must never appear on
+        // its own.
+        let schema = build_input_schema(&make_command(vec![], vec![]), &[], CommandPosition::Root);
+        assert!(
+            schema.get("x-apexe-end-of-options").is_none(),
+            "the marker must be absent unless an overlay asserted it"
+        );
+    }
+
+    #[test]
     fn test_schema_string_flag() {
         let flag = make_flag(
             Some("--output"),

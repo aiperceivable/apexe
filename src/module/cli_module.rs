@@ -371,6 +371,71 @@ mod tests {
         })
     }
 
+    /// A module whose schema marks `C` as a tool-level global option, the way
+    /// `build_input_schema` marks the globals it merges into a subcommand.
+    fn make_git_like_module() -> CliModule {
+        CliModule::new(CliModuleConfig {
+            module_id: "cli.git.cat_file".to_string(),
+            description: "Git cat-file".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "C": {
+                        "type": "string",
+                        "x-apexe-flag": "-C",
+                        "x-apexe-flag-position": "before-subcommand",
+                    },
+                    "t": {"type": "boolean", "x-apexe-flag": "-t"},
+                }
+            }),
+            output_schema: json!({"type": "object"}),
+            annotations: ModuleAnnotations::default(),
+            binary_path: "/usr/bin/git".to_string(),
+            command_parts: vec!["cat-file".to_string()],
+            json_flag: None,
+            timeout_ms: 5000,
+            max_output_bytes: executor::DEFAULT_MAX_OUTPUT_BYTES,
+        })
+    }
+
+    #[test]
+    fn test_assemble_arguments_places_global_options_before_the_subcommand() {
+        // Regression for #39 item 1. `git`'s global options must precede the
+        // subcommand token: `git -C <dir> cat-file` honours `-C`, while
+        // `git cat-file -C <dir>` hands it to a parser that reads it as
+        // something else and reports "not a git repository".
+        //
+        // `build_argv` reports the group; this is the only place that puts it
+        // ahead of `command_parts`. Without this test, swapping the two
+        // `extend` calls in `assemble_arguments` leaves the whole suite green.
+        let module = make_git_like_module();
+        let kwargs = json!({"C": "/repo", "t": true})
+            .as_object()
+            .expect("object literal")
+            .clone();
+
+        let rendered = executor::build_argv(&kwargs, Some(&module.input_schema)).unwrap();
+        let args = module.assemble_arguments(rendered);
+
+        assert_eq!(args, vec!["-C", "/repo", "cat-file", "-t"]);
+    }
+
+    #[test]
+    fn test_assemble_arguments_keeps_the_subcommand_first_without_the_marker() {
+        // The ordinary shape must be untouched: a module with no
+        // `before-subcommand` flag still renders `<subcommand> <flags>`.
+        let module = make_echo_module(vec!["hello".to_string()], None);
+        let kwargs = json!({"n": true})
+            .as_object()
+            .expect("object literal")
+            .clone();
+
+        let rendered = executor::build_argv(&kwargs, Some(&module.input_schema)).unwrap();
+        let args = module.assemble_arguments(rendered);
+
+        assert_eq!(args, vec!["hello", "--n"]);
+    }
+
     #[test]
     fn test_cli_module_from_scanned_basic() {
         let scanned = make_scanned_module("exec:///usr/bin/echo hello");
