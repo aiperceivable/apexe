@@ -659,6 +659,16 @@ McpServerBuilder::new()
 This is coarse-grained: it selects a subset of the tool surface for everyone.
 For per-caller rules, use `--acl` (§9.2).
 
+> **A stray comma is refused, not applied.** `--tags readonly,` splits to
+> `["readonly", ""]`, and every listed tag must match — no module carries an
+> empty tag, so the filter would admit nothing and the server would start with
+> an empty registry and no callable tools at all. `apexe serve` exits with an
+> error naming the empty tag instead. A tag that is merely unknown to *this*
+> host is not an error (one invocation is meant to be portable across
+> differently scanned machines), but if the filter excludes every loaded
+> module apexe logs a **warning** saying so, rather than the `admitted=0` info
+> line that looked identical to an empty modules directory.
+
 ### Explorer UI
 
 Enable with `--explorer` (HTTP transport only):

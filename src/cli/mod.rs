@@ -451,8 +451,7 @@ impl ServeArgs {
         }
 
         if let Some(ref tags_str) = self.tags {
-            let tags: Vec<String> = tags_str.split(',').map(|s| s.trim().to_string()).collect();
-            builder = builder.tags(tags);
+            builder = builder.tags(parse_tag_list(tags_str)?);
         }
         if let Some(ref prefix) = self.prefix {
             builder = builder.prefix(prefix);
@@ -491,6 +490,37 @@ impl ServeArgs {
             ..Default::default()
         }
     }
+}
+
+/// Split a comma-separated `--tags` value, refusing an empty token.
+///
+/// `--tags readonly,` splits to `["readonly", ""]`, and
+/// [`ModuleFilter::admits`](crate::module::ModuleFilter::admits) requires
+/// *every* token. No module carries an empty tag and none can be made to, so
+/// the filter is unsatisfiable against any registry, present or future: the
+/// registry comes up empty and the entire tool surface is uncallable. Before
+/// the filter moved to registration time this typo was harmless.
+///
+/// This is refused rather than warned about for the same reason the ACL
+/// validator refuses a structurally inert rule (see
+/// [`validate_acl_rules`](crate::governance::validate_acl_rules)): the list can
+/// never match anything, so no registry makes it correct. A tag that is merely
+/// unknown to *this* host stays a warning — one invocation is meant to be
+/// portable across differently scanned machines.
+fn parse_tag_list(raw: &str) -> anyhow::Result<Vec<String>> {
+    raw.split(',')
+        .map(|token| {
+            let tag = token.trim();
+            if tag.is_empty() {
+                anyhow::bail!(
+                    "--tags '{raw}' contains an empty tag. No module carries an empty tag, so \
+                     the filter would admit nothing and the server would start with no callable \
+                     tools. Remove the stray comma."
+                );
+            }
+            Ok(tag.to_string())
+        })
+        .collect()
 }
 
 /// Start A2A agent server for scanned CLI tools.
@@ -1020,6 +1050,42 @@ mod tests {
         // 0, so `> mcp.json` wrote that sentence as the file body.
         let result = Cli::try_parse_from(["apexe", "serve", "--show-config", "vscode"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_tag_list_splits_and_trims() {
+        assert_eq!(
+            parse_tag_list("readonly, git ,cli").unwrap(),
+            vec!["readonly", "git", "cli"]
+        );
+        assert_eq!(parse_tag_list("readonly").unwrap(), vec!["readonly"]);
+    }
+
+    #[test]
+    fn test_parse_tag_list_rejects_an_empty_tag() {
+        // `--tags readonly,` splits to ["readonly", ""], and `admits` requires
+        // every token. No module carries an empty tag, so the registry comes
+        // up empty and the whole tool surface is uncallable — previously
+        // signalled only by `admitted=0` at info level.
+        for raw in ["readonly,", ",readonly", "readonly,,git", "readonly, ,git"] {
+            let err = parse_tag_list(raw).unwrap_err().to_string();
+            assert!(err.contains("empty tag"), "{raw}: {err}");
+            assert!(err.contains("no callable"), "{raw}: {err}");
+        }
+        assert!(parse_tag_list("").is_err());
+    }
+
+    #[test]
+    fn test_serve_build_server_rejects_a_trailing_comma_in_tags() {
+        let cli = Cli::try_parse_from(["apexe", "serve", "--tags", "readonly,"]).unwrap();
+        let Commands::Serve(args) = cli.command else {
+            panic!("expected Commands::Serve");
+        };
+        let err = match args.build_server(&ApexeConfig::default()) {
+            Err(err) => err,
+            Ok(_) => panic!("a trailing comma must not produce a toolless server"),
+        };
+        assert!(err.to_string().contains("empty tag"), "{err}");
     }
 
     #[test]

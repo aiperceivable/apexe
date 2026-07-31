@@ -147,17 +147,33 @@ pub fn build_executor(opts: &ExecutorOptions<'_>) -> Result<Arc<Executor>, Modul
         .audit_path
         .map(|p| Arc::new(crate::governance::AuditManager::new(p)));
 
+    let loaded = modules.len();
     let admitted: Vec<ScannedModule> = modules
         .into_iter()
         .filter(|module| opts.filter.admits(module))
         .collect();
     if opts.filter.is_active() {
-        tracing::info!(
-            prefix = ?opts.filter.prefix,
-            tags = ?opts.filter.tags,
-            admitted = admitted.len(),
-            "Module filter active; excluded modules are neither listed nor callable"
-        );
+        // A filter that admits nothing leaves the whole tool surface
+        // uncallable. At `info` that was `admitted=0` -- indistinguishable
+        // from an empty modules directory, which is the other way to get a
+        // server with no tools. It gets its own `warn` so the operator can
+        // tell a mistyped filter from an unscanned host.
+        if admitted.is_empty() && loaded > 0 {
+            tracing::warn!(
+                prefix = ?opts.filter.prefix,
+                tags = ?opts.filter.tags,
+                loaded,
+                "Module filter excluded every loaded module; this server has NO callable \
+                 tools. Check the spelling of --tags/--prefix against `apexe list`."
+            );
+        } else {
+            tracing::info!(
+                prefix = ?opts.filter.prefix,
+                tags = ?opts.filter.tags,
+                admitted = admitted.len(),
+                "Module filter active; excluded modules are neither listed nor callable"
+            );
+        }
     }
 
     let registry = Registry::new();
@@ -558,6 +574,23 @@ mod tests {
             .await
             .expect_err("a filtered-out module must not be callable");
         assert_eq!(err.code, ErrorCode::ModuleNotFound);
+    }
+
+    #[test]
+    fn test_module_filter_never_admits_an_empty_tag() {
+        // The property `apexe serve --tags` relies on when it refuses a
+        // trailing comma (see `crate::cli::parse_tag_list`): an empty tag is
+        // unsatisfiable against any registry, so the whole surface goes away.
+        let dir = TempDir::new().unwrap();
+        write_two_modules(dir.path());
+
+        let mut opts = opts(Some(dir.path()));
+        opts.filter = ModuleFilter {
+            prefix: None,
+            tags: Some(vec!["git".to_string(), String::new()]),
+        };
+        let executor = build_executor(&opts).unwrap();
+        assert_eq!(executor.registry().count(), 0);
     }
 
     #[test]
