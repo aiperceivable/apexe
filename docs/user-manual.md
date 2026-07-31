@@ -852,15 +852,32 @@ A wrapped command that runs and exits non-zero comes back as an ordinary,
 successful tool result: **`isError: false`**, with `exit_code`, `stdout`,
 `stderr` and `ai_guidance` in the payload.
 
+`exit_code` is **not** a sibling of `isError`. MCP's `tools/call` result has a
+fixed shape — `content` plus `isError` — and apcore-mcp puts the whole payload
+into `content[0].text` as a **JSON string**:
+
 ```json
 {
-  "isError": false,
-  "exit_code": 2,
-  "stdout": "",
-  "stderr": "curl: option --max-time=1: is unknown",
-  "ai_guidance": "Command 'cli.curl' exited with code 2. stderr: ..."
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"exit_code\":2,\"stdout\":\"\",\"stderr\":\"curl: option --max-time=1: is unknown\",\"ai_guidance\":\"Command 'cli.curl' exited with code 2. stderr: ...\"}"
+    }
+  ],
+  "isError": false
 }
 ```
+
+So a client reads `exit_code` by JSON-parsing `content[0].text` first:
+
+```js
+const payload = JSON.parse(result.content[0].text);
+if (payload.exit_code !== 0) { /* the command ran and answered */ }
+```
+
+Reading `result.exit_code` directly yields `undefined`, and a client that then
+falls back to `isError` lands exactly in the trap the rest of this section
+exists to prevent.
 
 This is deliberate and will not change. In a CLI bridge, a non-zero exit is
 frequently the *answer*, not a failure:
@@ -883,10 +900,13 @@ question correctly.
 - the circuit breaker was open, the timeout killed the process, or the binary
   could not be spawned at all.
 
+On that path `content[0].text` is a plain diagnostic sentence rather than a
+JSON payload, so parsing it is only meaningful when `isError` is `false`.
+
 **So: an MCP client must not treat `isError: false` as "the command
-succeeded".** Read `exit_code` from the result payload (it is `required` in
-every generated output schema, alongside `stdout` and `stderr`) and apply the
-wrapped tool's own convention.
+succeeded".** Parse `content[0].text` and read `exit_code` from it (it is
+`required` in every generated output schema, alongside `stdout` and `stderr`),
+then apply the wrapped tool's own convention.
 
 The A2A surface follows the same split: a non-zero exit yields
 `TASK_STATE_COMPLETED` with the `exit_code` inside the artifact, while a
