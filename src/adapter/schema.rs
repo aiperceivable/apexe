@@ -539,6 +539,12 @@ fn apply_global_flag_placement(schema: &mut JsonValue, position: CommandPosition
 /// their canonical name does not collide with a command-level flag. For a
 /// subcommand, those surviving global flags are additionally marked
 /// `before-subcommand` — see [`apply_global_flag_placement`].
+///
+/// **Known debt:** over CLAUDE.md's 50-line ceiling. The body builds one
+/// `properties` map from four interleaved sources (positional args, command
+/// flags, surviving global flags, schema extensions), each of which reads and
+/// writes the same two accumulators; extracting them would mean threading both
+/// through every helper for no gain in clarity. Left whole deliberately.
 pub fn build_input_schema(
     command: &ScannedCommand,
     global_flags: &[ScannedFlag],

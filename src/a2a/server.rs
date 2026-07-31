@@ -169,7 +169,7 @@ fn split_host_port(authority: &str) -> Option<(&str, &str)> {
 /// `securitySchemes: {}` while an unauthenticated `POST /` reaches the JSON-RPC
 /// handler. Applying the weaker rule to the weaker transport would be backwards,
 /// so the same acknowledgement flag governs both.
-#[allow(clippy::result_large_err)]
+#[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
 fn validate_bind_url(url: &str, acknowledged: bool) -> Result<BindAddress, ModuleError> {
     let bind = parse_bind_url(url)?;
     if crate::auth::is_loopback_host(&bind.host) {

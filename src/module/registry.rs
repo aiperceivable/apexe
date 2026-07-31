@@ -147,34 +147,7 @@ pub fn build_executor(opts: &ExecutorOptions<'_>) -> Result<Arc<Executor>, Modul
         .audit_path
         .map(|p| Arc::new(crate::governance::AuditManager::new(p)));
 
-    let loaded = modules.len();
-    let admitted: Vec<ScannedModule> = modules
-        .into_iter()
-        .filter(|module| opts.filter.admits(module))
-        .collect();
-    if opts.filter.is_active() {
-        // A filter that admits nothing leaves the whole tool surface
-        // uncallable. At `info` that was `admitted=0` -- indistinguishable
-        // from an empty modules directory, which is the other way to get a
-        // server with no tools. It gets its own `warn` so the operator can
-        // tell a mistyped filter from an unscanned host.
-        if admitted.is_empty() && loaded > 0 {
-            tracing::warn!(
-                prefix = ?opts.filter.prefix,
-                tags = ?opts.filter.tags,
-                loaded,
-                "Module filter excluded every loaded module; this server has NO callable \
-                 tools. Check the spelling of --tags/--prefix against `apexe list`."
-            );
-        } else {
-            tracing::info!(
-                prefix = ?opts.filter.prefix,
-                tags = ?opts.filter.tags,
-                admitted = admitted.len(),
-                "Module filter active; excluded modules are neither listed nor callable"
-            );
-        }
-    }
+    let admitted = admit_modules(modules, &opts.filter);
 
     let registry = Registry::new();
     register_modules(&admitted, &registry, opts.timeout_ms, audit.clone());
@@ -186,90 +159,148 @@ pub fn build_executor(opts: &ExecutorOptions<'_>) -> Result<Arc<Executor>, Modul
     let registered_ids: Vec<String> = registry.module_ids_full(true);
 
     let mut executor = Executor::new(registry, Config::default());
+    install_middleware(&executor, opts);
+    install_acl(&mut executor, opts, &registered_ids, audit.as_ref())?;
+    install_approval_handler(&mut executor, opts);
 
-    if opts.enable_logging {
-        install_logging_middleware(&executor, opts.log_arguments);
+    Ok(Arc::new(executor))
+}
+
+/// Apply the [`ModuleFilter`] and say what it did.
+///
+/// A filter that admits nothing leaves the whole tool surface uncallable. At
+/// `info` that read as `admitted=0` — indistinguishable from an empty modules
+/// directory, the other way to end up with a server that serves nothing. It
+/// gets its own `warn` so a mistyped `--tags`/`--prefix` is distinguishable
+/// from an unscanned host.
+fn admit_modules(modules: Vec<ScannedModule>, filter: &ModuleFilter) -> Vec<ScannedModule> {
+    let loaded = modules.len();
+    let admitted: Vec<ScannedModule> = modules
+        .into_iter()
+        .filter(|module| filter.admits(module))
+        .collect();
+    if !filter.is_active() {
+        return admitted;
     }
+    if admitted.is_empty() && loaded > 0 {
+        tracing::warn!(
+            prefix = ?filter.prefix,
+            tags = ?filter.tags,
+            loaded,
+            "Module filter excluded every loaded module; this server has NO callable \
+             tools. Check the spelling of --tags/--prefix against `apexe list`."
+        );
+    } else {
+        tracing::info!(
+            prefix = ?filter.prefix,
+            tags = ?filter.tags,
+            admitted = admitted.len(),
+            "Module filter active; excluded modules are neither listed nor callable"
+        );
+    }
+    admitted
+}
 
+/// Install the logging and resilience middleware the options ask for.
+///
+/// A middleware that fails to install is warned about rather than fatal: none
+/// of the three is a security control, and a server that logs less is better
+/// than no server at all. The ACL, which *is* a security control, fails closed
+/// instead — see [`install_acl`].
+fn install_middleware(executor: &Executor, opts: &ExecutorOptions<'_>) {
+    if opts.enable_logging {
+        install_logging_middleware(executor, opts.log_arguments);
+    }
     if opts.enable_circuit_breaker {
         let breaker = HealthOnlyCircuitBreaker::with_defaults();
         if let Err(e) = executor.use_middleware(Box::new(breaker)) {
             tracing::warn!(error = %e, "Failed to add HealthOnlyCircuitBreaker");
         }
     }
-
     if opts.enable_retry {
         let retry = RetryMiddleware::new(RetryConfig::default());
         if let Err(e) = executor.use_middleware(Box::new(retry)) {
             tracing::warn!(error = %e, "Failed to add RetryMiddleware");
         }
     }
+}
 
-    // ACL is a security control: when the operator explicitly requests it via
-    // `--acl`, a missing file or a load failure must FAIL CLOSED (refuse to
-    // build the server) rather than degrade to an unguarded allow-all executor.
-    // apcore skips ACL enforcement entirely when no ACL is set, so silently
-    // continuing here would serve every tool to every caller.
-    if let Some(acl_path) = opts.acl_path {
-        if !acl_path.exists() {
-            return Err(ModuleError::new(
-                ErrorCode::GeneralInvalidInput,
-                format!(
-                    "ACL file not found: {} — refusing to start without the requested access control",
-                    acl_path.display()
-                ),
-            ));
-        }
-        let acl_mgr = crate::governance::AclManager::from_config(acl_path)?;
-        let mut acl = acl_mgr.into_inner();
-        // A rule whose target names nothing registered, or whose target list is
-        // empty, enforces nothing — and until now said nothing about it either.
-        // The registry is populated by this point (and already narrowed by
-        // `ModuleFilter`), so this is the first and only place both the policy
-        // and the surface it guards exist together. See `validate_acl_rules`
-        // for the refuse-vs-warn split.
-        let report = crate::governance::validate_acl_rules(acl.rules(), &registered_ids);
-        report.emit_warnings();
-        if let Some(error) = report.fatal_error(acl_path) {
-            return Err(error);
-        }
-        // Record every allow/deny decision to the audit trail (F5).
-        if let Some(ref audit) = audit {
-            let audit = audit.clone();
-            acl.set_audit_logger(move |entry| audit.log_acl_decision(entry));
-        }
-        executor.set_acl(acl);
-        tracing::info!(acl = %acl_path.display(), "ACL enforcement active");
+/// Load, validate and attach the ACL named by `--acl`, or do nothing.
+///
+/// ACL is a security control: when the operator explicitly requests one, a
+/// missing file or a load failure must FAIL CLOSED (refuse to build the
+/// server) rather than degrade to an unguarded allow-all executor. apcore
+/// skips ACL enforcement entirely when no ACL is set, so silently continuing
+/// here would serve every tool to every caller.
+#[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
+fn install_acl(
+    executor: &mut Executor,
+    opts: &ExecutorOptions<'_>,
+    registered_ids: &[String],
+    audit: Option<&Arc<crate::governance::AuditManager>>,
+) -> Result<(), ModuleError> {
+    let Some(acl_path) = opts.acl_path else {
+        return Ok(());
+    };
+    if !acl_path.exists() {
+        return Err(ModuleError::new(
+            ErrorCode::GeneralInvalidInput,
+            format!(
+                "ACL file not found: {} — refusing to start without the requested access control",
+                acl_path.display()
+            ),
+        ));
     }
+    let mut acl = crate::governance::AclManager::from_config(acl_path)?.into_inner();
+    // A rule whose target names nothing registered, or whose target list is
+    // empty, enforces nothing — and until now said nothing about it either.
+    // The registry is populated by this point (and already narrowed by
+    // `ModuleFilter`), so this is the first and only place both the policy
+    // and the surface it guards exist together. See `validate_acl_rules`
+    // for the refuse-vs-warn split.
+    let report = crate::governance::validate_acl_rules(acl.rules(), registered_ids);
+    report.emit_warnings();
+    if let Some(error) = report.fatal_error(acl_path) {
+        return Err(error);
+    }
+    // Record every allow/deny decision to the audit trail (F5).
+    if let Some(audit) = audit {
+        let audit = audit.clone();
+        acl.set_audit_logger(move |entry| audit.log_acl_decision(entry));
+    }
+    executor.set_acl(acl);
+    tracing::info!(acl = %acl_path.display(), "ACL enforcement active");
+    Ok(())
+}
 
-    if opts.enable_approval {
-        match &opts.approval_store {
-            Some(store) => {
-                executor.set_approval_handler(Box::new(StorageBackedApprovalHandler::new(
-                    store.clone(),
-                )));
-                tracing::info!(
-                    store_backed = true,
-                    "Approval handler enabled for destructive commands"
-                );
-            }
-            None => {
-                // See `DenyApprovalHandler`: there is no reachable interactive
-                // approval path, so say plainly that this is a deny gate rather
-                // than letting the operator discover it one bricked tool at a
-                // time.
-                executor.set_approval_handler(Box::new(DenyApprovalHandler::new()));
-                tracing::warn!(
-                    "Approval gate enabled WITHOUT an approval store: every call to a module \
-                     marked `requires_approval` will be DENIED. Interactive approval is not \
-                     available on a CLI-launched server. Use `--acl` for a per-caller boundary, \
-                     or embed apexe as a library with an ApprovalStore."
-                );
-            }
+/// Attach the approval gate `--enable-approval` asks for, or do nothing.
+fn install_approval_handler(executor: &mut Executor, opts: &ExecutorOptions<'_>) {
+    if !opts.enable_approval {
+        return;
+    }
+    match &opts.approval_store {
+        Some(store) => {
+            executor
+                .set_approval_handler(Box::new(StorageBackedApprovalHandler::new(store.clone())));
+            tracing::info!(
+                store_backed = true,
+                "Approval handler enabled for destructive commands"
+            );
+        }
+        None => {
+            // See `DenyApprovalHandler`: there is no reachable interactive
+            // approval path, so say plainly that this is a deny gate rather
+            // than letting the operator discover it one bricked tool at a
+            // time.
+            executor.set_approval_handler(Box::new(DenyApprovalHandler::new()));
+            tracing::warn!(
+                "Approval gate enabled WITHOUT an approval store: every call to a module \
+                 marked `requires_approval` will be DENIED. Interactive approval is not \
+                 available on a CLI-launched server. Use `--acl` for a per-caller boundary, \
+                 or embed apexe as a library with an ApprovalStore."
+            );
         }
     }
-
-    Ok(Arc::new(executor))
 }
 
 /// Install the structured-logging middleware appropriate to `log_arguments`.
@@ -307,7 +338,7 @@ fn install_logging_middleware(executor: &Executor, log_arguments: bool) {
 }
 
 /// Load `ScannedModule`s from the configured modules directory.
-#[allow(clippy::result_large_err)]
+#[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
 fn load_scanned_modules(modules_dir: Option<&Path>) -> Result<Vec<ScannedModule>, ModuleError> {
     match modules_dir {
         Some(dir) if dir.is_dir() => load_modules_from_dir(dir),

@@ -513,6 +513,12 @@ pub fn build_arguments(
 /// soon as any value begins with `-`. That is what makes such a value legal
 /// rather than refused; see [`validate_argument_value`] and
 /// [`operands_precede_flags`].
+///
+/// **Known debt:** this is over CLAUDE.md's 50-line ceiling. It is one
+/// sequential pass over the four argument groups, and the ordering between
+/// them *is* the contract — splitting it into four helpers would put the
+/// invariant that matters (what comes after what) in the caller, where no
+/// single function states it. Left whole deliberately.
 #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
 pub fn build_argv(
     kwargs: &serde_json::Map<String, Value>,

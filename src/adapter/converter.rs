@@ -165,6 +165,12 @@ impl CliToolConverter {
     }
 
     /// Extract description, schemas, annotations, docs, and examples from a command.
+    ///
+    /// **Known debt:** over CLAUDE.md's 50-line ceiling. It is a single
+    /// two-branch construction of one struct (a real command vs. the
+    /// tool-level fallback); splitting it would separate the two halves of a
+    /// contract that has to stay field-for-field aligned. Left whole
+    /// deliberately.
     fn extract_command_fields(
         tool: &ScannedCLITool,
         command_opt: Option<&&ScannedCommand>,

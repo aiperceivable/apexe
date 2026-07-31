@@ -185,7 +185,7 @@ pub fn resolve_auth(
 
 /// `--auth none`: allowed on loopback with a warning, refused elsewhere unless
 /// separately acknowledged.
-#[allow(clippy::result_large_err)]
+#[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
 fn resolve_none(
     host: &str,
     loopback: bool,
@@ -229,7 +229,7 @@ fn resolve_token(supplied: Option<String>) -> ResolvedAuth {
 
 /// `--auth jwt`: a secret is mandatory, since there is nothing sensible to
 /// generate.
-#[allow(clippy::result_large_err)]
+#[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
 fn resolve_jwt(secret: Option<&str>) -> Result<ResolvedAuth, ModuleError> {
     let secret = secret.filter(|s| !s.is_empty()).ok_or_else(|| {
         ModuleError::new(

@@ -298,7 +298,7 @@ impl McpServerBuilder {
     /// `SSE transport is deprecated` at startup; given the confidentiality
     /// impact, refusing by default is the honest reading of that. Streamable
     /// HTTP (`--transport http`) is unaffected.
-    #[allow(clippy::result_large_err)]
+    #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
     fn resolve_transport(&self) -> Result<&'static str, ModuleError> {
         match self.transport.as_str() {
             "stdio" => Ok("stdio"),
@@ -328,7 +328,7 @@ impl McpServerBuilder {
     }
 
     /// Assemble the APCoreMCP server from a configured executor and transport.
-    #[allow(clippy::result_large_err)]
+    #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
     fn build_mcp_server(
         self,
         executor: Arc<Executor>,
@@ -341,33 +341,43 @@ impl McpServerBuilder {
             );
         }
 
-        let effective_approval_store =
-            Self::effective_approval_store(self.enable_approval, &self.approval_store);
         let auth = resolve_auth(&self.transport, &self.host, &self.auth)?;
         Self::announce_auth(&auth, &self.host, self.port, &mut std::io::stderr());
 
-        let mut builder = APCoreMCP::builder()
+        let builder = APCoreMCP::builder()
             .backend(BackendSource::Executor(executor))
             .name(&self.name)
             .version(&self.version)
             .transport(transport)
             .host(&self.host)
             .port(self.port)
-            // Left on unconditionally, with no builder method to turn it off.
-            // The hook it gates calls `McpExecutor::validate`, which
-            // apcore-mcp's `ApcoreExecutorAdapter` does not implement, so it
-            // never fires for apexe's backend and there is nothing here for a
-            // caller to toggle. `apexe serve --skip-validation` was deleted
-            // for exactly this reason. Actual schema validation is unaffected:
-            // it runs in apcore's `input_validation` pipeline step inside
-            // `Executor::call`, which apexe never removes. Passing `true`
-            // keeps the safe behaviour in place if a future adapter does
-            // implement the hook.
+            // Always on; see the `validate_inputs` note on `McpServerBuilder`.
             .validate_inputs(true)
             .require_auth(auth.require_auth())
             .exempt_paths(exempt_paths())
             .observability(self.enable_metrics && transport != "stdio");
 
+        self.apply_optional_wiring(builder, &auth)
+            .build()
+            .map_err(|e| {
+                ModuleError::new(
+                    ErrorCode::GeneralInternalError,
+                    format!("Failed to build MCP server: {e}"),
+                )
+            })
+    }
+
+    /// Apply the settings that are only present for some configurations.
+    ///
+    /// Split out of [`Self::build_mcp_server`] so the unconditional server
+    /// identity (backend, name, transport, bind address) reads as one block
+    /// and every "only when the operator asked for it" decision reads as
+    /// another.
+    fn apply_optional_wiring(
+        self,
+        mut builder: apcore_mcp::APCoreMCPBuilder,
+        auth: &ResolvedAuth,
+    ) -> apcore_mcp::APCoreMCPBuilder {
         if let Some(authenticator) = auth.authenticator() {
             builder = builder.authenticator_arc(authenticator);
         }
@@ -390,16 +400,12 @@ impl McpServerBuilder {
         // `crate::module::registry`) — otherwise the meta-tool would be
         // exposed to MCP clients while the Executor never gates any call on
         // approval, so nothing would ever create a pending approval to check.
-        if let Some(store) = effective_approval_store {
+        if let Some(store) =
+            Self::effective_approval_store(self.enable_approval, &self.approval_store)
+        {
             builder = builder.approval_store(store);
         }
-
-        builder.build().map_err(|e| {
-            ModuleError::new(
-                ErrorCode::GeneralInternalError,
-                format!("Failed to build MCP server: {e}"),
-            )
-        })
+        builder
     }
 
     /// Tell the operator what credential the server expects.
@@ -479,7 +485,7 @@ impl McpServerBuilder {
     ///
     /// Loads modules, registers them, and converts to OpenAI format without
     /// starting a server.
-    #[allow(clippy::result_large_err)]
+    #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
     pub fn export_openai_tools(self) -> Result<Vec<Value>, ModuleError> {
         let executor = build_executor(&self.executor_options())?;
 
