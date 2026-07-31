@@ -260,6 +260,11 @@ apexe a2a --acl ~/.apexe/acl.yaml               # Governed by an ACL policy
 apexe a2a --cors-origin https://example.com     # Allow a browser origin
 ```
 
+> **`apexe a2a` has no transport authentication.** The `--auth*` flags are
+> `apexe serve` only, so there is no credential to opt into — bind A2A to
+> loopback, or put it behind a reverse proxy that authenticates. A non-loopback
+> `--url` refuses to start without `--allow-unauthenticated-bind`.
+
 > A2A has no interactive elicitation transport, so there is **no `--enable-approval`
 > flag** on `apexe a2a` (it's available on `apexe serve`, and on A2A only via the
 > library `ApprovalStore` API). See [`docs/user-manual.md`](docs/user-manual.md).

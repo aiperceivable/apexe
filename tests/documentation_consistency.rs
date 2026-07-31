@@ -306,3 +306,46 @@ fn test_user_manual_documents_transport_authentication() {
         "docs/user-manual.md must document `{flag}`, which the refusal points operators at"
     );
 }
+
+/// Every document that introduces `apexe a2a` must disclose that it has no
+/// transport authentication.
+///
+/// The manual said so; the README did not, and a reader who starts from the
+/// README meets the `--auth*` flags under `apexe serve` and reasonably assumes
+/// they apply. apcore-a2a has no `Authenticator` at all, so the only defence is
+/// the bind address — which is exactly what the refusal below enforces.
+#[tokio::test]
+async fn test_every_document_discloses_that_a2a_has_no_authentication() {
+    let err = apexe::a2a::A2aServerBuilder::new()
+        .url("http://0.0.0.0:8000")
+        .agent_card()
+        .await
+        .expect_err("a non-loopback A2A bind must refuse without the acknowledgement");
+    assert!(
+        err.message.contains("no transport authentication"),
+        "the refusal must say why it refuses: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("--allow-unauthenticated-bind"),
+        "the refusal must name the acknowledgement flag: {}",
+        err.message
+    );
+
+    for (name, text) in [
+        (
+            "docs/user-manual.md",
+            include_str!("../docs/user-manual.md"),
+        ),
+        ("README.md", include_str!("../README.md")),
+    ] {
+        assert!(
+            text.contains("no transport authentication"),
+            "{name} introduces `apexe a2a` without disclosing that it has none"
+        );
+        assert!(
+            text.contains("--allow-unauthenticated-bind"),
+            "{name} must name the flag a non-loopback A2A bind demands"
+        );
+    }
+}
