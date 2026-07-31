@@ -68,9 +68,15 @@ impl AclManager {
     ///     targets: ["cli.git.push"]
     ///     effect: deny
     ///     description: "Block destructive commands by default"
-    ///     conditions:
-    ///       require_approval: true
     /// ```
+    ///
+    /// A deny rule must be **unconditional** to deny. apcore registers exactly
+    /// five condition keys (`identity_types`, `roles`, `max_call_depth`,
+    /// `$or`, `$not`); any other key is treated as unsatisfied, so the rule
+    /// never matches and the call falls through to the next rule or to
+    /// `default_effect`. There is no condition meaning "ask a human first" —
+    /// approval is a separate layer (the Executor's `ApprovalHandler`; see the
+    /// user manual's §9.1 and §9.6), not an ACL condition.
     pub fn from_config(config_path: &Path) -> Result<Self, ModuleError>;
 
     /// Generate a default ACL from scanned modules based on their annotations.
@@ -79,7 +85,9 @@ impl AclManager {
     /// 1. Collect all module_ids where annotations.readonly == true.
     ///    Create rule: allow @external/* to access these modules.
     /// 2. Collect all module_ids where annotations.destructive == true.
-    ///    Create rule: deny @external/* with require_approval condition.
+    ///    Create rule: unconditional deny for @external/*. (Not a
+    ///    `require_approval` condition — apcore does not register that key,
+    ///    so the rule would never match and the command would run.)
     /// 3. All remaining modules: deny by default.
     /// 4. Return ACL with default_effect = Deny.
     pub fn generate_default(modules: &[ScannedModule]) -> ACL;
@@ -122,7 +130,13 @@ pub fn generate_default(modules: &[ScannedModule]) -> ACL {
         });
     }
 
-    // Group 2: Destructive modules -> deny with approval
+    // Group 2: Destructive modules -> unconditional deny.
+    //
+    // Deliberately no `conditions`. `require_approval` is not one of apcore's
+    // five registered condition keys, and an unknown key is treated as
+    // unsatisfied — the rule would never match, so a destructive command
+    // would fall through to the next rule or to `default_effect` and run.
+    // Approval gating lives in the Executor's ApprovalHandler, not the ACL.
     let destructive_ids: Vec<String> = modules.iter()
         .filter(|m| m.annotations.destructive)
         .map(|m| m.module_id.clone())
@@ -134,7 +148,7 @@ pub fn generate_default(modules: &[ScannedModule]) -> ACL {
             targets: destructive_ids,
             effect: Effect::Deny,
             description: Some("Block destructive CLI commands by default".into()),
-            conditions: Some(serde_json::json!({"require_approval": true})),
+            conditions: None,
         });
     }
 
@@ -269,7 +283,7 @@ approval + preview/dry-run) plus the process hygiene above.
 | Test Name | Scenario | Expected |
 |---|---|---|
 | `test_acl_generate_default_readonly_allowed` | 2 readonly modules | Rule with effect=Allow for those module_ids |
-| `test_acl_generate_default_destructive_denied` | 1 destructive module | Rule with effect=Deny and require_approval |
+| `test_acl_generate_default_destructive_denied` | 1 destructive module | Rule with effect=Deny and no `conditions` |
 | `test_acl_generate_default_write_denied` | 1 write module | Rule with effect=Deny |
 | `test_acl_generate_default_mixed` | 3 modules (1 each type) | 3 rules |
 | `test_acl_generate_default_empty` | No modules | ACL with only default deny |
