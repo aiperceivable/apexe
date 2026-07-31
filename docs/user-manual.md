@@ -764,6 +764,14 @@ are all carried through. `--modules-dir` matters most: a client launching
 `apexe serve` without it reads the default `~/.apexe/modules`, so anyone who
 scanned elsewhere would get a server with **no tools at all**.
 
+**Paths are made absolute.** A relative `--modules-dir ./modules` is written
+into the snippet as `/abs/path/to/cwd/modules`, resolved against the directory
+you ran `--show-config` in. The client that later runs the snippet launches
+`apexe` from its own working directory, so a relative path would resolve
+somewhere else entirely — the server would log `Modules directory not found,
+starting with zero tools` and exit 0, and a relative `--acl` would silently
+apply no policy at all.
+
 > **Credentials are never written into a snippet.** `--auth-token` and
 > `--jwt-secret` are excluded by construction, because a config file is shared
 > and often committed. For an HTTP server behind `--auth token`, the snippet

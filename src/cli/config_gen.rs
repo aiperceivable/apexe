@@ -6,6 +6,10 @@
 //! `--prefix`, `--tags`, `--acl` or the governance toggles produced a config
 //! that silently exposed a different (often empty) surface: an operator who
 //! scanned into a non-default directory got a server with no tools at all.
+//!
+//! Carrying the flags across is only half of it — every path in a snippet is
+//! also resolved against apexe's current directory, because the client that
+//! runs the snippet launches `apexe` from its own. See [`path_str`].
 
 use std::path::{Path, PathBuf};
 
@@ -69,13 +73,15 @@ pub struct ServeInvocation {
     /// `--port`, used to address the HTTP transports.
     pub port: u16,
     /// `--modules-dir`: without it a launched server reads the default
-    /// directory, which is empty for anyone who scanned elsewhere.
+    /// directory, which is empty for anyone who scanned elsewhere. Stored as
+    /// the operator typed it and made absolute when rendered — see
+    /// [`path_str`].
     pub modules_dir: Option<PathBuf>,
     /// `--tags` (comma-separated, AND).
     pub tags: Option<String>,
     /// `--prefix`.
     pub prefix: Option<String>,
-    /// `--acl`.
+    /// `--acl`. Made absolute when rendered — see [`path_str`].
     pub acl: Option<PathBuf>,
     /// `--enable-approval`.
     pub enable_approval: bool,
@@ -146,14 +152,16 @@ impl ServeInvocation {
 
     /// Flags that decide *which* modules the server serves at all.
     fn push_surface_flags(&self, args: &mut Vec<String>) {
-        push_value_flag(args, "--modules-dir", path_str(self.modules_dir.as_deref()));
+        let modules_dir = path_str(self.modules_dir.as_deref());
+        push_value_flag(args, "--modules-dir", modules_dir.as_deref());
         push_value_flag(args, "--tags", self.tags.as_deref());
         push_value_flag(args, "--prefix", self.prefix.as_deref());
     }
 
     /// Flags that decide how calls are governed and recorded.
     fn push_governance_flags(&self, args: &mut Vec<String>) {
-        push_value_flag(args, "--acl", path_str(self.acl.as_deref()));
+        let acl = path_str(self.acl.as_deref());
+        push_value_flag(args, "--acl", acl.as_deref());
         push_bool_flag(args, "--enable-approval", self.enable_approval);
         push_bool_flag(args, "--no-logging", self.no_logging);
         push_bool_flag(args, "--no-log-arguments", self.no_log_arguments);
@@ -177,11 +185,28 @@ fn push_bool_flag(args: &mut Vec<String>, flag: &str, enabled: bool) {
     }
 }
 
-/// Render a path for argv. A path that is not valid UTF-8 is dropped rather
-/// than lossily mangled: a wrong directory silently serves the wrong surface,
-/// whereas an absent flag serves the documented default.
-fn path_str(path: Option<&Path>) -> Option<&str> {
-    path.and_then(|p| p.to_str())
+/// Render a path for argv, resolved against apexe's current directory.
+///
+/// A snippet is not executed where it was generated. The MCP client launches
+/// `apexe` from *its own* working directory — Claude Desktop's is `/`, Cursor's
+/// is the workspace root — so `--show-config claude-desktop --modules-dir
+/// ./modules` emitted verbatim points the launched server at a directory that
+/// does not exist. It then logs "Modules directory not found, starting with
+/// zero tools" and exits 0: a server with no tools and no error. `--acl` fails
+/// more quietly still — the file is simply absent, so the governance boundary
+/// is not the one the operator asked for.
+///
+/// `std::path::absolute` rather than `canonicalize`: the target need not exist
+/// yet (the ordinary case for a `--modules-dir` about to be scanned into), and
+/// symlinks stay spelled the way the operator wrote them.
+///
+/// A path that is not valid UTF-8, or that cannot be resolved at all, is
+/// dropped rather than lossily mangled: a wrong directory silently serves the
+/// wrong surface, whereas an absent flag serves the documented default.
+fn path_str(path: Option<&Path>) -> Option<String> {
+    let path = path?;
+    let absolute = std::path::absolute(path).ok()?;
+    absolute.to_str().map(str::to_string)
 }
 
 /// Snippet for a client that launches the server itself.
@@ -327,6 +352,59 @@ mod tests {
                 .any(|w| w == ["--modules-dir", "/srv/apexe/modules"]),
             "args: {args:?}"
         );
+    }
+
+    #[test]
+    fn test_generate_config_makes_relative_paths_absolute() {
+        // The client launches `apexe` from its own working directory, not the
+        // one `--show-config` ran in, so a verbatim `./modules` points the
+        // launched server at a directory that does not exist: it logs
+        // "Modules directory not found, starting with zero tools" and exits 0.
+        let invocation = ServeInvocation {
+            modules_dir: Some(PathBuf::from("./modules")),
+            acl: Some(PathBuf::from("policy/acl.yaml")),
+            ..stdio_invocation()
+        };
+        let args = args_of(
+            &generate_config("claude-desktop", &invocation).unwrap(),
+            "apexe",
+        );
+
+        for flag in ["--modules-dir", "--acl"] {
+            let value = args
+                .windows(2)
+                .find(|w| w[0] == flag)
+                .map(|w| w[1].clone())
+                .unwrap_or_else(|| panic!("{flag} missing from {args:?}"));
+            assert!(
+                Path::new(&value).is_absolute(),
+                "{flag} was emitted relative: {value}"
+            );
+        }
+
+        let cwd = std::env::current_dir().unwrap();
+        assert!(args
+            .windows(2)
+            .any(|w| { w[0] == "--modules-dir" && w[1] == cwd.join("modules").to_str().unwrap() }));
+        assert!(args
+            .windows(2)
+            .any(|w| { w[0] == "--acl" && w[1] == cwd.join("policy/acl.yaml").to_str().unwrap() }));
+    }
+
+    #[test]
+    fn test_generate_config_leaves_absolute_paths_alone() {
+        let invocation = ServeInvocation {
+            modules_dir: Some(PathBuf::from("/srv/apexe/modules")),
+            acl: Some(PathBuf::from("/etc/apexe/acl.yaml")),
+            ..stdio_invocation()
+        };
+        let args = args_of(&generate_config("cursor", &invocation).unwrap(), "apexe");
+        assert!(args
+            .windows(2)
+            .any(|w| w == ["--modules-dir", "/srv/apexe/modules"]));
+        assert!(args
+            .windows(2)
+            .any(|w| w == ["--acl", "/etc/apexe/acl.yaml"]));
     }
 
     #[test]
