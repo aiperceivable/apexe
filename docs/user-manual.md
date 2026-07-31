@@ -735,7 +735,9 @@ carries, but `apexe a2a` (and `apexe serve`) do not yet populate
 today runs as a single implicit anonymous caller. Role-gated ACL rules
 (`conditions: {roles: [...]}`) are therefore not yet reachable over MCP/A2A;
 `--acl` is most useful today for apexe's readonly-allow / destructive-deny
-default policy (§9.1) and the `--enable-approval` human-in-the-loop gate.
+default policy (§9.1), alongside `--enable-approval`, which is an
+unconditional deny gate over `requires_approval` modules rather than a prompt
+(§9.6).
 See [`examples/acl_demo`](../examples/acl_demo/) for a library-level
 demonstration of the same role-based ACL contract, driven directly against
 the `Executor`.

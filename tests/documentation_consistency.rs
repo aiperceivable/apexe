@@ -118,6 +118,12 @@ fn user_manual_describes_approval_as_a_deny_gate() {
         !manual.contains("Sends approval request to MCP client"),
         "docs/user-manual.md's middleware table still promises an approval prompt"
     );
+    // §11 kept calling the flag a "human-in-the-loop gate" long after §9.6 and
+    // the CHANGELOG agreed there is no human in the loop to gate on.
+    assert!(
+        !manual.contains("human-in-the-loop"),
+        "docs/user-manual.md still calls --enable-approval a human-in-the-loop gate"
+    );
 }
 
 /// SSE is refused by default, so no document may present it as an ordinary
