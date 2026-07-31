@@ -11,7 +11,7 @@
 //! | transport | default |
 //! |---|---|
 //! | stdio | no auth — the boundary is the parent/child process relationship, and whatever can spawn apexe already holds the user's privileges |
-//! | HTTP/SSE on loopback | bearer token, generated and printed at startup, so a local dev server needs no secret management |
+//! | HTTP/SSE on loopback | bearer token, generated and written to stderr at startup, so a local dev server needs no secret management |
 //! | HTTP/SSE elsewhere | authentication required; `--auth none` refuses to start without a separate acknowledgement |
 //!
 //! A bearer token is the primary mechanism because the dominant deployment is

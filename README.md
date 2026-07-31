@@ -244,7 +244,8 @@ apexe serve --no-log-arguments                        # Drop argument payloads f
 ```
 
 > HTTP/SSE transports require a bearer token by default; a token is generated
-> and printed at startup on a loopback bind. `--auth none` on a non-loopback
+> and written to stderr at startup on a loopback bind (not through the log
+> pipeline, so `--log-level warn` still shows it). `--auth none` on a non-loopback
 > bind refuses to start without `--allow-unauthenticated-bind`. stdio is
 > unaffected. See [`docs/user-manual.md`](docs/user-manual.md).
 

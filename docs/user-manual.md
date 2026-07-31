@@ -123,7 +123,7 @@ apexe serve [OPTIONS]
 | `--tags <TAGS>` | - | Serve only modules carrying every listed tag (comma-separated, AND) |
 | `--acl <PATH>` | - | Path to ACL policy YAML file (the per-caller boundary) |
 | `--auth <MODE>` | per-transport | `token` (default for HTTP/SSE), `jwt`, or `none`. Ignored for stdio |
-| `--auth-token <VALUE>` | `APEXE_AUTH_TOKEN` | Bearer token for `--auth token`; one is generated and printed if unset |
+| `--auth-token <VALUE>` | `APEXE_AUTH_TOKEN` | Bearer token for `--auth token`; one is generated and written to **stderr** at startup if unset |
 | `--jwt-secret <VALUE>` | `APEXE_JWT_SECRET` | Signing secret for `--auth jwt` |
 | `--allow-unauthenticated-bind` | off | Acknowledge `--auth none` on a non-loopback bind (otherwise refused) |
 | `--allow-deprecated-sse` | off | Permit `--transport sse` despite its cross-client delivery defect |
@@ -561,7 +561,7 @@ defaults:
 | Transport / bind | Default | Why |
 |---|---|---|
 | **stdio** | no auth | The boundary is the parent/child process relationship — whatever can spawn apexe already holds your privileges. A token adds nothing and would break every Claude Desktop / Cursor config. |
-| **HTTP/SSE on `127.0.0.1`** | bearer token, **generated and printed at startup** | Any local process can reach the port, including a page in your browser. You should not have to manage a secret for a local dev server. |
+| **HTTP/SSE on `127.0.0.1`** | bearer token, **generated and written to stderr at startup** | Any local process can reach the port, including a page in your browser. You should not have to manage a secret for a local dev server. |
 | **HTTP/SSE on any other host** | authentication required | apexe wraps arbitrary local binaries. An unauthenticated non-loopback bind is a remote-execution entry point for every executable on the host. |
 
 ```bash
@@ -572,6 +572,13 @@ apexe serve --transport http --auth none                  # loopback only
 apexe serve --transport http --host 0.0.0.0 --auth none \
             --allow-unauthenticated-bind                  # states that you mean it
 ```
+
+A generated token is written **directly to stderr**, not through the log
+pipeline. Two consequences worth relying on: it appears at every `--log-level`,
+including `warn` and `error`, so the server can never demand a credential you
+have no way to read back (`--show-config` omits credentials by construction);
+and it is never written into a log file, journald, or a log aggregator you have
+pointed `tracing` at. The log itself only records *that* token auth is on.
 
 Clients send `Authorization: Bearer <token>`. The Explorer UI's `Authorization`
 field is wired to this — browsing (GET) is open, execution (POST, including

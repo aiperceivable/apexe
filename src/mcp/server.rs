@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::io::Write;
 use std::sync::Arc;
 
 use apcore::{ErrorCode, Executor, ModuleError};
@@ -342,7 +343,7 @@ impl McpServerBuilder {
         let effective_approval_store =
             Self::effective_approval_store(self.enable_approval, &self.approval_store);
         let auth = resolve_auth(&self.transport, &self.host, &self.auth)?;
-        Self::announce_auth(&auth, &self.host, self.port);
+        Self::announce_auth(&auth, &self.host, self.port, &mut std::io::stderr());
 
         let mut builder = APCoreMCP::builder()
             .backend(BackendSource::Executor(executor))
@@ -392,21 +393,39 @@ impl McpServerBuilder {
 
     /// Tell the operator what credential the server expects.
     ///
-    /// A generated token is only useful if it is visible, so it is emitted at
-    /// `info` — the level a server run at defaults actually prints. A token
-    /// supplied by the operator is never echoed back.
-    fn announce_auth(auth: &ResolvedAuth, host: &str, port: u16) {
+    /// The *fact* that a credential is required is an event, so it goes through
+    /// `tracing`. The value of a generated token does not: it is written
+    /// straight to `notice_sink` — in production, stderr. A token supplied by
+    /// the operator is never echoed back at all.
+    ///
+    /// The direct write is deliberate, for two reasons.
+    ///
+    /// It has to be unconditional. `resolve_auth` installs the token whatever
+    /// the log level is, so at `--log-level warn` a `tracing::info!` would be
+    /// dropped while the server still demanded the credential — and no apexe
+    /// command can recover the value afterwards, since `--show-config` omits
+    /// credentials by construction. That is a server nothing can ever call.
+    ///
+    /// It also has to stay off the log pipeline. `tracing` goes wherever the
+    /// operator pointed it — a file, journald, an aggregator — so routing the
+    /// credential that guards a remote-execution surface through it persists
+    /// the secret and often ships it off-host. That is the same concern
+    /// `--no-log-arguments` exists for one layer down.
+    fn announce_auth(auth: &ResolvedAuth, host: &str, port: u16, notice_sink: &mut dyn Write) {
         match auth {
             ResolvedAuth::Disabled => {}
             ResolvedAuth::Token {
                 token, generated, ..
             } => {
                 if *generated {
-                    tracing::info!(
-                        "Bearer token authentication enabled. Connect to http://{host}:{port} \
-                         with header:\n    Authorization: Bearer {token}\n\
-                         Pass --auth-token or set APEXE_AUTH_TOKEN to pin your own value, or \
-                         --auth none to disable."
+                    tracing::info!("Bearer token authentication enabled (token generated)");
+                    // Best-effort: a server that cannot reach stderr should
+                    // still start, and there is no better channel left to
+                    // report the failure on.
+                    let _ = writeln!(
+                        notice_sink,
+                        "{}",
+                        Self::generated_token_notice(token, host, port)
                     );
                 } else {
                     tracing::info!("Bearer token authentication enabled (token supplied)");
@@ -416,6 +435,16 @@ impl McpServerBuilder {
                 tracing::info!("JWT authentication enabled");
             }
         }
+    }
+
+    /// The startup notice for a generated bearer token.
+    fn generated_token_notice(token: &str, host: &str, port: u16) -> String {
+        format!(
+            "Bearer token authentication enabled. Connect to http://{host}:{port} with header:\n\
+             \x20   Authorization: Bearer {token}\n\
+             Pass --auth-token or set APEXE_AUTH_TOKEN to pin your own value, or --auth none to \
+             disable."
+        )
     }
 
     /// Whether `approval_store` should actually be threaded into
@@ -771,5 +800,60 @@ mod tests {
         // OpenAI format has "type": "function" and "function" key
         assert_eq!(tools[0]["type"], "function");
         assert!(tools[0]["function"]["name"].is_string());
+    }
+
+    #[test]
+    fn test_generated_token_notice_carries_the_token_and_endpoint() {
+        let notice = McpServerBuilder::generated_token_notice("deadbeef", "127.0.0.1", 9000);
+        assert!(
+            notice.contains("Authorization: Bearer deadbeef"),
+            "{notice}"
+        );
+        assert!(notice.contains("http://127.0.0.1:9000"), "{notice}");
+        assert!(notice.contains("--auth-token"), "{notice}");
+        assert!(notice.contains("APEXE_AUTH_TOKEN"), "{notice}");
+    }
+
+    fn announce(auth: &ResolvedAuth) -> String {
+        let mut sink: Vec<u8> = Vec::new();
+        McpServerBuilder::announce_auth(auth, "127.0.0.1", 8000, &mut sink);
+        String::from_utf8(sink).expect("the notice is UTF-8")
+    }
+
+    #[test]
+    fn test_announce_auth_writes_a_generated_token_to_the_notice_sink() {
+        // The token must not depend on `tracing`: `resolve_auth` installs it
+        // whatever the log level is, so an `info!` dropped at `--log-level
+        // warn` leaves a server whose credential nothing can recover.
+        let auth = resolve_auth("http", "127.0.0.1", &AuthOptions::default()).unwrap();
+        let ResolvedAuth::Token {
+            ref token,
+            generated,
+            ..
+        } = auth
+        else {
+            panic!("http on loopback defaults to a generated token");
+        };
+        assert!(generated);
+        let expected = token.clone();
+        assert!(announce(&auth).contains(&expected));
+    }
+
+    #[test]
+    fn test_announce_auth_never_echoes_a_supplied_token() {
+        let opts = AuthOptions {
+            token: Some("operator-secret".to_string()),
+            ..AuthOptions::default()
+        };
+        let auth = resolve_auth("http", "127.0.0.1", &opts).unwrap();
+        let notice = announce(&auth);
+        assert!(!notice.contains("operator-secret"), "{notice}");
+        assert!(notice.is_empty(), "{notice}");
+    }
+
+    #[test]
+    fn test_announce_auth_writes_nothing_when_auth_is_disabled() {
+        let auth = resolve_auth("stdio", "127.0.0.1", &AuthOptions::default()).unwrap();
+        assert!(announce(&auth).is_empty());
     }
 }

@@ -329,7 +329,7 @@ pub struct ServeArgs {
     pub auth: Option<String>,
 
     /// Bearer token for `--auth token`. Falls back to APEXE_AUTH_TOKEN; one is
-    /// generated and printed at startup if neither is set.
+    /// generated and written to stderr at startup if neither is set.
     #[arg(long, env = "APEXE_AUTH_TOKEN", hide_env_values = true)]
     pub auth_token: Option<String>,
 
