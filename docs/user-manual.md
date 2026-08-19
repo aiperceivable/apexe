@@ -112,7 +112,7 @@ apexe serve [OPTIONS]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--transport <TYPE>` | `stdio` | Transport: `stdio`, `http`, or `sse` (`sse` needs `--allow-deprecated-sse`) |
+| `--transport <TYPE>` | `stdio` | Transport: `stdio`, `http`, or `sse` (`sse` is deprecated upstream — see §10) |
 | `--host <HOST>` | `127.0.0.1` | Host for HTTP/SSE transports |
 | `--port <PORT>` | `8000` | Port for HTTP/SSE transports (1-65535) |
 | `--explorer` | off | Enable browser-based Tool Explorer UI (HTTP only) |
@@ -126,7 +126,7 @@ apexe serve [OPTIONS]
 | `--auth-token <VALUE>` | `APEXE_AUTH_TOKEN` | Bearer token for `--auth token`; one is generated and written to **stderr** at startup if unset |
 | `--jwt-secret <VALUE>` | `APEXE_JWT_SECRET` | Signing secret for `--auth jwt` |
 | `--allow-unauthenticated-bind` | off | Acknowledge `--auth none` on a non-loopback bind (otherwise refused) |
-| `--allow-deprecated-sse` | off | Permit `--transport sse` despite its cross-client delivery defect |
+| `--allow-deprecated-sse` | off | Accepted and ignored; the defect it acknowledged was fixed in apcore-mcp 0.18. Hidden from `--help`, removal planned |
 | `--enable-approval` | off | **Deny** every call to a `requires_approval` module — see §9.6 |
 | `--no-logging` | off | Disable structured logging middleware entirely |
 | `--no-log-arguments` | off | Drop `inputs`/`output` from every log event, error records included; failures keep a payload-free record |
@@ -540,18 +540,23 @@ There is no CLI flag for this — `apcore-mcp`'s `InMemoryApprovalStore` is docu
 |-----------|----------|---------|
 | **stdio** | Claude Desktop, Cursor (default) | `apexe serve` |
 | **streamable-http** | Remote agents, browser UI | `apexe serve --transport http --port 8000` |
-| **sse** | ⚠️ Deprecated, refused by default | `apexe serve --transport sse --allow-deprecated-sse` |
+| **sse** | ⚠️ Deprecated upstream, but served | `apexe serve --transport sse --port 8000` |
 
-> **`--transport sse` is refused unless you pass `--allow-deprecated-sse`.**
-> apcore-mcp's SSE handler shares one process-global channel across every
-> connection, so responses are delivered round-robin to whichever stream is
-> next: with two clients connected, **one client receives the other's tool
-> output**. It also silently drops one queued message per past disconnect
-> (while still answering `202 Accepted`), and never emits the `event: endpoint`
-> a spec-compliant MCP SSE client waits for. Streamable HTTP
-> (`--transport http`) is unaffected — verified with 50 concurrent
-> `tools/call`s and zero id mismatches. Use SSE only with a single concurrent
-> connection, if at all.
+> **`--transport sse` is deprecated, but it works again and no longer needs an acknowledgement.**
+> apexe used to refuse it: apcore-mcp shared one process-global channel across
+> every connection, so responses went round-robin to whichever stream was next
+> and, with two clients connected, **one client received the other's tool
+> output**. apcore-mcp 0.18 scopes a session per connection and emits the
+> `event: endpoint` a spec-compliant MCP SSE client waits for, so the defect is
+> gone and the refusal went with it. apexe requires `apcore-mcp = "0.18"`, so a
+> build cannot quietly resolve back to the affected 0.17.
+>
+> SSE is still **deprecated upstream** and apexe warns at startup. Prefer
+> `--transport http` (streamable HTTP) for anything new.
+>
+> `--allow-deprecated-sse` is still accepted so existing invocations keep
+> parsing, but it decides nothing and is hidden from `--help`. It will be
+> removed in a later release.
 
 ### Transport Authentication
 

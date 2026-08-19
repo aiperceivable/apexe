@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ## [Unreleased]
 
+### Changed
+
+- **Upgraded to apcore 0.27, apcore-mcp 0.18 and apcore-a2a 0.5, which closes two defects apexe had been working around.** `apcore-cli` moved to 0.10.5 in the same change and had to: 0.10.4 still required apcore 0.26, so the graph carried two incompatible `apcore` versions and apcore-mcp failed to build with `expected apcore::module::ModuleAnnotations, found ModuleAnnotations`. No apexe source change was needed — none of apcore 0.27's breaking changes reach this crate, including `Registry::describe`, whose signature *and* return shape changed without appearing in the upstream changelog at all.
+- **`--transport sse` is served again, and no longer needs an acknowledgement.** ([#27](https://github.com/aiperceivable/apexe/issues/27)) apexe refused it because apcore-mcp shared one process-global channel across every connection: responses went round-robin to whichever stream was next, so with two clients connected **one client received the other's tool output**. apcore-mcp 0.18 scopes a session per connection and emits the `event: endpoint` a spec-compliant client waits for, so the confidentiality defect that justified refusing is gone and the refusal went with it. The `apcore-mcp = "0.18"` requirement is what makes that safe to assume — resolving back to the affected 0.17 would take a manifest edit, not a lockfile drift. SSE remains *deprecated upstream*, so apexe warns at startup and `--transport http` stays the recommendation.
+- **`--allow-deprecated-sse` is now accepted and ignored**, hidden from `--help`, and slated for removal. It shipped as the acknowledgement the refusal required; keeping it parseable means an existing invocation does not start failing at argument parsing for a flag that no longer decides anything. `McpServerBuilder::allow_deprecated_sse` is likewise a no-op that warns when passed `true`.
+
+### Fixed
+
+- **A caller denied by the ACL no longer receives the resolved binary path and argv through `__apcore_module_preview`.** ([#39](https://github.com/aiperceivable/apexe/issues/39) item 4) This is the one #39 item the previous release could not close: `handle_preview` reported `acl: passed=false` and then ran the module preflight and preview anyway. apcore 0.27 implements PROTOCOL_SPEC §12.8.5.1 — an ACL denial must not invoke either hook, must not emit their checks, and must leave `predicted_changes` empty — so the fix arrives with the upgrade rather than from apexe. Verified over stdio against a deny rule: the denied envelope now carries `predicted_changes: []`, checks ending at the failed `acl` entry, and no occurrence of the resolved binary.
+
 Verification of the governance and transport surfaces — the parts never
 exercised over the wire — found that two of the three things documented as
 access control were not access control, that the approval gate could only ever

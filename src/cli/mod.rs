@@ -269,9 +269,8 @@ impl ScanArgs {
 /// Start MCP server for scanned CLI tools.
 #[derive(Debug, clap::Args)]
 pub struct ServeArgs {
-    /// MCP transport type. `sse` is deprecated and refused unless
-    /// `--allow-deprecated-sse` is passed: with more than one concurrent
-    /// connection it delivers one client's tool output to another.
+    /// MCP transport type. `sse` still works but is deprecated upstream --
+    /// prefer `http` (streamable HTTP) for anything new.
     #[arg(long, default_value = "stdio", value_parser = ["stdio", "http", "sse"])]
     pub transport: String,
 
@@ -342,9 +341,10 @@ pub struct ServeArgs {
     #[arg(long)]
     pub allow_unauthenticated_bind: bool,
 
-    /// Permit the deprecated SSE transport despite its cross-client response
-    /// delivery defect. Safe only with a single concurrent connection.
-    #[arg(long)]
+    /// Accepted and ignored. It used to be the acknowledgement `--transport
+    /// sse` required; apcore-mcp 0.18 fixed the defect, so SSE needs none.
+    /// Kept so an existing invocation still parses; will be removed later.
+    #[arg(long, hide = true)]
     pub allow_deprecated_sse: bool,
 
     /// Disable structured logging middleware

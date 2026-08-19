@@ -64,8 +64,8 @@ pub struct McpServerBuilder {
     enable_approval: bool,
     /// Credential required on the HTTP-family transports. See [`crate::auth`].
     auth: AuthOptions,
-    /// Permit the deprecated SSE transport despite its known cross-client
-    /// response delivery defect. See [`Self::resolve_transport`].
+    /// Accepted and ignored. The cross-client delivery defect it acknowledged
+    /// was fixed in apcore-mcp 0.18; see [`Self::allow_deprecated_sse`].
     allow_deprecated_sse: bool,
     /// Enable CircuitBreakerMiddleware (short-circuit a hanging/broken tool).
     enable_circuit_breaker: bool,
@@ -216,8 +216,22 @@ impl McpServerBuilder {
         self
     }
 
-    /// Permit `--transport sse` despite its known defects (default: refused).
+    /// Deprecated no-op, kept so an existing call still compiles.
+    ///
+    /// It used to be the acknowledgement `--transport sse` required, back when
+    /// apcore-mcp delivered one client's responses to another. apcore-mcp 0.18
+    /// scopes a session per connection, so SSE needs no acknowledgement and
+    /// this setting decides nothing. Passing `true` warns; the value is
+    /// otherwise recorded and unused, and the setter will be removed in a later
+    /// release.
     pub fn allow_deprecated_sse(mut self, allowed: bool) -> Self {
+        if allowed {
+            tracing::warn!(
+                "allow_deprecated_sse no longer decides anything: the defect it acknowledged \
+                 was fixed in apcore-mcp 0.18, and SSE is served (with a deprecation warning) \
+                 without it."
+            );
+        }
         self.allow_deprecated_sse = allowed;
         self
     }
@@ -288,38 +302,32 @@ impl McpServerBuilder {
 
     /// Map the user-facing transport name to the apcore-mcp transport string.
     ///
-    /// `sse` is refused unless explicitly permitted. apcore-mcp's SSE handler
-    /// shares one process-global channel across every connection, so responses
-    /// are delivered round-robin to whichever stream is next: with two clients
-    /// connected, one receives the other's tool output. It also drops one
-    /// queued message per past disconnect while still answering
-    /// `202 Accepted`, and never emits the `event: endpoint` a spec-compliant
-    /// MCP SSE client waits for. The framework itself logs
-    /// `SSE transport is deprecated` at startup; given the confidentiality
-    /// impact, refusing by default is the honest reading of that. Streamable
-    /// HTTP (`--transport http`) is unaffected.
+    /// `sse` was refused outright while apcore-mcp shared one process-global
+    /// channel across every connection: responses went round-robin to whichever
+    /// stream was next, so with two clients connected one received the other's
+    /// tool output. apcore-mcp 0.18 scopes a session per connection and emits
+    /// the `event: endpoint` a spec-compliant client waits for, so the
+    /// confidentiality defect that justified refusing is gone — and the refusal
+    /// went with it. The `apcore-mcp = "0.18"` requirement is what makes that
+    /// safe to assume: a build that could resolve the broken 0.17 would need a
+    /// manifest change, not a lockfile drift.
+    ///
+    /// SSE stays *deprecated* upstream — apcore-mcp still says so at startup —
+    /// so it is served with a warning rather than silently, and streamable HTTP
+    /// (`--transport http`) remains the recommendation.
     #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
     fn resolve_transport(&self) -> Result<&'static str, ModuleError> {
         match self.transport.as_str() {
             "stdio" => Ok("stdio"),
             "http" => Ok("streamable-http"),
-            "sse" if self.allow_deprecated_sse => {
+            "sse" => {
                 tracing::warn!(
-                    "SSE transport enabled despite a known confidentiality defect: with more \
-                     than one concurrent connection, one client receives another client's tool \
-                     output. Use a single connection only, or switch to --transport http."
+                    "The SSE transport is deprecated upstream; prefer --transport http \
+                     (streamable HTTP). The cross-client response delivery defect that made \
+                     apexe refuse this transport was fixed in apcore-mcp 0.18."
                 );
                 Ok("sse")
             }
-            "sse" => Err(ModuleError::new(
-                ErrorCode::GeneralInvalidInput,
-                "The SSE transport is deprecated and unsafe with more than one concurrent \
-                 connection: responses are delivered round-robin across every open stream, so \
-                 one client receives another client's tool output. Use `--transport http` \
-                 (streamable HTTP), which is unaffected. If you accept the risk on a \
-                 single-client server, pass `--allow-deprecated-sse`."
-                    .to_string(),
-            )),
             other => Err(ModuleError::new(
                 ErrorCode::GeneralInvalidInput,
                 format!("Unsupported transport: {other}"),
@@ -714,30 +722,40 @@ mod tests {
     }
 
     #[test]
-    fn test_mcp_server_builder_refuses_sse_by_default() {
-        // Regression for #27: SSE shares one process-global channel across
-        // every connection, so one client receives another's tool output.
+    fn test_mcp_server_builder_serves_sse_without_an_acknowledgement() {
+        // apexe refused SSE outright while apcore-mcp delivered one client's
+        // responses to another (#27). apcore-mcp 0.18 scopes a session per
+        // connection, so the refusal — and the flag that opted out of it — no
+        // longer have a defect to guard.
         let result = McpServerBuilder::new().transport("sse").build();
-        let err = result.err().expect("sse must be refused by default");
-        assert_eq!(err.code, ErrorCode::GeneralInvalidInput);
         assert!(
-            err.message.contains("--allow-deprecated-sse"),
-            "error should name the opt-out: {}",
-            err.message
+            result.is_ok(),
+            "sse must build without an acknowledgement: {:?}",
+            result.err()
         );
     }
 
     #[test]
-    fn test_mcp_server_builder_allows_sse_when_acknowledged() {
+    fn test_mcp_server_builder_still_accepts_the_retired_sse_acknowledgement() {
+        // The setter shipped, so an existing call must keep compiling and
+        // building; it simply decides nothing now.
         let result = McpServerBuilder::new()
             .transport("sse")
             .allow_deprecated_sse(true)
             .build();
-        assert!(
-            result.is_ok(),
-            "acknowledged sse should build: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[test]
+    fn test_mcp_server_builder_still_rejects_an_unknown_transport() {
+        // Relaxing sse must not turn `resolve_transport` into a passthrough.
+        let err = McpServerBuilder::new()
+            .transport("carrier-pigeon")
+            .build()
+            .err()
+            .expect("an unknown transport must still be refused");
+        assert_eq!(err.code, ErrorCode::GeneralInvalidInput);
+        assert!(err.message.contains("Unsupported transport"));
     }
 
     #[test]

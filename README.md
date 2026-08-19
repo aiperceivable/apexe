@@ -233,7 +233,7 @@ Start MCP server for scanned tools.
 apexe serve                                         # stdio (default)
 apexe serve --transport http --port 8000             # HTTP
 apexe serve --transport http --port 8000 --explorer  # HTTP + browser UI
-apexe serve --transport sse --allow-deprecated-sse   # Server-Sent Events (deprecated, unsafe with >1 client)
+apexe serve --transport sse --port 8000              # Server-Sent Events (deprecated upstream; prefer http)
 apexe serve --show-config claude-desktop             # Print integration config (carries the other flags; never a credential)
 apexe serve --name my-tools                          # Custom server name
 apexe serve --transport http --metrics                # + /metrics (Prometheus) and /usage

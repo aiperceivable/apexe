@@ -154,20 +154,22 @@ async fn test_user_manual_describes_approval_as_a_deny_gate() {
     );
 }
 
-/// SSE is refused by default, so no document may present it as an ordinary
-/// option: with two clients connected, one receives the other's tool output.
+/// SSE is served again — apcore-mcp 0.18 scoped a session per connection, so
+/// the cross-client delivery defect that made apexe refuse it is gone. It is
+/// still deprecated upstream, so no document may present it without saying so.
 ///
-/// The refusal is exercised first — a document is only required to carry the
-/// caveat for as long as the builder actually enforces it.
+/// The builder is exercised first, in the direction that now holds: a document
+/// is required to carry the caveat only for as long as apexe actually serves
+/// the transport. If SSE were refused again, this test would fail here rather
+/// than silently keep asserting prose about a transport nobody can reach.
 #[test]
 fn test_every_document_marks_sse_as_deprecated() {
-    let Err(err) = apexe::mcp::McpServerBuilder::new().transport("sse").build() else {
-        panic!("SSE must be refused without --allow-deprecated-sse");
-    };
     assert!(
-        err.message.contains("--allow-deprecated-sse"),
-        "the refusal must name the acknowledgement flag: {}",
-        err.message
+        apexe::mcp::McpServerBuilder::new()
+            .transport("sse")
+            .build()
+            .is_ok(),
+        "SSE must build without an acknowledgement flag"
     );
 
     for (name, text) in [
@@ -178,12 +180,31 @@ fn test_every_document_marks_sse_as_deprecated() {
         ("docs/quickstart.md", include_str!("../docs/quickstart.md")),
         ("README.md", include_str!("../README.md")),
     ] {
-        for line in text.lines().filter(|l| l.contains("--transport sse")) {
+        // The caveat may sit on the mention itself (a table cell, a sentence) or
+        // on the line immediately above it — these documents introduce a command
+        // with a comment and open a callout with a headline. A reader sees both,
+        // so both count; anything further away does not.
+        let lines: Vec<&str> = text.lines().collect();
+        let mut mentions = 0usize;
+        for (index, line) in lines.iter().enumerate() {
+            if !line.contains("--transport sse") {
+                continue;
+            }
+            mentions += 1;
+            let window = match index {
+                0 => line.to_lowercase(),
+                _ => format!("{}\n{}", lines[index - 1], line).to_lowercase(),
+            };
             assert!(
-                line.contains("--allow-deprecated-sse") || line.contains("deprecated"),
+                window.contains("deprecated"),
                 "{name} presents `--transport sse` without its caveat: {line}"
             );
         }
+        assert!(
+            mentions > 0,
+            "{name} no longer mentions `--transport sse` at all — this guard has \
+             stopped guarding anything; re-anchor it on whatever spelling replaced it"
+        );
     }
 }
 
