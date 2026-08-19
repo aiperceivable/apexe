@@ -139,9 +139,9 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "apcore"
-version = "0.26.0"
+version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0540f2ef65ce703a0b3333f90fced308ea97bd32f688c8ac062e3cbe53ba021"
+checksum = "fd17584d52a9de89ec2fb204bb8819f8379cc3ab8f68c47209f5cbf572f61952"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -167,9 +167,9 @@ dependencies = [
 
 [[package]]
 name = "apcore-a2a"
-version = "0.4.4"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8d1ed7dccab36b960131f386c910bb4b43519cedfe2c31a5a4078174d06df07"
+checksum = "a32c7ac90165cb60fc121b4d7a0b7467fd2f6a3f88e0f54a71097e0b6b7f7422"
 dependencies = [
  "apcore",
  "apcore-toolkit",
@@ -198,9 +198,9 @@ dependencies = [
 
 [[package]]
 name = "apcore-cli"
-version = "0.10.4"
+version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c9e4702a4029b42a7bc709487a1298360cfaf2a39165619c83777b5466a5e09"
+checksum = "4d80274dd6b44e4c40d8c03fd0b52a8c0860b1804a61176a9ab2b9626eb44b85"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -234,9 +234,9 @@ dependencies = [
 
 [[package]]
 name = "apcore-mcp"
-version = "0.17.2"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72bc6db92403cc603b8b5b8d3021a706186dc98ca499738504db3b94a10b2e5e"
+checksum = "3c26ff07f9c76367a50feccf656094a56cfb11d082431eca779f388537be5d51"
 dependencies = [
  "apcore",
  "apcore-toolkit",
@@ -1114,7 +1114,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2306,7 +2306,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3025,7 +3025,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3518,7 +3518,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4287,7 +4287,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
