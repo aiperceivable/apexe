@@ -574,3 +574,56 @@ fn test_mcp_serve_accepts_acl_targeting_the_registered_module() {
         "a correct ACL must load"
     );
 }
+
+/// `x-sensitive` must survive the write to disk, not just the schema builder.
+///
+/// Redaction is schema-driven and the schema travels in the binding file, so
+/// the marker only protects anything if it is still there when the file is
+/// read back. Every existing test stops at `build_input_schema`, which leaves
+/// the link that actually matters — scan → YAML → load → redact — unguarded:
+/// a write path that dropped the annotation would keep all of them green while
+/// every credential went to the log verbatim.
+///
+/// This is also what the manual's re-scan instruction rests on. §11 tells an
+/// operator that a binding scanned before the marker existed logs credentials
+/// and that re-scanning fixes it; that is only true while a fresh scan really
+/// does write the marker.
+#[test]
+fn test_sensitive_marker_survives_the_write_to_a_binding_file() {
+    use apexe::models::{ScannedFlag, ValueType};
+
+    let dir = TempDir::new().unwrap();
+    let tool = ScannedCLITool {
+        name: "fetch".to_string(),
+        description: "Fetch a URL".to_string(),
+        binary_path: "/usr/bin/true".to_string(),
+        global_flags: vec![ScannedFlag {
+            long_name: Some("--user".to_string()),
+            description: "Server user and password.".to_string(),
+            value_type: ValueType::String,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let modules = CliToolConverter::new().convert(&tool);
+    YamlOutput::without_verification()
+        .write(&modules, dir.path(), false)
+        .expect("binding should be written");
+
+    let written: String = std::fs::read_dir(dir.path())
+        .expect("the output directory exists")
+        .filter_map(Result::ok)
+        .map(|entry| std::fs::read_to_string(entry.path()).unwrap_or_default())
+        .collect();
+
+    assert!(
+        written.contains("--user"),
+        "the credential-bearing flag must reach the binding: {written}"
+    );
+    assert!(
+        written.contains("x-sensitive"),
+        "the marker apcore redacts on must survive the write, or redaction is \
+         inert for every scanned tool: {written}"
+    );
+}

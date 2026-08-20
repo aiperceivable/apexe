@@ -356,3 +356,104 @@ fn test_scan_fails_outright_when_no_tool_can_be_scanned() {
         .failure()
         .stderr(predicate::str::contains("No tool could be scanned"));
 }
+
+// --------------------------------------------------------------------------
+// A non-zero exit is not an MCP error (issue #39.2)
+// --------------------------------------------------------------------------
+
+/// The manual's `isError` claim must survive an apcore-mcp bump.
+///
+/// §11 tells a reader that a wrapped command exiting non-zero comes back as an
+/// ordinary successful tool result — `isError: false`, with the real outcome in
+/// `exit_code` inside `content[0].text` — and that keying on `isError` instead
+/// lands them in exactly the trap the section warns about. `grep` exits 1 when
+/// it finds nothing and `diff` exits 1 when files differ; reporting those as
+/// failed tool calls would be wrong.
+///
+/// That is a claim about **apcore-mcp's** envelope, not about apexe, and it had
+/// no guard: a change to how upstream maps a module result would leave the
+/// manual quietly wrong. It also depends on apexe's own half — `CliModule`
+/// returning `Ok` for a non-zero exit rather than an error — so either side can
+/// break it.
+///
+/// Driven through the real binary over stdio, because the envelope only exists
+/// at the transport: `Executor::call` returns the payload without it.
+#[test]
+fn test_a_non_zero_exit_is_not_reported_as_an_mcp_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let modules = tmp.path().join("modules");
+    std::fs::create_dir_all(&modules).unwrap();
+    // `/usr/bin/false` exits 1 and prints nothing, which is the whole case:
+    // a command that ran correctly and reported a non-zero result.
+    std::fs::write(
+        modules.join("cli.false.binding.yaml"),
+        "spec_version: '1.0'\n\
+         bindings:\n\
+         - module_id: cli.false\n\
+         \x20 target: exec:///usr/bin/false\n\
+         \x20 description: Always exit non-zero\n\
+         \x20 version: '1.0.0'\n\
+         \x20 tags: [cli]\n\
+         \x20 input_schema:\n\
+         \x20   type: object\n\
+         \x20   properties: {}\n\
+         \x20   additionalProperties: false\n\
+         \x20 output_schema:\n\
+         \x20   type: object\n",
+    )
+    .unwrap();
+
+    let session = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"cli.false","arguments":{}}}"#,
+        "\n",
+    );
+
+    let output = Command::cargo_bin("apexe")
+        .unwrap()
+        .args([
+            "serve",
+            "--transport",
+            "stdio",
+            "--modules-dir",
+            modules.to_str().unwrap(),
+        ])
+        .write_stdin(session)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("MCP responses are UTF-8");
+    let call: serde_json::Value = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|message| message["id"] == 5)
+        .expect("the tools/call response must arrive");
+
+    let result = &call["result"];
+    assert_eq!(
+        result["isError"], false,
+        "a command that ran and exited non-zero is a successful call: {result}"
+    );
+
+    // The real outcome is inside the content, as a JSON string — the manual
+    // shows this shape because `exit_code` is not a sibling of `isError`.
+    let text = result["content"][0]["text"]
+        .as_str()
+        .expect("the payload rides in content[0].text");
+    let payload: serde_json::Value =
+        serde_json::from_str(text).expect("content[0].text is a JSON document");
+    assert_eq!(
+        payload["exit_code"], 1,
+        "the non-zero exit must be readable where the manual says it is: {payload}"
+    );
+    assert!(
+        payload.get("ai_guidance").is_some(),
+        "a non-zero exit must carry guidance a caller can self-correct from: {payload}"
+    );
+}

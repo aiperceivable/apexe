@@ -730,8 +730,22 @@ forever.
 > `inputs` and `output` at INFO. Redaction is schema-driven: the scanner marks
 > credential-bearing options (`curl --user`, `--oauth2-bearer`, `--header`, key
 > and certificate paths, and their equivalents) with `x-sensitive: true`, and
-> those values are replaced before anything is written. A heuristic cannot be
-> exhaustive over every wrapped tool's option set — a request body (`curl
+> those values are replaced before anything is written.
+>
+> **The marker lives in the binding file, so a binding scanned before the
+> release that introduced it carries none and redacts nothing.** Redaction is not retroactive: it is
+> the scanner that writes `x-sensitive`, and upgrading apexe does not rewrite
+> bindings already on disk. Check with
+>
+> ```bash
+> grep -L x-sensitive ~/.apexe/modules/*.yaml
+> ```
+>
+> — every file listed still logs credentials verbatim. Re-scan those tools
+> (`apexe scan <tool> --no-cache`) to pick the marker up, or run with
+> `--no-log-arguments` until you have.
+>
+> A heuristic cannot be exhaustive over every wrapped tool's option set — a request body (`curl
 > --data`) and a key sitting in a URL's query string announce themselves in no
 > schema — so if you pass secrets through options apexe may not recognize, run
 > with `--no-log-arguments`.
