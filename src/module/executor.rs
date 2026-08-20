@@ -804,16 +804,92 @@ fn is_allowed_env(key: &str) -> bool {
     ENV_ALLOWLIST.contains(&key) || key.starts_with("LC_")
 }
 
+/// Report a failure to run or communicate with a wrapped binary.
+fn execute_error(binary_path: &str, doing: &str, cause: impl std::fmt::Display) -> ModuleError {
+    ModuleError::new(
+        ErrorCode::ModuleExecuteError,
+        format!("Failed to {doing} '{binary_path}': {cause}"),
+    )
+}
+
+/// Spawn `binary_path` with a scrubbed environment and piped streams.
+///
+/// The environment is cleared and rebuilt from [`ENV_ALLOWLIST`], so secrets in
+/// apexe's own environment do not leak to — or get surfaced by — the wrapped
+/// tool. `stdin` is `/dev/null` so a tool that waits for input fails fast
+/// instead of hanging, and `kill_on_drop` is what makes the caller's timeout
+/// actually kill the process rather than leave an orphan.
+///
+/// The `kill_on_drop` guarantee is covered by
+/// `test_execute_subprocess_kills_the_child_when_the_timeout_elapses`. The
+/// `stdin` one deliberately is not: `cargo test` already hands the harness a
+/// non-terminal stdin, so a child inheriting it behaves exactly like one given
+/// `/dev/null` and no assertion can tell the two apart. A test that passes with
+/// the line removed would report coverage it does not have.
+#[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+fn spawn_isolated(
+    binary_path: &str,
+    args: &[String],
+) -> Result<tokio::process::Child, ModuleError> {
+    let mut command = Command::new(binary_path);
+    command
+        .args(args)
+        .env_clear()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    for (key, value) in std::env::vars() {
+        if is_allowed_env(&key) {
+            command.env(key, value);
+        }
+    }
+    command
+        .spawn()
+        .map_err(|e| execute_error(binary_path, "execute", e))
+}
+
+/// Drain both pipes and the exit status, capping each stream.
+///
+/// One extra byte past the cap is read so truncation can be detected. The three
+/// are driven concurrently because reading one stream to completion while the
+/// other stays unread deadlocks the child once its pipe buffer fills.
+#[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+async fn collect_output(
+    child: &mut tokio::process::Child,
+    binary_path: &str,
+    max_output_bytes: usize,
+) -> Result<SubprocessOutput, ModuleError> {
+    let read_cap = max_output_bytes.saturating_add(1);
+    let mut stdout_pipe = child.stdout.take().expect("stdout was piped");
+    let mut stderr_pipe = child.stderr.take().expect("stderr was piped");
+    let (stdout_bytes, stderr_bytes, status) = tokio::join!(
+        read_up_to(&mut stdout_pipe, read_cap),
+        read_up_to(&mut stderr_pipe, read_cap),
+        child.wait(),
+    );
+
+    let stdout_bytes = stdout_bytes.map_err(|e| execute_error(binary_path, "read stdout of", e))?;
+    let stderr_bytes = stderr_bytes.map_err(|e| execute_error(binary_path, "read stderr of", e))?;
+    let status = status.map_err(|e| execute_error(binary_path, "wait on", e))?;
+
+    let (stdout, stdout_truncated) = truncate_output(&stdout_bytes, max_output_bytes);
+    let (stderr, stderr_truncated) = truncate_output(&stderr_bytes, max_output_bytes);
+    Ok(SubprocessOutput {
+        stdout,
+        stderr,
+        exit_code: status.code().unwrap_or(-1),
+        stdout_truncated,
+        stderr_truncated,
+    })
+}
+
 /// Execute a subprocess with a timeout, capturing stdout/stderr.
 ///
 /// Runs the given binary with args directly (no shell), optionally appending
-/// json_flag parts. The environment is scrubbed to [`ENV_ALLOWLIST`] so secrets
-/// in apexe's own environment do not leak to the wrapped tool. Captured
-/// stdout/stderr are each capped at `max_output_bytes` to bound memory use
-/// against runaway output; stdout, stderr, and the exit status are collected
-/// concurrently to avoid pipe deadlock. The child has `kill_on_drop` set, so if
-/// `timeout_ms` elapses the process is actually killed rather than left running
-/// as an orphan.
+/// json_flag parts. See [`spawn_isolated`] for the environment scrubbing and
+/// [`collect_output`] for the output caps and the concurrent drain that avoids
+/// pipe deadlock.
 #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
 pub async fn execute_subprocess(
     binary_path: &str,
@@ -824,79 +900,15 @@ pub async fn execute_subprocess(
 ) -> Result<SubprocessOutput, ModuleError> {
     let mut full_args: Vec<String> = args.to_vec();
     if let Some(flag) = json_flag {
-        for part in shell_words::split(flag).unwrap_or_default() {
-            full_args.push(part);
-        }
+        full_args.extend(shell_words::split(flag).unwrap_or_default());
     }
 
-    let timeout_duration = std::time::Duration::from_millis(timeout_ms);
-
     let run = async {
-        let mut command = Command::new(binary_path);
-        command
-            .args(&full_args)
-            .env_clear()
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        // Re-add only allowlisted environment variables (scrub secrets).
-        for (key, value) in std::env::vars() {
-            if is_allowed_env(&key) {
-                command.env(key, value);
-            }
-        }
-        let mut child = command.spawn().map_err(|e| {
-            ModuleError::new(
-                ErrorCode::ModuleExecuteError,
-                format!("Failed to execute '{}': {}", binary_path, e),
-            )
-        })?;
-
-        // Read one extra byte past the cap so truncation can be detected,
-        // and drive stdout/stderr/wait concurrently: reading each stream
-        // sequentially while the other stays unread can deadlock the child
-        // once its pipe buffer fills.
-        let read_cap = max_output_bytes.saturating_add(1);
-        let mut stdout_pipe = child.stdout.take().expect("stdout was piped");
-        let mut stderr_pipe = child.stderr.take().expect("stderr was piped");
-        let (stdout_bytes, stderr_bytes, status) = tokio::join!(
-            read_up_to(&mut stdout_pipe, read_cap),
-            read_up_to(&mut stderr_pipe, read_cap),
-            child.wait(),
-        );
-
-        let stdout_bytes = stdout_bytes.map_err(|e| {
-            ModuleError::new(
-                ErrorCode::ModuleExecuteError,
-                format!("Failed to read stdout of '{binary_path}': {e}"),
-            )
-        })?;
-        let stderr_bytes = stderr_bytes.map_err(|e| {
-            ModuleError::new(
-                ErrorCode::ModuleExecuteError,
-                format!("Failed to read stderr of '{binary_path}': {e}"),
-            )
-        })?;
-        let status = status.map_err(|e| {
-            ModuleError::new(
-                ErrorCode::ModuleExecuteError,
-                format!("Failed to wait on '{binary_path}': {e}"),
-            )
-        })?;
-
-        let (stdout, stdout_truncated) = truncate_output(&stdout_bytes, max_output_bytes);
-        let (stderr, stderr_truncated) = truncate_output(&stderr_bytes, max_output_bytes);
-
-        Ok::<SubprocessOutput, ModuleError>(SubprocessOutput {
-            stdout,
-            stderr,
-            exit_code: status.code().unwrap_or(-1),
-            stdout_truncated,
-            stderr_truncated,
-        })
+        let mut child = spawn_isolated(binary_path, &full_args)?;
+        collect_output(&mut child, binary_path, max_output_bytes).await
     };
 
+    let timeout_duration = std::time::Duration::from_millis(timeout_ms);
     match tokio::time::timeout(timeout_duration, run).await {
         Ok(result) => result,
         // `retryable` is deliberately left unset here: a killed process may
@@ -1964,6 +1976,35 @@ mod tests {
         assert!(!is_allowed_env("GH_TOKEN"));
         assert!(!is_allowed_env("OPENAI_API_KEY"));
         assert!(!is_allowed_env("CARGO_PKG_NAME"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_subprocess_kills_the_child_when_the_timeout_elapses() {
+        // §9.3 promises the process is "actually terminated rather than left
+        // running as an orphan" — the guarantee that makes a timed-out
+        // `rm -rf` stop deleting, and the premise `CliModule::execute` reasons
+        // about when it decides whether a timeout is safe to retry. It rests
+        // entirely on `kill_on_drop(true)`, and flipping that to false broke no
+        // test: the timeout error is produced by the outer `tokio::time::
+        // timeout` either way, so nothing observed the child again.
+        //
+        // A surviving orphan is observable through its side effect: the child
+        // touches a file after the timeout has already fired.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let marker = tmp.path().join("orphan-ran");
+        let script = format!("sleep 1; : > {}", marker.display());
+
+        let error = execute_subprocess("sh", &["-c".to_string(), script], None, 150, 4096)
+            .await
+            .expect_err("the command must time out");
+        assert_eq!(error.code, ErrorCode::ModuleTimeout);
+
+        // Past the child's own sleep, so an unkilled one would have finished.
+        tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
+        assert!(
+            !marker.exists(),
+            "the timed-out child kept running and completed its side effect"
+        );
     }
 
     #[tokio::test]

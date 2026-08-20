@@ -88,90 +88,102 @@ fn extract_click_description(help_text: &str) -> String {
     desc.chars().take(200).collect()
 }
 
-fn extract_click_flags(help_text: &str) -> Vec<ScannedFlag> {
-    // Click format: "  --flag TEXT  Description"
-    // Or: "  -f, --flag TEXT  Description"
-    // Also: "  --flag / --no-flag  Description" for boolean toggles
+/// Build the boolean flag a `--flag / --no-flag` toggle line describes.
+fn toggle_flag(long_name: String, description: String) -> ScannedFlag {
+    ScannedFlag {
+        long_name: Some(long_name),
+        short_name: None,
+        description,
+        value_type: ValueType::Boolean,
+        required: false,
+        default: None,
+        enum_values: None,
+        repeatable: false,
+        value_name: None,
+        ..Default::default()
+    }
+}
 
+/// Build the flag one `-f, --flag TEXT  Description` line describes.
+///
+/// Click states the default, the choice list and whether the option is required
+/// inside the description prose rather than in the signature, so all three are
+/// recovered from `description` rather than from the capture groups.
+fn value_flag(
+    short_name: Option<String>,
+    long_name: Option<String>,
+    type_str: Option<&str>,
+    description: String,
+) -> ScannedFlag {
+    let default = DEFAULT_RE
+        .captures(&description)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().trim().to_string());
+
+    let enum_values = ENUM_RE
+        .captures(&description)
+        .and_then(|c| c.get(1))
+        .map(|m| {
+            m.as_str()
+                .split('|')
+                .map(|s| s.trim().to_string())
+                .collect::<Vec<_>>()
+        });
+
+    // A choice list is the stronger statement: it names the accepted values,
+    // where the placeholder only names their shape.
+    let value_type = if enum_values.is_some() {
+        ValueType::Enum
+    } else {
+        // One table for the whole scanner; see `scanner::value_placeholder`.
+        crate::scanner::value_placeholder::flag_value_type(type_str)
+    };
+
+    ScannedFlag {
+        long_name,
+        short_name,
+        required: REQUIRED_RE.is_match(&description),
+        description,
+        value_type,
+        default,
+        enum_values,
+        repeatable: false,
+        value_name: type_str.map(|s| s.trim_matches('<').trim_matches('>').to_string()),
+        ..Default::default()
+    }
+}
+
+/// Extract flags from Click's OPTIONS block.
+///
+/// Two passes over the same text: `--flag / --no-flag` boolean toggles first,
+/// then ordinary options. The toggles go first because a toggle's two halves
+/// also match the ordinary pattern, and `seen` is what stops the second pass
+/// re-reporting them.
+fn extract_click_flags(help_text: &str) -> Vec<ScannedFlag> {
     let mut flags = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // Handle toggle flags first
     for cap in TOGGLE_RE.captures_iter(help_text) {
         let long_name = format!("--{}", &cap[2]);
         if !seen.insert(long_name.clone()) {
             continue;
         }
-        let description = cap[4].trim().to_string();
-        flags.push(ScannedFlag {
-            long_name: Some(long_name),
-            short_name: None,
-            description,
-            value_type: ValueType::Boolean,
-            required: false,
-            default: None,
-            enum_values: None,
-            repeatable: false,
-            value_name: None,
-            ..Default::default()
-        });
+        flags.push(toggle_flag(long_name, cap[4].trim().to_string()));
     }
 
     for cap in FLAG_RE.captures_iter(help_text) {
-        let short_name = cap.get(2).map(|m| format!("-{}", m.as_str()));
-        let long_name = Some(format!("--{}", &cap[4]));
-        let type_str = cap.get(5).map(|m| m.as_str());
-        let description = cap
-            .get(6)
-            .map(|m| m.as_str().trim().to_string())
-            .unwrap_or_default();
-
-        if let Some(ref ln) = long_name {
-            if !seen.insert(ln.clone()) {
-                continue;
-            }
+        let long_name = format!("--{}", &cap[4]);
+        if !seen.insert(long_name.clone()) {
+            continue;
         }
-
-        // One table for the whole scanner; see `scanner::value_placeholder`.
-        let value_type = crate::scanner::value_placeholder::flag_value_type(type_str);
-
-        let default = DEFAULT_RE
-            .captures(&description)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().trim().to_string());
-
-        let enum_values = ENUM_RE
-            .captures(&description)
-            .and_then(|c| c.get(1))
-            .map(|m| {
-                m.as_str()
-                    .split('|')
-                    .map(|s| s.trim().to_string())
-                    .collect::<Vec<_>>()
-            });
-
-        let required = REQUIRED_RE.is_match(&description);
-
-        let actual_type = if enum_values.is_some() {
-            ValueType::Enum
-        } else {
-            value_type
-        };
-
-        let value_name = type_str.map(|s| s.trim_matches('<').trim_matches('>').to_string());
-
-        flags.push(ScannedFlag {
-            long_name,
-            short_name,
-            description,
-            value_type: actual_type,
-            required,
-            default,
-            enum_values,
-            repeatable: false,
-            value_name,
-            ..Default::default()
-        });
+        flags.push(value_flag(
+            cap.get(2).map(|m| format!("-{}", m.as_str())),
+            Some(long_name),
+            cap.get(5).map(|m| m.as_str()),
+            cap.get(6)
+                .map(|m| m.as_str().trim().to_string())
+                .unwrap_or_default(),
+        ));
     }
 
     flags

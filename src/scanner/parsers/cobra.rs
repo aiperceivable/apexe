@@ -106,21 +106,16 @@ fn extract_available_commands(help_text: &str) -> Vec<String> {
     names
 }
 
-fn extract_cobra_flags(help_text: &str, section_header: &str) -> Vec<ScannedFlag> {
-    // Cobra format: "  -f, --flag type   Description"
-    // Or: "      --flag type   Description"
-    // The section header is caller-supplied ("Flags:" / "Global Flags:"), so
-    // this small anchor regex stays dynamic; the expensive flag regex is shared.
+/// Slice out the text under `section_header`, up to the next unindented line.
+///
+/// The section header is caller-supplied ("Flags:" / "Global Flags:"), so this
+/// small anchor regex stays dynamic; the expensive flag regex is shared.
+/// Returns `None` when the tool prints no such section.
+fn cobra_section_content<'a>(help_text: &'a str, section_header: &str) -> Option<&'a str> {
     let section_re = Regex::new(&format!(r"(?m)^{}$", regex::escape(section_header))).unwrap();
-
-    let mut flags = Vec::new();
-
-    let section_start = match section_re.find(help_text) {
-        Some(m) => m.end(),
-        None => return flags,
-    };
-
+    let section_start = section_re.find(help_text)?.end();
     let section_text = &help_text[section_start..];
+
     let section_end = section_text
         .lines()
         .skip(1) // skip the blank line after header
@@ -140,48 +135,60 @@ fn extract_cobra_flags(help_text: &str, section_header: &str) -> Vec<ScannedFlag
         })
         .unwrap_or(section_text.len());
 
-    let section_content = &section_text[..section_end];
+    Some(&section_text[..section_end])
+}
 
+/// Map Cobra's own type words onto apexe's value types.
+///
+/// A flag with no type word is a boolean — that is how Cobra prints a switch.
+/// Anything unrecognised is treated as a string, which is the safe direction:
+/// it takes a value, and apexe does not have to know its shape to pass it on.
+fn cobra_value_type(type_str: Option<&str>) -> ValueType {
+    match type_str {
+        Some("string") | Some("stringSlice") | Some("stringArray") => ValueType::String,
+        Some("int") | Some("uint") => ValueType::Integer,
+        Some("float") => ValueType::Float,
+        Some("bool") => ValueType::Boolean,
+        Some("duration") => ValueType::String,
+        None => ValueType::Boolean,
+        _ => ValueType::String,
+    }
+}
+
+/// Extract flags from one Cobra help section.
+///
+/// Cobra prints `  -f, --flag type   Description`, or `      --flag type
+/// Description` for an option with no short form.
+fn extract_cobra_flags(help_text: &str, section_header: &str) -> Vec<ScannedFlag> {
+    let Some(section_content) = cobra_section_content(help_text, section_header) else {
+        return Vec::new();
+    };
+
+    let mut flags = Vec::new();
     for cap in FLAG_RE.captures_iter(section_content) {
-        let short_name = cap.get(2).map(|m| format!("-{}", m.as_str()));
-        let long_name = Some(format!("--{}", &cap[4]));
         let type_str = cap.get(5).map(|m| m.as_str());
         let description = cap
             .get(6)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
-
-        let value_type = match type_str {
-            Some("string") | Some("stringSlice") | Some("stringArray") => ValueType::String,
-            Some("int") | Some("uint") => ValueType::Integer,
-            Some("float") => ValueType::Float,
-            Some("bool") => ValueType::Boolean,
-            Some("duration") => ValueType::String,
-            None => ValueType::Boolean,
-            _ => ValueType::String,
-        };
-
         let default = DEFAULT_RE
             .captures(&description)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().trim().trim_matches('"').to_string());
 
-        let value_name = type_str.map(|s| s.to_string());
-
         flags.push(ScannedFlag {
-            long_name,
-            short_name,
+            long_name: Some(format!("--{}", &cap[4])),
+            short_name: cap.get(2).map(|m| format!("-{}", m.as_str())),
             description,
-            value_type,
+            value_type: cobra_value_type(type_str),
             required: false,
             default,
             enum_values: None,
             repeatable: false,
-            value_name,
+            value_name: type_str.map(|s| s.to_string()),
             ..Default::default()
         });
     }
-
     flags
 }
 
