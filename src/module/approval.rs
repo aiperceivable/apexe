@@ -128,27 +128,27 @@ impl ApprovalGate {
         }
     }
 
-    /// Record a refusal, using the trace and identity the request carries.
-    fn audit_refusal(&self, request: &ApprovalRequest) {
+    /// Record one approval-gate refusal.
+    ///
+    /// `duration_ms` is 0: the gate runs before anything is timed, and inventing
+    /// an elapsed time for a call that never started would be worse than
+    /// reporting none.
+    fn audit_refusal(&self, module_id: &str, trace_id: &str, caller_id: Option<&str>) {
         let Some(ref audit) = self.audit else {
             return;
         };
-        // `duration_ms` is 0: the gate runs before anything is timed, and
-        // inventing an elapsed time for a call that never started would be
-        // worse than reporting none.
-        audit.log_refusal(
+        audit.log_refusal(module_id, trace_id, caller_id, ErrorCode::ApprovalDenied, 0);
+    }
+
+    /// Record a refusal for a request that carries its own context.
+    fn audit_request_refusal(&self, request: &ApprovalRequest) {
+        let context = request.context.as_ref();
+        self.audit_refusal(
             &request.module_id,
-            request
-                .context
-                .as_ref()
-                .map_or("", |ctx| ctx.trace_id.as_str()),
-            request
-                .context
-                .as_ref()
+            context.map_or("", |ctx| ctx.trace_id.as_str()),
+            context
                 .and_then(|ctx| ctx.identity.as_ref())
                 .map(|id| id.id()),
-            ErrorCode::ApprovalDenied,
-            0,
         );
     }
 }
@@ -189,15 +189,43 @@ impl ApprovalHandler for ApprovalGate {
                 );
             }
         }
-        self.audit_refusal(request);
+        self.audit_request_refusal(request);
         Ok(result)
     }
 
+    /// Resolve a previously-issued approval id.
+    ///
+    /// **apcore reaches this from ordinary caller input.** When a `tools/call`'s
+    /// arguments carry an `_approval_token` property, the approval gate calls
+    /// this instead of [`request_approval`](Self::request_approval) — and it
+    /// does so before `input_validation`, so nothing has rejected the extra
+    /// property yet. Nothing is ever actually pending here (this gate resolves
+    /// synchronously against the live connection), so the answer is always a
+    /// refusal.
+    ///
+    /// That refusal has to be audited like any other. It reaches no middleware —
+    /// `approval_gate` runs before `middleware_before`, so
+    /// [`FailureLogMiddleware`](crate::module::FailureLogMiddleware) never sees
+    /// it — so without this a caller suppressed the record of their own denied
+    /// attempt by adding one property to the arguments object. Tool arguments
+    /// arriving over MCP are external input.
+    ///
+    /// The record carries no trace or identity: an `ApprovalHandler` receives
+    /// only the id on this path. `module_id` is recorded as the approval id it
+    /// was asked about, which is the only thing that distinguishes one such
+    /// refusal from another.
     async fn check_approval(&self, approval_id: &str) -> Result<ApprovalResult, ModuleError> {
-        // Nothing is ever pending: `request_approval` resolves synchronously
-        // against the live connection. Upstream says the same; deferring keeps
-        // one answer rather than two.
-        self.inner.check_approval(approval_id).await
+        let result = self.inner.check_approval(approval_id).await?;
+        if matches!(classify(&result), Disposition::Granted) {
+            return Ok(result);
+        }
+        tracing::warn!(
+            approval_id,
+            reason = ?result.reason,
+            "Refusing an approval-token lookup: this gate holds no pending approvals"
+        );
+        self.audit_refusal(approval_id, "", None);
+        Ok(result)
     }
 }
 
@@ -302,6 +330,40 @@ mod tests {
         assert_eq!(entry["event"], "refusal");
         assert_eq!(entry["module_id"], "cli.rm");
         assert_eq!(entry["error_code"], "APPROVAL_DENIED");
+    }
+
+    #[tokio::test]
+    async fn test_an_approval_token_lookup_is_audited_like_any_other_refusal() {
+        // apcore calls `check_approval` instead of `request_approval` whenever
+        // the arguments carry `_approval_token`, and it does so before
+        // `input_validation` — so nothing has rejected the extra property yet.
+        // The refusal reaches no middleware either (`approval_gate` precedes
+        // `middleware_before`), so before this a caller suppressed the record of
+        // their own denied attempt by adding one property to the object.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let gate =
+            ApprovalGate::with_audit(Some(Arc::new(crate::governance::AuditManager::new(&path))));
+
+        let result = gate
+            .check_approval("caller-supplied-token")
+            .await
+            .expect("the gate answers rather than erroring");
+        assert_eq!(result.status, "rejected");
+
+        let content = std::fs::read_to_string(&path).expect("a refusal must be recorded");
+        let entry: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(entry["event"], "refusal");
+        assert_eq!(entry["error_code"], "APPROVAL_DENIED");
+        assert_eq!(
+            entry["module_id"], "caller-supplied-token",
+            "the id is the only thing distinguishing one such refusal from another"
+        );
+        assert!(
+            entry.get("trace_id").is_none(),
+            "no context reaches this path, so the join key is omitted rather than \
+             claimed blank: {entry}"
+        );
     }
 
     #[tokio::test]

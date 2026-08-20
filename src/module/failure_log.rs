@@ -34,9 +34,35 @@ use std::time::Instant;
 
 use apcore::context::Context;
 use apcore::middleware::Middleware;
-use apcore::ModuleError;
+use apcore::{ErrorCode, ModuleError};
 use async_trait::async_trait;
 use serde_json::Value;
+
+/// Whether [`CliModule`](crate::module::CliModule) already wrote an audit row
+/// for a failure carrying `code`, so this middleware must not write a second.
+///
+/// `CliModule::abandon_run` records an `event: "execution"` row with
+/// `exit_code: -1` when the subprocess could not be spawned, timed out, or
+/// overflowed its output cap, and then re-raises. That error propagates out of
+/// the execute step, which is *after* `middleware_before`, so apcore runs the
+/// `on_error` chain and this middleware saw it too — producing a second row for
+/// the same `trace_id` that said `status: "refused"`, i.e. that the binary never
+/// ran. Both cannot be true, and every consumer counting `event == "refusal"`
+/// over-counted. This is the same double-count deliberately avoided for ACL
+/// denials, arriving through the other door.
+///
+/// **Residual gap, stated rather than hidden.** apcore's own global-deadline
+/// check raises `ModuleTimeout` from inside the execute step *before* the
+/// module is called, and `CliModule` never sees it, so that one loses its
+/// refusal row here. Losing one rare row is the better side of the trade
+/// against corrupting every refusal tally; closing it needs a channel from the
+/// module to the middleware that apcore does not currently offer.
+fn module_records_its_own_outcome(code: ErrorCode) -> bool {
+    matches!(
+        code,
+        ErrorCode::ModuleTimeout | ErrorCode::ModuleExecuteError
+    )
+}
 
 /// Emits a payload-free record for every call that ends in failure.
 ///
@@ -46,11 +72,10 @@ use serde_json::Value;
 ///   payload-bearing one is suppressed, so a failure produces exactly one such
 ///   line either way;
 /// * a `refusal` row in the governance audit trail, emitted whenever an audit
-///   path is configured. That one is unconditional on purpose. A call refused
-///   by the ACL, the approval gate or schema validation never reaches
-///   [`CliModule`](crate::module::CliModule), so before this the audit trail
-///   recorded only the calls that *ran* — someone probing the argv guards left
-///   no trace at all, which is the sequence an audit exists to capture.
+///   path is configured and the failure is one [`CliModule`](crate::module::CliModule)
+///   did not already record. Before this the audit trail held only the calls
+///   that *ran* — someone probing the argv guards left no trace at all, which
+///   is the sequence an audit exists to capture.
 #[derive(Debug, Default)]
 pub struct FailureLogMiddleware {
     /// Per-call start instants keyed by `trace_id:module_id`, mirroring
@@ -175,6 +200,12 @@ impl Middleware for FailureLogMiddleware {
             );
         }
         if let Some(ref audit) = self.audit {
+            if module_records_its_own_outcome(error.code) {
+                // `CliModule` already wrote an `execution`/`error` row for this
+                // very trace; a `refusal` row on top would claim the binary
+                // never ran. See `module_records_its_own_outcome`.
+                return Ok(None);
+            }
             // The authenticated principal, not `ctx.caller_id` — that field
             // names the calling *module* in a nested chain and is `None` for
             // every inbound request by apcore's contract, so it would record

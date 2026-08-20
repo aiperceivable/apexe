@@ -47,7 +47,14 @@ pub struct ExecutionRecord<'a> {
     /// `"acl_decision"`; this writer emits `"execution"` or `"refusal"`.
     pub event: &'static str,
     /// Correlates with the ACL entry's `trace_id` for the same call.
-    pub trace_id: &'a str,
+    ///
+    /// Omitted rather than blank when the writer has none — the approval gate's
+    /// `check_approval` path receives only an approval id, no context. A
+    /// present-but-empty `trace_id` would claim the one join an audit trail
+    /// exists to support while silently grouping every context-less refusal
+    /// together, which is why `caller_id` is treated the same way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<&'a str>,
     /// Authenticated principal, or `None` for an unauthenticated caller.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caller_id: Option<&'a str>,
@@ -99,7 +106,7 @@ impl AuditManager {
         self.append(&ExecutionRecord {
             timestamp: Self::now(),
             event: "execution",
-            trace_id,
+            trace_id: (!trace_id.is_empty()).then_some(trace_id),
             caller_id,
             module_id,
             status,
@@ -143,7 +150,7 @@ impl AuditManager {
         self.append(&ExecutionRecord {
             timestamp: Self::now(),
             event: "refusal",
-            trace_id,
+            trace_id: (!trace_id.is_empty()).then_some(trace_id),
             caller_id,
             module_id,
             status: "refused",
@@ -187,33 +194,42 @@ impl AuditManager {
         self.append_line(&line, "ACL audit entry");
     }
 
-    /// Append one already-serialized line, hardening the file's mode first.
+    /// Append one already-serialized line as a single write.
     ///
     /// `what` names the record kind for the failure message. Best-effort
     /// throughout: an audit write that cannot land is logged and dropped rather
     /// than failing the caller's request, because refusing to serve because the
     /// log is unwritable is a worse outcome than serving unlogged — and the
     /// warning is what tells an operator to fix it.
+    ///
+    /// **One `write_all`, never `writeln!`.** `writeln!` on an unbuffered
+    /// `File` issues two `write(2)` calls — the body, then the newline — and
+    /// this manager takes `&self`, holds no lock, and is shared through one
+    /// `Arc` by every `CliModule`, the failure-log middleware, the approval
+    /// gate and the ACL callback. Two concurrent calls therefore emitted
+    /// `bodyA bodyB \n \n`: one line holding two concatenated records, then a
+    /// blank. Measured at 400 concurrent writes: 107 unparseable lines and 133
+    /// blank ones. A single `write(2)` under `O_APPEND` is atomic for a regular
+    /// file, which is the guarantee append-only JSONL relies on.
     fn append_line(&self, line: &str, what: &str) {
-        match std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
+        // Keep the audit log owner-only so caller identities and denied targets
+        // aren't world-readable on shared hosts. `mode()` applies only when the
+        // file is created, which closes the window a post-open `set_permissions`
+        // left open — and, unlike a per-write chmod, leaves an operator's own
+        // later mode change (group-read for a log shipper, say) alone.
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
         {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&self.path) {
             Ok(mut file) => {
-                // Keep the audit log owner-only so caller identities and denied
-                // targets aren't world-readable on shared hosts. Either record
-                // kind can be the file's first write, so this must happen here
-                // rather than at one privileged creation site.
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(
-                        &self.path,
-                        std::fs::Permissions::from_mode(0o600),
-                    );
-                }
-                if let Err(e) = writeln!(file, "{line}") {
+                let mut record = String::with_capacity(line.len() + 1);
+                record.push_str(line);
+                record.push('\n');
+                if let Err(e) = file.write_all(record.as_bytes()) {
                     tracing::warn!(error = %e, "Failed to append {what}");
                 }
             }
@@ -260,6 +276,76 @@ mod tests {
         mgr.log_execution("cli.git.commit", "t2", None, "error", 1, 25);
 
         assert_eq!(records(&path).len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn test_concurrent_writers_each_get_their_own_line() {
+        // One `Arc<AuditManager>` is shared by every `CliModule`, the failure-log
+        // middleware, the approval gate and the ACL callback, and it takes
+        // `&self` with no lock. `writeln!` on an unbuffered `File` is two
+        // `write(2)` calls, so concurrent records used to interleave as
+        // `bodyA bodyB \n \n` — a line holding two JSON objects, then a blank.
+        // 107 of 400 lines were unparseable before the single-write fix. The
+        // trail becoming unreadable under load is the one condition an audit
+        // exists for, so this is pinned rather than left to inspection.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let audit = std::sync::Arc::new(AuditManager::new(&path));
+
+        const WRITERS: usize = 400;
+        let mut handles = Vec::with_capacity(WRITERS);
+        for i in 0..WRITERS {
+            let audit = audit.clone();
+            handles.push(tokio::spawn(async move {
+                audit.log_execution(
+                    "cli.probe",
+                    &format!("trace{i:040}"),
+                    Some("@external"),
+                    "success",
+                    0,
+                    1,
+                );
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("no writer task may panic");
+        }
+
+        let content = std::fs::read_to_string(&path).expect("the trail exists");
+        assert!(
+            content.lines().all(|line| !line.trim().is_empty()),
+            "a blank line means a record's newline landed apart from its body"
+        );
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(
+            lines.len(),
+            WRITERS,
+            "every record must occupy exactly one line"
+        );
+        for line in lines {
+            serde_json::from_str::<serde_json::Value>(line)
+                .unwrap_or_else(|e| panic!("every line must parse ({e}): {line}"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_the_trail_is_owner_only_from_its_very_first_write() {
+        // The mode is set through `OpenOptions::mode`, which applies at
+        // creation. A post-open `set_permissions` left the file world-readable
+        // for the window in between — long enough for a local process on a
+        // shared host to open it and keep a readable descriptor for its whole
+        // life, which is exactly what the doc says the mode prevents.
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        AuditManager::new(&path).log_execution("cli.ls", "t", None, "success", 0, 1);
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "the trail must never be group- or world-readable"
+        );
     }
 
     #[test]
