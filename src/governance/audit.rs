@@ -40,12 +40,12 @@ use std::path::{Path, PathBuf};
 /// apcore's own contract, so it stays anonymous by design and not for want of
 /// this record.
 #[derive(Debug, Serialize)]
-pub struct ExecutionRecord<'a> {
+pub(crate) struct ExecutionRecord<'a> {
     /// RFC 3339 UTC, matching the ACL entry's format so one parser reads both.
-    pub timestamp: String,
+    pub(crate) timestamp: String,
     /// Discriminates the record kinds sharing this file. ACL decisions carry
     /// `"acl_decision"`; this writer emits `"execution"` or `"refusal"`.
-    pub event: &'static str,
+    pub(crate) event: &'static str,
     /// Correlates with the ACL entry's `trace_id` for the same call.
     ///
     /// Omitted rather than blank when the writer has none — the approval gate's
@@ -54,25 +54,25 @@ pub struct ExecutionRecord<'a> {
     /// exists to support while silently grouping every context-less refusal
     /// together, which is why `caller_id` is treated the same way.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub trace_id: Option<&'a str>,
+    pub(crate) trace_id: Option<&'a str>,
     /// Authenticated principal, or `None` for an unauthenticated caller.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub caller_id: Option<&'a str>,
-    pub module_id: &'a str,
+    pub(crate) caller_id: Option<&'a str>,
+    pub(crate) module_id: &'a str,
     /// `"success"`, `"error"` (the binary ran and failed) or `"refused"` (the
     /// call never reached the binary).
-    pub status: &'a str,
+    pub(crate) status: &'a str,
     /// Absent on a refusal: no process existed to exit.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub exit_code: Option<i32>,
+    pub(crate) exit_code: Option<i32>,
     /// Failure class for a refusal, e.g. `ACL_DENIED`. Serialized through
     /// apcore's own `Serialize`, so the audit trail spells a code exactly as
     /// the protocol does. Never the error's *message*, which quotes the value
     /// it rejected and would put caller payload into a file that deliberately
     /// holds none.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_code: Option<ErrorCode>,
-    pub duration_ms: u64,
+    pub(crate) error_code: Option<ErrorCode>,
+    pub(crate) duration_ms: u64,
 }
 
 /// Appends governance events to a JSONL audit log.

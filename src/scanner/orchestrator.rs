@@ -393,12 +393,6 @@ impl ScanOrchestrator {
         Ok(String::new())
     }
 
-    /// Tier 2: merge man page content into the scan result.
-    ///
-    /// The man page is treated as a usage source in its own right, not only as
-    /// a description patch. Tools whose `--help` is a single bundled usage line
-    /// (most BSD/macOS built-ins, e.g. `ls`) parse to zero flags in Tier 1, and
-    /// their man page is the only machine-readable record of their options.
     /// Adopt the man page's DESCRIPTION as the tool-level summary.
     ///
     /// It replaces whatever Tier 1 produced. That fallback is not merely weaker
@@ -437,7 +431,12 @@ impl ScanOrchestrator {
         merge_new_flags(&mut tool.global_flags, &man_flags);
     }
 
-    /// Raise `tool` to Tier 2 with whatever its man page adds.
+    /// Tier 2: merge man page content into the scan result.
+    ///
+    /// The man page is treated as a usage source in its own right, not only as
+    /// a description patch. Tools whose `--help` is a single bundled usage line
+    /// (most BSD/macOS built-ins, e.g. `ls`) parse to zero flags in Tier 1, and
+    /// their man page is the only machine-readable record of their options.
     fn enrich_with_man_page(&self, tool: &mut ScannedCLITool, lookup_name: &str) {
         let Some(man_help) = self.man_parser.parse_man_page(lookup_name) else {
             return;
@@ -567,6 +566,68 @@ fn corroborate_sources(target: &mut [ScannedFlag], source: &[ScannedFlag]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The subcommand-padding rule carries this file's longest rationale and
+    /// had no test: its only guard wrapped its assertion in
+    /// `if tools[0].scan_tier >= 2`, so on a host without an `ls` man page it
+    /// asserted nothing and reported green. `adopt_man_description` is now a
+    /// free-standing function over `&mut ScannedCLITool`, so the three branches
+    /// are testable without touching the host.
+    #[test]
+    fn test_adopt_man_description_pads_only_stub_subcommand_summaries() {
+        use crate::models::{HelpFormat, ScannedCLITool, ScannedCommand};
+
+        let sub = |name: &str, description: &str, help_format: HelpFormat| ScannedCommand {
+            name: name.to_string(),
+            full_command: format!("tool {name}"),
+            description: description.to_string(),
+            flags: vec![],
+            positional_args: vec![],
+            subcommands: vec![],
+            examples: vec![],
+            help_format,
+            structured_output: Default::default(),
+            end_of_options: false,
+            raw_help: String::new(),
+        };
+
+        let mut tool = ScannedCLITool {
+            name: "tool".to_string(),
+            description: "stale help-derived text".to_string(),
+            subcommands: vec![
+                sub("stub", "Short one", HelpFormat::Gnu),
+                sub("own-man", "Show commit logs", HelpFormat::Man),
+                sub("empty", "", HelpFormat::Gnu),
+                sub(
+                    "long",
+                    "A summary comfortably past twenty characters",
+                    HelpFormat::Gnu,
+                ),
+            ],
+            ..Default::default()
+        };
+
+        ScanOrchestrator::adopt_man_description(&mut tool, "The authoritative DESCRIPTION");
+
+        assert_eq!(tool.description, "The authoritative DESCRIPTION");
+        assert_eq!(
+            tool.subcommands[0].description, "Short one — The authoritative DESCRIPTION",
+            "a short non-Man summary is a stub and gets padded"
+        );
+        assert_eq!(
+            tool.subcommands[1].description, "Show commit logs",
+            "a Man-format subcommand's NAME line is authoritative and is left alone \
+             — padding it is how `git log` became 84% a description of `git`"
+        );
+        assert_eq!(
+            tool.subcommands[2].description, "",
+            "an empty summary has nothing to pad onto"
+        );
+        assert_eq!(
+            tool.subcommands[3].description, "A summary comfortably past twenty characters",
+            "a long summary is not a stub"
+        );
+    }
     use crate::models::ValueType;
     use tempfile::TempDir;
 

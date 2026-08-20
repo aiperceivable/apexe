@@ -584,7 +584,7 @@ fn test_mcp_serve_accepts_acl_targeting_the_registered_module() {
 /// a write path that dropped the annotation would keep all of them green while
 /// every credential went to the log verbatim.
 ///
-/// This is also what the manual's re-scan instruction rests on. §11 tells an
+/// This is also what the manual's re-scan instruction rests on. §10 tells an
 /// operator that a binding scanned before the marker existed logs credentials
 /// and that re-scanning fixes it; that is only true while a fresh scan really
 /// does write the marker.

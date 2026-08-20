@@ -23,9 +23,6 @@ impl<'a> SubcommandDiscovery<'a> {
         }
     }
 
-    /// Recursively discover subcommands.
-    ///
-    /// Returns a list of ScannedCommand with nested subcommands.
     /// Scan one subcommand and its nested subcommands.
     ///
     /// `None` when the subcommand's `--help` produced nothing, which is a skip
@@ -66,6 +63,9 @@ impl<'a> SubcommandDiscovery<'a> {
     }
 
     /// Scan every named subcommand, recursing until `max_depth`.
+    /// Recursively discover subcommands.
+    ///
+    /// Returns a list of ScannedCommand with nested subcommands.
     pub fn discover(
         &self,
         tool_name: &str,

@@ -303,7 +303,6 @@ fn apply_scalar_type_hints(schema: &mut JsonValue, value_type: ValueType) {
     apply_path_marker(schema, value_type);
 }
 
-/// Convert a ScannedFlag into a JSON Schema property value.
 /// Schema for a flag that may be given more than once, as an array.
 fn repeatable_flag_schema(flag: &ScannedFlag) -> JsonValue {
     let mut schema = json!({
@@ -1255,6 +1254,58 @@ mod tests {
             schema["properties"]["url"]["x-sensitive"], true,
             "the operand that took the flag's key must keep its credential \
              judgement: {schema}"
+        );
+    }
+
+    #[test]
+    fn test_a_displaced_flag_falls_back_to_a_numbered_rescue_key() {
+        // `{prop}_option` is not automatically free: git ships both
+        // `--strategy` and `--strategy-option`, which is the case the rescue's
+        // own doc cites. Only the happy path was covered, so an off-by-one in
+        // the `(2..=9)` range would silently drop a real flag from the contract
+        // — the regression the rescue exists to prevent.
+        let taken = make_flag(
+            Some("--path-option"),
+            "Strategy option.",
+            ValueType::String,
+            false,
+            None,
+            None,
+            false,
+        );
+        let displaced = make_flag(
+            Some("--path"),
+            "Glob predicate, unrelated to the walk roots.",
+            ValueType::String,
+            true,
+            None,
+            None,
+            false,
+        );
+        let arg = ScannedArg {
+            name: "path".to_string(),
+            description: String::new(),
+            value_type: ValueType::String,
+            required: true,
+            variadic: false,
+            before_flags: false,
+        };
+        let cmd = make_command(vec![taken, displaced], vec![arg]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
+
+        assert_eq!(
+            schema["properties"]["path"]["x-apexe-positional"], 0,
+            "the operand takes the plain key"
+        );
+        assert_eq!(
+            schema["properties"]["path_option_2"]["x-apexe-flag"], "--path",
+            "`path_option` was already taken, so the flag lands on the numbered \
+             fallback: {schema}"
+        );
+        let required = schema["required"].as_array().expect("required list");
+        assert!(
+            required.iter().any(|v| v == "path_option_2"),
+            "`required` must follow the flag to its new home: {schema}"
         );
     }
 

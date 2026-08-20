@@ -28,12 +28,6 @@ impl SkillOutput {
         Self
     }
 
-    /// Write one `SKILL.md` per module under `<output_dir>/.claude/skills/`.
-    ///
-    /// Returns the paths written.
-    // ModuleError is the crate-wide domain error; boxing it would diverge
-    // from the rest of the apexe/apcore API surface.
-    #[allow(clippy::result_large_err)]
     /// Reserve `dir_name` for `module_id`, refusing a clash between two modules.
     ///
     /// `module_id` is not itself a safe path component (see
@@ -91,7 +85,9 @@ impl SkillOutput {
         Ok(path)
     }
 
-    /// Write a `SKILL.md` per module under `output_dir/.claude/skills/`.
+    /// Write one `SKILL.md` per module under `<output_dir>/.claude/skills/`.
+    ///
+    /// Returns the paths written.
     #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
     pub fn write(
         &self,

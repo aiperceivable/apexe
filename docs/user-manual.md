@@ -127,7 +127,7 @@ apexe serve [OPTIONS]
 | `--jwt-secret <VALUE>` | `APEXE_JWT_SECRET` | Signing secret for `--auth jwt` |
 | `--allow-unauthenticated-bind` | off | Acknowledge `--auth none` on a non-loopback bind (otherwise refused) |
 | `--allow-deprecated-sse` | off | Accepted and ignored; the defect it acknowledged was fixed in apcore-mcp 0.18. Hidden from `--help`, removal planned |
-| `--enable-approval` | off | **Deny** every call to a `requires_approval` module — see §9.6 |
+| `--enable-approval` | off | Prompt the connected MCP client for a human decision on every `requires_approval` module; a client that cannot be prompted is refused — see §9.6 |
 | `--no-logging` | off | Disable structured logging middleware entirely |
 | `--no-log-arguments` | off | Drop `inputs`/`output` from every log event, error records included; failures keep a payload-free record |
 | `--no-circuit-breaker` | off | Disable CircuitBreakerMiddleware (on by default) |
@@ -172,8 +172,8 @@ apexe a2a [OPTIONS]
 > transport, so an approval prompt can never be resolved over it; the flag would
 > only ever error. Approval on A2A is a library-only feature — construct
 > `A2aServerBuilder` with an `ApprovalStore`. `apexe serve` keeps
-> `--enable-approval`, but note that there it is an unconditional **deny** gate
-> rather than a prompt — see §9.6.
+> `--enable-approval`, which prompts the connected MCP client for a human
+> decision — see §9.6.
 
 > **`apexe a2a` has no transport authentication.** The `--auth*` flags are
 > `apexe serve` only. Bind A2A to loopback, or put it behind a reverse proxy
@@ -530,14 +530,15 @@ A call the governance stack stopped — `event: "refusal"`. `error_code` replace
   Note this is *not* apcore's `Context::caller_id`, which names the calling
   *module* in a nested chain and is `None` for every inbound request.
 - **`duration_ms` is 0 for a refusal that short-circuited** ahead of the
-  middleware phase (ACL, approval gate) — no clock had started.
+  middleware phase — in practice the approval gate, since an ACL denial
+  produces no apexe `refusal` row at all (see below). No clock had started.
 - **No input values, hashed or otherwise.** Earlier versions wrote an
   `input_hash`; it was salted with random bytes that were then discarded, so
   nothing could ever be checked against it. A field that cannot be verified is
   not a privacy control, so it was dropped rather than kept for appearance.
 - **Resilience**: audit logging never causes execution failures. Write errors
   are reported via tracing and the call proceeds.
-- **Permissions**: the file is created `0600`.
+- **Permissions**: the file is created `0600` — the mode is set through `OpenOptions::mode`, so it never exists world-readable even briefly, and an operator's own later `chmod` is left alone.
 
 **A third shape appears in the same file.** ACL decisions are written by apcore
 itself, not by apexe, and carry its richer entry — `decision`, `reason`,
@@ -560,7 +561,10 @@ itself, not by apexe, and carry its richer entry — `decision`, `reason`,
 
 apexe deliberately does **not** also emit a `refusal` row for an ACL denial: it
 would double-count the same event with strictly less detail. A consumer counting
-refusals should count `event == "refusal"` plus `decision == "deny"`.
+refusals should count `event == "refusal"` plus `decision == "deny"`. A call
+that reached the wrapped binary and then failed — a timeout, a spawn failure,
+an output overflow — is **not** a refusal: it appears once, as
+`event: "execution"` with `status: "error"` and `exit_code: -1`.
 
 > **Breaking change (unreleased).** The `user` and `input_hash` fields are gone,
 > and `event`, `trace_id` and `caller_id` are new. `user` came from `getlogin()`,
@@ -574,7 +578,7 @@ refusals should count `event == "refusal"` plus `decision == "deny"`.
 Every `CliModule` call runs through `execute_subprocess` (`src/module/executor.rs`), which applies isolation **unconditionally** — there is no `--sandbox` toggle and no "unsandboxed" mode. (This is not `apcore-cli`'s `Sandbox`, which expects the host binary to re-exec itself with an `--internal-sandbox-runner` subcommand and rediscover modules from `APCORE_EXTENSIONS_ROOT` — a model apexe's runtime-scanned CLI modules don't fit.)
 
 - **Environment scrubbing**: the subprocess does **not** inherit apexe's full environment. The env is cleared and only a base allowlist is passed through (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TZ`, `TMPDIR`), so secrets in apexe's environment (API tokens, cloud credentials) can't leak to — or be surfaced by — a wrapped tool. File-based credentials under `$HOME` still work. (Per-tool credential-env passthrough is planned as an opt-in config knob.)
-- **No shell**: arguments are passed as direct argv (no shell interpolation), and client-supplied string values containing shell metacharacters are rejected before execution.
+- **No shell**: arguments are passed as direct argv and handed to `execve` — no shell is spawned anywhere on the execution path, so shell metacharacters are inert data and pass through unchanged. (`curl --data '{"a":1}'` and every `jq` filter depend on that.) A caller-supplied value is rejected only for NUL and the five line terminators, which would corrupt the audit trail's framing, and for a leading `-`, which the wrapped tool would parse as an option the caller was not granted — see `CONTROL_CHARS` and `validate_argument_value` in `src/module/executor.rs`. The shell-metacharacter blacklist that remains (`BINDING_INJECTION_CHARS`) applies only to `json_flag` and the command path read out of a *binding file*, which is a build-time artifact rather than caller input.
 - **Output cap**: stdout/stderr are each capped at 64 MiB (`executor::DEFAULT_MAX_OUTPUT_BYTES`). A command that exceeds it gets `stdout_truncated`/`stderr_truncated: true` in the result instead of exhausting memory.
 - **Timeout kills the process**: the child is spawned with `kill_on_drop(true)`; when `--timeout`/`default_timeout` elapses, the subprocess is actually terminated rather than left running as an orphan.
 - **stdin** is connected to `/dev/null`, so a tool that waits for input fails fast instead of hanging.
@@ -721,7 +725,7 @@ forever.
 | Middleware | Status | Effect |
 |-----------|--------|--------|
 | **LoggingMiddleware** | Enabled by default | Structured logging of inputs/outputs, redacting properties the scanner marked `x-sensitive` — see below |
-| **FailureLogMiddleware** | Automatic with `--no-log-arguments` | One payload-free `ERROR` record per failed call — see below |
+| **FailureLogMiddleware** | Automatic with `--no-log-arguments`, and whenever an audit log is configured | One payload-free `ERROR` record per failed call, plus the `refusal` rows in `audit.jsonl` — see below |
 | **CircuitBreakerMiddleware** | Enabled by default (`--no-circuit-breaker`) | Short-circuits a hanging/broken tool — see §9.5 |
 | **RetryMiddleware** | Enabled by default (`--no-retry`) | Retries idempotent timeouts only — see §9.5 |
 | **ApprovalGate** | Opt-in (`--enable-approval`) | Prompts the connected MCP client for a human decision on a `requires_approval` module; refuses when the client cannot be prompted — see §9.6 |

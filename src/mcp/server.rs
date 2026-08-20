@@ -174,12 +174,13 @@ impl McpServerBuilder {
         self
     }
 
-    /// Set ACL config file path for access control on the Executor.
+    /// Set the JSONL governance audit-log path; `None` disables auditing.
     pub fn audit_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.audit_path = Some(path.into());
         self
     }
 
+    /// Set the ACL policy file path for access control on the Executor.
     pub fn acl_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.acl_path = Some(path.into());
         self
@@ -201,9 +202,10 @@ impl McpServerBuilder {
         self
     }
 
-    /// Deny every call to a module annotated `requires_approval` (default:
-    /// disabled). Interactive approval is not reachable from a CLI-launched
-    /// server; see [`ApprovalGate`](crate::module::ApprovalGate).
+    /// Gate every call to a module annotated `requires_approval` on a human
+    /// decision from the connected MCP client (default: disabled). A client
+    /// that cannot be prompted is refused; see
+    /// [`ApprovalGate`](crate::module::ApprovalGate).
     pub fn enable_approval(mut self, enabled: bool) -> Self {
         self.enable_approval = enabled;
         self
@@ -454,11 +456,42 @@ impl McpServerBuilder {
                     );
                 } else {
                     tracing::info!("Bearer token authentication enabled (token supplied)");
+                    Self::announce_cleartext(host, notice_sink);
                 }
             }
             ResolvedAuth::Jwt { .. } => {
                 tracing::info!("JWT authentication enabled");
+                Self::announce_cleartext(host, notice_sink);
             }
+        }
+    }
+
+    /// The cleartext warning for a bind that carries a credential over plain
+    /// HTTP, or `None` on loopback where the traffic reaches no interface.
+    fn cleartext_caveat(host: &str) -> Option<String> {
+        if crate::auth::is_loopback_host(host) {
+            return None;
+        }
+        Some(
+            "\nWARNING: this is a non-loopback bind serving plain HTTP, so the credential it \
+             requires travels in cleartext and anything on the path can replay it. Put apexe \
+             behind a TLS-terminating reverse proxy before using it across a network."
+                .to_string(),
+        )
+    }
+
+    /// Write the cleartext caveat on its own, for the arms that build no notice.
+    ///
+    /// A supplied `--auth-token` and `--auth jwt` are in exactly the same
+    /// hazard as a generated token — `resolve_auth` calls it "the one failure
+    /// that silently undoes the whole of the auth default" — but neither has a
+    /// value to print, so neither reached `notice_sink` and the only warning
+    /// left for them was the `tracing::warn!`. That is the channel this notice
+    /// exists to route around: at `--log-level error` it is dropped, and the
+    /// manual promises both.
+    fn announce_cleartext(host: &str, notice_sink: &mut dyn Write) {
+        if let Some(caveat) = Self::cleartext_caveat(host) {
+            let _ = writeln!(notice_sink, "{}", caveat.trim_start());
         }
     }
 
@@ -471,14 +504,7 @@ impl McpServerBuilder {
     /// at `--log-level error` the operator would read "connect to http://..."
     /// with the warning nowhere in sight.
     fn generated_token_notice(token: &str, host: &str, port: u16) -> String {
-        let caveat = if crate::auth::is_loopback_host(host) {
-            String::new()
-        } else {
-            "\nWARNING: this is a non-loopback bind serving plain HTTP, so that token travels \
-             in cleartext. Put apexe behind a TLS-terminating reverse proxy before using it \
-             across a network."
-                .to_string()
-        };
+        let caveat = Self::cleartext_caveat(host).unwrap_or_default();
         format!(
             "Bearer token authentication enabled. Connect to http://{host}:{port} with header:\n\
              \x20   Authorization: Bearer {token}\n\
@@ -913,6 +939,60 @@ mod tests {
         let notice = McpServerBuilder::generated_token_notice("deadbeef", "0.0.0.0", 9000);
         assert!(notice.contains("cleartext"), "{notice}");
         assert!(notice.contains("reverse proxy"), "{notice}");
+    }
+
+    #[test]
+    fn test_a_supplied_token_on_a_public_bind_still_warns_about_cleartext() {
+        // The hazard is the transport, not who minted the credential. This arm
+        // builds no notice — there is no value to print — so before this the
+        // only warning was the `tracing::warn!` in resolve_auth, which is the
+        // channel the stderr notice exists to route around: at `--log-level
+        // error` the operator saw nothing at all.
+        let opts = AuthOptions {
+            token: Some("operator-secret".to_string()),
+            ..AuthOptions::default()
+        };
+        let auth = resolve_auth("http", "0.0.0.0", &opts).unwrap();
+        let mut sink: Vec<u8> = Vec::new();
+        McpServerBuilder::announce_auth(&auth, "0.0.0.0", 9000, &mut sink);
+        let notice = String::from_utf8(sink).unwrap();
+
+        assert!(notice.contains("cleartext"), "{notice}");
+        assert!(
+            !notice.contains("operator-secret"),
+            "a supplied token is still never echoed: {notice}"
+        );
+    }
+
+    #[test]
+    fn test_jwt_on_a_public_bind_still_warns_about_cleartext() {
+        let opts = AuthOptions {
+            mode: Some(crate::auth::AuthMode::Jwt),
+            jwt_secret: Some("s3cret".to_string()),
+            ..AuthOptions::default()
+        };
+        let auth = resolve_auth("http", "0.0.0.0", &opts).unwrap();
+        let mut sink: Vec<u8> = Vec::new();
+        McpServerBuilder::announce_auth(&auth, "0.0.0.0", 9000, &mut sink);
+        let notice = String::from_utf8(sink).unwrap();
+
+        assert!(notice.contains("cleartext"), "{notice}");
+        assert!(
+            !notice.contains("s3cret"),
+            "the secret is never echoed: {notice}"
+        );
+    }
+
+    #[test]
+    fn test_a_supplied_token_on_loopback_stays_silent() {
+        let opts = AuthOptions {
+            token: Some("operator-secret".to_string()),
+            ..AuthOptions::default()
+        };
+        let auth = resolve_auth("http", "127.0.0.1", &opts).unwrap();
+        let mut sink: Vec<u8> = Vec::new();
+        McpServerBuilder::announce_auth(&auth, "127.0.0.1", 9000, &mut sink);
+        assert!(String::from_utf8(sink).unwrap().is_empty());
     }
 
     #[test]

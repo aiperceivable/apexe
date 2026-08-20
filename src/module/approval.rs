@@ -43,11 +43,21 @@ use async_trait::async_trait;
 /// today's behaviour rather than something wrong.
 /// `test_no_elicitation_path_is_reported_with_a_remedy` drives the real
 /// handler, so drift fails the suite rather than passing silently.
-const NO_PROMPT_REASONS: [&str; 3] = [
+const NO_PROMPT_REASONS: [&str; 2] = [
     "No context available for elicitation",
     "No elicitation callback available",
-    "Elicitation returned no response",
 ];
+
+/// Upstream's reason when a prompt was sent and no answer came back.
+///
+/// Kept apart from [`NO_PROMPT_REASONS`] because it does **not** mean the client
+/// declared no elicitation support: apcore-mcp returns it whenever the router's
+/// callback yields `None`, which covers a transport failure, the client
+/// disconnecting mid-prompt, and an unparseable answer. Telling an
+/// elicitation-capable operator that their client lacks the capability sends
+/// them to the wrong remedy — the same give-up-and-revert failure this module
+/// exists to prevent.
+const NO_ANSWER_REASON: &str = "Elicitation returned no response";
 
 /// What the gate does with one outcome from the upstream handler.
 #[derive(Debug, PartialEq, Eq)]
@@ -55,9 +65,16 @@ enum Disposition {
     /// A human approved. Pass it through untouched and audit nothing: the
     /// execution it permits is recorded on its own under the same `trace_id`.
     Granted,
+    /// The decision is still out — an `ApprovalStore` recorded the request and
+    /// someone will resolve it later. Not a refusal, so nothing is audited
+    /// here; apcore raises `ApprovalPending` and the caller retries.
+    Pending,
     /// No prompt could be delivered at all. Replace the reason with one naming
     /// the remedy, and audit the refusal.
     NoPromptAvailable,
+    /// A prompt went out and nothing came back. Say so without asserting a
+    /// cause, and audit the refusal.
+    NoAnswer,
     /// A human refused, or something else went wrong. Their reason already says
     /// what happened; audit the refusal and leave it alone.
     Refused,
@@ -72,13 +89,28 @@ enum Disposition {
 /// `APPROVAL_DENIED` in the trail for a call that actually ran, was
 /// undetectable while this was an `if` inside the trait method.
 fn classify(result: &ApprovalResult) -> Disposition {
-    if result.status == "approved" {
-        return Disposition::Granted;
+    match result.status.as_str() {
+        "approved" => return Disposition::Granted,
+        "pending" => return Disposition::Pending,
+        _ => {}
     }
     match result.reason.as_deref() {
         Some(reason) if NO_PROMPT_REASONS.contains(&reason) => Disposition::NoPromptAvailable,
+        Some(NO_ANSWER_REASON) => Disposition::NoAnswer,
         _ => Disposition::Refused,
     }
+}
+
+/// What a caller is told when a prompt went out and no answer came back.
+fn no_answer_reason(module_id: &str) -> String {
+    format!(
+        "Module '{module_id}' is marked `requires_approval` and no answer to the approval prompt \
+         came back. The client may not support MCP elicitation, or the connection may have \
+         dropped before the prompt was answered — this is not a human declining. Retry, connect a \
+         client that supports elicitation, use `--acl` to grant specific callers access to \
+         specific modules, or embed apexe as a library with an `ApprovalStore` for out-of-band \
+         approvals."
+    )
 }
 
 /// What a caller is told when the gate is on and no prompt can be delivered.
@@ -99,10 +131,12 @@ fn no_prompt_reason(module_id: &str) -> String {
 /// `enable_approval` is set and no [`ApprovalStore`](apcore_mcp::ApprovalStore)
 /// was supplied. See the module docs for what this adds over
 /// [`ElicitationApprovalHandler`] alone.
-#[derive(Debug)]
 pub struct ApprovalGate {
-    /// The upstream handler that does the prompting.
-    inner: ElicitationApprovalHandler,
+    /// The handler that actually decides. Boxed so the same audit-and-reword
+    /// wrapper serves both handlers `build_executor` can install: the
+    /// elicitation gate, and the `ApprovalStore`-backed one whose refusals
+    /// reach no middleware either.
+    inner: Box<dyn ApprovalHandler>,
     /// Governance audit sink. `None` disables auditing.
     ///
     /// Only refusals are written. A *granted* approval is followed by the
@@ -120,12 +154,24 @@ impl ApprovalGate {
 
     /// Create the gate, recording each refusal to `audit`.
     pub fn with_audit(audit: Option<Arc<crate::governance::AuditManager>>) -> Self {
-        Self {
-            // `None`: the callback is per-request and comes from the live
-            // router, which is the whole point — see the module docs.
-            inner: ElicitationApprovalHandler::new(None),
-            audit,
-        }
+        // `None`: the callback is per-request and comes from the live router,
+        // which is the whole point — see the module docs.
+        Self::wrapping(Box::new(ElicitationApprovalHandler::new(None)), audit)
+    }
+
+    /// Wrap an arbitrary approval handler, auditing every refusal it returns.
+    ///
+    /// The audit guarantee is a property of *where the gate runs*, not of which
+    /// handler decides: `approval_gate` precedes `middleware_before`, so no
+    /// middleware observes any refusal from it. A store-backed deployment — the
+    /// one the manual documents as the production answer — was getting the
+    /// worse of the two guarantees while the audit sink sat unused one line
+    /// away in `install_approval_handler`.
+    pub fn wrapping(
+        inner: Box<dyn ApprovalHandler>,
+        audit: Option<Arc<crate::governance::AuditManager>>,
+    ) -> Self {
+        Self { inner, audit }
     }
 
     /// Record one approval-gate refusal.
@@ -153,6 +199,14 @@ impl ApprovalGate {
     }
 }
 
+impl std::fmt::Debug for ApprovalGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApprovalGate")
+            .field("has_audit", &self.audit.is_some())
+            .finish()
+    }
+}
+
 impl Default for ApprovalGate {
     fn default() -> Self {
         Self::new()
@@ -170,7 +224,14 @@ impl ApprovalHandler for ApprovalGate {
             Disposition::Granted => {
                 tracing::info!(
                     module_id = %request.module_id,
-                    "Approval granted through the connected MCP client"
+                    "Approval granted"
+                );
+                return Ok(result);
+            }
+            Disposition::Pending => {
+                tracing::info!(
+                    module_id = %request.module_id,
+                    "Approval recorded as pending for out-of-band resolution"
                 );
                 return Ok(result);
             }
@@ -180,6 +241,13 @@ impl ApprovalHandler for ApprovalGate {
                     "Denying approval-gated call: this client declared no elicitation support"
                 );
                 result.reason = Some(no_prompt_reason(&request.module_id));
+            }
+            Disposition::NoAnswer => {
+                tracing::warn!(
+                    module_id = %request.module_id,
+                    "Denying approval-gated call: the prompt went out and no answer came back"
+                );
+                result.reason = Some(no_answer_reason(&request.module_id));
             }
             Disposition::Refused => {
                 tracing::info!(
@@ -216,7 +284,10 @@ impl ApprovalHandler for ApprovalGate {
     /// refusal from another.
     async fn check_approval(&self, approval_id: &str) -> Result<ApprovalResult, ModuleError> {
         let result = self.inner.check_approval(approval_id).await?;
-        if matches!(classify(&result), Disposition::Granted) {
+        if matches!(
+            classify(&result),
+            Disposition::Granted | Disposition::Pending
+        ) {
             return Ok(result);
         }
         tracing::warn!(
@@ -276,6 +347,33 @@ mod tests {
                 "{reason} means no prompt reached anyone"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_an_unanswered_prompt_does_not_claim_the_client_lacks_the_capability() {
+        // apcore-mcp returns this whenever its callback yields `None`, which
+        // covers a transport failure and a mid-prompt disconnect as well as a
+        // client with no elicitation support. Folding it in with the other two
+        // told an elicitation-capable operator the opposite of what their own
+        // `initialize` handshake said, and sent them to the wrong remedy.
+        assert_eq!(
+            classify(&result_with("rejected", Some(NO_ANSWER_REASON))),
+            Disposition::NoAnswer
+        );
+        let unanswered = no_answer_reason("cli.rm");
+        let unpromptable = no_prompt_reason("cli.rm");
+        assert_ne!(
+            unanswered, unpromptable,
+            "the two outcomes must not read as the same diagnosis"
+        );
+        assert!(
+            !unanswered.contains("declared no MCP elicitation support"),
+            "an unanswered prompt must not assert a cause it did not observe: {unanswered}"
+        );
+        assert!(
+            unanswered.contains("--acl"),
+            "it must still name the alternative: {unanswered}"
+        );
     }
 
     #[tokio::test]

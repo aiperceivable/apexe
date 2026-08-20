@@ -64,9 +64,13 @@ fn test_every_document_states_the_same_parser_count() {
     // crate doc, so a rename cannot pass by keeping the count the same.
     let crate_doc = include_str!("../src/scanner/mod.rs");
     for parser in ["Man", "BSD Usage", "GNU", "Click", "Cobra", "Clap"] {
+        // Anchored to the §6 table ROW, not to the bare name. `contains("Man")`
+        // was satisfied unconditionally by the manual's own H1
+        // (`# apexe User Manual`), so deleting the Man row — the exact drift
+        // this test says it exists to catch — left it green.
         assert!(
-            manual.contains(parser),
-            "docs/user-manual.md omits the {parser} parser"
+            manual.contains(&format!("| **{parser}** |")),
+            "docs/user-manual.md's Tier 1 table omits the {parser} parser row"
         );
         assert!(
             crate_doc.contains(parser),
@@ -82,10 +86,51 @@ fn test_every_document_states_the_same_parser_count() {
 /// `HealthOnlyCircuitBreaker`. The distinction is user-visible: an agent doing
 /// schema trial-and-error is exactly the case the old text told readers to fear.
 ///
-/// Anchored to the runtime type name rather than to a literal, so renaming the
-/// middleware in `src/module/breaker.rs` fails this test.
+/// The wiring is exercised first. The previous version of this guard read only
+/// `type_name::<HealthOnlyCircuitBreaker>()`, which proves the type is still
+/// exported and nothing about whether `build_executor` installs it — so §9.5's
+/// "wires two middleware on by default" could go stale with the test green.
+///
+/// One limit, stated rather than papered over: `HealthOnlyCircuitBreaker::name`
+/// deliberately returns `"circuit_breaker"`, the same name apcore's own
+/// middleware uses, because apcore keys ordering and duplicate detection on it.
+/// So the installed-chain listing proves the breaker is wired and honours the
+/// flag; it cannot prove *which* breaker. That half is pinned by behaviour
+/// instead, in `breaker.rs::test_acl_denials_do_not_open_the_circuit`.
 #[test]
 fn test_user_manual_names_the_wired_circuit_breaker() {
+    use apexe::module::{build_executor, ExecutorOptions};
+
+    let installed = |enabled: bool| -> Vec<String> {
+        let opts = ExecutorOptions {
+            modules_dir: None,
+            timeout_ms: 30_000,
+            acl_path: None,
+            filter: apexe::module::ModuleFilter::default(),
+            audit_path: None,
+            enable_logging: false,
+            log_arguments: false,
+            enable_approval: false,
+            enable_circuit_breaker: enabled,
+            enable_retry: false,
+            approval_store: None,
+        };
+        build_executor(&opts)
+            .expect("an executor with no modules still builds")
+            .middlewares()
+    };
+
+    assert!(
+        installed(true).iter().any(|name| name == "circuit_breaker"),
+        "build_executor must wire the circuit breaker on by default, as §9.5 says"
+    );
+    assert!(
+        !installed(false)
+            .iter()
+            .any(|name| name == "circuit_breaker"),
+        "--no-circuit-breaker must actually remove it, or the flag is decorative"
+    );
+
     let wired = std::any::type_name::<apexe::module::HealthOnlyCircuitBreaker>()
         .rsplit("::")
         .next()
@@ -159,10 +204,22 @@ async fn test_user_manual_describes_what_the_approval_gate_actually_does() {
         !manual.contains("blocks until the connected MCP client's user responds"),
         "docs/user-manual.md still describes the pre-0.18 promise"
     );
-    assert!(
-        !manual.contains("denies every call to a module"),
-        "docs/user-manual.md still describes the gate as unconditional denial"
-    );
+    // Not a single literal: the stale claim survived in two other spellings
+    // (`**Deny** every call to a ...` in the §4.2 flag table and
+    // `unconditional **deny** gate` in §11) while the pinned string matched
+    // neither, so the guard stayed green over live drift. Any line pairing
+    // `enable-approval` with deny-language is what has to fail.
+    for (number, line) in manual.lines().enumerate() {
+        let lowered = line.to_lowercase();
+        if !lowered.contains("enable-approval") {
+            continue;
+        }
+        assert!(
+            !(lowered.contains("deny") || lowered.contains("denies")),
+            "docs/user-manual.md:{} still describes --enable-approval as a deny gate: {line}",
+            number + 1
+        );
+    }
 }
 
 /// SSE is served again — apcore-mcp 0.18 scoped a session per connection, so

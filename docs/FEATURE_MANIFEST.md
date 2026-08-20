@@ -4,9 +4,9 @@
 
 **apexe** -- Outside-In CLI-to-Agent Bridge. Automatically wraps CLI tools into governed apcore modules, served via MCP/A2A.
 
-**Version:** 0.5.1 — Full apcore ecosystem integration (MCP + A2A) plus curated tool overlays and variant-aware scanning.
+**Version:** 0.6.0 — Full apcore ecosystem integration (MCP + A2A) plus curated tool overlays and variant-aware scanning.
 
-**Status:** All features implemented. 597 tests passing, 0 failures.
+**Status:** All features implemented. 894 tests passing, 0 failures.
 
 > The section headings below tagged "(v0.1.0 …)" record when each piece first
 > landed; the crate is now **0.5.1**. For the authoritative current state see
@@ -129,14 +129,14 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 | `apcore` | Core module system, ACL, errors |
 | `apcore-toolkit` | Scanner types, YAML writer, verifiers |
 | `apcore-mcp` | MCP protocol server |
-| `apcore-cli` | Audit logging (JSONL) |
+| `apcore-cli` | `--man` page generation |
 | `clap` (derive mode) | CLI argument parsing |
 | `serde` + `serde_json` + `serde_yaml` | Serialization |
 | `tokio` | Async runtime |
 | `tracing` + `tracing-subscriber` | Structured logging |
 | `thiserror` | Typed error definitions |
 | `regex` | Help-text parsing and format detection (all parsers) |
-| `sha2` | SHA-256 hashing for audit privacy |
+| `chrono` | RFC 3339 timestamps for the audit trail |
 | `uuid` | UUID v4 for trace IDs |
 | `shell-words` | Shell argument splitting |
 

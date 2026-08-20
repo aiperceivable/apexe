@@ -106,7 +106,6 @@ pub fn extract_description(help_text: &str) -> String {
     desc.chars().take(200).collect()
 }
 
-/// Extract flags from OPTIONS section using regex patterns.
 /// Collect flags spelled with a long form, recording every short alias seen.
 ///
 /// Matches `-m, --message=MSG`, `-m, --message MSG` and `--all`. The long name

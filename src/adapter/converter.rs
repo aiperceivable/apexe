@@ -66,7 +66,6 @@ impl CliToolConverter {
             .collect()
     }
 
-    /// Build a single ScannedModule from a leaf command (or synthesized root).
     /// The `exec://` target a module is invoked through.
     ///
     /// For a root-only tool this is just the binary path; for a subcommand the
@@ -99,6 +98,7 @@ impl CliToolConverter {
             .collect()
     }
 
+    /// Build a single ScannedModule from a leaf command (or synthesized root).
     fn build_single_module(
         &self,
         tool: &ScannedCLITool,
@@ -167,13 +167,6 @@ impl CliToolConverter {
         metadata
     }
 
-    /// Extract description, schemas, annotations, docs, and examples from a command.
-    ///
-    /// **Known debt:** over CLAUDE.md's 50-line ceiling. It is a single
-    /// two-branch construction of one struct (a real command vs. the
-    /// tool-level fallback); splitting it would separate the two halves of a
-    /// contract that has to stay field-for-field aligned. Left whole
-    /// deliberately.
     /// The description a command contributes, or a synthesized one.
     ///
     /// A command with no help text of its own still needs a summary an agent

@@ -38,6 +38,19 @@ use apcore::{ErrorCode, ModuleError};
 use async_trait::async_trait;
 use serde_json::Value;
 
+/// Entry count past which `before` sweeps timed-out leftovers.
+///
+/// Well above any plausible in-flight concurrency, so the sweep is a leak
+/// backstop rather than part of the hot path.
+const STALE_SWEEP_THRESHOLD: usize = 1024;
+
+/// Age past which an unreleased timing entry is treated as abandoned.
+///
+/// Comfortably beyond apexe's own default per-call timeout, so a slow but live
+/// call is never swept out from under itself — the only cost of doing so would
+/// be a `duration_ms` of 0 on its eventual failure record.
+const STALE_ENTRY_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+
 /// Whether [`CliModule`](crate::module::CliModule) already wrote an audit row
 /// for a failure carrying `code`, so this middleware must not write a second.
 ///
@@ -161,7 +174,19 @@ impl Middleware for FailureLogMiddleware {
         ctx: &Context<Value>,
     ) -> Result<Option<Value>, ModuleError> {
         let key = Self::timing_key(module_id, ctx);
-        self.with_start_times(|times| times.insert(key, Instant::now()));
+        self.with_start_times(|times| {
+            // A cancelled call releases nothing: apcore short-circuits
+            // `ExecutionCancelled` ahead of the on_error chain, so neither
+            // `after` nor `on_error` runs and the entry would live as long as
+            // the server. Agent clients cancel routinely, so this is a slow
+            // leak on every deployment rather than an edge case. Sweeping on
+            // insert keeps the cost proportional to traffic and needs no
+            // background task.
+            if times.len() >= STALE_SWEEP_THRESHOLD {
+                times.retain(|_, started| started.elapsed() < STALE_ENTRY_AGE);
+            }
+            times.insert(key, Instant::now());
+        });
         Ok(None)
     }
 
@@ -227,6 +252,7 @@ mod tests {
     use super::*;
     use apcore::ErrorCode;
     use serde_json::json;
+    use std::time::Duration;
 
     fn context() -> Context<Value> {
         Context::anonymous()
@@ -275,6 +301,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_abandoned_timing_entries_do_not_grow_without_bound() {
+        // apcore short-circuits `ExecutionCancelled` ahead of the on_error
+        // chain, so a cancelled call runs neither `after` nor `on_error` and
+        // its entry is never released. Agent clients cancel routinely, so
+        // without the sweep the map grows for the life of the server.
+        let middleware = FailureLogMiddleware::new();
+        for _ in 0..(STALE_SWEEP_THRESHOLD + 64) {
+            middleware
+                .before("cli.ls", json!({}), &context())
+                .await
+                .expect("before never fails");
+        }
+        // Nothing is old enough to sweep yet, so the map is allowed to hold
+        // them; what must hold is that the sweep runs and the map stays bounded
+        // once entries age out.
+        middleware.with_start_times(|times| {
+            for started in times.values_mut() {
+                *started = Instant::now() - STALE_ENTRY_AGE - Duration::from_secs(1);
+            }
+        });
+        middleware
+            .before("cli.ls", json!({}), &context())
+            .await
+            .expect("before never fails");
+        assert_eq!(
+            middleware.with_start_times(|times| times.len()),
+            1,
+            "aged-out entries must be swept, leaving only the call just started"
+        );
+    }
+
+    #[tokio::test]
     async fn test_failure_log_middleware_releases_timing_entries() {
         // Both terminal paths have to release the entry, or a long-lived
         // server accumulates one Instant per call it ever served.
@@ -316,9 +374,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_failure_log_middleware_survives_a_failure_before_the_middleware_phase() {
-        // apcore runs `acl_check` and `approval_gate` ahead of
-        // `middleware_before`, so a governance refusal reaches on_error with no
-        // recorded start instant. That must still produce a record, not panic.
+        // `on_error` can be reached with no matching `before` — apcore runs it
+        // over `executed_middlewares`, and a failure raised inside the execute
+        // step arrives after this middleware's own `before` may have been
+        // released by a concurrent path. `take_elapsed_ms` returning `None`
+        // must fall back to 0 rather than panic.
         let middleware = FailureLogMiddleware::new();
         let error = ModuleError::new(ErrorCode::ACLDenied, "denied".to_string());
         let outcome = middleware

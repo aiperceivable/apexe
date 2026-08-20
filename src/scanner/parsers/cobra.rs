@@ -112,7 +112,11 @@ fn extract_available_commands(help_text: &str) -> Vec<String> {
 /// small anchor regex stays dynamic; the expensive flag regex is shared.
 /// Returns `None` when the tool prints no such section.
 fn cobra_section_content<'a>(help_text: &'a str, section_header: &str) -> Option<&'a str> {
-    let section_re = Regex::new(&format!(r"(?m)^{}$", regex::escape(section_header))).unwrap();
+    // INVARIANT: regex::escape neutralises every metacharacter in the header,
+    // so the anchored pattern always compiles. The file-header note covers the
+    // compile-time-constant patterns and does not reach this dynamic one.
+    let section_re = Regex::new(&format!(r"(?m)^{}$", regex::escape(section_header)))
+        .expect("an escaped header is always a valid regex");
     let section_start = section_re.find(help_text)?.end();
     let section_text = &help_text[section_start..];
 

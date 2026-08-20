@@ -605,7 +605,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_writes_audit_entry() {
         // F5 §4.3: with an audit sink attached, each execution appends a JSONL
-        // entry (module_id + status), and raw input is not stored (hashed).
+        // entry (module_id + status), and raw input is not stored.
         let tmp = tempfile::TempDir::new().unwrap();
         let audit_path = tmp.path().join("audit.jsonl");
         let audit = Arc::new(AuditManager::new(&audit_path));

@@ -330,10 +330,11 @@ pub struct ServeArgs {
     #[arg(long)]
     pub acl: Option<PathBuf>,
 
-    /// Deny every call to a module marked `requires_approval`. Interactive
-    /// approval is not available on a CLI-launched server, so this is an
-    /// unconditional block rather than a prompt -- use `--acl` for a
-    /// per-caller boundary.
+    /// Gate every call to a module marked `requires_approval` on a human
+    /// decision, delivered to the connected MCP client as an elicitation
+    /// prompt. A client that declared no elicitation support cannot be
+    /// prompted and is refused -- use `--acl` for a per-caller boundary that
+    /// needs no human.
     #[arg(long)]
     pub enable_approval: bool,
 
@@ -1188,6 +1189,48 @@ mod tests {
         // at serve time). It must be rejected at parse.
         let result = Cli::try_parse_from(["apexe", "a2a", "--enable-approval"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_a2a_build_server_wires_the_surface_filters() {
+        // The three a2a filter tests all drive `A2aServerBuilder` directly, so
+        // the CLI-to-builder wiring was unguarded: dropping either `if let` arm
+        // left every test green while `apexe a2a --prefix` served the whole
+        // scanned surface. That matters more here than on `apexe serve` —
+        // A2A has no authenticator, so narrowing the registered surface is the
+        // only limiting mechanism available.
+        let cli =
+            Cli::try_parse_from(["apexe", "a2a", "--prefix", "cli.git.", "--tags", "readonly"])
+                .unwrap();
+        let Commands::A2a(args) = cli.command else {
+            panic!("expected Commands::A2a");
+        };
+        let builder = args
+            .build_server(&ApexeConfig::default())
+            .expect("well-formed flags build a server");
+        let filter = builder.module_filter();
+
+        assert_eq!(filter.prefix.as_deref(), Some("cli.git."));
+        assert_eq!(
+            filter.tags.as_deref(),
+            Some(["readonly".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn test_a2a_build_server_rejects_a_trailing_comma_in_tags() {
+        let cli = Cli::try_parse_from(["apexe", "a2a", "--tags", "readonly,"]).unwrap();
+        let Commands::A2a(args) = cli.command else {
+            panic!("expected Commands::A2a");
+        };
+        let err = match args.build_server(&ApexeConfig::default()) {
+            Ok(_) => panic!("an empty tag makes the filter unsatisfiable"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("empty tag"),
+            "the refusal must name the stray comma: {err}"
+        );
     }
 
     #[test]

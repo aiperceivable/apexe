@@ -289,12 +289,13 @@ impl A2aServerBuilder {
         self
     }
 
-    /// Set ACL config file path for access control on the Executor.
+    /// Set the JSONL governance audit-log path; `None` disables auditing.
     pub fn audit_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.audit_path = Some(path.into());
         self
     }
 
+    /// Set the ACL policy file path for access control on the Executor.
     pub fn acl_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.acl_path = Some(path.into());
         self
@@ -352,6 +353,14 @@ impl A2aServerBuilder {
     pub fn cors_origins(mut self, origins: Vec<String>) -> Self {
         self.cors_origins = origins;
         self
+    }
+
+    /// The surface filter this builder will register modules through.
+    ///
+    /// Exposed so a test can pin the CLI-to-builder wiring without binding a
+    /// port; the filter itself is enforced at registration.
+    pub fn module_filter(&self) -> &crate::module::ModuleFilter {
+        &self.filter
     }
 
     /// Serve only modules whose `module_id` starts with `prefix`.

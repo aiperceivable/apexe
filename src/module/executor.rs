@@ -469,51 +469,6 @@ impl RenderedArgv {
     }
 }
 
-/// Build CLI args from JSON kwargs, spelling each one the way `input_schema`
-/// says the wrapped tool accepts it, and flatten the result.
-///
-/// See [`build_argv`], which this wraps: use that wherever the module's
-/// subcommand tokens have to be interleaved. Flattening is what every
-/// subcommand-less tool wants, and it is what the argv-shape tests assert.
-#[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
-pub fn build_arguments(
-    kwargs: &serde_json::Map<String, Value>,
-    input_schema: Option<&Value>,
-) -> Result<Vec<String>, ModuleError> {
-    Ok(build_argv(kwargs, input_schema)?.into_flat())
-}
-
-/// Build CLI args from JSON kwargs, spelling each one the way `input_schema`
-/// says the wrapped tool accepts it.
-///
-/// Bool `true` emits the bare flag, `false` and null are skipped, and an array
-/// repeats the flag once per element. Values marked `x-apexe-positional` are
-/// emitted bare and ordered by their recorded index — an input object has no
-/// ordering of its own, so without that index `cp source target` would depend
-/// on the order the caller happened to write the JSON keys in.
-///
-/// Placement is per-token, not one global rule, because a single grammar can
-/// put dash-tokens on both sides of the same operand. `find` is
-/// `find [-H|-L|-P] [-EXdsx] [-f path] path ... [expression]`: its true
-/// options must precede the paths (`find dir -L` is "unknown primary or
-/// operator") while its primaries must follow them (`find -name '*.txt' dir`
-/// is "illegal option -- n"). Four ordered groups are therefore emitted —
-/// leading flags, leading operands, trailing flags, trailing operands — each
-/// sorted by its own recorded index. A schema carrying neither marker yields
-/// the ordinary `tool [options] operands` shape, unchanged.
-/// See `x-apexe-flag-position` and `x-apexe-operand-position`.
-///
-/// A fifth group sits outside all four: a flag marked
-/// `x-apexe-flag-position: "before-subcommand"` is reported in
-/// [`RenderedArgv::before_subcommand`] rather than emitted here, because the
-/// subcommand tokens it has to precede are not part of this function's output.
-///
-/// A tool whose schema carries `x-apexe-end-of-options` additionally gets a
-/// `--` separator inserted at the point its parser stops reading options, as
-/// soon as any value begins with `-`. That is what makes such a value legal
-/// rather than refused; see [`validate_argument_value`] and
-/// [`operands_precede_flags`].
-///
 /// The five token groups a call's arguments sort into, before ordering.
 ///
 /// Split out from [`build_argv`] so that function is the ordering rule and
@@ -683,6 +638,50 @@ fn needs_end_of_options(
     honours_separator && (groups.saw_dash_leading_value || nothing_stops_option_parsing)
 }
 
+/// Build CLI args from JSON kwargs, spelling each one the way `input_schema`
+/// says the wrapped tool accepts it, and flatten the result.
+///
+/// See [`build_argv`], which this wraps: use that wherever the module's
+/// subcommand tokens have to be interleaved. Flattening is what every
+/// subcommand-less tool wants, and it is what the argv-shape tests assert.
+#[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+pub fn build_arguments(
+    kwargs: &serde_json::Map<String, Value>,
+    input_schema: Option<&Value>,
+) -> Result<Vec<String>, ModuleError> {
+    Ok(build_argv(kwargs, input_schema)?.into_flat())
+}
+
+/// Build CLI args from JSON kwargs, spelling each one the way `input_schema`
+/// says the wrapped tool accepts it.
+///
+/// Bool `true` emits the bare flag, `false` and null are skipped, and an array
+/// repeats the flag once per element. Values marked `x-apexe-positional` are
+/// emitted bare and ordered by their recorded index — an input object has no
+/// ordering of its own, so without that index `cp source target` would depend
+/// on the order the caller happened to write the JSON keys in.
+///
+/// Placement is per-token, not one global rule, because a single grammar can
+/// put dash-tokens on both sides of the same operand. `find` is
+/// `find [-H|-L|-P] [-EXdsx] [-f path] path ... [expression]`: its true
+/// options must precede the paths (`find dir -L` is "unknown primary or
+/// operator") while its primaries must follow them (`find -name '*.txt' dir`
+/// is "illegal option -- n"). Four ordered groups are therefore emitted —
+/// leading flags, leading operands, trailing flags, trailing operands — each
+/// sorted by its own recorded index. A schema carrying neither marker yields
+/// the ordinary `tool [options] operands` shape, unchanged.
+/// See `x-apexe-flag-position` and `x-apexe-operand-position`.
+///
+/// A fifth group sits outside all four: a flag marked
+/// `x-apexe-flag-position: "before-subcommand"` is reported in
+/// [`RenderedArgv::before_subcommand`] rather than emitted here, because the
+/// subcommand tokens it has to precede are not part of this function's output.
+///
+/// A tool whose schema carries `x-apexe-end-of-options` additionally gets a
+/// `--` separator inserted at the point its parser stops reading options, as
+/// soon as any value begins with `-`. That is what makes such a value legal
+/// rather than refused; see [`validate_argument_value`] and
+/// [`operands_precede_flags`].
 #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
 pub fn build_argv(
     kwargs: &serde_json::Map<String, Value>,
@@ -861,6 +860,8 @@ async fn collect_output(
     max_output_bytes: usize,
 ) -> Result<SubprocessOutput, ModuleError> {
     let read_cap = max_output_bytes.saturating_add(1);
+    // INVARIANT: stdout/stderr were configured Stdio::piped() in
+    // `spawn_isolated`, so take() is Some.
     let mut stdout_pipe = child.stdout.take().expect("stdout was piped");
     let mut stderr_pipe = child.stderr.take().expect("stderr was piped");
     let (stdout_bytes, stderr_bytes, status) = tokio::join!(

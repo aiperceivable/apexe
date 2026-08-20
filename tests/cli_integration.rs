@@ -363,7 +363,7 @@ fn test_scan_fails_outright_when_no_tool_can_be_scanned() {
 
 /// The manual's `isError` claim must survive an apcore-mcp bump.
 ///
-/// §11 tells a reader that a wrapped command exiting non-zero comes back as an
+/// §13 tells a reader that a wrapped command exiting non-zero comes back as an
 /// ordinary successful tool result — `isError: false`, with the real outcome in
 /// `exit_code` inside `content[0].text` — and that keying on `isError` instead
 /// lands them in exactly the trap the section warns about. `grep` exits 1 when
@@ -456,4 +456,31 @@ fn test_a_non_zero_exit_is_not_reported_as_an_mcp_error() {
         payload.get("ai_guidance").is_some(),
         "a non-zero exit must carry guidance a caller can self-correct from: {payload}"
     );
+}
+
+/// `apexe --man` is the one thing `apcore-cli` is a dependency for.
+///
+/// README.md and docs/FEATURE_MANIFEST.md both name it as the reason the crate
+/// is in the manifest, and this branch bumped that dependency and added a guard
+/// pinning its version — but nothing exercised the feature, so an upstream
+/// change to `has_man_flag` or `build_program_man_page` would have shipped
+/// silently.
+#[test]
+fn test_man_flag_emits_a_man_page() {
+    let output = Command::cargo_bin("apexe")
+        .unwrap()
+        .arg("--man")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let man = String::from_utf8(output).expect("a man page is UTF-8");
+    assert!(
+        man.contains(".TH"),
+        "roff output must carry a title header: {}",
+        &man[..man.len().min(200)]
+    );
+    assert!(man.contains("apexe"), "the page must name the program");
 }

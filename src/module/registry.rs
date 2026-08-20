@@ -287,8 +287,13 @@ fn install_approval_handler(
     }
     match &opts.approval_store {
         Some(store) => {
-            executor
-                .set_approval_handler(Box::new(StorageBackedApprovalHandler::new(store.clone())));
+            // Wrapped, not bare: an out-of-band decline reaches no middleware
+            // either (see `ApprovalGate::wrapping`), so a store-backed
+            // deployment would otherwise have no refusal record at all.
+            executor.set_approval_handler(Box::new(ApprovalGate::wrapping(
+                Box::new(StorageBackedApprovalHandler::new(store.clone())),
+                audit.clone(),
+            )));
             tracing::info!(
                 store_backed = true,
                 "Approval handler enabled for destructive commands"

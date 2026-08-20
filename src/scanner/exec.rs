@@ -9,18 +9,6 @@ use std::io;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-/// Run `program` with `args`, capturing stdout/stderr, killing the child if it
-/// exceeds `timeout`.
-///
-/// stdin is connected to `/dev/null` so a tool that waits for input fails fast
-/// instead of blocking. On timeout the child is killed and reaped (no orphan)
-/// and an [`io::ErrorKind::TimedOut`] error is returned.
-///
-/// stdout and stderr are drained on dedicated threads so a child that fills its
-/// pipe buffer (>~64 KiB) never blocks in `write()` — reading only after the
-/// child exits would deadlock on large output (the same reason
-/// `std::process::Command::output()` drains both pipes concurrently). This
-/// matters for big-help tools (`kubectl`, `docker`, `--help all`).
 /// Drain a pipe on its own thread.
 ///
 /// Both pipes are read concurrently with the wait loop: reading one to
@@ -35,7 +23,18 @@ fn drain_pipe(mut pipe: impl io::Read + Send + 'static) -> std::thread::JoinHand
     })
 }
 
-/// Run `program`, killing it if `timeout` elapses, and capture both pipes.
+/// Run `program` with `args`, capturing stdout/stderr, killing the child if it
+/// exceeds `timeout`.
+///
+/// stdin is connected to `/dev/null` so a tool that waits for input fails fast
+/// instead of blocking. On timeout the child is killed and reaped (no orphan)
+/// and an [`io::ErrorKind::TimedOut`] error is returned.
+///
+/// stdout and stderr are drained on dedicated threads so a child that fills its
+/// pipe buffer (>~64 KiB) never blocks in `write()` — reading only after the
+/// child exits would deadlock on large output (the same reason
+/// `std::process::Command::output()` drains both pipes concurrently). This
+/// matters for big-help tools (`kubectl`, `docker`, `--help all`).
 pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> io::Result<Output> {
     let mut child = Command::new(program)
         .args(args)
