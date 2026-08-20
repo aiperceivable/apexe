@@ -401,6 +401,113 @@ fn flush_flag(
     description_lines.clear();
 }
 
+/// The spellings one option line yields, accumulated token by token.
+#[derive(Default)]
+struct FlagSpelling {
+    short_name: Option<String>,
+    long_name: Option<String>,
+    value_name: Option<String>,
+    /// Set by the `--exec-path[=<path>]` form, where the bracket on the name
+    /// side of the `=` is the only thing marking the value optional.
+    value_optional: bool,
+}
+
+impl FlagSpelling {
+    /// Record a value placeholder, keeping the first one seen.
+    fn note_value_if_unset(&mut self, placeholder: &str) {
+        if self.value_name.is_none() {
+            self.value_name = Some(strip_placeholder_brackets(placeholder));
+        }
+    }
+
+    /// Record a spelling. A short name is kept only if none was seen yet, so an
+    /// alias list's first short form wins.
+    fn note_name(&mut self, name: String) {
+        if name.starts_with("--") {
+            self.long_name = Some(name);
+        } else if self.short_name.is_none() {
+            self.short_name = Some(name);
+        }
+    }
+
+    /// Turn the accumulated spellings into a flag.
+    ///
+    /// A placeholder states the value's shape as well as its existence:
+    /// `--max-count=<number>` typed `string` rejects the `3` a caller naturally
+    /// sends. Inference is shared with the pipeline's placeholder-recovery pass
+    /// so both paths type the same wording the same way. No placeholder means
+    /// no value, hence a boolean.
+    fn into_flag(self) -> ScannedFlag {
+        let value_type = match self.value_name.as_deref() {
+            Some(placeholder) => crate::scanner::value_placeholder::infer_value_type(placeholder),
+            None => ValueType::Boolean,
+        };
+        ScannedFlag {
+            long_name: self.long_name,
+            short_name: self.short_name,
+            description: String::new(),
+            value_type,
+            required: false,
+            default: None,
+            enum_values: None,
+            repeatable: false,
+            value_name: self.value_name,
+            value_optional: self.value_optional,
+            ..Default::default()
+        }
+    }
+}
+
+/// Read one dash-leading token into `spelling`.
+///
+/// Covers the four spellings that put a value on the name side of the token:
+/// `--color=when`, `--exec-path[=<path>]`, git's attached short form `-n<num>`,
+/// and a parenthesised alias group.
+fn absorb_option_token(spelling: &mut FlagSpelling, token: &str) {
+    let (name, inline_value) = match token.split_once('=') {
+        Some((name, value)) => (name, Some(value)),
+        None => (token, None),
+    };
+    // `--exec-path[=<path>]` puts the bracket on the *name* side of the `=`.
+    // Left in place it produced a flag literally named `--exec-path[` and a
+    // schema property key ending in `[` — a token git rejects, and an awkward
+    // identifier for any consumer generating code from the schema. The bracket
+    // is the only thing distinguishing an optional value from a required one,
+    // so it is recorded rather than merely dropped.
+    let name = match name.strip_suffix('[') {
+        Some(stripped) => {
+            spelling.value_optional = true;
+            stripped
+        }
+        None => name,
+    };
+    // An inline value overrides: it is attached to this very token, so it is
+    // more specific than anything a previous token in the alias list offered.
+    if let Some(value) = inline_value.filter(|value| !value.is_empty()) {
+        spelling.value_name = Some(strip_placeholder_brackets(value));
+    }
+    // A short option may carry its value attached with no separator at all:
+    // git spells `-n<num>`, `-S<string>`, `-G<regex>`, `-O<orderfile>`.
+    // Splitting at the placeholder is what keeps the property key `n` rather
+    // than `n<num>`.
+    let name = match name.split_once('<') {
+        Some((head, tail)) if !head.is_empty() => {
+            spelling.note_value_if_unset(tail);
+            head
+        }
+        _ => name,
+    };
+    let name = strip_optional_group(name);
+    // `--` on its own is the end-of-options marker, not an option, and it is
+    // documented in OPTIONS by several tools. `canonical_name` strips the
+    // dashes, so it used to reach the schema as a property whose key was the
+    // empty string.
+    if name.trim_start_matches('-').is_empty() {
+        return;
+    }
+    spelling.note_name(name);
+}
+
 /// Parse the flag names, value placeholder, and any same-line description from
 /// one option line (already trimmed).
 ///
@@ -409,10 +516,7 @@ fn flush_flag(
 /// `--exec-path[=<path>]`.
 fn parse_flag_line(trimmed: &str) -> FlagLine {
     let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-    let mut short_name: Option<String> = None;
-    let mut long_name: Option<String> = None;
-    let mut value_name: Option<String> = None;
-    let mut value_optional = false;
+    let mut spelling = FlagSpelling::default();
     let mut consumed = 0;
 
     while consumed < tokens.len() {
@@ -428,94 +532,25 @@ fn parse_flag_line(trimmed: &str) -> FlagLine {
             // in long format` would read "list" as a value name.
             let continues = raw.ends_with(',');
             if continues && consumed > 0 && is_value_placeholder(token) {
-                if value_name.is_none() {
-                    value_name = Some(strip_placeholder_brackets(token));
-                }
+                spelling.note_value_if_unset(token);
                 consumed += 1;
                 continue;
             }
             break;
         }
-        let (name, inline_value) = match token.split_once('=') {
-            Some((name, value)) => (name, Some(value)),
-            None => (token, None),
-        };
-        // `--exec-path[=<path>]` puts the bracket on the *name* side of the
-        // `=`. Left in place it produced a flag literally named `--exec-path[`
-        // and a schema property key ending in `[` — a token git rejects, and an
-        // awkward identifier for any consumer generating code from the schema.
-        // The bracket is the only thing distinguishing an optional value from a
-        // required one, so it is recorded rather than merely dropped.
-        let name = match name.strip_suffix('[') {
-            Some(stripped) => {
-                value_optional = true;
-                stripped
-            }
-            None => name,
-        };
-        if let Some(value) = inline_value.filter(|value| !value.is_empty()) {
-            value_name = Some(strip_placeholder_brackets(value));
-        }
-        // A short option may carry its value attached with no separator at all:
-        // git spells `-n<num>`, `-S<string>`, `-G<regex>`, `-O<orderfile>`.
-        // Splitting at the placeholder is what keeps the property key `n`
-        // rather than `n<num>`.
-        let name = match name.split_once('<') {
-            Some((head, tail)) if !head.is_empty() => {
-                if value_name.is_none() {
-                    value_name = Some(strip_placeholder_brackets(tail));
-                }
-                head
-            }
-            _ => name,
-        };
-        let name = strip_optional_group(name);
-        if name.trim_start_matches('-').is_empty() {
-            // `--` on its own is the end-of-options marker, not an option, and
-            // it is documented in OPTIONS by several tools. `canonical_name`
-            // strips the dashes, so it used to reach the schema as a property
-            // whose key was the empty string.
-            consumed += 1;
-            continue;
-        }
-        if name.starts_with("--") {
-            long_name = Some(name);
-        } else if short_name.is_none() {
-            short_name = Some(name);
-        }
+        absorb_option_token(&mut spelling, token);
         consumed += 1;
     }
 
     let remainder = &tokens[consumed..];
     let mut inline_description = remainder.join(" ");
-    if value_name.is_none() && remainder.len() == 1 && is_value_placeholder(remainder[0]) {
-        value_name = Some(strip_placeholder_brackets(remainder[0]));
+    if spelling.value_name.is_none() && remainder.len() == 1 && is_value_placeholder(remainder[0]) {
+        spelling.value_name = Some(strip_placeholder_brackets(remainder[0]));
         inline_description = String::new();
     }
 
-    // A placeholder states the value's shape as well as its existence:
-    // `--max-count=<number>` typed `string` rejects the `3` a caller naturally
-    // sends. Inference is shared with the pipeline's placeholder-recovery pass
-    // so both paths type the same wording the same way.
-    let value_type = match value_name.as_deref() {
-        Some(placeholder) => crate::scanner::value_placeholder::infer_value_type(placeholder),
-        None => ValueType::Boolean,
-    };
-
     FlagLine {
-        flag: ScannedFlag {
-            long_name,
-            short_name,
-            description: String::new(),
-            value_type,
-            required: false,
-            default: None,
-            enum_values: None,
-            repeatable: false,
-            value_name,
-            value_optional,
-            ..Default::default()
-        },
+        flag: spelling.into_flag(),
         inline_description,
     }
 }
@@ -919,6 +954,30 @@ ENVIRONMENT
         assert_eq!(flags.len(), 1);
         assert_eq!(flags[0].long_name.as_deref(), Some("--color"));
         assert_eq!(flags[0].value_name.as_deref(), Some("when"));
+    }
+
+    #[test]
+    fn test_extract_man_options_prefers_the_long_forms_value_placeholder() {
+        // An alias list can name the same value twice, and the two spellings
+        // are not interchangeable: `value_name` feeds `infer_value_type`, so
+        // `<FILE>` and `<out>` give the property different types. The inline
+        // placeholder attached to the long form wins over the detached one
+        // after the short form — it is attached to the very token it describes,
+        // where the detached one is positional.
+        //
+        // The rule was untestable before `absorb_option_token` existed: the
+        // overwrite and the first-wins branch sat four lines apart in one
+        // function, and swapping the overwrite for first-wins broke nothing.
+        let man_text = "OPTIONS\n       -o <out>, --output=<FILE>\n              Write here.\n";
+        let flags = extract_man_options(man_text);
+        assert_eq!(flags.len(), 1);
+        assert_eq!(flags[0].short_name.as_deref(), Some("-o"));
+        assert_eq!(flags[0].long_name.as_deref(), Some("--output"));
+        assert_eq!(
+            flags[0].value_name.as_deref(),
+            Some("FILE"),
+            "the long form's inline placeholder must win over the short form's detached one"
+        );
     }
 
     #[test]

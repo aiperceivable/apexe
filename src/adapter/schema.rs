@@ -533,133 +533,181 @@ fn apply_global_flag_placement(schema: &mut JsonValue, position: CommandPosition
     }
 }
 
+/// The `properties` map and `required` list, built together.
+///
+/// One accumulator rather than two loose locals, so the invariant that ties
+/// them — `required` never names a key `properties` does not hold — has a
+/// place to live, and the phases below thread one value instead of a pair.
+#[derive(Default)]
+struct InputProperties {
+    properties: serde_json::Map<String, JsonValue>,
+    required: Vec<String>,
+}
+
+impl InputProperties {
+    /// Add a property, recording it as required when `required` is set.
+    ///
+    /// A flag and a positional of the same name can both be required; the
+    /// property is one entry, so it must not appear in `required` twice.
+    fn insert(&mut self, name: String, schema: JsonValue, required: bool) {
+        if required && !self.required.contains(&name) {
+            self.required.push(name.clone());
+        }
+        self.properties.insert(name, schema);
+    }
+
+    /// Move `displaced` to a free key so a flag survives an operand taking its
+    /// name, returning whether it found one.
+    ///
+    /// The executor spells a flag from `x-apexe-flag`, never from the property
+    /// key, so a suffixed key renders exactly the same command line.
+    fn rekey_displaced_flag(&mut self, prop_name: &str, displaced: JsonValue) {
+        let Some(rescued) = free_rescue_key(prop_name, &self.properties) else {
+            return;
+        };
+        self.properties.insert(rescued.clone(), displaced);
+        // `required` named the old key, which now belongs to the operand;
+        // point it at the flag's new home.
+        if let Some(slot) = self.required.iter_mut().find(|name| *name == prop_name) {
+            slot.clone_from(&rescued);
+        }
+    }
+
+    /// Assemble the finished schema.
+    fn into_schema(self, end_of_options: bool) -> JsonValue {
+        let mut schema = json!({
+            "type": "object",
+            "properties": self.properties,
+            "additionalProperties": false,
+        });
+        if !self.required.is_empty() {
+            schema["required"] = json!(self.required);
+        }
+        // A schema-root marker rather than a per-property one: `--` separates
+        // options from operands for the whole invocation, so it says nothing
+        // about any individual property. The executor reads it to decide both
+        // whether a `-`-leading value may be passed through and where the
+        // separator goes.
+        if end_of_options {
+            schema["x-apexe-end-of-options"] = json!(true);
+        }
+        schema
+    }
+}
+
+/// Add the command's own flags.
+fn add_command_flags(
+    acc: &mut InputProperties,
+    command: &ScannedCommand,
+    by_literal: &std::collections::HashMap<String, String>,
+) {
+    for flag in &command.flags {
+        let mut prop_schema = flag_to_schema(flag);
+        apply_conflicts(&mut prop_schema, flag, by_literal);
+        acc.insert(flag.canonical_name(), prop_schema, flag.required);
+    }
+}
+
+/// Add the tool's global flags, skipping any the command already claimed.
+///
+/// A flag that survives the collision check is one the tool's own parser owns
+/// and the subcommand's does not, which is exactly the set that has to precede
+/// the subcommand token — see [`apply_global_flag_placement`].
+fn add_global_flags(
+    acc: &mut InputProperties,
+    global_flags: &[ScannedFlag],
+    by_literal: &std::collections::HashMap<String, String>,
+    position: CommandPosition,
+) {
+    for flag in global_flags {
+        let prop_name = flag.canonical_name();
+        if acc.properties.contains_key(&prop_name) {
+            continue;
+        }
+        let mut prop_schema = flag_to_schema(flag);
+        apply_conflicts(&mut prop_schema, flag, by_literal);
+        apply_global_flag_placement(&mut prop_schema, position);
+        acc.insert(prop_name, prop_schema, flag.required);
+    }
+}
+
+/// Carry across what a displaced flag knew before the operand takes its key.
+///
+/// The flag's description is inherited when the positional has none, which is
+/// the common shape: usage lines carry no prose, so the description only exists
+/// on the flag. Overwriting outright used to discard it.
+///
+/// A same-named flag and operand are usually two spellings of one option
+/// (`curl --url` and `<url>`), so a credential judgement made on the flag has to
+/// survive too — the operand's own name and (often empty) description may not
+/// carry the evidence the flag's help text did.
+fn inherit_from_displaced(prop_schema: &mut JsonValue, displaced: &JsonValue) {
+    if prop_schema.get("description").is_none() {
+        if let Some(description) = displaced.get("description") {
+            prop_schema["description"] = description.clone();
+        }
+    }
+    if displaced.get("x-sensitive").is_some() {
+        prop_schema["x-sensitive"] = json!(true);
+    }
+}
+
+/// Add the command's positional arguments.
+///
+/// A positional replaces a same-named flag rather than being skipped: a name
+/// that appears in the usage line as an operand is passed bare, and that is the
+/// form every tool accepts. `curl` is the case in point — `curl [options...]
+/// <url>` and a `--url` option both exist, and only the operand form is
+/// universal.
+///
+/// The displaced flag is *re-keyed* rather than dropped. "Operand wins" is
+/// right for `curl`, where `--url` and `<url>` are the same thing, but the
+/// premise fails whenever the two merely share a name: `find -path PATTERN` is
+/// a glob predicate and has nothing to do with the `path` operand naming the
+/// roots of the walk, and `grep --file=FILE` reads patterns from a file while
+/// the `file` operand names the files to search. Overwriting removed those
+/// options from the contract entirely — no property rendered `-path` or `-f`,
+/// so an agent could not invoke them at all.
+fn add_positional_args(acc: &mut InputProperties, command: &ScannedCommand) {
+    for (index, arg) in command.positional_args.iter().enumerate() {
+        let prop_name = arg.name.to_lowercase().replace('-', "_");
+        let mut prop_schema = arg_to_schema(arg, index);
+
+        if let Some(displaced) = acc.properties.get(&prop_name).cloned() {
+            inherit_from_displaced(&mut prop_schema, &displaced);
+            // Only a real flag needs rescuing; a duplicate operand name has
+            // nothing to preserve.
+            if displaced.get("x-apexe-flag").is_some() {
+                acc.rekey_displaced_flag(&prop_name, displaced);
+            }
+        }
+
+        acc.insert(prop_name, prop_schema, arg.required);
+    }
+}
+
 /// Build a JSON Schema for command inputs, merging command flags with global flags.
 ///
-/// Command-level flags take precedence; global flags are included only when
-/// their canonical name does not collide with a command-level flag. For a
-/// subcommand, those surviving global flags are additionally marked
-/// `before-subcommand` — see [`apply_global_flag_placement`].
+/// Three sequential phases over one accumulator, in precedence order: command
+/// flags, then the global flags that did not collide with them, then positional
+/// args, which displace a same-named flag to a suffixed key rather than
+/// dropping it.
 ///
-/// **Known debt:** over CLAUDE.md's 50-line ceiling. The body builds one
-/// `properties` map from four interleaved sources (positional args, command
-/// flags, surviving global flags, schema extensions), each of which reads and
-/// writes the same two accumulators; extracting them would mean threading both
-/// through every helper for no gain in clarity. Left whole deliberately.
+/// For a subcommand, the surviving global flags are additionally marked
+/// `before-subcommand` — see [`apply_global_flag_placement`].
 pub fn build_input_schema(
     command: &ScannedCommand,
     global_flags: &[ScannedFlag],
     position: CommandPosition,
 ) -> JsonValue {
-    let mut properties = serde_json::Map::new();
-    let mut required: Vec<String> = Vec::new();
     let by_literal = property_names_by_literal(command, global_flags);
+    let mut acc = InputProperties::default();
 
-    // Command flags first.
-    for flag in &command.flags {
-        let prop_name = flag.canonical_name();
-        let mut prop_schema = flag_to_schema(flag);
-        apply_conflicts(&mut prop_schema, flag, &by_literal);
-        properties.insert(prop_name.clone(), prop_schema);
-        if flag.required {
-            required.push(prop_name);
-        }
-    }
+    add_command_flags(&mut acc, command, &by_literal);
+    add_global_flags(&mut acc, global_flags, &by_literal, position);
+    add_positional_args(&mut acc, command);
 
-    // Global flags, skipping collisions. A flag that survives this loop is one
-    // the tool's own parser owns and the subcommand's does not, which is exactly
-    // the set that has to precede the subcommand token.
-    for flag in global_flags {
-        let prop_name = flag.canonical_name();
-        if !properties.contains_key(&prop_name) {
-            let mut prop_schema = flag_to_schema(flag);
-            apply_conflicts(&mut prop_schema, flag, &by_literal);
-            apply_global_flag_placement(&mut prop_schema, position);
-            properties.insert(prop_name.clone(), prop_schema);
-            if flag.required {
-                required.push(prop_name);
-            }
-        }
-    }
-
-    // Positional args. A positional replaces a same-named flag rather than
-    // being skipped: a name that appears in the usage line as an operand is
-    // passed bare, and that is the form every tool accepts. `curl` is the case
-    // in point -- `curl [options...] <url>` and a `--url` option both exist,
-    // and only the operand form is universal.
-    //
-    // The flag's description is inherited when the positional has none, which
-    // is the common shape: usage lines carry no prose, so the description only
-    // exists on the flag. Overwriting outright used to discard it.
-    //
-    // The displaced flag is *re-keyed* rather than dropped. "Operand wins" is
-    // right for `curl`, where `--url` and `<url>` are the same thing, but the
-    // premise fails whenever the two merely share a name: `find -path PATTERN`
-    // is a glob predicate and has nothing to do with the `path` operand naming
-    // the roots of the walk, and `grep --file=FILE` reads patterns from a file
-    // while the `file` operand names the files to search. Overwriting removed
-    // those options from the contract entirely — no property rendered `-path`
-    // or `-f`, so an agent could not invoke them at all. The executor spells a
-    // flag from `x-apexe-flag`, never from the property key, so a suffixed key
-    // renders exactly the same command line.
-    for (index, arg) in command.positional_args.iter().enumerate() {
-        let prop_name = arg.name.to_lowercase().replace('-', "_");
-        let mut prop_schema = arg_to_schema(arg, index);
-
-        if let Some(displaced) = properties.get(&prop_name).cloned() {
-            if prop_schema.get("description").is_none() {
-                if let Some(description) = displaced.get("description") {
-                    prop_schema["description"] = description.clone();
-                }
-            }
-            // A same-named flag and operand are usually two spellings of one
-            // option (`curl --url` and `<url>`), so a credential judgement made
-            // on the flag has to survive the operand taking its key — the
-            // operand's own name and (often empty) description may not carry
-            // the evidence the flag's help text did.
-            if displaced.get("x-sensitive").is_some() {
-                prop_schema["x-sensitive"] = json!(true);
-            }
-            // Only a real flag needs rescuing; a duplicate operand name has
-            // nothing to preserve.
-            if displaced.get("x-apexe-flag").is_some() {
-                if let Some(rescued) = free_rescue_key(&prop_name, &properties) {
-                    properties.insert(rescued.clone(), displaced);
-                    // `required` named the old key, which now belongs to the
-                    // operand; point it at the flag's new home.
-                    if let Some(slot) = required.iter_mut().find(|name| **name == prop_name) {
-                        slot.clone_from(&rescued);
-                    }
-                }
-            }
-        }
-
-        properties.insert(prop_name.clone(), prop_schema);
-        // A flag and a positional of the same name can both be required; the
-        // property is one entry, so it must not appear in `required` twice.
-        if arg.required && !required.contains(&prop_name) {
-            required.push(prop_name);
-        }
-    }
-
-    let mut schema = json!({
-        "type": "object",
-        "properties": properties,
-        "additionalProperties": false,
-    });
-
-    if !required.is_empty() {
-        schema["required"] = json!(required);
-    }
-
-    // A schema-root marker rather than a per-property one: `--` separates
-    // options from operands for the whole invocation, so it says nothing about
-    // any individual property. The executor reads it to decide both whether a
-    // `-`-leading value may be passed through and where the separator goes.
-    if command.end_of_options {
-        schema["x-apexe-end-of-options"] = json!(true);
-    }
-
-    schema
+    acc.into_schema(command.end_of_options)
 }
 
 /// Build a JSON Schema for command output, including structured output when supported.
@@ -1165,6 +1213,45 @@ mod tests {
         assert_eq!(schema["properties"]["secret"]["x-apexe-positional"], 0);
         assert_eq!(schema["properties"]["secret"]["x-sensitive"], true);
         assert_eq!(schema["properties"]["secret_option"]["x-sensitive"], true);
+    }
+
+    #[test]
+    fn test_schema_sensitive_is_inherited_when_only_the_flags_help_says_so() {
+        // The existing coverage names the operand `secret`, so
+        // `apply_sensitive_arg` marks it from the name alone and the
+        // inheritance is redundant there — removing it broke nothing.
+        //
+        // This is the case it exists for, and the one the comment names: the
+        // evidence lives in the flag's *help text*, and a usage line carries no
+        // prose, so the operand arrives with an unremarkable name and an empty
+        // description. `curl --url` / `<url>` is exactly this. Without the
+        // inheritance a credential embedded in the URL is logged verbatim,
+        // which is the defect #30 closed.
+        let flag = make_flag(
+            Some("--url"),
+            "URL to work with. May embed a password as user:pass@host.",
+            ValueType::String,
+            false,
+            None,
+            None,
+            false,
+        );
+        let arg = ScannedArg {
+            name: "url".to_string(),
+            description: String::new(),
+            value_type: ValueType::String,
+            required: true,
+            variadic: false,
+            before_flags: false,
+        };
+        let cmd = make_command(vec![flag], vec![arg]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
+
+        assert_eq!(
+            schema["properties"]["url"]["x-sensitive"], true,
+            "the operand that took the flag's key must keep its credential \
+             judgement: {schema}"
+        );
     }
 
     #[test]
