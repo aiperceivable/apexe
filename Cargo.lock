@@ -296,6 +296,7 @@ dependencies = [
  "apcore-toolkit",
  "assert_cmd",
  "async-trait",
+ "chrono",
  "clap",
  "dirs",
  "openssl",

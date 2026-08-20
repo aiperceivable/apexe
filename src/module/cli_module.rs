@@ -263,7 +263,14 @@ impl Module for CliModule {
                 // needs to see. Exit code is unknown, so record -1.
                 if let Some(ref audit) = self.audit {
                     let duration_ms = start.elapsed().as_millis() as u64;
-                    audit.log_execution(&self.module_id, &inputs, "error", -1, duration_ms);
+                    audit.log_execution(
+                        &self.module_id,
+                        &ctx.trace_id,
+                        ctx.identity.as_ref().map(|id| id.id()),
+                        "error",
+                        -1,
+                        duration_ms,
+                    );
                 }
                 return Err(e);
             }
@@ -311,8 +318,10 @@ impl Module for CliModule {
             "CLI module execution completed"
         );
 
-        // F5 §4.3: record the execution in the governance audit trail. The
-        // logger hashes the input (no raw values are persisted).
+        // F5 §4.3: record the execution in the governance audit trail. No raw
+        // argument values are persisted — the record names the call, not what
+        // was in it — and `trace_id` is what joins it to the ACL decision that
+        // permitted it.
         if let Some(ref audit) = self.audit {
             let status = if output.exit_code == 0 {
                 "success"
@@ -321,7 +330,8 @@ impl Module for CliModule {
             };
             audit.log_execution(
                 &self.module_id,
-                &inputs,
+                &ctx.trace_id,
+                ctx.identity.as_ref().map(|id| id.id()),
                 status,
                 output.exit_code,
                 duration_ms,
@@ -590,12 +600,19 @@ mod tests {
 
         let content = std::fs::read_to_string(&audit_path).unwrap();
         let entry: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(entry["event"], "execution");
         assert_eq!(entry["module_id"], "test.echo");
         assert_eq!(entry["status"], "success");
         assert_eq!(entry["exit_code"], 0);
-        // Raw input must NOT be persisted — only a hash.
-        assert!(entry.get("input_hash").is_some());
+        // The record names the call, never its arguments. `input_hash` used to
+        // stand in for them and was dropped: apcore-cli salted it with 16 fresh
+        // random bytes per call and discarded the salt, so nobody — itself
+        // included — could reproduce the digest from a known input.
         assert!(!content.contains("secret"));
+        assert!(entry.get("input_hash").is_none());
+        // `trace_id` is what joins this record to the ACL decision for the same
+        // call; the previous shape had none.
+        assert_eq!(entry["trace_id"], ctx.trace_id);
     }
 
     #[tokio::test]

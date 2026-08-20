@@ -370,3 +370,72 @@ async fn test_every_document_discloses_that_a2a_has_no_authentication() {
         );
     }
 }
+
+/// Both dependency tables must state the versions `Cargo.toml` actually
+/// requires.
+///
+/// The apcore 0.27 / apcore-mcp 0.18 / apcore-a2a 0.5 upgrade left README.md
+/// and FEATURE_MANIFEST.md naming 0.26 / 0.17 / 0.4 — through a full `make
+/// check`, because nothing tied the prose to the manifest. A reader consulting
+/// either table to reproduce the build gets a graph that no longer resolves,
+/// and the tables are the only place apexe states which upstream contract it
+/// codes against.
+///
+/// Anchored to `Cargo.toml` rather than to literals, so the next bump fails
+/// here instead of shipping.
+#[test]
+fn test_every_dependency_table_states_the_required_version() {
+    let manifest = include_str!("../Cargo.toml");
+    let readme = include_str!("../README.md");
+    let features = include_str!("../docs/FEATURE_MANIFEST.md");
+
+    // The first quoted string on the crate's dependency line is its version,
+    // for both `foo = "0.1"` and `foo = { version = "0.1", .. }`.
+    let required = |crate_name: &str| -> String {
+        let line = manifest
+            .lines()
+            .map(str::trim)
+            .find(|line| {
+                line.strip_prefix(crate_name)
+                    .is_some_and(|rest| rest.trim_start().starts_with('='))
+            })
+            .unwrap_or_else(|| panic!("Cargo.toml has no dependency line for {crate_name}"));
+        let (_, after) = line.split_once('"').expect("a quoted version");
+        let (version, _) = after.split_once('"').expect("a closed quote");
+        version.to_string()
+    };
+
+    for crate_name in [
+        "apcore",
+        "apcore-a2a",
+        "apcore-cli",
+        "apcore-mcp",
+        "apcore-toolkit",
+    ] {
+        let version = required(crate_name);
+
+        // README links the crate, then names the version: `](..-rust) 0.27 |`.
+        let readme_row = format!("-rust) {version} |");
+        let readme_mentions = readme
+            .lines()
+            .filter(|line| line.contains(crate_name) && line.starts_with('|'))
+            .count();
+        assert!(
+            readme_mentions > 0,
+            "README.md dependency table lost its {crate_name} row"
+        );
+        assert!(
+            readme
+                .lines()
+                .any(|line| line.contains(crate_name) && line.contains(&readme_row)),
+            "README.md must state {crate_name} {version} to match Cargo.toml"
+        );
+
+        // FEATURE_MANIFEST uses a plain table: `| `apcore` | 0.27 | .. |`.
+        let manifest_row = format!("| `{crate_name}` | {version} |");
+        assert!(
+            features.contains(&manifest_row),
+            "docs/FEATURE_MANIFEST.md must state `{manifest_row}` to match Cargo.toml"
+        );
+    }
+}

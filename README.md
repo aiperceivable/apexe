@@ -28,11 +28,11 @@ Outside-In CLI-to-Agent Bridge — automatically wraps existing CLI tools into g
 
 | Crate | Role |
 |-------|------|
-| [apcore](https://github.com/aiperceivable/apcore-rust) 0.26 | Module trait, Registry, ACL, ModuleError, Context |
+| [apcore](https://github.com/aiperceivable/apcore-rust) 0.27 | Module trait, Registry, ACL, ModuleError, Context |
 | [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit-rust) 0.10 | ScannedModule, YAMLWriter, DisplayResolver |
-| [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) 0.17 | MCP server with middleware, auth, Explorer UI |
-| [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust) 0.4 | A2A agent server sharing the same governed `Executor` |
-| [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) 0.10 | AuditLogger |
+| [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) 0.18 | MCP server with middleware, auth, Explorer UI |
+| [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust) 0.5 | A2A agent server sharing the same governed `Executor` |
+| [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) 0.10 | `--man` page generation |
 
 ---
 
@@ -458,7 +458,7 @@ gh workflow run release.yml -f tag=rust/vX.Y.Z
 | [F2: Module Executor](docs/features/v2-f2-module-executor.md) | apcore Module trait for CLI subprocess execution |
 | [F3: Binding Output](docs/features/v2-f3-binding-output.md) | apcore-toolkit YAMLWriter integration |
 | [F4: MCP Server](docs/features/v2-f4-mcp-server.md) | apcore-mcp server builder |
-| [F5: Governance](docs/features/v2-f5-governance.md) | ACL + AuditLogger + Sandbox wrappers |
+| [F5: Governance](docs/features/v2-f5-governance.md) | apcore ACL wrapper + apexe's own audit trail |
 | [F6: Error Migration](docs/features/v2-f6-error-migration.md) | ApexeError → ModuleError conversion |
 | [F7: Config Integration](docs/features/v2-f7-config-integration.md) | apcore Config integration |
 

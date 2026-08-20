@@ -45,7 +45,7 @@ src/
 ├── errors           ApexeError + From<ApexeError> for ModuleError
 ├── governance/      Access control, audit
 │   ├── acl          AclManager wrapping apcore::ACL
-│   └── audit        AuditManager wrapping apcore_cli::AuditLogger
+│   └── audit        AuditManager, apexe's own JSONL execution/refusal record
 │                    (subprocess isolation is always-on in module/executor.rs)
 ├── mcp/             MCP server integration
 │   └── server       McpServerBuilder wrapping apcore_mcp::APCoreMCP
@@ -70,11 +70,11 @@ src/
 
 | Crate | Version | Usage |
 |-------|---------|-------|
-| `apcore` | 0.26 | Module trait, Registry, ACL, ModuleError, ErrorCode, Context, Config |
+| `apcore` | 0.27 | Module trait, Registry, ACL, ModuleError, ErrorCode, Context, Config |
 | `apcore-toolkit` | 0.10 | ScannedModule, YAMLWriter, Verifier, ModuleAnnotations, `deduplicate_ids` |
-| `apcore-mcp` | 0.17 | APCoreMCP server (stdio, streamable-http, SSE, Explorer UI) |
-| `apcore-a2a` | 0.4 | A2A agent server (`async_serve` / `build_app`, `Authenticator`) |
-| `apcore-cli` | 0.10 | AuditLogger (JSONL audit) |
+| `apcore-mcp` | 0.18 | APCoreMCP server (stdio, streamable-http, SSE, Explorer UI) |
+| `apcore-a2a` | 0.5 | A2A agent server (`async_serve` / `build_app`, `Authenticator`) |
+| `apcore-cli` | 0.10 | `--man` page generation (`build_program_man_page`) |
 
 ## v0.1.0 Features
 
@@ -110,7 +110,7 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 
 ### Governance (v0.1.0 rewritten)
 - `AclManager`: wraps `apcore::ACL`, generates default rules from annotations; fails closed when a configured ACL is missing/malformed
-- `AuditManager`: wraps `apcore_cli::AuditLogger`, JSONL append-only with SHA-256 hashing; records executions and ACL allow/deny decisions (log `0o600`)
+- `AuditManager`: apexe's own append-only JSONL trail (log `0o600`); records executions, refusals (`event`, `trace_id`, `caller_id`, `error_code`) and ACL allow/deny decisions. No input values, hashed or otherwise — see user-manual §9.2
 - Subprocess isolation: always-on in `module/executor.rs` — env scrubbing, no-shell argv, output cap, timeout + `kill_on_drop` (no separate SandboxManager)
 
 ## Tool Overlays & Variant Detection (v0.4.0, extended in v0.5.0)

@@ -29,7 +29,7 @@
 //! `error_code` names the failure class, which is what an alert keys on.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use apcore::context::Context;
@@ -38,19 +38,55 @@ use apcore::ModuleError;
 use async_trait::async_trait;
 use serde_json::Value;
 
-/// Emits a payload-free `ERROR` record for every call that ends in failure.
+/// Emits a payload-free record for every call that ends in failure.
+///
+/// Two records, with different lifetimes:
+///
+/// * an `ERROR`-level `tracing` event, emitted only when apcore's own
+///   payload-bearing one is suppressed, so a failure produces exactly one such
+///   line either way;
+/// * a `refusal` row in the governance audit trail, emitted whenever an audit
+///   path is configured. That one is unconditional on purpose. A call refused
+///   by the ACL, the approval gate or schema validation never reaches
+///   [`CliModule`](crate::module::CliModule), so before this the audit trail
+///   recorded only the calls that *ran* — someone probing the argv guards left
+///   no trace at all, which is the sequence an audit exists to capture.
 #[derive(Debug, Default)]
 pub struct FailureLogMiddleware {
     /// Per-call start instants keyed by `trace_id:module_id`, mirroring
     /// apcore's own timing key so two concurrent calls to the same module
     /// cannot claim each other's duration.
     start_times: Mutex<HashMap<String, Instant>>,
+    /// Governance audit sink. `None` disables auditing entirely.
+    audit: Option<Arc<crate::governance::AuditManager>>,
+    /// Whether to emit the `tracing` record. False when apcore's
+    /// `LoggingMiddleware` is already emitting one for the same failure.
+    emit_tracing_record: bool,
 }
 
 impl FailureLogMiddleware {
-    /// Create a middleware with no calls in flight.
+    /// Create a middleware that only emits the `tracing` record.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            emit_tracing_record: true,
+            ..Self::default()
+        }
+    }
+
+    /// Create a middleware writing `refusal` rows to `audit`.
+    ///
+    /// `emit_tracing_record` should be false when apcore's `LoggingMiddleware`
+    /// still has its error hook enabled, so one failure does not produce two
+    /// `ERROR` lines saying the same thing.
+    pub fn with_audit(
+        audit: Option<Arc<crate::governance::AuditManager>>,
+        emit_tracing_record: bool,
+    ) -> Self {
+        Self {
+            start_times: Mutex::new(HashMap::new()),
+            audit,
+            emit_tracing_record,
+        }
     }
 
     /// Key a call's start instant by trace and module.
@@ -128,14 +164,29 @@ impl Middleware for FailureLogMiddleware {
         // `duration_ms` is 0 when the failure short-circuited the pipeline
         // ahead of the middleware phase, so no `before` ever ran for it.
         let duration_ms = self.take_elapsed_ms(module_id, ctx).unwrap_or(0.0);
-        tracing::error!(
-            module_id = module_id,
-            trace_id = %ctx.trace_id,
-            caller_id = ?ctx.caller_id,
-            error_code = ?error.code,
-            duration_ms = duration_ms,
-            "Module call failed"
-        );
+        if self.emit_tracing_record {
+            tracing::error!(
+                module_id = module_id,
+                trace_id = %ctx.trace_id,
+                caller_id = ?ctx.caller_id,
+                error_code = ?error.code,
+                duration_ms = duration_ms,
+                "Module call failed"
+            );
+        }
+        if let Some(ref audit) = self.audit {
+            // The authenticated principal, not `ctx.caller_id` — that field
+            // names the calling *module* in a nested chain and is `None` for
+            // every inbound request by apcore's contract, so it would record
+            // every refusal against nobody.
+            audit.log_refusal(
+                module_id,
+                &ctx.trace_id,
+                ctx.identity.as_ref().map(|id| id.id()),
+                error.code,
+                duration_ms as u64,
+            );
+        }
         Ok(None)
     }
 }

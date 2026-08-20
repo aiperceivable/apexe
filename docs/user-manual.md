@@ -456,22 +456,89 @@ through. Put the narrow denials above the broad allows.
 
 ### 9.2 Audit Trail
 
-Every tool invocation via `apexe serve` is logged to `~/.apexe/audit.jsonl`:
+`~/.apexe/audit.jsonl` records both the calls that ran and the calls that were
+refused. Discriminate on `event`; `trace_id` joins a record to the corresponding
+`tracing` line and to the ACL entries below.
+
+A call that reached the wrapped binary — `event: "execution"`:
 
 ```json
 {
-  "timestamp": "2026-03-28T10:30:00.123Z",
-  "user": "tercelyi",
-  "module_id": "cli.git.commit",
-  "input_hash": "a3f2b8...",
+  "timestamp": "2026-08-20T01:24:04.535Z",
+  "event": "execution",
+  "trace_id": "a09dfb2ab24d4faab69b222c52aac5e4",
+  "caller_id": "@external",
+  "module_id": "cli.cp",
   "status": "success",
   "exit_code": 0,
-  "duration_ms": 42
+  "duration_ms": 3
 }
 ```
 
-- **Privacy**: Inputs are SHA-256 hashed with a random salt. Raw input values are never logged.
-- **Resilience**: Audit logging never causes execution failures. Write errors are silently logged via tracing.
+A call the governance stack stopped — `event: "refusal"`. `error_code` replaces
+`exit_code`, since nothing ever ran to exit:
+
+```json
+{
+  "timestamp": "2026-08-20T01:20:34.532Z",
+  "event": "refusal",
+  "trace_id": "71a7bbc6e5f44437a97441952755d9a5",
+  "caller_id": "@external",
+  "module_id": "cli.cp",
+  "status": "refused",
+  "error_code": "APPROVAL_DENIED",
+  "duration_ms": 0
+}
+```
+
+- **Refusals are recorded regardless of `--no-logging`.** That flag governs the
+  `tracing` stream; turning the operational log down must not turn the audit
+  trail off. A caller probing the argv guards produces one `refusal` row per
+  attempt either way — the sequence an audit exists to capture.
+- **`caller_id` is the authenticated principal**, or `@external` for an
+  unauthenticated inbound request (apcore's canonical name for one). It is
+  omitted entirely rather than guessed when no identity is attached at all.
+  Note this is *not* apcore's `Context::caller_id`, which names the calling
+  *module* in a nested chain and is `None` for every inbound request.
+- **`duration_ms` is 0 for a refusal that short-circuited** ahead of the
+  middleware phase (ACL, approval gate) — no clock had started.
+- **No input values, hashed or otherwise.** Earlier versions wrote an
+  `input_hash`; it was salted with random bytes that were then discarded, so
+  nothing could ever be checked against it. A field that cannot be verified is
+  not a privacy control, so it was dropped rather than kept for appearance.
+- **Resilience**: audit logging never causes execution failures. Write errors
+  are reported via tracing and the call proceeds.
+- **Permissions**: the file is created `0600`.
+
+**A third shape appears in the same file.** ACL decisions are written by apcore
+itself, not by apexe, and carry its richer entry — `decision`, `reason`,
+`identity_type`, `roles`, `call_depth`, and an RFC 3339 timestamp with a
+`+00:00` offset rather than `Z`:
+
+```json
+{
+  "timestamp": "2026-07-30T01:24:35.300132+00:00",
+  "caller_id": "@external",
+  "target_id": "cli.ls",
+  "decision": "deny",
+  "reason": "default_effect",
+  "identity_type": "external",
+  "roles": [],
+  "call_depth": 1,
+  "trace_id": "36df7e553f354ffcb572e5b961ec4627"
+}
+```
+
+apexe deliberately does **not** also emit a `refusal` row for an ACL denial: it
+would double-count the same event with strictly less detail. A consumer counting
+refusals should count `event == "refusal"` plus `decision == "deny"`.
+
+> **Breaking change (unreleased).** The `user` and `input_hash` fields are gone,
+> and `event`, `trace_id` and `caller_id` are new. `user` came from `getlogin()`,
+> which returns the owner of the controlling terminal — under a service manager
+> that is the terminal's owner or `root`, not whoever made the call, so it
+> attributed every request to the wrong principal. Consumers keying on either
+> removed field need updating.
 
 ### 9.3 Subprocess Isolation (always-on)
 

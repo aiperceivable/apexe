@@ -159,9 +159,9 @@ pub fn build_executor(opts: &ExecutorOptions<'_>) -> Result<Arc<Executor>, Modul
     let registered_ids: Vec<String> = registry.module_ids_full(true);
 
     let mut executor = Executor::new(registry, Config::default());
-    install_middleware(&executor, opts);
+    install_middleware(&executor, opts, audit.clone());
     install_acl(&mut executor, opts, &registered_ids, audit.as_ref())?;
-    install_approval_handler(&mut executor, opts);
+    install_approval_handler(&mut executor, opts, audit.clone());
 
     Ok(Arc::new(executor))
 }
@@ -207,10 +207,15 @@ fn admit_modules(modules: Vec<ScannedModule>, filter: &ModuleFilter) -> Vec<Scan
 /// of the three is a security control, and a server that logs less is better
 /// than no server at all. The ACL, which *is* a security control, fails closed
 /// instead — see [`install_acl`].
-fn install_middleware(executor: &Executor, opts: &ExecutorOptions<'_>) {
+fn install_middleware(
+    executor: &Executor,
+    opts: &ExecutorOptions<'_>,
+    audit: Option<Arc<crate::governance::AuditManager>>,
+) {
     if opts.enable_logging {
         install_logging_middleware(executor, opts.log_arguments);
     }
+    install_failure_log(executor, opts, audit);
     if opts.enable_circuit_breaker {
         let breaker = HealthOnlyCircuitBreaker::with_defaults();
         if let Err(e) = executor.use_middleware(Box::new(breaker)) {
@@ -274,7 +279,11 @@ fn install_acl(
 }
 
 /// Attach the approval gate `--enable-approval` asks for, or do nothing.
-fn install_approval_handler(executor: &mut Executor, opts: &ExecutorOptions<'_>) {
+fn install_approval_handler(
+    executor: &mut Executor,
+    opts: &ExecutorOptions<'_>,
+    audit: Option<Arc<crate::governance::AuditManager>>,
+) {
     if !opts.enable_approval {
         return;
     }
@@ -292,7 +301,7 @@ fn install_approval_handler(executor: &mut Executor, opts: &ExecutorOptions<'_>)
             // approval path, so say plainly that this is a deny gate rather
             // than letting the operator discover it one bricked tool at a
             // time.
-            executor.set_approval_handler(Box::new(DenyApprovalHandler::new()));
+            executor.set_approval_handler(Box::new(DenyApprovalHandler::with_audit(audit.clone())));
             tracing::warn!(
                 "Approval gate enabled WITHOUT an approval store: every call to a module \
                  marked `requires_approval` will be DENIED. Interactive approval is not \
@@ -326,13 +335,35 @@ fn install_logging_middleware(executor: &Executor, log_arguments: bool) {
     if let Err(e) = executor.use_middleware(Box::new(logging)) {
         tracing::warn!(error = %e, "Failed to add LoggingMiddleware");
     }
-    if log_arguments {
+}
+
+/// Install [`FailureLogMiddleware`] when it has something to do.
+///
+/// It carries two independent jobs, and they answer to different switches:
+///
+/// * the payload-free `tracing` record, needed only when apcore's own error
+///   record is suppressed — otherwise one failure would print twice;
+/// * the `refusal` row in the governance audit trail, which depends on
+///   `--audit` alone. Deliberately **not** on `--no-logging`: the audit trail
+///   is the evidence a governed deployment relies on, and "the operator wanted
+///   a quieter console" is not a reason for a denied call to vanish from it.
+///   A refusal never reaches [`CliModule`], so without this the trail records
+///   only the calls that ran.
+fn install_failure_log(
+    executor: &Executor,
+    opts: &ExecutorOptions<'_>,
+    audit: Option<Arc<crate::governance::AuditManager>>,
+) {
+    let emit_tracing_record = opts.enable_logging && !opts.log_arguments;
+    if !emit_tracing_record && audit.is_none() {
         return;
     }
-    if let Err(e) = executor.use_middleware(Box::new(FailureLogMiddleware::new())) {
+    let failure_log = FailureLogMiddleware::with_audit(audit, emit_tracing_record);
+    if let Err(e) = executor.use_middleware(Box::new(failure_log)) {
         tracing::warn!(
             error = %e,
-            "Failed to add FailureLogMiddleware; failed calls will not be logged"
+            "Failed to add FailureLogMiddleware; refused calls will reach neither \
+             the log nor the audit trail"
         );
     }
 }
@@ -496,6 +527,16 @@ mod tests {
             .unwrap();
     }
 
+    /// Install the middleware stack for `opts` and name what landed.
+    fn installed_middleware(opts: &ExecutorOptions<'_>) -> Vec<String> {
+        let executor = Executor::new(Registry::new(), Config::default());
+        let audit = opts
+            .audit_path
+            .map(|p| Arc::new(crate::governance::AuditManager::new(p)));
+        install_middleware(&executor, opts, audit);
+        executor.middlewares()
+    }
+
     #[test]
     fn test_log_arguments_off_swaps_in_the_payload_free_failure_log() {
         // Regression: `log_errors` was hardcoded `true`, so apcore's on_error
@@ -503,10 +544,10 @@ mod tests {
         // object with only `x-sensitive` properties masked — after the operator
         // passed --no-log-arguments. The payload-bearing middleware has to go
         // silent and the payload-free one has to take over, in one step.
-        let executor = Executor::new(Registry::new(), Config::default());
-        install_logging_middleware(&executor, false);
+        let mut opts = opts(None);
+        opts.log_arguments = false;
 
-        let installed = executor.middlewares();
+        let installed = installed_middleware(&opts);
         assert!(
             installed.iter().any(|name| name == "apexe_failure_log"),
             "a refused call must still produce an ERROR record; got {installed:?}"
@@ -515,15 +556,39 @@ mod tests {
 
     #[test]
     fn test_log_arguments_on_keeps_apcores_record_and_adds_no_second_one() {
-        // The default configuration must not log two ERROR lines per failure.
-        let executor = Executor::new(Registry::new(), Config::default());
-        install_logging_middleware(&executor, true);
+        // The default configuration must not log two ERROR lines per failure,
+        // and with no audit path there is nothing else for the failure log to
+        // do, so it should not be installed at all.
+        let installed = installed_middleware(&opts(None));
 
-        let installed = executor.middlewares();
         assert!(installed.iter().any(|name| name == "logging"));
         assert!(
             !installed.iter().any(|name| name == "apexe_failure_log"),
             "apcore already logs the failure here; got {installed:?}"
+        );
+    }
+
+    #[test]
+    fn test_refusal_auditing_survives_no_logging() {
+        // `--no-logging` is a verbosity choice; the audit trail is evidence. A
+        // refused call never reaches `CliModule`, so if the failure log were
+        // gated on logging being enabled, turning the console down would erase
+        // every denial from the governance record — the one event an audit
+        // exists to capture.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let audit_path = tmp.path().join("audit.jsonl");
+        let mut opts = opts(None);
+        opts.enable_logging = false;
+        opts.audit_path = Some(&audit_path);
+
+        let installed = installed_middleware(&opts);
+        assert!(
+            !installed.iter().any(|name| name == "logging"),
+            "--no-logging must still suppress apcore's logging middleware"
+        );
+        assert!(
+            installed.iter().any(|name| name == "apexe_failure_log"),
+            "refusals must keep reaching the audit trail; got {installed:?}"
         );
     }
 

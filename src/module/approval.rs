@@ -18,8 +18,10 @@
 //! *ungoverned* default — strictly worse than either alternative. So apexe
 //! states what happened and what to reach for instead.
 
+use std::sync::Arc;
+
 use apcore::approval::{ApprovalHandler, ApprovalRequest, ApprovalResult};
-use apcore::ModuleError;
+use apcore::{ErrorCode, ModuleError};
 use async_trait::async_trait;
 
 /// What a caller is told when a `requires_approval` module is refused.
@@ -55,12 +57,27 @@ fn rejected(reason: String) -> ApprovalResult {
 /// `enable_approval` is set and no [`ApprovalStore`](apcore_mcp::ApprovalStore)
 /// was supplied. See the module docs for why no interactive path exists.
 #[derive(Debug, Clone, Default)]
-pub struct DenyApprovalHandler;
+pub struct DenyApprovalHandler {
+    /// Governance audit sink. `None` disables auditing.
+    ///
+    /// The approval gate runs *before* the middleware phase, so a denial here
+    /// never reaches [`FailureLogMiddleware`](crate::module::FailureLogMiddleware)
+    /// and cannot be recorded there. Unlike an ACL denial, which apcore reports
+    /// through its own audit entry, nothing else in the stack observes this
+    /// one — so without this the single most likely refusal in a governed
+    /// deployment left no trace at all.
+    audit: Option<Arc<crate::governance::AuditManager>>,
+}
 
 impl DenyApprovalHandler {
-    /// Create the handler.
+    /// Create the handler with no audit sink.
     pub fn new() -> Self {
-        Self
+        Self { audit: None }
+    }
+
+    /// Create the handler, recording each denial to `audit`.
+    pub fn with_audit(audit: Option<Arc<crate::governance::AuditManager>>) -> Self {
+        Self { audit }
     }
 }
 
@@ -74,6 +91,25 @@ impl ApprovalHandler for DenyApprovalHandler {
             module_id = %request.module_id,
             "Denying approval-gated call: no interactive approval path on this transport"
         );
+        if let Some(ref audit) = self.audit {
+            // `duration_ms` is 0: the gate runs before anything is timed, and
+            // inventing an elapsed time for a call that never started would be
+            // worse than reporting none.
+            audit.log_refusal(
+                &request.module_id,
+                request
+                    .context
+                    .as_ref()
+                    .map_or("", |ctx| ctx.trace_id.as_str()),
+                request
+                    .context
+                    .as_ref()
+                    .and_then(|ctx| ctx.identity.as_ref())
+                    .map(|id| id.id()),
+                ErrorCode::ApprovalDenied,
+                0,
+            );
+        }
         Ok(rejected(denial_reason(&request.module_id)))
     }
 
@@ -120,6 +156,40 @@ mod tests {
             reason.contains("--acl"),
             "reason names the alternative: {reason}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_denial_reaches_the_audit_trail() {
+        // The approval gate runs ahead of the middleware phase, so a denial is
+        // invisible to `FailureLogMiddleware` and apcore emits no audit entry
+        // of its own for it — unlike an ACL denial. Without this the refusal an
+        // `--enable-approval` deployment produces most often left no trace.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let handler = DenyApprovalHandler::with_audit(Some(std::sync::Arc::new(
+            crate::governance::AuditManager::new(&path),
+        )));
+
+        handler
+            .request_approval(&request("cli.cp"))
+            .await
+            .expect("handler resolves rather than erroring");
+
+        let content = std::fs::read_to_string(&path).expect("a refusal must be recorded");
+        let entry: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(entry["event"], "refusal");
+        assert_eq!(entry["module_id"], "cli.cp");
+        assert_eq!(entry["error_code"], "APPROVAL_DENIED");
+    }
+
+    #[tokio::test]
+    async fn test_denial_without_an_audit_sink_writes_nothing() {
+        // `--audit` off must stay off; the handler still denies.
+        let result = DenyApprovalHandler::new()
+            .request_approval(&request("cli.cp"))
+            .await
+            .expect("handler resolves rather than erroring");
+        assert_eq!(result.status, "rejected");
     }
 
     #[tokio::test]
