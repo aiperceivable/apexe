@@ -592,24 +592,37 @@ Destructive modules (`annotations.destructive == true`) implement apcore's `Modu
 - **`HealthOnlyCircuitBreaker`** — short-circuits calls to a `(module_id, caller)` pair after repeated failures (default: ≥5 samples, ≥50% error rate), instead of letting every caller keep hammering a hanging or broken CLI tool. Auto-recovers after a cooldown window via a single probe call. Only outcomes that say the *wrapped binary* is unhealthy feed the window — spawn failure, timeout, signal death, internal error. Input-validation rejections, conflict refusals and governance decisions (ACL denial, approval denied/timeout/pending, cancellation, depth and frequency limits) do **not** count: the module was reachable and enforced its contract exactly as designed, and schema trial-and-error is the normal behaviour of an LLM caller. Counting those meant five malformed calls disabled a tool for every caller while a binary that failed every time kept its circuit closed.
 - **`RetryMiddleware`** — retries a call after a transient failure, but *only* when the error is explicitly marked `retryable`. `CliModule` marks a timeout `retryable` **only when the module is annotated `idempotent`** (§8) — a killed non-idempotent command (e.g. `rm -rf` timing out mid-delete) is never auto-retried, since it may have partially applied its side effect.
 
-### 9.6 Approval: `--enable-approval` is a deny gate, not a prompt
+### 9.6 Approval: `--enable-approval` prompts the connected client
 
-On a CLI-launched server, `--enable-approval` **denies every call to a module
-annotated `requires_approval`**. It does not prompt anyone. Read that before
-turning it on: enabling it bricks every gated tool.
+`--enable-approval` gates every call to a module annotated `requires_approval`
+on a human decision, delivered to the connected MCP client as an
+`elicitation/create` request. Accept and the call runs; decline or cancel and it
+is refused.
 
-Why: apcore-mcp's `ElicitationApprovalHandler` needs an `ElicitCallback`, and
-that callback only exists inside apcore-mcp's own router, in a side-channel map
-of `Box<dyn Any>`. The `ApprovalRequest` that reaches an externally-constructed
-`ApprovalHandler` carries only the JSON `Context`, which holds the string
-`"available"` rather than the callback itself — apcore-mcp documents this as a
-Rust-specific limitation. There is no path from a handler apexe can build to the
-transport, so no interactive approval is possible from `apexe serve`.
+**It only works with a client that declared elicitation support** in its
+`initialize` handshake. A client that did not cannot be prompted, so its gated
+calls are refused — fail-closed, with a reason that says the prompt could not be
+delivered and names what to use instead. Check your client before turning the
+flag on: against one without elicitation, this is still an unconditional deny
+gate over every `requires_approval` module.
 
-apexe therefore installs its own `DenyApprovalHandler`, which says exactly that
-in the rejection reason and logs a warning at startup, rather than returning an
-opaque "No elicitation callback available". For a real per-caller boundary, use
-`--acl` (§9.2), which is enforced on `tools/call`.
+This needs apcore-mcp **0.18 or later**. Earlier versions could not reach the
+prompt at all: the `ElicitCallback` lives inside apcore-mcp's router, and an
+`ApprovalHandler` built outside it — which is all a CLI entry point can build —
+received only the JSON `Context`, whose `data` map holds the string
+`"available"` rather than the callback, because no closure is a
+`serde_json::Value`. 0.18 registers the callback per tool call and puts its
+*id* in the context instead, which is a `Value`, so the handler can exchange it
+for the live callback.
+
+apexe wraps apcore-mcp's `ElicitationApprovalHandler` in its own `ApprovalGate`
+for two things upstream cannot do from where it sits: every refusal is written
+to the audit trail (§9.2) — the approval gate runs ahead of the middleware
+phase, so nothing else in the stack observes it — and a refusal for want of a
+prompt is reported with a remedy rather than as `Elicitation returned no
+response`. A human's own "no" is passed through verbatim.
+
+For a per-caller boundary that needs no human at all, use `--acl` (§9.2).
 
 For approval flows where the approver isn't in the session (e.g. a Slack bot),
 `apexe`'s `ExecutorOptions`/`McpServerBuilder`/`A2aServerBuilder` accept an
@@ -711,7 +724,7 @@ forever.
 | **FailureLogMiddleware** | Automatic with `--no-log-arguments` | One payload-free `ERROR` record per failed call — see below |
 | **CircuitBreakerMiddleware** | Enabled by default (`--no-circuit-breaker`) | Short-circuits a hanging/broken tool — see §9.5 |
 | **RetryMiddleware** | Enabled by default (`--no-retry`) | Retries idempotent timeouts only — see §9.5 |
-| **DenyApprovalHandler** | Opt-in (`--enable-approval`) | Denies every call to a `requires_approval` module — see §9.6 |
+| **ApprovalGate** | Opt-in (`--enable-approval`) | Prompts the connected MCP client for a human decision on a `requires_approval` module; refuses when the client cannot be prompted — see §9.6 |
 
 > **Credentials in tool arguments.** The logging middleware records each call's
 > `inputs` and `output` at INFO. Redaction is schema-driven: the scanner marks
@@ -810,8 +823,9 @@ their `Executor` through the same `apexe::module::build_executor()`, so an
 `--acl` policy, the logging middleware, the audit trail, and the always-on
 subprocess isolation behave identically regardless of which transport a caller
 uses. **Approval** is the one exception: `apexe serve` offers
-`--enable-approval`, which is an unconditional deny gate rather than a prompt
-(§9.6), while `apexe a2a` has no such flag at all — approval on A2A is
+`--enable-approval`, which prompts the connected MCP client for a human
+decision (§9.6), while `apexe a2a` has no such flag at all — A2A has no
+elicitation transport, so a prompt could never be delivered over it — approval on A2A is
 library-only (supply an `ApprovalStore` to `A2aServerBuilder`).
 Transport authentication (§10) is likewise `apexe serve` only.
 
@@ -845,9 +859,8 @@ carries, but `apexe a2a` (and `apexe serve`) do not yet populate
 today runs as a single implicit anonymous caller. Role-gated ACL rules
 (`conditions: {roles: [...]}`) are therefore not yet reachable over MCP/A2A;
 `--acl` is most useful today for apexe's readonly-allow / destructive-deny
-default policy (§9.1), alongside `--enable-approval`, which is an
-unconditional deny gate over `requires_approval` modules rather than a prompt
-(§9.6).
+default policy (§9.1), alongside `--enable-approval` (§9.6), whose prompt
+asks the connected client rather than keying on a caller identity.
 See [`examples/acl_demo`](../examples/acl_demo/) for a library-level
 demonstration of the same role-based ACL contract, driven directly against
 the `Executor`.

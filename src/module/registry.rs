@@ -14,9 +14,7 @@ use apcore::{Config, ErrorCode, Executor, ModuleError, Registry};
 use apcore_mcp::{ApprovalStore, StorageBackedApprovalHandler};
 use apcore_toolkit::ScannedModule;
 
-use crate::module::{
-    CliModule, DenyApprovalHandler, FailureLogMiddleware, HealthOnlyCircuitBreaker,
-};
+use crate::module::{ApprovalGate, CliModule, FailureLogMiddleware, HealthOnlyCircuitBreaker};
 use crate::output::load_modules_from_dir;
 
 /// Which subset of the scanned modules a server exposes.
@@ -297,16 +295,16 @@ fn install_approval_handler(
             );
         }
         None => {
-            // See `DenyApprovalHandler`: there is no reachable interactive
-            // approval path, so say plainly that this is a deny gate rather
-            // than letting the operator discover it one bricked tool at a
-            // time.
-            executor.set_approval_handler(Box::new(DenyApprovalHandler::with_audit(audit.clone())));
-            tracing::warn!(
-                "Approval gate enabled WITHOUT an approval store: every call to a module \
-                 marked `requires_approval` will be DENIED. Interactive approval is not \
-                 available on a CLI-launched server. Use `--acl` for a per-caller boundary, \
-                 or embed apexe as a library with an ApprovalStore."
+            // See `ApprovalGate`: the connected client is prompted when it
+            // supports MCP elicitation, and refused with a reason naming the
+            // remedy when it does not.
+            executor.set_approval_handler(Box::new(ApprovalGate::with_audit(audit.clone())));
+            tracing::info!(
+                "Approval gate enabled: a call to a module marked `requires_approval` prompts \
+                 the connected MCP client for a human decision. A client that declared no \
+                 elicitation support cannot be prompted, so its calls are refused — use \
+                 `--acl` for a per-caller boundary, or embed apexe as a library with an \
+                 ApprovalStore for out-of-band approvals."
             );
         }
     }

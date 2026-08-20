@@ -122,7 +122,7 @@ impl AuditManager {
     /// * [`FailureLogMiddleware`](crate::module::FailureLogMiddleware) for
     ///   anything at or after `middleware_before` — schema rejections, the argv
     ///   guards, timeouts, spawn failures.
-    /// * [`DenyApprovalHandler`](crate::module::DenyApprovalHandler) for the
+    /// * [`ApprovalGate`](crate::module::ApprovalGate) for the
     ///   approval gate, which runs *ahead* of the middleware phase and so never
     ///   reaches a middleware's `on_error` at all.
     ///

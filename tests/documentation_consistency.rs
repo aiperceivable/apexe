@@ -102,55 +102,66 @@ fn test_user_manual_names_the_wired_circuit_breaker() {
     );
 }
 
-/// The manual must not promise an approval prompt that cannot happen.
+/// The manual's account of `--enable-approval` must match what the gate does.
 ///
-/// §9.6 previously said `--enable-approval` "blocks until the connected MCP
-/// client's user responds to an elicitation prompt". No such path exists from
-/// a CLI-launched server: the flag denies every gated call. An operator who
-/// reads the old text enables it, finds every destructive tool bricked, and
-/// turns it back off — landing on the ungoverned default.
+/// This claim has now been wrong in both directions. §9.6 once promised a
+/// prompt that no CLI-launched server could deliver; it was then corrected to
+/// "denies every call", which apcore-mcp 0.18 made wrong in turn by giving an
+/// externally-built handler a route to the live elicitation callback. Either
+/// error costs the same: an operator who cannot predict what the flag does
+/// turns it off and lands on the ungoverned default.
 ///
-/// The handler is driven first, so the manual is only held to a claim the
-/// runtime has just demonstrated.
+/// The gate is driven first, so the manual is only held to a claim the runtime
+/// has just demonstrated. A bare `ApprovalRequest` carries no context and so no
+/// live callback id — the same position a client that declared no elicitation
+/// support puts the gate in.
 #[tokio::test]
-async fn test_user_manual_describes_approval_as_a_deny_gate() {
+async fn test_user_manual_describes_what_the_approval_gate_actually_does() {
     use apcore::approval::{ApprovalHandler, ApprovalRequest};
 
-    let handler = apexe::module::DenyApprovalHandler::new();
+    let gate = apexe::module::ApprovalGate::new();
     let mut request = ApprovalRequest::default();
     request.module_id = "cli.rm".to_string();
-    let outcome = handler
+    let outcome = gate
         .request_approval(&request)
         .await
-        .expect("the deny gate answers rather than erroring");
+        .expect("the gate answers rather than erroring");
+
     assert_eq!(
         outcome.status, "rejected",
-        "the wired approval handler must deny, not prompt"
+        "with no prompt deliverable the gate must fail closed"
     );
     let reason = outcome.reason.unwrap_or_default();
     assert!(
-        reason.contains("denies every such call"),
-        "the denial must say it is unconditional: {reason}"
+        reason.contains("no MCP elicitation support"),
+        "the refusal must say the prompt could not be delivered, not just that it was \
+         refused: {reason}"
+    );
+    assert!(
+        reason.contains("--acl"),
+        "the refusal must name what to use instead: {reason}"
     );
 
     let manual = include_str!("../docs/user-manual.md");
     assert!(
-        manual.contains("DenyApprovalHandler"),
+        manual.contains("ApprovalGate"),
         "docs/user-manual.md must name the approval handler that is actually wired"
     );
+    // The version is load-bearing: on apcore-mcp 0.17 the prompt cannot be
+    // delivered at all, so a reader on an older pin needs to know why the flag
+    // behaves differently for them.
+    assert!(
+        manual.contains("0.18 or later"),
+        "docs/user-manual.md must state the apcore-mcp version the prompt needs"
+    );
+    // Both retired claims. The first over-promised, the second under-promised.
     assert!(
         !manual.contains("blocks until the connected MCP client's user responds"),
-        "docs/user-manual.md still promises an elicitation prompt that cannot be delivered"
+        "docs/user-manual.md still describes the pre-0.18 promise"
     );
     assert!(
-        !manual.contains("Sends approval request to MCP client"),
-        "docs/user-manual.md's middleware table still promises an approval prompt"
-    );
-    // §11 kept calling the flag a "human-in-the-loop gate" long after §9.6 and
-    // the CHANGELOG agreed there is no human in the loop to gate on.
-    assert!(
-        !manual.contains("human-in-the-loop"),
-        "docs/user-manual.md still calls --enable-approval a human-in-the-loop gate"
+        !manual.contains("denies every call to a module"),
+        "docs/user-manual.md still describes the gate as unconditional denial"
     );
 }
 

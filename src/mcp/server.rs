@@ -59,8 +59,8 @@ pub struct McpServerBuilder {
     /// Include call arguments and output in the structured log. See
     /// [`ExecutorOptions::log_arguments`](crate::module::ExecutorOptions::log_arguments).
     log_arguments: bool,
-    /// Deny calls to modules annotated `requires_approval`. See
-    /// [`DenyApprovalHandler`](crate::module::DenyApprovalHandler).
+    /// Gate calls to modules annotated `requires_approval` on a human decision. See
+    /// [`ApprovalGate`](crate::module::ApprovalGate).
     enable_approval: bool,
     /// Credential required on the HTTP-family transports. See [`crate::auth`].
     auth: AuthOptions,
@@ -203,7 +203,7 @@ impl McpServerBuilder {
 
     /// Deny every call to a module annotated `requires_approval` (default:
     /// disabled). Interactive approval is not reachable from a CLI-launched
-    /// server; see [`DenyApprovalHandler`](crate::module::DenyApprovalHandler).
+    /// server; see [`ApprovalGate`](crate::module::ApprovalGate).
     pub fn enable_approval(mut self, enabled: bool) -> Self {
         self.enable_approval = enabled;
         self

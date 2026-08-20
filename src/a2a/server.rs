@@ -27,8 +27,8 @@ pub struct A2aServerBuilder {
     /// Include call arguments and output in the structured log. See
     /// [`ExecutorOptions::log_arguments`](crate::module::ExecutorOptions::log_arguments).
     log_arguments: bool,
-    /// Deny calls to modules annotated `requires_approval`. See
-    /// [`DenyApprovalHandler`](crate::module::DenyApprovalHandler).
+    /// Gate calls to modules annotated `requires_approval` on a human decision. See
+    /// [`ApprovalGate`](crate::module::ApprovalGate).
     enable_approval: bool,
     /// Enable CircuitBreakerMiddleware (short-circuit a hanging/broken tool).
     enable_circuit_breaker: bool,

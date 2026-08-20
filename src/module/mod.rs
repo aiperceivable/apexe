@@ -5,7 +5,7 @@ pub mod executor;
 pub mod failure_log;
 pub mod registry;
 
-pub use approval::DenyApprovalHandler;
+pub use approval::ApprovalGate;
 pub use breaker::HealthOnlyCircuitBreaker;
 pub use cli_module::CliModule;
 pub use failure_log::FailureLogMiddleware;
