@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use apcore::Config as CoreConfig;
+use apcore::{Config as CoreConfig, ModuleError};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -53,11 +53,34 @@ impl ApexeConfig {
         self.core_config.clone().unwrap_or_default()
     }
 
+    /// Apply a global `--timeout` override, if the operator gave one.
+    ///
+    /// A CLI flag outranks `config.yaml`, matching how `--log-level` resolves.
+    pub fn with_timeout_override(mut self, timeout: Option<u64>) -> Self {
+        if let Some(seconds) = timeout {
+            self.default_timeout = seconds;
+        }
+        self
+    }
+
     /// Create all required directories if they do not exist.
-    pub fn ensure_dirs(&self) -> std::io::Result<()> {
-        std::fs::create_dir_all(&self.modules_dir)?;
-        std::fs::create_dir_all(&self.cache_dir)?;
-        std::fs::create_dir_all(&self.config_dir)?;
+    ///
+    /// Returns the crate-wide domain error rather than `std::io::Error`, so a
+    /// failure here carries the same code, retryability and guidance every
+    /// other apexe failure does — and so `Cli::run`, which is the only caller,
+    /// reports it through `report_error` like anything else. `ApexeError::Io`
+    /// keeps the underlying `ErrorKind` on the way through.
+    #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
+    pub fn ensure_dirs(&self) -> Result<(), ModuleError> {
+        for dir in [&self.modules_dir, &self.cache_dir, &self.config_dir] {
+            std::fs::create_dir_all(dir).map_err(|e| {
+                let context = std::io::Error::new(
+                    e.kind(),
+                    format!("failed to create {}: {e}", dir.display()),
+                );
+                ModuleError::from(crate::errors::ApexeError::Io(context))
+            })?;
+        }
         Ok(())
     }
 }
@@ -476,6 +499,35 @@ mod tests {
         let core = config.core_config();
         // CoreConfig::default() should have reasonable defaults
         assert!(core.executor.max_call_depth > 0);
+    }
+
+    #[test]
+    fn test_ensure_dirs_reports_a_domain_error_not_a_bare_io_error() {
+        // The return type is `Result<(), ModuleError>` so `Cli::run`'s failure
+        // path renders this like any other apexe error — with a code and, where
+        // one exists, guidance — rather than as a bare io::Error string. The
+        // path is unusable because a *file* stands where a directory must go,
+        // which `create_dir_all` cannot resolve.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blocker = tmp.path().join("not-a-dir");
+        std::fs::write(&blocker, b"x").unwrap();
+
+        let config = ApexeConfig {
+            modules_dir: blocker.join("modules"),
+            cache_dir: tmp.path().join("cache"),
+            config_dir: tmp.path().join("config"),
+            ..ApexeConfig::default()
+        };
+
+        let err = config
+            .ensure_dirs()
+            .expect_err("a file where a directory must go cannot be created");
+        assert_eq!(err.code, apcore::ErrorCode::GeneralInternalError);
+        assert!(
+            err.message.contains("not-a-dir"),
+            "the message must name the path that could not be created: {}",
+            err.message
+        );
     }
 
     #[test]

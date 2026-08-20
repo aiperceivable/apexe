@@ -91,6 +91,8 @@ apexe scan <TOOLS>... [OPTIONS]
 | `--format <FMT>` | `table` | Output format: `json`, `yaml`, or `table` |
 | `--skills-dir <DIR>` | - | Also write a Claude Skill (`SKILL.md`) per module under `<DIR>/.claude/skills/<module_id>/` |
 | `--overlay <PATH>` | - | Load one explicit curated overlay file (JSON/YAML). See [§6.5 Tool Overlays](#65-tool-overlays) |
+| `--verify` | off | Fail the command when a written binding does not verify. The YAML verifier runs either way; without this a failure is a warning and the scan still exits 0 |
+| `--dry-run` | off | Report what would be written — bindings, ACL and skills — without creating or overwriting anything |
 
 ```bash
 apexe scan git                         # basic scan
@@ -115,7 +117,7 @@ apexe serve [OPTIONS]
 | `--transport <TYPE>` | `stdio` | Transport: `stdio`, `http`, or `sse` (`sse` is deprecated upstream — see §10) |
 | `--host <HOST>` | `127.0.0.1` | Host for HTTP/SSE transports |
 | `--port <PORT>` | `8000` | Port for HTTP/SSE transports (1-65535) |
-| `--explorer` | off | Enable browser-based Tool Explorer UI (HTTP only) |
+| `--explorer` | off | Enable the browser-based Tool Explorer UI. HTTP/SSE only — on stdio it warns and mounts nothing, since there is no HTTP surface to serve it on |
 | `--modules-dir <DIR>` | `~/.apexe/modules/` | Directory containing binding files |
 | `--name <NAME>` | `apexe` | MCP server name |
 | `--show-config <TARGET>` | - | Print an integration snippet for `claude-desktop` or `cursor` and exit — see [§12](#12-integrating-with-ai-agents). Any other value is an error on stderr with a non-zero exit |
@@ -1141,7 +1143,20 @@ All directories are created automatically on first use.
 
 ---
 
-## 15. Logging & Debugging
+## 15. Global Flags, Logging & Debugging
+
+Two flags are global — they parse before or after the subcommand, whichever is
+more natural to type:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--log-level <LEVEL>` | `RUST_LOG` → `APEXE_LOG_LEVEL` / `config.yaml` → `info` | Verbosity for the `tracing` stream |
+| `--timeout <SECS>` | `default_timeout` from `config.yaml` (30) | Per-call timeout override, applied to every subcommand that runs or probes a wrapped binary. Refuses `0`, which would kill every call before it started |
+
+```bash
+apexe --timeout 120 scan ffmpeg     # a slow tool needs longer than the default
+apexe scan ffmpeg --timeout 120     # identical; both positions parse
+```
 
 apexe uses structured logging via the `tracing` crate.
 

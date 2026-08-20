@@ -18,6 +18,12 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub log_level: Option<String>,
 
+    /// Per-call timeout in seconds, overriding `default_timeout` from
+    /// `config.yaml`. Applies to every subcommand that runs a wrapped binary
+    /// or probes one during a scan.
+    #[arg(long, global = true, value_parser = clap::value_parser!(u64).range(1..))]
+    pub timeout: Option<u64>,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -47,7 +53,7 @@ impl Cli {
     }
 
     pub fn run(self) -> anyhow::Result<()> {
-        let config = load_config(None, None)?;
+        let config = load_config(None, None)?.with_timeout_override(self.timeout);
         config.ensure_dirs()?;
 
         match self.command {
@@ -98,6 +104,23 @@ pub struct ScanArgs {
     /// must still agree.
     #[arg(long)]
     pub overlay: Option<PathBuf>,
+
+    /// Fail the command when a written binding does not verify.
+    ///
+    /// The YAML verifier already runs on every write; without this flag a
+    /// failure is a warning and the command still exits 0, which is right for
+    /// a scan whose other tools succeeded. With it, an unverifiable binding is
+    /// an error — the form a pipeline needs, since a binding that does not
+    /// parse is not a deliverable.
+    #[arg(long)]
+    pub verify: bool,
+
+    /// Report what would be written without creating or overwriting anything.
+    ///
+    /// Covers all three deliverables — bindings, the ACL policy and any
+    /// skills — so a dry run never touches the filesystem.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 impl ScanArgs {
@@ -188,12 +211,65 @@ impl ScanArgs {
     ) -> anyhow::Result<()> {
         let yaml_output = crate::output::YamlOutput::new();
         let write_results = yaml_output
-            .write(modules, output_dir, false)
+            .write(modules, output_dir, self.dry_run)
             .map_err(|e| anyhow::anyhow!("Failed to write binding files: {e}"))?;
+
+        let mut unverified: Vec<String> = Vec::new();
         for wr in &write_results {
-            if let Some(ref path) = wr.path {
-                info!(path, "Generated binding");
+            // A dry run reports no path — nothing was created — so the
+            // module id is what identifies the deliverable.
+            match (&wr.path, self.dry_run) {
+                (_, true) => println!(
+                    "Would write binding for {} under {}",
+                    wr.module_id,
+                    output_dir.display()
+                ),
+                (Some(path), false) => info!(path, "Generated binding"),
+                (None, false) => {
+                    tracing::warn!(module_id = %wr.module_id, "Binding written with no path reported")
+                }
             }
+            // The YAML verifier runs on every write, but its result was
+            // discarded: a binding that does not parse was reported as
+            // "Generated binding" and the command exited 0. It is a warning by
+            // default — one bad tool should not throw away the scan of the
+            // others — and an error under `--verify`, which is the form a
+            // pipeline needs.
+            if !wr.verified {
+                let detail = wr
+                    .verification_error
+                    .as_deref()
+                    .unwrap_or("no reason reported");
+                tracing::warn!(
+                    module_id = %wr.module_id,
+                    error = detail,
+                    "Binding failed verification"
+                );
+                unverified.push(format!("  {}: {detail}", wr.module_id));
+            }
+        }
+
+        self.report_unverified(&unverified)
+    }
+
+    /// Turn the unverified-binding list into the command's verdict.
+    ///
+    /// A warning by default — a scan whose other tools succeeded still produced
+    /// real deliverables, and throwing them away over one bad binding is the
+    /// wrong trade. `--verify` escalates, because a pipeline that treats a
+    /// short surface as the whole surface is the failure this project has
+    /// already been bitten by.
+    ///
+    /// Split out so the escalation is reachable from a test: driving it through
+    /// a real scan would need a tool whose help text yields an unparseable
+    /// binding, which is not something to manufacture.
+    fn report_unverified(&self, unverified: &[String]) -> anyhow::Result<()> {
+        if self.verify && !unverified.is_empty() {
+            anyhow::bail!(
+                "{} binding(s) failed verification:\n{}",
+                unverified.len(),
+                unverified.join("\n")
+            );
         }
         Ok(())
     }
@@ -203,8 +279,12 @@ impl ScanArgs {
         modules: &[apcore_toolkit::ScannedModule],
         config: &ApexeConfig,
     ) -> anyhow::Result<()> {
-        let acl_manager = crate::governance::AclManager::generate_default(modules);
         let acl_path = config.config_dir.join("acl.yaml");
+        if self.dry_run {
+            println!("Would write ACL policy: {}", acl_path.display());
+            return Ok(());
+        }
+        let acl_manager = crate::governance::AclManager::generate_default(modules);
         acl_manager
             .write_config(&acl_path)
             .map_err(|e| anyhow::anyhow!("Failed to write ACL: {e}"))?;
@@ -215,6 +295,14 @@ impl ScanArgs {
         let Some(ref skills_dir) = self.skills_dir else {
             return Ok(());
         };
+        if self.dry_run {
+            println!(
+                "Would write {} skill file(s) under {}",
+                modules.len(),
+                skills_dir.join(".claude").join("skills").display()
+            );
+            return Ok(());
+        }
         let paths = crate::output::SkillOutput::new()
             .write(modules, skills_dir)
             .map_err(|e| anyhow::anyhow!("Failed to write skill files: {e}"))?;
@@ -903,6 +991,8 @@ mod tests {
         // fall back to heuristics under an authoritative-looking banner.
         let config = ApexeConfig::default();
         let args = ScanArgs {
+            verify: false,
+            dry_run: false,
             tools: vec!["echo".to_string()],
             output_dir: None,
             depth: 1,
@@ -1233,6 +1323,116 @@ mod tests {
         );
     }
 
+    fn scan_args(verify: bool) -> ScanArgs {
+        let cli = Cli::try_parse_from(
+            ["apexe", "scan", "ls"]
+                .iter()
+                .copied()
+                .chain(verify.then_some("--verify")),
+        )
+        .unwrap();
+        match cli.command {
+            Commands::Scan(args) => args,
+            _ => panic!("expected Commands::Scan"),
+        }
+    }
+
+    #[test]
+    fn test_verify_turns_an_unverified_binding_into_a_failure() {
+        // The YAML verifier already ran on every write; its verdict was
+        // discarded, so a binding that does not parse was reported as
+        // "Generated binding" and the command exited 0. `--verify` is what
+        // makes that a failure, which is the form a pipeline needs.
+        let unverified = |verify: bool| -> anyhow::Result<()> {
+            scan_args(verify)
+                .report_unverified(&["cli.broken: could not parse as YAML".to_string()])
+        };
+
+        assert!(
+            unverified(false).is_ok(),
+            "without the flag an unverified binding is a warning: one bad tool \
+             must not throw away the scan of the others"
+        );
+        let err = match unverified(true) {
+            Ok(()) => panic!("--verify must fail on an unverified binding"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains("cli.broken"),
+            "the failure names the module: {err}"
+        );
+        assert!(
+            err.contains("could not parse as YAML"),
+            "and the reason: {err}"
+        );
+    }
+
+    #[test]
+    fn test_scan_args_verify_flag() {
+        let cli = Cli::try_parse_from(["apexe", "scan", "ls", "--verify"]).unwrap();
+        let Commands::Scan(args) = cli.command else {
+            panic!("expected Commands::Scan");
+        };
+        assert!(args.verify);
+        assert!(!args.dry_run, "the two flags are independent");
+    }
+
+    #[test]
+    fn test_scan_args_dry_run_flag() {
+        let cli = Cli::try_parse_from(["apexe", "scan", "ls", "--dry-run"]).unwrap();
+        let Commands::Scan(args) = cli.command else {
+            panic!("expected Commands::Scan");
+        };
+        assert!(args.dry_run);
+        assert!(!args.verify);
+    }
+
+    #[test]
+    fn test_scan_args_default_to_neither_flag() {
+        let cli = Cli::try_parse_from(["apexe", "scan", "ls"]).unwrap();
+        let Commands::Scan(args) = cli.command else {
+            panic!("expected Commands::Scan");
+        };
+        assert!(!args.verify, "a scan must not fail on a warning by default");
+        assert!(!args.dry_run, "a scan writes by default");
+    }
+
+    #[test]
+    fn test_global_timeout_flag() {
+        // Global, so it parses after the subcommand too — which is how anyone
+        // actually types it.
+        for argv in [
+            ["apexe", "--timeout", "120", "scan", "ls"],
+            ["apexe", "scan", "ls", "--timeout", "120"],
+        ] {
+            let cli = Cli::try_parse_from(argv).unwrap();
+            assert_eq!(cli.timeout, Some(120), "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn test_global_timeout_rejects_zero() {
+        // A zero timeout would kill every call before it started.
+        assert!(Cli::try_parse_from(["apexe", "--timeout", "0", "scan", "ls"]).is_err());
+    }
+
+    #[test]
+    fn test_timeout_override_beats_the_config_file() {
+        let config = ApexeConfig {
+            default_timeout: 30,
+            ..ApexeConfig::default()
+        };
+        assert_eq!(
+            config.clone().with_timeout_override(None).default_timeout,
+            30
+        );
+        assert_eq!(
+            config.with_timeout_override(Some(120)).default_timeout,
+            120,
+            "a CLI flag outranks config.yaml, matching --log-level"
+        );
+    }
+
     #[test]
     fn test_a2a_defaults() {
         let cli = Cli::try_parse_from(["apexe", "a2a"]).unwrap();
@@ -1435,6 +1635,8 @@ mod tests {
     fn test_scan_execute_nonexistent_tool_errors() {
         let config = ApexeConfig::default();
         let args = ScanArgs {
+            verify: false,
+            dry_run: false,
             tools: vec!["nonexistent_tool_xyz_12345".to_string()],
             output_dir: None,
             depth: 2,
@@ -1462,6 +1664,8 @@ mod tests {
         let bad_output = file_path.join("nested");
 
         let args = ScanArgs {
+            verify: false,
+            dry_run: false,
             tools: vec!["echo".to_string()],
             output_dir: None,
             depth: 2,

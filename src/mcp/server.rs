@@ -344,6 +344,12 @@ impl McpServerBuilder {
         executor: Arc<Executor>,
         transport: &str,
     ) -> Result<APCoreMCP, ModuleError> {
+        if self.explorer && transport == "stdio" {
+            tracing::warn!(
+                "--explorer has no effect on stdio transport (the Explorer is a browser UI \
+                 served over HTTP; there is no HTTP surface on stdio). Use --transport http."
+            );
+        }
         if self.enable_metrics && transport == "stdio" {
             tracing::warn!(
                 "--metrics has no effect on stdio transport (no HTTP surface to serve \
@@ -367,7 +373,7 @@ impl McpServerBuilder {
             .exempt_paths(exempt_paths())
             .observability(self.enable_metrics && transport != "stdio");
 
-        self.apply_optional_wiring(builder, &auth)
+        self.apply_optional_wiring(builder, &auth, transport)
             .build()
             .map_err(|e| {
                 ModuleError::new(
@@ -387,11 +393,12 @@ impl McpServerBuilder {
         self,
         mut builder: apcore_mcp::APCoreMCPBuilder,
         auth: &ResolvedAuth,
+        transport: &str,
     ) -> apcore_mcp::APCoreMCPBuilder {
         if let Some(authenticator) = auth.authenticator() {
             builder = builder.authenticator_arc(authenticator);
         }
-        if self.explorer {
+        if Self::serves_explorer(self.explorer, transport) {
             builder = builder.include_explorer(true);
         }
         // The filter is already enforced in the registry (see
@@ -416,6 +423,21 @@ impl McpServerBuilder {
             builder = builder.approval_store(store);
         }
         builder
+    }
+
+    /// Whether `--explorer` actually mounts anything on this transport.
+    ///
+    /// Gated for the same reason `--metrics` is: the Explorer is a browser UI
+    /// served over HTTP, so asking for it on stdio produced routes nothing
+    /// could reach — the flag was accepted and did nothing, with no
+    /// diagnostic. `build_mcp_server` emits the warning; this is what makes
+    /// the flag's *effect* match what that warning says.
+    ///
+    /// A named predicate rather than an inline condition because the outcome is
+    /// unobservable from outside on stdio — there is no HTTP surface to probe —
+    /// so a test has to reach the decision itself.
+    fn serves_explorer(requested: bool, transport: &str) -> bool {
+        requested && transport != "stdio"
     }
 
     /// Tell the operator what credential the server expects.
@@ -927,6 +949,20 @@ mod tests {
     fn test_announce_auth_writes_nothing_when_auth_is_disabled() {
         let auth = resolve_auth("stdio", "127.0.0.1", &AuthOptions::default()).unwrap();
         assert!(announce(&auth).is_empty());
+    }
+
+    #[test]
+    fn test_explorer_is_mounted_only_where_it_can_be_reached() {
+        // stdio has no HTTP surface, so the effect is unobservable from
+        // outside — the integration test can only see the warning. This pins
+        // the other half: that the flag stops wiring anything.
+        assert!(!McpServerBuilder::serves_explorer(true, "stdio"));
+        assert!(McpServerBuilder::serves_explorer(true, "streamable-http"));
+        assert!(McpServerBuilder::serves_explorer(true, "sse"));
+        assert!(
+            !McpServerBuilder::serves_explorer(false, "streamable-http"),
+            "the flag still has to be asked for"
+        );
     }
 
     #[test]

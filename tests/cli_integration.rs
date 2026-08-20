@@ -558,3 +558,114 @@ fn test_the_explorer_prefills_only_required_keys() {
         );
     }
 }
+
+// --------------------------------------------------------------------------
+// scan --dry-run / --verify, and the --explorer transport gate
+// --------------------------------------------------------------------------
+
+/// `--dry-run` must not touch the filesystem, for any of the three
+/// deliverables.
+///
+/// Reporting what *would* be written is only useful if nothing is; a preview
+/// that half-writes is worse than no preview, because the operator now has to
+/// work out which half.
+#[test]
+fn test_scan_dry_run_writes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("modules");
+    let skills = tmp.path().join("skills");
+
+    let stdout = Command::cargo_bin("apexe")
+        .unwrap()
+        .args([
+            "scan",
+            "ls",
+            "--output-dir",
+            out.to_str().unwrap(),
+            "--skills-dir",
+            skills.to_str().unwrap(),
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let report = String::from_utf8(stdout).expect("stdout is UTF-8");
+    assert!(
+        report.contains("Would write binding"),
+        "a dry run must still name the bindings it skipped: {report}"
+    );
+    assert!(
+        report.contains("Would write ACL policy"),
+        "the ACL is a deliverable too: {report}"
+    );
+
+    let created = |dir: &std::path::Path| -> usize { walk_files(dir).len() };
+    assert_eq!(created(&out), 0, "no binding may be written");
+    assert_eq!(created(&skills), 0, "no skill may be written");
+}
+
+/// Count files under `dir`, treating a missing directory as empty.
+fn walk_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(walk_files(&path));
+        } else {
+            found.push(path);
+        }
+    }
+    found
+}
+
+/// A real scan is the control: the dry run's zero files must mean something.
+#[test]
+fn test_scan_without_dry_run_writes_the_binding() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("modules");
+
+    Command::cargo_bin("apexe")
+        .unwrap()
+        .args(["scan", "ls", "--output-dir", out.to_str().unwrap()])
+        .assert()
+        .success();
+
+    assert!(
+        !walk_files(&out).is_empty(),
+        "the same scan without --dry-run must produce a binding"
+    );
+}
+
+/// `--explorer` on stdio warns instead of silently doing nothing.
+///
+/// The Explorer is served over HTTP. Asking for it on stdio used to wire it
+/// anyway, where nothing could ever reach it, so the flag looked accepted and
+/// produced no UI and no diagnostic. Mirrors how `--metrics` already behaves.
+#[test]
+fn test_explorer_on_stdio_warns_that_it_does_nothing() {
+    let session = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#,
+        "\n",
+    );
+    let stderr = Command::cargo_bin("apexe")
+        .unwrap()
+        .args(["serve", "--transport", "stdio", "--explorer"])
+        .write_stdin(session)
+        .assert()
+        .success()
+        .get_output()
+        .stderr
+        .clone();
+
+    let log = String::from_utf8_lossy(&stderr).into_owned();
+    assert!(
+        log.contains("--explorer has no effect on stdio"),
+        "the flag must say it does nothing here: {log}"
+    );
+}
