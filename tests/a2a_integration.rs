@@ -149,3 +149,89 @@ async fn test_a2a_serve_fails_fast_on_enable_approval_without_store() {
         "enable_approval without a store must fail fast"
     );
 }
+
+/// Write a second binding so a filter has something to exclude.
+fn write_true_binding(dir: &Path) {
+    let module = ScannedModule::new(
+        "sys.true".to_string(),
+        "Do nothing, successfully".to_string(),
+        json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+        json!({ "type": "object" }),
+        vec!["sys".to_string()],
+        "exec:///usr/bin/true".to_string(),
+    );
+    YamlOutput::without_verification()
+        .write(&[module], dir, false)
+        .expect("binding should be written");
+}
+
+/// `--prefix` must narrow the A2A surface, not just the card.
+///
+/// `apexe serve` gained registration-level filtering in #28; `apexe a2a` was
+/// left with `ModuleFilter::default()` hardcoded, so the A2A surface could not
+/// be narrowed at all. That gap matters more here than on MCP: `apexe a2a` has
+/// no authenticator, so choosing which wrapped binaries the surface exposes is
+/// the only limiting mechanism available.
+#[tokio::test]
+async fn test_a2a_prefix_filter_excludes_a_module_from_the_card() {
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    write_true_binding(dir.path());
+
+    let card = A2aServerBuilder::new()
+        .modules_dir(dir.path())
+        .prefix("cli.")
+        .agent_card()
+        .await
+        .expect("agent card should build from bindings");
+
+    let blob = serde_json::to_string(&card).unwrap();
+    assert!(blob.contains("cli.echo"), "the admitted skill: {blob}");
+    assert!(
+        !blob.contains("sys.true"),
+        "an excluded module must not be advertised: {blob}"
+    );
+}
+
+#[tokio::test]
+async fn test_a2a_tags_filter_excludes_a_module_from_the_card() {
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    write_true_binding(dir.path());
+
+    let card = A2aServerBuilder::new()
+        .modules_dir(dir.path())
+        .tags(vec!["sys".to_string()])
+        .agent_card()
+        .await
+        .expect("agent card should build from bindings");
+
+    let blob = serde_json::to_string(&card).unwrap();
+    assert!(blob.contains("sys.true"), "the admitted skill: {blob}");
+    assert!(
+        !blob.contains("cli.echo"),
+        "an excluded module must not be advertised: {blob}"
+    );
+}
+
+/// The filter runs at registration, so exclusion is not merely cosmetic.
+///
+/// A card-only filter would leave `sys.true` callable by name — the exact
+/// divergence #28 closed on the MCP side. An empty registry is the observable
+/// proof that nothing was registered, since `agent_card` refuses one.
+#[tokio::test]
+async fn test_a2a_filter_that_admits_nothing_leaves_an_empty_registry() {
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+
+    let result = A2aServerBuilder::new()
+        .modules_dir(dir.path())
+        .prefix("nomatch.")
+        .agent_card()
+        .await;
+
+    assert!(
+        result.is_err(),
+        "a filter admitting nothing must leave no registered module"
+    );
+}

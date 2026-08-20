@@ -576,6 +576,18 @@ pub struct A2aArgs {
     #[arg(long, default_value = "300")]
     pub execution_timeout: u64,
 
+    /// Restrict the served skills to those carrying every listed tag
+    /// (comma-separated). Excluded modules are neither advertised on the agent
+    /// card nor callable.
+    #[arg(long)]
+    pub tags: Option<String>,
+
+    /// Restrict the served skills to those whose module ID starts with this
+    /// prefix. Excluded modules are neither advertised on the agent card nor
+    /// callable.
+    #[arg(long)]
+    pub prefix: Option<String>,
+
     /// Allowed CORS origin (repeatable)
     #[arg(long)]
     pub cors_origin: Vec<String>,
@@ -591,14 +603,14 @@ pub struct A2aArgs {
 
 impl A2aArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
-        let server = self.build_server(config);
+        let server = self.build_server(config)?;
         let runtime = tokio::runtime::Runtime::new()?;
         runtime
             .block_on(server.serve())
             .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
-    fn build_server(&self, config: &ApexeConfig) -> crate::a2a::A2aServerBuilder {
+    fn build_server(&self, config: &ApexeConfig) -> anyhow::Result<crate::a2a::A2aServerBuilder> {
         let modules_dir = self
             .modules_dir
             .clone()
@@ -618,13 +630,20 @@ impl A2aArgs {
             .allow_unauthenticated_bind(self.allow_unauthenticated_bind)
             .audit_path(config.audit_log.clone());
 
+        if let Some(ref tags_str) = self.tags {
+            builder = builder.tags(parse_tag_list(tags_str)?);
+        }
+        if let Some(ref prefix) = self.prefix {
+            builder = builder.prefix(prefix);
+        }
+
         // Only load ACL when explicitly specified via --acl flag.
         // Without --acl, the server runs without access control (all tools allowed).
         if let Some(ref acl_path) = self.acl {
             builder = builder.acl_path(acl_path);
         }
 
-        builder
+        Ok(builder)
     }
 }
 

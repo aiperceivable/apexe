@@ -45,6 +45,12 @@ pub struct A2aServerBuilder {
     execution_timeout: u64,
     /// Allowed CORS origins. Empty = no CORS layer.
     cors_origins: Vec<String>,
+    /// Restrict the served skills to a subset of the scanned modules.
+    ///
+    /// Enforced at registration, exactly as on the MCP side: an excluded
+    /// module does not exist on the server, so it is absent from the agent
+    /// card *and* uncallable. See [`ModuleFilter`](crate::module::ModuleFilter).
+    filter: crate::module::ModuleFilter,
     /// Acknowledge binding A2A to a non-loopback address. A2A has no
     /// authenticator at all, so this is the `apexe serve --auth none`
     /// configuration with no way to opt back in — see [`validate_bind_url`].
@@ -207,6 +213,7 @@ impl A2aServerBuilder {
             modules_dir: None,
             timeout_ms: 30_000,
             acl_path: None,
+            filter: crate::module::ModuleFilter::default(),
             audit_path: None,
             enable_logging: true,
             log_arguments: true,
@@ -328,15 +335,33 @@ impl A2aServerBuilder {
         self
     }
 
+    /// Serve only modules whose `module_id` starts with `prefix`.
+    ///
+    /// Excluded modules are absent from the agent card and uncallable, because
+    /// the filter runs at registration rather than over the card. On A2A that
+    /// distinction carries more weight than on MCP: `apexe a2a` has no
+    /// authenticator, so narrowing the surface is the only mechanism available
+    /// for limiting what an unauthenticated caller can reach.
+    pub fn prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.filter.prefix = Some(prefix.into());
+        self
+    }
+
+    /// Serve only modules carrying every tag in `tags`.
+    ///
+    /// See [`prefix`](Self::prefix) for why this is enforced at registration.
+    pub fn tags(mut self, tags: Vec<String>) -> Self {
+        self.filter.tags = Some(tags);
+        self
+    }
+
     /// Options shared with the MCP builder for assembling a governed `Executor`.
     fn executor_options(&self) -> ExecutorOptions<'_> {
         ExecutorOptions {
             modules_dir: self.modules_dir.as_deref(),
             timeout_ms: self.timeout_ms,
             acl_path: self.acl_path.as_deref(),
-            // A2A has no `--prefix`/`--tags` surface of its own; the default
-            // filter admits every scanned module.
-            filter: crate::module::ModuleFilter::default(),
+            filter: self.filter.clone(),
             audit_path: self.audit_path.as_deref(),
             enable_logging: self.enable_logging,
             log_arguments: self.log_arguments,

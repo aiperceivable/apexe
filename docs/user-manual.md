@@ -158,6 +158,8 @@ apexe a2a [OPTIONS]
 | `--name <NAME>` | `apexe` | A2A agent name |
 | `--explorer` | off | Enable browser-based Explorer UI |
 | `--acl <PATH>` | - | Path to ACL policy YAML file |
+| `--tags <T1,T2>` | - | Serve only modules carrying every listed tag. Excluded modules are neither advertised nor callable |
+| `--prefix <PREFIX>` | - | Serve only modules whose ID starts with this prefix. Excluded modules are neither advertised nor callable |
 | `--no-logging` | off | Disable structured logging middleware entirely |
 | `--no-log-arguments` | off | Drop `inputs`/`output` from every log event, error records included; failures keep a payload-free record |
 | `--no-circuit-breaker` | off | Disable CircuitBreakerMiddleware (on by default) |
@@ -175,7 +177,11 @@ apexe a2a [OPTIONS]
 
 > **`apexe a2a` has no transport authentication.** The `--auth*` flags are
 > `apexe serve` only. Bind A2A to loopback, or put it behind a reverse proxy
-> that authenticates.
+> that authenticates. Because there is no credential to grant or
+> withhold, `--prefix`/`--tags` carry more weight here than on `apexe serve`:
+> narrowing the registered surface is the only mechanism that limits what an
+> unauthenticated caller can reach, short of an `--acl` keyed on an identity
+> A2A never establishes.
 
 ```bash
 apexe a2a                                       # http://127.0.0.1:8000
@@ -183,6 +189,8 @@ apexe a2a --url http://127.0.0.1:9000 --explorer  # custom port + browser UI
 # A non-loopback bind needs the acknowledgement, because A2A has no authenticator:
 apexe a2a --url http://0.0.0.0:9000 --allow-unauthenticated-bind
 apexe a2a --acl ~/.apexe/acl.yaml               # governed by an ACL policy
+apexe a2a --prefix cli.git.                     # serve only the git modules
+apexe a2a --tags readonly                       # serve only readonly modules
 ```
 
 ### 4.4 `apexe list`
