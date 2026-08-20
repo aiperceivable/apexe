@@ -26,6 +26,46 @@ impl<'a> SubcommandDiscovery<'a> {
     /// Recursively discover subcommands.
     ///
     /// Returns a list of ScannedCommand with nested subcommands.
+    /// Scan one subcommand and its nested subcommands.
+    ///
+    /// `None` when the subcommand's `--help` produced nothing, which is a skip
+    /// rather than a failure: a tool listing a subcommand it cannot describe
+    /// should not take the rest of the scan with it.
+    fn scan_subcommand(
+        &self,
+        tool_name: &str,
+        parent_command: &[String],
+        sub_name: &str,
+        depth: u32,
+    ) -> Option<ScannedCommand> {
+        let mut full_cmd: Vec<String> = parent_command.to_vec();
+        full_cmd.push(sub_name.to_string());
+
+        let help_text = self.run_help(tool_name, &full_cmd)?;
+        let parsed = self.pipeline.parse(&help_text, tool_name);
+
+        let nested = if parsed.subcommand_names.is_empty() {
+            Vec::new()
+        } else {
+            self.discover(tool_name, &full_cmd, &parsed.subcommand_names, depth + 1)
+        };
+
+        Some(ScannedCommand {
+            name: sub_name.to_string(),
+            full_command: full_cmd.join(" "),
+            description: parsed.description,
+            flags: parsed.flags,
+            positional_args: parsed.positional_args,
+            subcommands: nested,
+            examples: parsed.examples,
+            help_format: parsed.help_format,
+            structured_output: parsed.structured_output,
+            end_of_options: false,
+            raw_help: help_text,
+        })
+    }
+
+    /// Scan every named subcommand, recursing until `max_depth`.
     pub fn discover(
         &self,
         tool_name: &str,
@@ -42,44 +82,10 @@ impl<'a> SubcommandDiscovery<'a> {
             return Vec::new();
         }
 
-        let mut commands = Vec::new();
-
-        for sub_name in subcommand_names {
-            let mut full_cmd: Vec<String> = parent_command.to_vec();
-            full_cmd.push(sub_name.clone());
-
-            // Run --help for this subcommand
-            let help_text = match self.run_help(tool_name, &full_cmd) {
-                Some(text) => text,
-                None => continue,
-            };
-
-            // Parse help text
-            let parsed = self.pipeline.parse(&help_text, tool_name);
-
-            // Recursively discover nested subcommands
-            let nested = if !parsed.subcommand_names.is_empty() {
-                self.discover(tool_name, &full_cmd, &parsed.subcommand_names, depth + 1)
-            } else {
-                Vec::new()
-            };
-
-            commands.push(ScannedCommand {
-                name: sub_name.clone(),
-                full_command: full_cmd.join(" "),
-                description: parsed.description,
-                flags: parsed.flags,
-                positional_args: parsed.positional_args,
-                subcommands: nested,
-                examples: parsed.examples,
-                help_format: parsed.help_format,
-                structured_output: parsed.structured_output,
-                end_of_options: false,
-                raw_help: help_text,
-            });
-        }
-
-        commands
+        subcommand_names
+            .iter()
+            .filter_map(|sub_name| self.scan_subcommand(tool_name, parent_command, sub_name, depth))
+            .collect()
     }
 
     /// Run `<tool> <subcommand...> --help` and capture output.

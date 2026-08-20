@@ -67,6 +67,38 @@ impl CliToolConverter {
     }
 
     /// Build a single ScannedModule from a leaf command (or synthesized root).
+    /// The `exec://` target a module is invoked through.
+    ///
+    /// For a root-only tool this is just the binary path; for a subcommand the
+    /// subcommand path is appended ("exec:///usr/bin/git commit").
+    /// `fields.full_command` cannot be used here: it is the *full* invocation
+    /// ("git commit"), so prefixing the binary path spelled the tool name twice
+    /// and produced `git git commit`.
+    fn build_target(tool: &ScannedCLITool, path: &[String]) -> String {
+        if path.is_empty() {
+            format!("exec://{}", tool.binary_path)
+        } else {
+            format!("exec://{} {}", tool.binary_path, path.join(" "))
+        }
+    }
+
+    /// Wrap each parsed invocation as a titled example.
+    ///
+    /// Spec §3.3 step 10: the command's examples are carried onto the module so
+    /// downstream MCP/A2A docs surface them. `command.examples` is a plain
+    /// `Vec<String>` invocation list.
+    fn build_examples(invocations: Vec<String>) -> Vec<ModuleExample> {
+        invocations
+            .into_iter()
+            .map(|invocation| {
+                // ModuleExample is #[non_exhaustive]; build via Default + field set.
+                let mut example = ModuleExample::default();
+                example.title = invocation;
+                example
+            })
+            .collect()
+    }
+
     fn build_single_module(
         &self,
         tool: &ScannedCLITool,
@@ -75,57 +107,28 @@ impl CliToolConverter {
     ) -> ScannedModule {
         let mut segments = vec![self.namespace.clone(), sanitize_id_segment(&tool.name)];
         segments.extend(path.iter().map(|segment| sanitize_id_segment(segment)));
-        let module_id = segments.join(".");
 
         let fields = Self::extract_command_fields(tool, command_opt);
-
         let help_format_name =
             help_format_to_tag(command_opt.map_or(HelpFormat::Unknown, |c| c.help_format));
 
-        let tags = self.build_tags(tool, command_opt, help_format_name);
-        // For root-only tools (no subcommands), target is just the binary path.
-        // For subcommands, append the subcommand path only (e.g.
-        // "exec:///usr/bin/git commit"). `fields.full_command` cannot be used
-        // here: it is the *full* invocation ("git commit"), so prefixing the
-        // binary path spelled the tool name twice and produced `git git commit`.
-        let target = if path.is_empty() {
-            format!("exec://{}", tool.binary_path)
-        } else {
-            format!("exec://{} {}", tool.binary_path, path.join(" "))
-        };
-        let version = tool
-            .version
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string());
-        let metadata = self.build_metadata(tool, path, help_format_name);
-
         let mut module = ScannedModule::new(
-            module_id,
+            segments.join("."),
             fields.description,
             fields.input_schema,
             fields.output_schema,
-            tags,
-            target,
+            self.build_tags(tool, command_opt, help_format_name),
+            Self::build_target(tool, path),
         );
-        module.version = version;
+        module.version = tool
+            .version
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
         module.annotations = Some(fields.annotations);
         module.documentation = fields.documentation;
-        module.metadata = metadata;
+        module.metadata = self.build_metadata(tool, path, help_format_name);
         module.warnings = tool.warnings.clone();
-        // Spec §3.3 step 10: carry the command's parsed examples onto the module
-        // so downstream MCP/A2A docs surface them. command.examples is a plain
-        // Vec<String> invocation list; wrap each as a titled ModuleExample.
-        module.examples = fields
-            .examples
-            .into_iter()
-            .map(|ex| {
-                // ModuleExample is #[non_exhaustive]; build via Default + field set.
-                let mut example = ModuleExample::default();
-                example.title = ex;
-                example
-            })
-            .collect();
-
+        module.examples = Self::build_examples(fields.examples);
         module
     }
 
@@ -171,62 +174,70 @@ impl CliToolConverter {
     /// tool-level fallback); splitting it would separate the two halves of a
     /// contract that has to stay field-for-field aligned. Left whole
     /// deliberately.
+    /// The description a command contributes, or a synthesized one.
+    ///
+    /// A command with no help text of its own still needs a summary an agent
+    /// can read, so `Execute <command>` is the floor rather than an empty
+    /// string.
+    fn command_description(candidates: [&str; 2], fallback_name: &str) -> String {
+        candidates
+            .into_iter()
+            .find(|candidate| !candidate.is_empty())
+            .map_or_else(|| format!("Execute {fallback_name}"), str::to_string)
+    }
+
+    /// Raw help text, or `None` when the command produced none.
+    fn command_documentation(raw_help: &str) -> Option<String> {
+        (!raw_help.is_empty()).then(|| raw_help.to_string())
+    }
+
+    /// Gather the per-command fields a module is assembled from.
+    ///
+    /// `command_opt` is `None` for a tool's own invocation, where a root command
+    /// is synthesized from the tool. The two differ in exactly one thing beyond
+    /// their source: a real command is reached only through `collect_leaves`,
+    /// which runs only when the tool has subcommands and always pushes a
+    /// non-empty path — so it always sits behind at least one subcommand token,
+    /// and its global flags have to precede that token. The synthesized root has
+    /// no such token, so its global flags are ordinary flags and must keep their
+    /// default placement.
     fn extract_command_fields(
         tool: &ScannedCLITool,
         command_opt: Option<&&ScannedCommand>,
     ) -> CommandFields {
-        if let Some(command) = command_opt {
-            let description = if command.description.is_empty() {
-                format!("Execute {}", command.full_command)
-            } else {
-                command.description.clone()
-            };
-            let documentation = if command.raw_help.is_empty() {
-                None
-            } else {
-                Some(command.raw_help.clone())
-            };
-            CommandFields {
-                description,
-                // Reached only through `collect_leaves`, which runs only when the
-                // tool has subcommands and always pushes a non-empty path — so a
-                // `Some(command)` here is always behind at least one subcommand
-                // token, and the module target always carries it.
-                input_schema: schema::build_input_schema(
-                    command,
-                    &tool.global_flags,
-                    schema::CommandPosition::Subcommand,
-                ),
-                output_schema: schema::build_output_schema(command),
-                annotations: apply_annotation_overrides(annotations::infer(command), tool),
-                documentation,
-                examples: command.examples.clone(),
+        // Borrowed, not cloned: `raw_help` holds a whole help text, and this
+        // runs once per module. `synth` outlives the borrow because it is
+        // declared here and initialized only on the branch that needs it.
+        let synth;
+        let (command, position): (&ScannedCommand, _) = match command_opt {
+            Some(command) => (command, schema::CommandPosition::Subcommand),
+            None => {
+                synth = synthesize_root_command(tool);
+                (&synth, schema::CommandPosition::Root)
             }
-        } else {
-            let synth = synthesize_root_command(tool);
-            let description = [synth.description.as_str(), tool.description.as_str()]
-                .into_iter()
-                .find(|candidate| !candidate.is_empty())
-                .map_or_else(|| format!("Execute {}", tool.name), str::to_string);
-            let documentation = if synth.raw_help.is_empty() {
-                None
-            } else {
-                Some(synth.raw_help.clone())
-            };
-            CommandFields {
-                description,
-                // The synthesized root has no subcommand token, so its global
-                // flags are ordinary flags and must keep their default placement.
-                input_schema: schema::build_input_schema(
-                    &synth,
-                    &tool.global_flags,
-                    schema::CommandPosition::Root,
-                ),
-                output_schema: schema::build_output_schema(&synth),
-                annotations: apply_annotation_overrides(annotations::infer(&synth), tool),
-                documentation,
-                examples: synth.examples.clone(),
-            }
+        };
+
+        // A real command speaks only for itself; the synthesized root may fall
+        // back to the tool's own description.
+        let fallback = match command_opt {
+            Some(_) => "",
+            None => tool.description.as_str(),
+        };
+        let fallback_name = match command_opt {
+            Some(command) => command.full_command.as_str(),
+            None => tool.name.as_str(),
+        };
+
+        CommandFields {
+            description: Self::command_description(
+                [command.description.as_str(), fallback],
+                fallback_name,
+            ),
+            input_schema: schema::build_input_schema(command, &tool.global_flags, position),
+            output_schema: schema::build_output_schema(command),
+            annotations: apply_annotation_overrides(annotations::infer(command), tool),
+            documentation: Self::command_documentation(&command.raw_help),
+            examples: command.examples.clone(),
         }
     }
 

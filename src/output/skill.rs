@@ -34,57 +34,77 @@ impl SkillOutput {
     // ModuleError is the crate-wide domain error; boxing it would diverge
     // from the rest of the apexe/apcore API surface.
     #[allow(clippy::result_large_err)]
+    /// Reserve `dir_name` for `module_id`, refusing a clash between two modules.
+    ///
+    /// `module_id` is not itself a safe path component (see
+    /// [`sanitize_skill_dir_name`]), so distinct ids can sanitize to the same
+    /// directory — `a/b` and `a_b` both yield `a_b`. Without this the second
+    /// module's SKILL.md would silently overwrite the first's instead of
+    /// surfacing the naming clash.
+    #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
+    fn claim_skill_dir<'a>(
+        seen_dirs: &mut std::collections::HashMap<String, &'a str>,
+        dir_name: &str,
+        module_id: &'a str,
+    ) -> Result<(), ModuleError> {
+        match seen_dirs.get(dir_name) {
+            Some(&existing) if existing != module_id => Err(ModuleError::new(
+                ErrorCode::GeneralInvalidInput,
+                format!(
+                    "Skill directory name collision: modules '{existing}' \
+                     and '{module_id}' both sanitize to '.claude/skills/{dir_name}'"
+                ),
+            )),
+            Some(_) => Ok(()),
+            None => {
+                seen_dirs.insert(dir_name.to_string(), module_id);
+                Ok(())
+            }
+        }
+    }
+
+    /// Write one module's `SKILL.md`, returning its path.
+    #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
+    fn write_one(
+        module: &ScannedModule,
+        output_dir: &Path,
+        dir_name: &str,
+    ) -> Result<PathBuf, ModuleError> {
+        let skill_dir = output_dir.join(".claude").join("skills").join(dir_name);
+        std::fs::create_dir_all(&skill_dir).map_err(|e| {
+            ModuleError::new(
+                ErrorCode::GeneralInternalError,
+                format!(
+                    "Failed to create skill directory {}: {e}",
+                    skill_dir.display()
+                ),
+            )
+        })?;
+
+        let path = skill_dir.join("SKILL.md");
+        std::fs::write(&path, render_skill(module)).map_err(|e| {
+            ModuleError::new(
+                ErrorCode::GeneralInternalError,
+                format!("Failed to write {}: {e}", path.display()),
+            )
+        })?;
+        Ok(path)
+    }
+
+    /// Write a `SKILL.md` per module under `output_dir/.claude/skills/`.
+    #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
     pub fn write(
         &self,
         modules: &[ScannedModule],
         output_dir: &Path,
     ) -> Result<Vec<PathBuf>, ModuleError> {
         let mut written = Vec::with_capacity(modules.len());
-        // module_id is not itself a safe path component (see
-        // sanitize_skill_dir_name), so distinct module_ids can sanitize to
-        // the same directory name (e.g. "a/b" and "a_b" both -> "a_b").
-        // Without this check the second module's SKILL.md would silently
-        // overwrite the first's instead of surfacing the naming clash.
         let mut seen_dirs: std::collections::HashMap<String, &str> =
             std::collections::HashMap::new();
         for module in modules {
             let dir_name = sanitize_skill_dir_name(&module.module_id);
-            if let Some(&existing_module_id) = seen_dirs.get(&dir_name) {
-                if existing_module_id != module.module_id {
-                    return Err(ModuleError::new(
-                        ErrorCode::GeneralInvalidInput,
-                        format!(
-                            "Skill directory name collision: modules '{existing_module_id}' \
-                             and '{}' both sanitize to '.claude/skills/{dir_name}'",
-                            module.module_id
-                        ),
-                    ));
-                }
-            } else {
-                seen_dirs.insert(dir_name.clone(), &module.module_id);
-            }
-
-            let content = render_skill(module);
-
-            let skill_dir = output_dir.join(".claude").join("skills").join(dir_name);
-            std::fs::create_dir_all(&skill_dir).map_err(|e| {
-                ModuleError::new(
-                    ErrorCode::GeneralInternalError,
-                    format!(
-                        "Failed to create skill directory {}: {e}",
-                        skill_dir.display()
-                    ),
-                )
-            })?;
-
-            let path = skill_dir.join("SKILL.md");
-            std::fs::write(&path, content).map_err(|e| {
-                ModuleError::new(
-                    ErrorCode::GeneralInternalError,
-                    format!("Failed to write {}: {e}", path.display()),
-                )
-            })?;
-            written.push(path);
+            Self::claim_skill_dir(&mut seen_dirs, &dir_name, &module.module_id)?;
+            written.push(Self::write_one(module, output_dir, &dir_name)?);
         }
         Ok(written)
     }

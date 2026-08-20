@@ -5,7 +5,7 @@
 //! spawns a pager, or simply hangs would otherwise stall the entire scan
 //! indefinitely. All spawn sites route through [`run_with_timeout`].
 
-use std::io::{self, Read};
+use std::io;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -21,6 +21,21 @@ use std::time::{Duration, Instant};
 /// child exits would deadlock on large output (the same reason
 /// `std::process::Command::output()` drains both pipes concurrently). This
 /// matters for big-help tools (`kubectl`, `docker`, `--help all`).
+/// Drain a pipe on its own thread.
+///
+/// Both pipes are read concurrently with the wait loop: reading one to
+/// completion while the other stays unread deadlocks the child once its pipe
+/// buffer fills. A read error yields whatever arrived before it — the exit
+/// status is the outcome that matters here.
+fn drain_pipe(mut pipe: impl io::Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = pipe.read_to_end(&mut buf);
+        buf
+    })
+}
+
+/// Run `program`, killing it if `timeout` elapses, and capture both pipes.
 pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> io::Result<Output> {
     let mut child = Command::new(program)
         .args(args)
@@ -30,46 +45,32 @@ pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> io::
         .spawn()?;
 
     // INVARIANT: stdout/stderr were configured Stdio::piped() above, so take() is Some.
-    let mut out_pipe = child.stdout.take().expect("stdout was piped");
-    let mut err_pipe = child.stderr.take().expect("stderr was piped");
-    let out_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = out_pipe.read_to_end(&mut buf);
-        buf
-    });
-    let err_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = err_pipe.read_to_end(&mut buf);
-        buf
-    });
+    let out_reader = drain_pipe(child.stdout.take().expect("stdout was piped"));
+    let err_reader = drain_pipe(child.stderr.take().expect("stderr was piped"));
 
     let deadline = Instant::now() + timeout;
     let status = loop {
-        match child.try_wait()? {
-            Some(status) => break status,
-            None => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    // Readers unblock once the killed child's pipe ends close.
-                    let _ = out_reader.join();
-                    let _ = err_reader.join();
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        format!("`{program}` timed out after {timeout:?}"),
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
+        if let Some(status) = child.try_wait()? {
+            break status;
         }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            // Readers unblock once the killed child's pipe ends close.
+            let _ = out_reader.join();
+            let _ = err_reader.join();
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("`{program}` timed out after {timeout:?}"),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
     };
 
-    let stdout = out_reader.join().unwrap_or_default();
-    let stderr = err_reader.join().unwrap_or_default();
     Ok(Output {
         status,
-        stdout,
-        stderr,
+        stdout: out_reader.join().unwrap_or_default(),
+        stderr: err_reader.join().unwrap_or_default(),
     })
 }
 

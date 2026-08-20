@@ -399,6 +399,45 @@ impl ScanOrchestrator {
     /// a description patch. Tools whose `--help` is a single bundled usage line
     /// (most BSD/macOS built-ins, e.g. `ls`) parse to zero flags in Tier 1, and
     /// their man page is the only machine-readable record of their options.
+    /// Adopt the man page's DESCRIPTION as the tool-level summary.
+    ///
+    /// It replaces whatever Tier 1 produced. That fallback is not merely weaker
+    /// but frequently wrong: a tool that rejects `--help` (most BSD built-ins)
+    /// has its error text — "ls: unrecognized option `--help'" — parsed as if it
+    /// were a description.
+    ///
+    /// Padding a subcommand's own summary with the parent tool's DESCRIPTION
+    /// only helps when that summary is a stub. It is not one when the
+    /// subcommand's `--help` was itself a man page: its NAME line is the
+    /// authoritative one-liner, and it is often short precisely because it is
+    /// good. `git log` → "Show commit logs" became "Show commit logs — Git is a
+    /// fast, scalable, distributed revision control system with an unusually
+    /// rich command set…", where 84% of the text describes `git` rather than
+    /// `git log` — the same "a description of git filed under the name of git
+    /// log" that the man parser exists to fix, reappearing one field over.
+    fn adopt_man_description(tool: &mut ScannedCLITool, description: &str) {
+        tool.description.clear();
+        tool.description.push_str(description);
+        for cmd in &mut tool.subcommands {
+            let is_stub = cmd.help_format != HelpFormat::Man && cmd.description.len() < 20;
+            if is_stub && !cmd.description.is_empty() {
+                cmd.description = format!("{} — {}", cmd.description, description);
+            }
+        }
+    }
+
+    /// Fold the man page's flags into the tool's, marking their source.
+    fn merge_man_flags(tool: &mut ScannedCLITool, mut man_flags: Vec<ScannedFlag>) {
+        stamp_source(&mut man_flags, FlagSource::ManPage);
+        for cmd in &mut tool.subcommands {
+            fill_missing_descriptions(&mut cmd.flags, &man_flags);
+        }
+        fill_missing_descriptions(&mut tool.global_flags, &man_flags);
+        corroborate_sources(&mut tool.global_flags, &man_flags);
+        merge_new_flags(&mut tool.global_flags, &man_flags);
+    }
+
+    /// Raise `tool` to Tier 2 with whatever its man page adds.
     fn enrich_with_man_page(&self, tool: &mut ScannedCLITool, lookup_name: &str) {
         let Some(man_help) = self.man_parser.parse_man_page(lookup_name) else {
             return;
@@ -416,43 +455,12 @@ impl ScanOrchestrator {
         if !man_help.examples.is_empty() && tool.examples.is_empty() {
             tool.examples.clone_from(&man_help.examples);
         }
-
         if !man_help.description.is_empty() {
-            // The man page DESCRIPTION is the authoritative tool-level summary,
-            // so it replaces whatever Tier 1 produced. That fallback is not
-            // merely weaker but frequently wrong: a tool that rejects `--help`
-            // (most BSD built-ins) has its error text — "ls: unrecognized
-            // option `--help'" — parsed as if it were a description.
-            tool.description.clone_from(&man_help.description);
-            // Padding a subcommand's own summary with the parent tool's
-            // DESCRIPTION only helps when that summary is a stub. It is not one
-            // when the subcommand's `--help` was itself a man page: its NAME
-            // line is the authoritative one-liner, and it is often short
-            // precisely because it is good. `git log` → "Show commit logs"
-            // became "Show commit logs — Git is a fast, scalable, distributed
-            // revision control system with an unusually rich command set…",
-            // where 84% of the text describes `git` rather than `git log` —
-            // the same "a description of git filed under the name of git log"
-            // that the man parser exists to fix, reappearing one field over.
-            for cmd in &mut tool.subcommands {
-                let is_stub = cmd.help_format != HelpFormat::Man && cmd.description.len() < 20;
-                if is_stub && !cmd.description.is_empty() {
-                    cmd.description = format!("{} — {}", cmd.description, man_help.description);
-                }
-            }
+            Self::adopt_man_description(tool, &man_help.description);
         }
-
-        if man_help.flags.is_empty() {
-            return;
+        if !man_help.flags.is_empty() {
+            Self::merge_man_flags(tool, man_help.flags);
         }
-        let mut man_flags = man_help.flags;
-        stamp_source(&mut man_flags, FlagSource::ManPage);
-        for cmd in &mut tool.subcommands {
-            fill_missing_descriptions(&mut cmd.flags, &man_flags);
-        }
-        fill_missing_descriptions(&mut tool.global_flags, &man_flags);
-        corroborate_sources(&mut tool.global_flags, &man_flags);
-        merge_new_flags(&mut tool.global_flags, &man_flags);
     }
 
     fn enrich_with_completions(&self, tool: &mut ScannedCLITool, tool_name: &str) {

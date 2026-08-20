@@ -83,62 +83,70 @@ fn extract_clap_description(help_text: &str) -> String {
     desc.chars().take(200).collect()
 }
 
-fn extract_clap_flags(help_text: &str) -> Vec<ScannedFlag> {
-    // Clap format: "  -f, --flag <VALUE>  Description"
-    // Or: "      --flag <VALUE>  Description"
-    let mut flags = Vec::new();
+/// Build the flag one `-f, --flag <VALUE>  Description` line describes.
+///
+/// Clap states the default, the choice list, whether the option is required and
+/// whether it repeats inside the description prose rather than in the signature,
+/// so all four are recovered from `description`.
+fn clap_flag(
+    short_name: Option<String>,
+    long_name: Option<String>,
+    value_name: Option<String>,
+    description: String,
+) -> ScannedFlag {
+    let default = DEFAULT_RE
+        .captures(&description)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().trim().to_string());
 
-    for cap in FLAG_RE.captures_iter(help_text) {
-        let short_name = cap.get(2).map(|m| format!("-{}", m.as_str()));
-        let long_name = Some(format!("--{}", &cap[4]));
-        let value_name = cap.get(5).map(|m| m.as_str().to_string());
-        let description = cap
-            .get(6)
-            .map(|m| m.as_str().trim().to_string())
-            .unwrap_or_default();
-
-        // One table for the whole scanner; see `scanner::value_placeholder`.
-        let value_type = crate::scanner::value_placeholder::flag_value_type(value_name.as_deref());
-
-        let default = DEFAULT_RE
-            .captures(&description)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().trim().to_string());
-
-        let enum_values = ENUM_RE
-            .captures(&description)
-            .and_then(|c| c.get(1))
-            .map(|m| {
-                m.as_str()
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .collect::<Vec<_>>()
-            });
-
-        let required = description.to_lowercase().contains("required");
-        let repeatable = description.contains("...");
-
-        let actual_type = if enum_values.is_some() {
-            ValueType::Enum
-        } else {
-            value_type
-        };
-
-        flags.push(ScannedFlag {
-            long_name,
-            short_name,
-            description,
-            value_type: actual_type,
-            required,
-            default,
-            enum_values,
-            repeatable,
-            value_name,
-            ..Default::default()
+    let enum_values = ENUM_RE
+        .captures(&description)
+        .and_then(|c| c.get(1))
+        .map(|m| {
+            m.as_str()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect::<Vec<_>>()
         });
-    }
 
-    flags
+    // A choice list is the stronger statement: it names the accepted values,
+    // where the placeholder only names their shape.
+    let value_type = if enum_values.is_some() {
+        ValueType::Enum
+    } else {
+        // One table for the whole scanner; see `scanner::value_placeholder`.
+        crate::scanner::value_placeholder::flag_value_type(value_name.as_deref())
+    };
+
+    ScannedFlag {
+        long_name,
+        short_name,
+        required: description.to_lowercase().contains("required"),
+        repeatable: description.contains("..."),
+        description,
+        value_type,
+        default,
+        enum_values,
+        value_name,
+        ..Default::default()
+    }
+}
+
+/// Extract flags from a Clap-style help text.
+fn extract_clap_flags(help_text: &str) -> Vec<ScannedFlag> {
+    FLAG_RE
+        .captures_iter(help_text)
+        .map(|cap| {
+            clap_flag(
+                cap.get(2).map(|m| format!("-{}", m.as_str())),
+                Some(format!("--{}", &cap[4])),
+                cap.get(5).map(|m| m.as_str().to_string()),
+                cap.get(6)
+                    .map(|m| m.as_str().trim().to_string())
+                    .unwrap_or_default(),
+            )
+        })
+        .collect()
 }
 
 fn extract_clap_args(help_text: &str) -> Vec<ScannedArg> {

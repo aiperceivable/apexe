@@ -136,25 +136,40 @@ impl ScanArgs {
         let scanned_count = outcome.tools.len();
         self.print_results(outcome.tools, &modules)?;
 
-        // A partial run wrote real bindings, so the successes are reported
-        // above and kept on disk — but it also silently produced fewer modules
-        // than asked for, which is the failure mode this project has already
-        // been bitten by. Exiting non-zero is what stops a pipeline from
-        // treating a short surface as the whole surface; the message names both
-        // halves so the exit code is never the only information available.
-        if !outcome.failures.is_empty() {
-            return Err(anyhow::anyhow!(
-                "Scanned {} of {} tools; bindings for the {} that succeeded were written to {}.\n\
-                 Failed:\n{}",
-                scanned_count,
-                self.tools.len(),
-                scanned_count,
-                output_dir.display(),
-                Self::render_failures(&outcome.failures)
-            ));
-        }
+        Self::report_partial_run(
+            &outcome.failures,
+            scanned_count,
+            self.tools.len(),
+            &output_dir,
+        )
+    }
 
-        Ok(())
+    /// Fail the command when some requested tools could not be scanned.
+    ///
+    /// A partial run wrote real bindings, so the successes are reported and
+    /// kept on disk — but it also silently produced fewer modules than asked
+    /// for, which is the failure mode this project has already been bitten by.
+    /// Exiting non-zero is what stops a pipeline from treating a short surface
+    /// as the whole surface; the message names both halves so the exit code is
+    /// never the only information available.
+    fn report_partial_run(
+        failures: &[crate::scanner::ScanFailure],
+        scanned_count: usize,
+        requested_count: usize,
+        output_dir: &std::path::Path,
+    ) -> anyhow::Result<()> {
+        if failures.is_empty() {
+            return Ok(());
+        }
+        Err(anyhow::anyhow!(
+            "Scanned {} of {} tools; bindings for the {} that succeeded were written to {}.\n\
+             Failed:\n{}",
+            scanned_count,
+            requested_count,
+            scanned_count,
+            output_dir.display(),
+            Self::render_failures(failures)
+        ))
     }
 
     /// One `  tool: reason` line per failure, in the order they were requested.

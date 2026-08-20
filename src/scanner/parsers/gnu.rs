@@ -107,20 +107,28 @@ pub fn extract_description(help_text: &str) -> String {
 }
 
 /// Extract flags from OPTIONS section using regex patterns.
-pub fn extract_flags(help_text: &str) -> Vec<ScannedFlag> {
-    // Match flags like:
-    //   -m, --message=MSG   Use the given message
-    //   -m, --message MSG   Use the given message
-    //   --all               Stage all
-    //   -v                  Verbose
-
-    let mut flags = Vec::new();
+/// Collect flags spelled with a long form, recording every short alias seen.
+///
+/// Matches `-m, --message=MSG`, `-m, --message MSG` and `--all`. The long name
+/// is the identity here, so a repeated one is skipped; the short names go into
+/// `seen_short` so the short-only pass below does not re-report them.
+fn collect_long_flags(
+    help_text: &str,
+    seen_short: &mut std::collections::HashSet<String>,
+    flags: &mut Vec<ScannedFlag>,
+) {
     let mut seen_long: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut seen_short: std::collections::HashSet<String> = std::collections::HashSet::new();
-
     for cap in FLAG_RE.captures_iter(help_text) {
-        let short_name = cap.get(2).map(|m| format!("-{}", m.as_str()));
         let long_name = cap.get(4).map(|m| format!("--{}", m.as_str()));
+        if let Some(ref long) = long_name {
+            if !seen_long.insert(long.clone()) {
+                continue;
+            }
+        }
+        let short_name = cap.get(2).map(|m| format!("-{}", m.as_str()));
+        if let Some(ref short) = short_name {
+            seen_short.insert(short.clone());
+        }
         let value_name = cap
             .get(6)
             .map(|m| m.as_str().trim_matches('<').trim_matches('>').to_string());
@@ -128,44 +136,44 @@ pub fn extract_flags(help_text: &str) -> Vec<ScannedFlag> {
             .get(7)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
-
-        if let Some(ref ln) = long_name {
-            if !seen_long.insert(ln.clone()) {
-                continue;
-            }
-        }
-        if let Some(ref sn) = short_name {
-            seen_short.insert(sn.clone());
-        }
-
-        let flag = build_flag(long_name, short_name, description, value_name);
-        flags.push(flag);
+        flags.push(build_flag(long_name, short_name, description, value_name));
     }
+}
 
-    // Collect short-only flags not already captured
+/// Collect flags that have no long form, e.g. `-v   Verbose`.
+///
+/// A line carrying `--` was already read by [`collect_long_flags`]; matching it
+/// again here would report the short half a second time under its own name.
+fn collect_short_only_flags(
+    help_text: &str,
+    seen_short: &mut std::collections::HashSet<String>,
+    flags: &mut Vec<ScannedFlag>,
+) {
     for cap in SHORT_ONLY_RE.captures_iter(help_text) {
-        let short_char = cap[1].to_string();
-        let short_name = format!("-{short_char}");
+        let short_name = format!("-{}", &cap[1]);
         if seen_short.contains(&short_name) {
             continue;
         }
-        // Check that this line doesn't also have a long flag (already captured above)
-        let full_match = cap.get(0).unwrap().as_str();
-        if full_match.contains("--") {
+        // INVARIANT: group 0 is the whole match, always present on a capture.
+        if cap.get(0).is_some_and(|m| m.as_str().contains("--")) {
             continue;
         }
-
         let value_name = cap.get(2).map(|m| m.as_str().to_string());
         let description = cap
             .get(3)
             .map(|m| m.as_str().trim().to_string())
             .unwrap_or_default();
-
         seen_short.insert(short_name.clone());
-        let flag = build_flag(None, Some(short_name), description, value_name);
-        flags.push(flag);
+        flags.push(build_flag(None, Some(short_name), description, value_name));
     }
+}
 
+/// Extract flags from a GNU-style help text.
+pub fn extract_flags(help_text: &str) -> Vec<ScannedFlag> {
+    let mut flags = Vec::new();
+    let mut seen_short: std::collections::HashSet<String> = std::collections::HashSet::new();
+    collect_long_flags(help_text, &mut seen_short, &mut flags);
+    collect_short_only_flags(help_text, &mut seen_short, &mut flags);
     flags
 }
 

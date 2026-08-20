@@ -304,64 +304,68 @@ fn apply_scalar_type_hints(schema: &mut JsonValue, value_type: ValueType) {
 }
 
 /// Convert a ScannedFlag into a JSON Schema property value.
-fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
-    let base_type = value_type_to_json_schema(flag.value_type);
-
-    if flag.repeatable {
-        let mut schema = json!({
-            "type": "array",
-            "items": { "type": base_type },
-        });
-        // On `items`, not on the array: it is each element that is a path.
-        apply_items_type_hints(&mut schema, flag.value_type);
-        if !flag.description.is_empty() {
-            schema["description"] = json!(flag.description);
-        }
-        apply_long_running(&mut schema, flag);
-        apply_flag_literal(&mut schema, flag);
-        // Repeatable is the common arity for the credential options that
-        // matter most: curl's `--header` and `--cookie` both repeat, so
-        // skipping this branch would leave `Authorization: Bearer …` in the
-        // log.
-        apply_sensitive_flag(&mut schema, flag);
-        // Placement is orthogonal to arity — `find -f path` is pre-operand and
-        // could legitimately repeat — so it must be emitted on this branch too,
-        // not only on the scalar one below.
-        apply_flag_placement(&mut schema, flag);
-        return schema;
+/// Schema for a flag that may be given more than once, as an array.
+fn repeatable_flag_schema(flag: &ScannedFlag) -> JsonValue {
+    let mut schema = json!({
+        "type": "array",
+        "items": { "type": value_type_to_json_schema(flag.value_type) },
+    });
+    // On `items`, not on the array: it is each element that is a path.
+    apply_items_type_hints(&mut schema, flag.value_type);
+    if !flag.description.is_empty() {
+        schema["description"] = json!(flag.description);
     }
+    apply_long_running(&mut schema, flag);
+    apply_flag_literal(&mut schema, flag);
+    // Repeatable is the common arity for the credential options that matter
+    // most: curl's `--header` and `--cookie` both repeat, so skipping this
+    // would leave `Authorization: Bearer …` in the log.
+    apply_sensitive_flag(&mut schema, flag);
+    // Placement is orthogonal to arity — `find -f path` is pre-operand and
+    // could legitimately repeat — so it must be emitted on this branch too,
+    // not only on the scalar one.
+    apply_flag_placement(&mut schema, flag);
+    schema
+}
 
-    // An optional-value flag has two legal spellings and the contract has to
-    // admit both, or one of them is unreachable: `git --exec-path` prints the
-    // exec path while `git --exec-path=<p>` sets it. `true` selects the bare
-    // form and a string supplies a value; the executor already renders long
-    // options as `--flag=value`, which is the spelling an optional value
-    // requires.
+/// Schema for a flag given at most once.
+///
+/// An optional-value flag has two legal spellings and the contract has to admit
+/// both, or one of them is unreachable: `git --exec-path` prints the exec path
+/// while `git --exec-path=<p>` sets it. `true` selects the bare form and a
+/// string supplies a value; the executor already renders long options as
+/// `--flag=value`, which is the spelling an optional value requires.
+fn scalar_flag_schema(flag: &ScannedFlag) -> JsonValue {
+    let base_type = value_type_to_json_schema(flag.value_type);
     let mut schema = if flag.value_optional {
         json!({ "type": [base_type, "boolean"], "x-apexe-value-optional": true })
     } else {
         json!({ "type": base_type })
     };
 
-    // Add format hints so AI agents can distinguish path/URI from plain strings
+    // Format hints, so an agent can distinguish path/URI from a plain string.
     apply_scalar_type_hints(&mut schema, flag.value_type);
-
     if !flag.description.is_empty() {
         schema["description"] = json!(flag.description);
     }
-
     apply_default(&mut schema, flag);
-
     if let Some(ref enum_values) = flag.enum_values {
         schema["enum"] = json!(enum_values);
     }
-
     apply_long_running(&mut schema, flag);
     apply_flag_literal(&mut schema, flag);
     apply_flag_placement(&mut schema, flag);
     apply_sensitive_flag(&mut schema, flag);
-
     schema
+}
+
+/// Build the JSON Schema property one flag contributes.
+fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
+    if flag.repeatable {
+        repeatable_flag_schema(flag)
+    } else {
+        scalar_flag_schema(flag)
+    }
 }
 
 /// Record that this flag belongs ahead of the command's operands.

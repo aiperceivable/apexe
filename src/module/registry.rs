@@ -418,6 +418,47 @@ fn strip_mcp_alias(display: &mut serde_json::Value) {
 /// `descriptor.metadata["display"]`) actually sees it — minus the MCP tool-name
 /// alias, which [`strip_mcp_alias`] removes so the advertised name stays
 /// callable.
+/// Build the descriptor apcore registers a scanned module under.
+///
+/// Both places apcore-mcp looks for a display alias are cleared: it reads
+/// `descriptor.display` first and only falls back to `metadata["display"]`, so
+/// leaving either intact would still expose an uncallable tool name.
+fn build_descriptor(scanned: &ScannedModule) -> ModuleDescriptor {
+    let mut metadata = scanned.metadata.clone();
+    if let Some(display) = metadata.get_mut("display") {
+        strip_mcp_alias(display);
+    }
+    let mut display = scanned.display.clone();
+    if let Some(display) = display.as_mut() {
+        strip_mcp_alias(display);
+    }
+
+    ModuleDescriptor {
+        module_id: scanned.module_id.clone(),
+        name: None,
+        description: scanned.description.clone(),
+        documentation: scanned.documentation.clone(),
+        input_schema: scanned.input_schema.clone(),
+        output_schema: scanned.output_schema.clone(),
+        version: scanned.version.clone(),
+        tags: scanned.tags.clone(),
+        annotations: Some(scanned.annotations.clone().unwrap_or_default()),
+        // Man-page invocations, carried through so apcore-a2a's skill mapper
+        // can render them. Dropping them here was why the A2A agent card
+        // advertised no examples at all even though the binding file has them.
+        examples: scanned.examples.clone(),
+        metadata,
+        display,
+        sunset_date: None,
+        dependencies: vec![],
+        enabled: true,
+    }
+}
+
+/// Register each scanned module, warning past the ones that cannot be built.
+///
+/// A module that fails here is skipped rather than aborting the server: one
+/// malformed binding among 168 should not take the whole registry with it.
 fn register_modules(
     modules: &[ScannedModule],
     registry: &Registry,
@@ -425,57 +466,21 @@ fn register_modules(
     audit: Option<Arc<crate::governance::AuditManager>>,
 ) {
     for scanned in modules {
-        match CliModule::from_scanned(scanned, timeout_ms) {
-            Ok(cli_module) => {
-                let cli_module = cli_module.with_audit(audit.clone());
-                let module_id = scanned.module_id.clone();
-                let annotations = scanned.annotations.clone().unwrap_or_default();
-
-                // Both places apcore-mcp looks for the alias must be cleared:
-                // it reads `descriptor.display` first and only falls back to
-                // `metadata["display"]`, so leaving either one intact would
-                // still expose an uncallable tool name.
-                let mut metadata = scanned.metadata.clone();
-                if let Some(display) = metadata.get_mut("display") {
-                    strip_mcp_alias(display);
-                }
-                let mut display = scanned.display.clone();
-                if let Some(display) = display.as_mut() {
-                    strip_mcp_alias(display);
-                }
-
-                let descriptor = ModuleDescriptor {
-                    module_id: module_id.clone(),
-                    name: None,
-                    description: scanned.description.clone(),
-                    documentation: scanned.documentation.clone(),
-                    input_schema: scanned.input_schema.clone(),
-                    output_schema: scanned.output_schema.clone(),
-                    version: scanned.version.clone(),
-                    tags: scanned.tags.clone(),
-                    annotations: Some(annotations),
-                    // Man-page invocations, carried through so apcore-a2a's
-                    // skill mapper can render them. Dropping them here was why
-                    // the A2A agent card advertised no examples at all even
-                    // though the binding file has them.
-                    examples: scanned.examples.clone(),
-                    metadata,
-                    display,
-                    sunset_date: None,
-                    dependencies: vec![],
-                    enabled: true,
-                };
-                if let Err(e) = registry.register(&module_id, Box::new(cli_module), descriptor) {
-                    tracing::warn!(module_id, error = %e, "Failed to register module");
-                }
-            }
+        let cli_module = match CliModule::from_scanned(scanned, timeout_ms) {
+            Ok(cli_module) => cli_module.with_audit(audit.clone()),
             Err(e) => {
                 tracing::warn!(
                     module_id = scanned.module_id,
                     error = %e,
                     "Failed to create CliModule"
                 );
+                continue;
             }
+        };
+        let module_id = scanned.module_id.clone();
+        let descriptor = build_descriptor(scanned);
+        if let Err(e) = registry.register(&module_id, Box::new(cli_module), descriptor) {
+            tracing::warn!(module_id, error = %e, "Failed to register module");
         }
     }
 }

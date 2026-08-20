@@ -67,6 +67,82 @@ struct BindAddress {
 /// The default `--url`, and the only value that needs no acknowledgement.
 const DEFAULT_A2A_URL: &str = "http://127.0.0.1:8000";
 
+/// Reject a `--url` value, saying what is wrong and what to give instead.
+#[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
+fn refuse_bind_url(url: &str, detail: &str) -> ModuleError {
+    ModuleError::new(
+        ErrorCode::GeneralInvalidInput,
+        format!(
+            "Refusing to start: --url '{url}' {detail} Give a full \
+             `http://<host>:<port>` with no path, for example `{DEFAULT_A2A_URL}`."
+        ),
+    )
+}
+
+/// Strip the scheme, refusing anything that is not a bare `http://` authority.
+///
+/// The A2A server derives its listen address by splitting this value on `://`
+/// and passing everything after it verbatim to the socket bind, which is why a
+/// missing scheme and a trailing path are both fatal rather than cosmetic.
+#[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
+fn http_authority(url: &str) -> Result<&str, ModuleError> {
+    let Some((scheme, authority)) = url.split_once("://") else {
+        return Err(refuse_bind_url(
+            url,
+            "has no scheme, and the A2A server derives its listen address by \
+             splitting on '://' — with no scheme it falls back to 0.0.0.0:8000 and \
+             serves every wrapped binary on every interface, unauthenticated.",
+        ));
+    };
+    if scheme != "http" {
+        return Err(refuse_bind_url(
+            url,
+            &format!(
+                "uses the '{scheme}' scheme, but the A2A server both serves plain HTTP \
+                 and derives its listen address from this value, so '{scheme}' describes \
+                 neither the listener nor a reachable endpoint."
+            ),
+        ));
+    }
+    if authority.contains(['/', '?', '#']) {
+        return Err(refuse_bind_url(
+            url,
+            "carries a path, query or fragment. Everything after '://' is passed \
+             verbatim to the socket bind, so it would fail to start.",
+        ));
+    }
+    Ok(authority)
+}
+
+/// Split a validated authority into the address the server binds.
+#[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
+fn bind_address(url: &str, authority: &str) -> Result<BindAddress, ModuleError> {
+    let (host, port) = split_host_port(authority).ok_or_else(|| {
+        refuse_bind_url(
+            url,
+            "names no port. The whole authority is passed verbatim to the socket \
+             bind, which needs an explicit `host:port`.",
+        )
+    })?;
+    if host.is_empty() {
+        return Err(refuse_bind_url(url, "names no host."));
+    }
+    let port: u16 = port
+        .parse()
+        .map_err(|_| refuse_bind_url(url, &format!("has '{port}' where a port number belongs.")))?;
+    if port == 0 {
+        return Err(refuse_bind_url(
+            url,
+            "asks for port 0, which binds an arbitrary port the agent card \
+             would then misreport.",
+        ));
+    }
+    Ok(BindAddress {
+        host: host.to_string(),
+        port,
+    })
+}
+
 /// Parse `--url` into the address apcore-a2a will bind, refusing anything whose
 /// listener would not be the one the operator described.
 ///
@@ -88,64 +164,7 @@ const DEFAULT_A2A_URL: &str = "http://127.0.0.1:8000";
 /// TLS URL describes neither the listener nor a reachable endpoint.
 #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
 fn parse_bind_url(url: &str) -> Result<BindAddress, ModuleError> {
-    let refuse = |detail: String| {
-        ModuleError::new(
-            ErrorCode::GeneralInvalidInput,
-            format!(
-                "Refusing to start: --url '{url}' {detail} Give a full \
-                 `http://<host>:<port>` with no path, for example `{DEFAULT_A2A_URL}`."
-            ),
-        )
-    };
-
-    let Some((scheme, authority)) = url.split_once("://") else {
-        return Err(refuse(
-            "has no scheme, and the A2A server derives its listen address by \
-             splitting on '://' — with no scheme it falls back to 0.0.0.0:8000 and \
-             serves every wrapped binary on every interface, unauthenticated."
-                .to_string(),
-        ));
-    };
-    if scheme != "http" {
-        return Err(refuse(format!(
-            "uses the '{scheme}' scheme, but the A2A server both serves plain HTTP \
-             and derives its listen address from this value, so '{scheme}' describes \
-             neither the listener nor a reachable endpoint."
-        )));
-    }
-    if authority.contains(['/', '?', '#']) {
-        return Err(refuse(
-            "carries a path, query or fragment. Everything after '://' is passed \
-             verbatim to the socket bind, so it would fail to start."
-                .to_string(),
-        ));
-    }
-
-    let (host, port) = split_host_port(authority).ok_or_else(|| {
-        refuse(
-            "names no port. The whole authority is passed verbatim to the socket \
-             bind, which needs an explicit `host:port`."
-                .to_string(),
-        )
-    })?;
-    if host.is_empty() {
-        return Err(refuse("names no host.".to_string()));
-    }
-    let port: u16 = port
-        .parse()
-        .map_err(|_| refuse(format!("has '{port}' where a port number belongs.")))?;
-    if port == 0 {
-        return Err(refuse(
-            "asks for port 0, which binds an arbitrary port the agent card \
-             would then misreport."
-                .to_string(),
-        ));
-    }
-
-    Ok(BindAddress {
-        host: host.to_string(),
-        port,
-    })
+    bind_address(url, http_authority(url)?)
 }
 
 /// Split an authority into host and port, keeping a bracketed IPv6 literal
