@@ -112,122 +112,139 @@ static OPTION_VALUE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"-{1,2}[A-Za-z][\w-]*\[?=?\s*<[^>]+>(?:=<[^>]+>)*\]?").expect("valid static regex")
 });
 
-/// Extract `<name>` positional-argument placeholders from a single usage line.
+/// Byte ranges on a usage line that belong to an option's value.
 ///
-/// Skips placeholders that belong to an option's value (see [`OPTION_VALUE_RE`]),
-/// including repeatable ones such as `[--include=<path>...]`, and marks a
-/// placeholder as optional (`required: false`) when it appears inside an
-/// unclosed `[...]` group, e.g. the trailing `<args>` in
-/// `git [--version] <command> [<args>]`.
-pub fn extract_args_from_usage_line(line: &str) -> Vec<ScannedArg> {
-    let option_value_ranges: Vec<(usize, usize)> = OPTION_VALUE_RE
-        .find_iter(line)
-        .map(|m| (m.start(), m.end()))
-        .collect();
+/// See [`OPTION_VALUE_RE`]: `git -C <path>` spells the option's argument with
+/// the same angle-bracket syntax a real operand uses, so two of the three
+/// passes below have to exclude anything opening inside one of these.
+struct OptionValueRanges(Vec<(usize, usize)>);
 
-    // Collected with their offsets so both placeholder styles can be returned
-    // in the order they appear on the line. Order is the argument's meaning:
-    // `<jq filter> [file...]` and `[file...] <jq filter>` are different calls.
-    let mut found: Vec<(usize, ScannedArg)> = Vec::new();
+impl OptionValueRanges {
+    /// Collect every option-value span on `line`.
+    fn of(line: &str) -> Self {
+        Self(
+            OPTION_VALUE_RE
+                .find_iter(line)
+                .map(|m| (m.start(), m.end()))
+                .collect(),
+        )
+    }
 
+    /// Whether a placeholder *opening* at `offset` belongs to an option.
+    ///
+    /// Attribution is decided by where the placeholder opens, not by its whole
+    /// range: a trailing `...` or `]` belongs to the placeholder's match but
+    /// not to the option's, so comparing whole ranges would let
+    /// `[--include=<path>...]` escape and be reported as a positional argument.
+    fn covers(&self, offset: usize) -> bool {
+        self.0
+            .iter()
+            .any(|&(start, end)| offset >= start && offset < end)
+    }
+}
+
+/// Build an operand with the fields every pass below fills the same way.
+fn scanned_operand(name: String, required: bool, variadic: bool) -> ScannedArg {
+    ScannedArg {
+        name,
+        description: String::new(),
+        value_type: ValueType::String,
+        required,
+        variadic,
+        before_flags: false,
+    }
+}
+
+/// Whether `name` at `offset` is an option's own value rather than an operand.
+///
+/// A placeholder sitting inside an option group is that option's value. The
+/// bracketed and bare passes have always checked this; the angle-bracket pass
+/// did not, which only became visible once man-page SYNOPSIS lines started
+/// reaching here — git's `[(-m | --max-count) <num>]` put `num` on
+/// `cli.git.grep` as a positional, so `{"num": 3}` rendered `git grep 3` and
+/// searched for the literal "3".
+///
+/// `is_option_group_word` catches the other spelling: `git log [<options>]`
+/// names its option group in the same syntax as a real operand, and reporting
+/// `options` as a positional puts a bare `options` token on the command line,
+/// which no tool accepts.
+fn belongs_to_an_option(line: &str, offset: usize, name: &str) -> bool {
+    inside_option_group(line, offset) || is_option_group_word(name)
+}
+
+/// Angle-bracket placeholders: `<file>`, `[<args>]`, `<path>...`.
+fn collect_angle_placeholders(
+    line: &str,
+    ranges: &OptionValueRanges,
+    found: &mut Vec<(usize, ScannedArg)>,
+) {
     for cap in ARG_RE.captures_iter(line) {
         // INVARIANT: group 0 is the whole match, always present on a capture.
         let Some(whole) = cap.get(0) else { continue };
-        // Attribution is decided by where the placeholder *opens*: a trailing
-        // `...` or `]` belongs to the placeholder's match but not to the
-        // option's, so comparing whole ranges would let `[--include=<path>...]`
-        // escape and be reported as a positional argument.
-        let is_option_value = option_value_ranges
-            .iter()
-            .any(|&(start, end)| whole.start() >= start && whole.start() < end);
-        if is_option_value {
-            continue;
-        }
-        // A placeholder sitting inside an option group is that option's value,
-        // not an operand. The other two passes have always checked this; the
-        // angle-bracket pass did not, which only became visible once man-page
-        // SYNOPSIS lines started reaching here — git's
-        // `[(-m | --max-count) <num>]` put `num` on `cli.git.grep` as a
-        // positional, so `{"num": 3}` rendered `git grep 3` and searched for
-        // the literal "3".
-        if inside_option_group(line, whole.start()) {
+        if ranges.covers(whole.start()) {
             continue;
         }
         let name = normalize_name(&cap[1]);
-        // `git log [<options>] [<revision-range>] ...` names its option group
-        // in the same angle-bracket syntax as a real operand. Reporting
-        // `options` as a positional would put a bare `options` token on the
-        // command line, which no tool accepts.
-        if is_option_group_word(&name) {
+        if belongs_to_an_option(line, whole.start(), &name) {
             continue;
         }
-
         found.push((
             whole.start(),
-            ScannedArg {
+            scanned_operand(
                 name,
-                description: String::new(),
-                value_type: ValueType::String,
-                required: bracket_depth_before(line, whole.start()) <= 0,
-                variadic: cap.get(2).is_some(),
-                before_flags: false,
-            },
+                bracket_depth_before(line, whole.start()) <= 0,
+                cap.get(2).is_some(),
+            ),
         ));
     }
+}
 
+/// Bracketed operands: `[FILE]`, `[file...]`.
+///
+/// A bracketed lowercase word with no ellipsis is not evidence enough. BSD
+/// writes optional operands lowercase and its required ones bare
+/// (`basename string [suffix]`), and bare lowercase is deliberately not matched
+/// by [`BARE_OPERAND_RE`] — so accepting `[suffix]` here would yield a contract
+/// holding only the optional half of the tool's arguments, which reads as "this
+/// is all it takes" and is worse than reporting none. An all-caps placeholder
+/// is GNU's explicit convention and carries no such doubt.
+fn collect_bracketed_operands(line: &str, found: &mut Vec<(usize, ScannedArg)>) {
     for cap in BRACKET_OPERAND_RE.captures_iter(line) {
         // INVARIANT: groups 0 and 1 are present on every capture of this pattern.
         let (Some(whole), Some(name_match)) = (cap.get(0), cap.get(1)) else {
             continue;
         };
         let name = normalize_name(name_match.as_str());
-        if inside_option_group(line, name_match.start()) || is_option_group_word(&name) {
+        if belongs_to_an_option(line, name_match.start(), &name) {
             continue;
         }
 
         let variadic = cap.get(2).is_some() || cap.get(3).is_some();
-        // A bracketed lowercase word with no ellipsis is not evidence enough.
-        // BSD writes optional operands lowercase and its required ones bare
-        // (`basename string [suffix]`), and bare lowercase is deliberately not
-        // matched below — so accepting `[suffix]` here would yield a contract
-        // holding only the optional half of the tool's arguments, which reads as
-        // "this is all it takes" and is worse than reporting none. An all-caps
-        // placeholder is GNU's explicit convention and carries no such doubt.
         let is_placeholder_caps = !name.chars().any(|ch| ch.is_ascii_lowercase());
         if !is_placeholder_caps && !variadic {
             continue;
         }
-
         if found.iter().any(|(_, arg)| arg.name == name) {
             continue;
         }
-        found.push((
-            whole.start(),
-            ScannedArg {
-                name,
-                description: String::new(),
-                value_type: ValueType::String,
-                // Bracketed by construction, hence optional.
-                required: false,
-                variadic,
-                before_flags: false,
-            },
-        ));
+        // Bracketed by construction, hence optional.
+        found.push((whole.start(), scanned_operand(name, false, variadic)));
     }
+}
 
+/// Bare operands: `file`, `FILE...`.
+fn collect_bare_operands(
+    line: &str,
+    ranges: &OptionValueRanges,
+    found: &mut Vec<(usize, ScannedArg)>,
+) {
     for cap in BARE_OPERAND_RE.captures_iter(line) {
         // INVARIANT: groups 0 and 1 are present on every capture of this pattern.
         let (Some(whole), Some(name_match)) = (cap.get(0), cap.get(1)) else {
             continue;
         };
         let name = normalize_name(name_match.as_str());
-        if inside_option_group(line, name_match.start()) || is_option_group_word(&name) {
-            continue;
-        }
-        let is_option_value = option_value_ranges
-            .iter()
-            .any(|&(start, end)| whole.start() >= start && whole.start() < end);
-        if is_option_value {
+        if belongs_to_an_option(line, name_match.start(), &name) || ranges.covers(whole.start()) {
             continue;
         }
         // An all-caps word inside brackets was already taken by the bracketed
@@ -237,16 +254,34 @@ pub fn extract_args_from_usage_line(line: &str) -> Vec<ScannedArg> {
         }
         found.push((
             whole.start(),
-            ScannedArg {
+            scanned_operand(
                 name,
-                description: String::new(),
-                value_type: ValueType::String,
-                required: bracket_depth_before(line, whole.start()) <= 0,
-                variadic: cap.get(2).is_some(),
-                before_flags: false,
-            },
+                bracket_depth_before(line, whole.start()) <= 0,
+                cap.get(2).is_some(),
+            ),
         ));
     }
+}
+
+/// Extract `<name>` positional-argument placeholders from a single usage line.
+///
+/// Three passes over the same line, one per placeholder spelling, each skipping
+/// anything the earlier passes already claimed. Results are collected with their
+/// offsets and sorted at the end because order is the argument's meaning:
+/// `<jq filter> [file...]` and `[file...] <jq filter>` are different calls.
+///
+/// Placeholders belonging to an option's value are skipped throughout — see
+/// [`OptionValueRanges`] — including repeatable ones such as
+/// `[--include=<path>...]`. A placeholder inside an unclosed `[...]` group is
+/// marked optional, e.g. the trailing `<args>` in
+/// `git [--version] <command> [<args>]`.
+pub fn extract_args_from_usage_line(line: &str) -> Vec<ScannedArg> {
+    let ranges = OptionValueRanges::of(line);
+    let mut found: Vec<(usize, ScannedArg)> = Vec::new();
+
+    collect_angle_placeholders(line, &ranges, &mut found);
+    collect_bracketed_operands(line, &mut found);
+    collect_bare_operands(line, &ranges, &mut found);
 
     found.sort_by_key(|(offset, _)| *offset);
     found.into_iter().map(|(_, arg)| arg).collect()
@@ -330,6 +365,34 @@ mod tests {
     fn test_skips_variadic_short_option_value_placeholder() {
         let args = extract_args_from_usage_line("Usage: tool [-I <dir>...]");
         assert!(args.is_empty(), "expected no positional args, got {args:?}");
+    }
+
+    #[test]
+    fn test_skips_an_unbracketed_option_value_placeholder() {
+        // Every other option-value test brackets the option, and a bracketed
+        // one is caught by `inside_option_group` rather than by the
+        // option-value ranges. Removing the range check therefore broke nothing
+        // in this suite while still reporting `file` as an operand of the
+        // command — so `{"file": "x", "input": "y"}` rendered `tool x y`, the
+        // option's value emitted bare with the option itself gone.
+        let args = extract_args_from_usage_line("Usage: tool --output=<file> <input>");
+        assert_eq!(
+            args.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+            ["input"],
+            "the option's value is not an operand: {args:?}"
+        );
+    }
+
+    #[test]
+    fn test_skips_an_unbracketed_option_value_written_with_a_space() {
+        // `-m, --max-time <seconds>` is how help text usually spells it, and
+        // the separated form is the one apexe renders (see `build_argv`).
+        let args = extract_args_from_usage_line("Usage: tool --output <file> <input>");
+        assert_eq!(
+            args.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+            ["input"],
+            "the option's value is not an operand: {args:?}"
+        );
     }
 
     #[test]

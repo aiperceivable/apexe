@@ -145,6 +145,99 @@ impl CliModule {
         args.extend(rendered.after_subcommand);
         args
     }
+
+    /// Record one completed or abandoned run in the governance audit trail.
+    ///
+    /// F5 §4.3. No raw argument values are persisted — the record names the
+    /// call, not what was in it — and `trace_id` is what joins it to the ACL
+    /// decision that permitted it.
+    fn audit_execution(
+        &self,
+        ctx: &Context<Value>,
+        status: &str,
+        exit_code: i32,
+        duration_ms: u64,
+    ) {
+        if let Some(ref audit) = self.audit {
+            audit.log_execution(
+                &self.module_id,
+                &ctx.trace_id,
+                ctx.identity.as_ref().map(|id| id.id()),
+                status,
+                exit_code,
+                duration_ms,
+            );
+        }
+    }
+
+    /// Turn a subprocess failure into the error the caller sees, auditing it.
+    ///
+    /// Only a timeout is marked retryable, and only when the module is
+    /// annotated idempotent: a killed non-idempotent command (e.g. `rm -rf`)
+    /// may have partially applied its side effect, so blindly retrying it
+    /// (e.g. via `RetryMiddleware`) would be unsafe.
+    ///
+    /// A killed or failed attempt — timeout, spawn failure, output overflow —
+    /// must still appear in the audit trail; the `rm -rf`-that-timed-out case
+    /// is exactly what an operator needs to see. The exit code is unknown, so
+    /// it is recorded as -1.
+    fn abandon_run(
+        &self,
+        error: ModuleError,
+        ctx: &Context<Value>,
+        elapsed_ms: u64,
+    ) -> ModuleError {
+        self.audit_execution(ctx, "error", -1, elapsed_ms);
+        if error.code == ErrorCode::ModuleTimeout {
+            error.with_retryable(self.annotations.idempotent)
+        } else {
+            error
+        }
+    }
+
+    /// Assemble the result object a completed run returns.
+    ///
+    /// `json_output` is added only when the module declares a JSON flag and the
+    /// output parses; `ai_guidance` only on a non-zero exit, where a caller has
+    /// something to self-correct from.
+    fn build_result(
+        &self,
+        output: &executor::SubprocessOutput,
+        ctx: &Context<Value>,
+        duration_ms: u64,
+    ) -> serde_json::Map<String, Value> {
+        let mut result = serde_json::Map::new();
+        result.insert("stdout".into(), Value::String(output.stdout.clone()));
+        result.insert("stderr".into(), Value::String(output.stderr.clone()));
+        result.insert("exit_code".into(), Value::Number(output.exit_code.into()));
+        if output.stdout_truncated {
+            result.insert("stdout_truncated".into(), Value::Bool(true));
+        }
+        if output.stderr_truncated {
+            result.insert("stderr_truncated".into(), Value::Bool(true));
+        }
+
+        if self.json_flag.is_some() && !output.stdout.trim().is_empty() {
+            if let Ok(parsed) = serde_json::from_str::<Value>(&output.stdout) {
+                result.insert("json_output".into(), parsed);
+            }
+        }
+
+        // Execution metadata, for observability.
+        result.insert("trace_id".into(), Value::String(ctx.trace_id.clone()));
+        result.insert("duration_ms".into(), Value::Number(duration_ms.into()));
+
+        if output.exit_code != 0 {
+            let guidance = format!(
+                "Command '{}' exited with code {}. stderr: {}",
+                self.module_id,
+                output.exit_code,
+                output.stderr.chars().take(200).collect::<String>()
+            );
+            result.insert("ai_guidance".into(), Value::String(guidance));
+        }
+        result
+    }
 }
 
 #[async_trait]
@@ -233,11 +326,10 @@ impl Module for CliModule {
         );
 
         let start = std::time::Instant::now();
-
         let user_args = executor::build_argv(kwargs, Some(&self.input_schema))?;
         let args: Vec<String> = self.assemble_arguments(user_args);
 
-        let output = match executor::execute_subprocess(
+        let output = executor::execute_subprocess(
             &self.binary_path,
             &args,
             self.json_flag.as_deref(),
@@ -245,70 +337,10 @@ impl Module for CliModule {
             self.max_output_bytes,
         )
         .await
-        {
-            Ok(output) => output,
-            Err(e) => {
-                // Only mark a timeout retryable when the module is annotated
-                // idempotent: a killed non-idempotent command (e.g. `rm -rf`)
-                // may have partially applied its side effect, so blindly
-                // retrying it (e.g. via RetryMiddleware) would be unsafe.
-                let e = if e.code == ErrorCode::ModuleTimeout {
-                    e.with_retryable(self.annotations.idempotent)
-                } else {
-                    e
-                };
-                // F5 §4.3: a killed/failed attempt (timeout, spawn failure,
-                // output overflow) must still appear in the audit trail — the
-                // rm -rf-that-timed-out case above is exactly what an operator
-                // needs to see. Exit code is unknown, so record -1.
-                if let Some(ref audit) = self.audit {
-                    let duration_ms = start.elapsed().as_millis() as u64;
-                    audit.log_execution(
-                        &self.module_id,
-                        &ctx.trace_id,
-                        ctx.identity.as_ref().map(|id| id.id()),
-                        "error",
-                        -1,
-                        duration_ms,
-                    );
-                }
-                return Err(e);
-            }
-        };
+        .map_err(|e| self.abandon_run(e, ctx, start.elapsed().as_millis() as u64))?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
-
-        let mut result = serde_json::Map::new();
-        result.insert("stdout".into(), Value::String(output.stdout.clone()));
-        result.insert("stderr".into(), Value::String(output.stderr.clone()));
-        result.insert("exit_code".into(), Value::Number(output.exit_code.into()));
-        if output.stdout_truncated {
-            result.insert("stdout_truncated".into(), Value::Bool(true));
-        }
-        if output.stderr_truncated {
-            result.insert("stderr_truncated".into(), Value::Bool(true));
-        }
-
-        if self.json_flag.is_some() && !output.stdout.trim().is_empty() {
-            if let Ok(parsed) = serde_json::from_str::<Value>(&output.stdout) {
-                result.insert("json_output".into(), parsed);
-            }
-        }
-
-        // Attach execution metadata for observability
-        result.insert("trace_id".into(), Value::String(ctx.trace_id.clone()));
-        result.insert("duration_ms".into(), Value::Number(duration_ms.into()));
-
-        // Generate ai_guidance on non-zero exit for AI self-correction
-        if output.exit_code != 0 {
-            let guidance = format!(
-                "Command '{}' exited with code {}. stderr: {}",
-                self.module_id,
-                output.exit_code,
-                output.stderr.chars().take(200).collect::<String>()
-            );
-            result.insert("ai_guidance".into(), Value::String(guidance));
-        }
+        let result = self.build_result(&output, ctx, duration_ms);
 
         tracing::info!(
             module_id = %self.module_id,
@@ -318,25 +350,12 @@ impl Module for CliModule {
             "CLI module execution completed"
         );
 
-        // F5 §4.3: record the execution in the governance audit trail. No raw
-        // argument values are persisted — the record names the call, not what
-        // was in it — and `trace_id` is what joins it to the ACL decision that
-        // permitted it.
-        if let Some(ref audit) = self.audit {
-            let status = if output.exit_code == 0 {
-                "success"
-            } else {
-                "error"
-            };
-            audit.log_execution(
-                &self.module_id,
-                &ctx.trace_id,
-                ctx.identity.as_ref().map(|id| id.id()),
-                status,
-                output.exit_code,
-                duration_ms,
-            );
-        }
+        let status = if output.exit_code == 0 {
+            "success"
+        } else {
+            "error"
+        };
+        self.audit_execution(ctx, status, output.exit_code, duration_ms);
 
         Ok(Value::Object(result))
     }

@@ -514,11 +514,175 @@ pub fn build_arguments(
 /// rather than refused; see [`validate_argument_value`] and
 /// [`operands_precede_flags`].
 ///
-/// **Known debt:** this is over CLAUDE.md's 50-line ceiling. It is one
-/// sequential pass over the four argument groups, and the ordering between
-/// them *is* the contract — splitting it into four helpers would put the
-/// invariant that matters (what comes after what) in the caller, where no
-/// single function states it. Left whole deliberately.
+/// The five token groups a call's arguments sort into, before ordering.
+///
+/// Split out from [`build_argv`] so that function is the ordering rule and
+/// nothing else: which group a token lands in is a per-argument decision, and
+/// stating it under 90 lines of value rendering hid the one invariant that
+/// actually matters — what comes after what.
+#[derive(Debug, Default)]
+struct ArgvGroups {
+    /// Tokens for [`RenderedArgv::before_subcommand`]; see [`FlagPlacement`].
+    before_subcommand: Vec<String>,
+    /// Flags marked [`FlagPlacement::BeforeOperands`].
+    leading_flags: Vec<String>,
+    /// Flags in the ordinary post-operand position.
+    trailing_flags: Vec<String>,
+    /// `(operand index, tokens)` for operands preceding the flags. Sorted
+    /// before use, so operands land in the order the usage line declared
+    /// regardless of JSON key order.
+    leading_operands: Vec<(u64, Vec<String>)>,
+    /// `(operand index, tokens)` for operands following the flags.
+    trailing_operands: Vec<(u64, Vec<String>)>,
+    /// Whether any rendered value begins with `-`, and so needs the `--`
+    /// separator's protection. Emitting `--` unconditionally would be legal for
+    /// a tool that declares the marker, but it would rewrite every invocation
+    /// of that tool for the sake of the few that need it.
+    saw_dash_leading_value: bool,
+}
+
+impl ArgvGroups {
+    /// Append `tokens` to the group `form` names.
+    fn extend(&mut self, form: &ArgForm, tokens: Vec<String>) {
+        match *form {
+            ArgForm::Flag(_, FlagPlacement::BeforeSubcommand) => {
+                self.before_subcommand.extend(tokens);
+            }
+            ArgForm::Flag(_, FlagPlacement::BeforeOperands) => self.leading_flags.extend(tokens),
+            ArgForm::Flag(_, FlagPlacement::Default) => self.trailing_flags.extend(tokens),
+            ArgForm::Positional(index, OperandPlacement::BeforeFlags) => {
+                self.leading_operands.push((index, tokens));
+            }
+            ArgForm::Positional(index, OperandPlacement::AfterFlags) => {
+                self.trailing_operands.push((index, tokens));
+            }
+        }
+    }
+}
+
+/// Render one property's value or values into argv tokens.
+///
+/// `attached` selects the `--flag=value` spelling. An option whose value is
+/// *optional* accepts only that form, so it is the one case `=` is required
+/// for, and `x-apexe-value-optional` marks exactly those options.
+///
+/// Everything else takes two argv entries. `--flag=value` is a GNU convention
+/// rather than a universal one, so the previous premise — that an option with a
+/// required value accepts both spellings — is simply false: `curl` implements
+/// its own parser and accepts NO long option in `=` form, answering
+/// `--max-time=1` with "option --max-time=1: is unknown". That made 134 of
+/// cli.curl's 258 properties unusable. The separated form is the one the help
+/// text shows (`-m, --max-time <seconds>`) and GNU accepts it as well as `=`.
+///
+/// Short options were never attachable — `-I=PATTERN` would pass a value
+/// beginning with `=` — so they take the separated form here too.
+///
+/// Every value is validated before it is emitted; `saw_dash` is set when one
+/// begins with `-` under a schema that declares [`END_OF_OPTIONS`].
+#[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+fn render_property_tokens(
+    key: &str,
+    value: &Value,
+    form: &ArgForm,
+    attached: bool,
+    honours_separator: bool,
+    saw_dash: &mut bool,
+) -> Result<Vec<String>, ModuleError> {
+    let (items, indexed): (Vec<&Value>, bool) = match value {
+        Value::Array(items) => (items.iter().collect(), true),
+        other => (vec![other], false),
+    };
+
+    let mut tokens: Vec<String> = Vec::new();
+    for (position, item) in items.into_iter().enumerate() {
+        let text = json_value_to_string(item);
+        let location = ValueLocation {
+            param_name: key,
+            index: indexed.then_some(position),
+        };
+        validate_argument_value(location, &text, item.is_number(), honours_separator)?;
+        if honours_separator && text.starts_with('-') {
+            *saw_dash = true;
+        }
+        match *form {
+            ArgForm::Flag(ref literal, _) if attached && literal.starts_with("--") => {
+                tokens.push(format!("{literal}={text}"));
+            }
+            ArgForm::Flag(ref literal, _) => {
+                tokens.push(literal.clone());
+                tokens.push(text);
+            }
+            ArgForm::Positional(..) => tokens.push(text),
+        }
+    }
+    Ok(tokens)
+}
+
+/// Sort each argument into its token group, rendering values along the way.
+///
+/// A bare operand cannot carry a boolean: there is no token to emit for `true`
+/// and no way to express `false`. Skipping is the only coherent reading, and
+/// matches how `false` is treated for flags.
+#[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+fn collect_argv_groups(
+    kwargs: &serde_json::Map<String, Value>,
+    input_schema: Option<&Value>,
+    honours_separator: bool,
+) -> Result<ArgvGroups, ModuleError> {
+    let mut groups = ArgvGroups::default();
+
+    for (key, value) in kwargs {
+        let form = arg_form(input_schema, key);
+
+        if let Value::Bool(enabled) = value {
+            if let ArgForm::Flag(ref literal, _) = form {
+                if *enabled {
+                    reject_bare_flag_for_value_option(input_schema, key, literal)?;
+                    groups.extend(&form, vec![literal.clone()]);
+                }
+            }
+            continue;
+        }
+        if value.is_null() {
+            continue;
+        }
+
+        let tokens = render_property_tokens(
+            key,
+            value,
+            &form,
+            value_must_be_attached(input_schema, key),
+            honours_separator,
+            &mut groups.saw_dash_leading_value,
+        )?;
+        groups.extend(&form, tokens);
+    }
+
+    groups.leading_operands.sort_by_key(|(index, _)| *index);
+    groups.trailing_operands.sort_by_key(|(index, _)| *index);
+    Ok(groups)
+}
+
+/// Whether this call needs a `--` separator emitted at all.
+///
+/// In an operands-first grammar it is the first *operand* that stops the tool
+/// reading options, so a call that renders none leaves the trailing tokens
+/// exposed to the option parser even though nothing in it begins with a dash:
+/// `find -f dir -name '*.txt'` is "illegal option -- n", while
+/// `find -f dir -- -name '*.txt'` works. This is reachable precisely because
+/// `-f` supplies the paths in place of the operand, which is the case the
+/// operand's own description points at.
+fn needs_end_of_options(
+    groups: &ArgvGroups,
+    honours_separator: bool,
+    separator_precedes_operands: bool,
+) -> bool {
+    let nothing_stops_option_parsing = separator_precedes_operands
+        && groups.leading_operands.is_empty()
+        && !(groups.trailing_flags.is_empty() && groups.trailing_operands.is_empty());
+    honours_separator && (groups.saw_dash_leading_value || nothing_stops_option_parsing)
+}
+
 #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
 pub fn build_argv(
     kwargs: &serde_json::Map<String, Value>,
@@ -527,139 +691,38 @@ pub fn build_argv(
     reject_conflicting_flags(kwargs, input_schema)?;
 
     let honours_separator = honours_end_of_options(input_schema);
-    // Set as soon as a value that needs the separator's protection is rendered.
-    // Emitting `--` unconditionally would be legal for a tool that declares the
-    // marker, but it would rewrite every invocation of that tool for the sake
-    // of the few that need it.
-    let mut saw_dash_leading_value = false;
-
-    let mut before_subcommand: Vec<String> = Vec::new();
-    let mut leading_flags: Vec<String> = Vec::new();
-    let mut trailing_flags: Vec<String> = Vec::new();
-    // (index, values) -- each list is sorted before being appended, so operands
-    // land in the order the usage line declared regardless of JSON key order.
-    let mut leading_operands: Vec<(u64, Vec<String>)> = Vec::new();
-    let mut trailing_operands: Vec<(u64, Vec<String>)> = Vec::new();
-
-    for (key, value) in kwargs {
-        let form = arg_form(input_schema, key);
-
-        // A bare operand cannot carry a boolean: there is no token to emit for
-        // `true` and no way to express `false`. Skipping is the only coherent
-        // reading, and matches how `false` is treated for flags.
-        if let Value::Bool(enabled) = value {
-            if let ArgForm::Flag(ref literal, placement) = form {
-                if *enabled {
-                    reject_bare_flag_for_value_option(input_schema, key, literal)?;
-                    match placement {
-                        FlagPlacement::BeforeSubcommand => {
-                            before_subcommand.push(literal.clone());
-                        }
-                        FlagPlacement::BeforeOperands => leading_flags.push(literal.clone()),
-                        FlagPlacement::Default => trailing_flags.push(literal.clone()),
-                    }
-                }
-            }
-            continue;
-        }
-
-        if value.is_null() {
-            continue;
-        }
-
-        let attached = value_must_be_attached(input_schema, key);
-        let (items, indexed): (Vec<&Value>, bool) = match value {
-            Value::Array(items) => (items.iter().collect(), true),
-            other => (vec![other], false),
-        };
-
-        let mut rendered: Vec<String> = Vec::new();
-        for (position, item) in items.into_iter().enumerate() {
-            let text = json_value_to_string(item);
-            let location = ValueLocation {
-                param_name: key,
-                index: indexed.then_some(position),
-            };
-            validate_argument_value(location, &text, item.is_number(), honours_separator)?;
-            if honours_separator && text.starts_with('-') {
-                saw_dash_leading_value = true;
-            }
-            match form {
-                // An option whose value is *optional* accepts only the attached
-                // spelling, so it is the one case `=` is required for, and
-                // `x-apexe-value-optional` marks exactly those options.
-                //
-                // Everything else takes two argv entries. `--flag=value` is a
-                // GNU convention rather than a universal one, so the previous
-                // premise -- that an option with a required value accepts both
-                // spellings -- is simply false: `curl` implements its own
-                // parser and accepts NO long option in `=` form, answering
-                // `--max-time=1` with "option --max-time=1: is unknown". That
-                // made 134 of cli.curl's 258 properties unusable. The separated
-                // form is the one the help text shows (`-m, --max-time
-                // <seconds>`) and GNU accepts it as well as `=`.
-                //
-                // Short options were never attachable -- `-I=PATTERN` would
-                // pass a value beginning with `=` -- so they fall through here
-                // unchanged.
-                ArgForm::Flag(ref literal, _) if attached && literal.starts_with("--") => {
-                    rendered.push(format!("{literal}={text}"));
-                }
-                ArgForm::Flag(ref literal, _) => {
-                    rendered.push(literal.clone());
-                    rendered.push(text);
-                }
-                ArgForm::Positional(..) => rendered.push(text),
-            }
-        }
-
-        match form {
-            ArgForm::Flag(_, FlagPlacement::BeforeSubcommand) => {
-                before_subcommand.extend(rendered);
-            }
-            ArgForm::Flag(_, FlagPlacement::BeforeOperands) => leading_flags.extend(rendered),
-            ArgForm::Flag(_, FlagPlacement::Default) => trailing_flags.extend(rendered),
-            ArgForm::Positional(index, OperandPlacement::BeforeFlags) => {
-                leading_operands.push((index, rendered));
-            }
-            ArgForm::Positional(index, OperandPlacement::AfterFlags) => {
-                trailing_operands.push((index, rendered));
-            }
-        }
-    }
-
-    leading_operands.sort_by_key(|(index, _)| *index);
-    trailing_operands.sort_by_key(|(index, _)| *index);
+    let groups = collect_argv_groups(kwargs, input_schema, honours_separator)?;
 
     // The separator marks where the tool stops reading options, which is ahead
     // of whichever operand group its grammar puts first.
     let separator_precedes_operands = operands_precede_flags(input_schema);
-
-    // In an operands-first grammar it is the first *operand* that stops the
-    // tool reading options, so a call that renders none leaves the trailing
-    // tokens exposed to the option parser even though nothing in it begins
-    // with a dash: `find -f dir -name '*.txt'` is "illegal option -- n", while
-    // `find -f dir -- -name '*.txt'` works. This is reachable precisely because
-    // `-f` supplies the paths in place of the operand, which is the case the
-    // operand's own description points at.
-    let nothing_stops_option_parsing = separator_precedes_operands
-        && leading_operands.is_empty()
-        && !(trailing_flags.is_empty() && trailing_operands.is_empty());
     let needs_separator =
-        honours_separator && (saw_dash_leading_value || nothing_stops_option_parsing);
+        needs_end_of_options(&groups, honours_separator, separator_precedes_operands);
 
-    let mut args: Vec<String> = leading_flags;
+    // This ordering is the contract; everything above only decides which group
+    // a token belongs to.
+    let mut args: Vec<String> = groups.leading_flags;
     if needs_separator && separator_precedes_operands {
         args.push(END_OF_OPTIONS.to_string());
     }
-    args.extend(leading_operands.into_iter().flat_map(|(_, values)| values));
-    args.extend(trailing_flags);
+    args.extend(
+        groups
+            .leading_operands
+            .into_iter()
+            .flat_map(|(_, values)| values),
+    );
+    args.extend(groups.trailing_flags);
     if needs_separator && !separator_precedes_operands {
         args.push(END_OF_OPTIONS.to_string());
     }
-    args.extend(trailing_operands.into_iter().flat_map(|(_, values)| values));
+    args.extend(
+        groups
+            .trailing_operands
+            .into_iter()
+            .flat_map(|(_, values)| values),
+    );
     Ok(RenderedArgv {
-        before_subcommand,
+        before_subcommand: groups.before_subcommand,
         after_subcommand: args,
     })
 }
