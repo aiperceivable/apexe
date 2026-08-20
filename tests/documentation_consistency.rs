@@ -439,3 +439,41 @@ fn test_every_dependency_table_states_the_required_version() {
         );
     }
 }
+
+/// The manual's account of an A2A denial must match what apcore-a2a maps.
+///
+/// §9.1 tells the reader that an ACL denial reaches an A2A caller as `-32001
+/// Task not found` — a claim about upstream, not about apexe, and therefore
+/// one that can silently become false on an `apcore-a2a` bump. The advice that
+/// depends on it ("check `audit.jsonl`, not the response") would then send an
+/// operator to the wrong place, so the claim is anchored to the mapper itself.
+///
+/// If this fails because upstream started reporting the real reason, that is
+/// good news: delete the caveat from §9.1 rather than restoring the mapping.
+#[test]
+fn test_user_manual_matches_the_a2a_denial_apcore_actually_maps() {
+    let denial = apcore::ModuleError::new(
+        apcore::ErrorCode::ACLDenied,
+        "Access denied: caller 'None' cannot access module 'cli.cp'".to_string(),
+    );
+    let mapped = apcore_a2a::ErrorMapper::to_jsonrpc_error(&denial);
+
+    let manual = include_str!("../docs/user-manual.md");
+    assert!(
+        manual.contains(&format!("`-{}`", -mapped.code)),
+        "docs/user-manual.md must state the JSON-RPC code {} that apcore-a2a maps an ACL \
+         denial to",
+        mapped.code
+    );
+    assert!(
+        manual.contains(&format!("`{}`", mapped.message)),
+        "docs/user-manual.md must quote the message apcore-a2a returns: {:?}",
+        mapped.message
+    );
+    assert!(
+        !mapped.message.contains("cli.cp"),
+        "the caveat exists because the reason is withheld; upstream now leaks the module \
+         name, so §9.1 needs rewriting: {:?}",
+        mapped.message
+    );
+}

@@ -462,6 +462,27 @@ Rule ordering is **first match wins**, not most-specific-wins: an
 `allow` rule for `cli.*` placed before a `deny` rule for `cli.rm` lets `cli.rm`
 through. Put the narrow denials above the broad allows.
 
+**A denial reads very differently on the two transports.** Over MCP the caller
+gets the real reason:
+
+```
+[ACLDenied] Access denied: caller 'None' cannot access module 'cli.cp'
+```
+
+Over A2A it gets a JSON-RPC `-32001` with the fixed message `Task not found`,
+and the task lands in `TASK_STATE_FAILED`. That mapping is apcore-a2a's, shared
+with its Python and TypeScript siblings and locked by an upstream test: it
+withholds the reason so an unauthorized caller cannot enumerate what exists,
+the same reasoning that returns HTTP 404 instead of 403.
+
+Know it before you debug an ACL over A2A. An agent reading `Task not found`
+concludes its *task id* was wrong — the one thing that was fine — and an
+operator watching it concludes the ACL is broken and removes it. The denial is
+working; only the message is uninformative. `audit.jsonl` records the real
+decision on both transports (§9.2), with `decision: deny`, the matched rule
+index and the same `trace_id` the caller saw, so check there rather than trying
+to read the outcome off the A2A response.
+
 ### 9.2 Audit Trail
 
 `~/.apexe/audit.jsonl` records both the calls that ran and the calls that were
