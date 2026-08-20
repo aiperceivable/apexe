@@ -636,6 +636,15 @@ defaults:
 | **HTTP/SSE on `127.0.0.1`** | bearer token, **generated and written to stderr at startup** | Any local process can reach the port, including a page in your browser. You should not have to manage a secret for a local dev server. |
 | **HTTP/SSE on any other host** | authentication required | apexe wraps arbitrary local binaries. An unauthenticated non-loopback bind is a remote-execution entry point for every executable on the host. |
 
+> **apexe terminates no TLS.** On a non-loopback bind the bearer token or JWT
+> travels in cleartext, and anything on the path can replay it to reach the same
+> remote-execution surface the credential exists to close. apexe warns at
+> startup — both through `tracing` and in the token notice on stderr, since the
+> two can be filtered differently — but it cannot refuse: apexe behind a
+> TLS-terminating reverse proxy is the correct deployment and looks identical
+> from inside the process. Put one in front, or bind to `127.0.0.1` and reach it
+> through an SSH tunnel.
+
 ```bash
 apexe serve --transport http                              # token generated + printed
 apexe serve --transport http --auth-token "$MY_TOKEN"     # or APEXE_AUTH_TOKEN

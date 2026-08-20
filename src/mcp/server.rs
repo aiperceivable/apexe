@@ -463,12 +463,27 @@ impl McpServerBuilder {
     }
 
     /// The startup notice for a generated bearer token.
+    ///
+    /// On a non-loopback bind the notice carries the cleartext caveat itself,
+    /// rather than leaving it to the `tracing::warn!` that `resolve_auth`
+    /// emits. This notice is the line an operator copies, and it is on stderr
+    /// precisely because `tracing` can be redirected or dropped by log level —
+    /// at `--log-level error` the operator would read "connect to http://..."
+    /// with the warning nowhere in sight.
     fn generated_token_notice(token: &str, host: &str, port: u16) -> String {
+        let caveat = if crate::auth::is_loopback_host(host) {
+            String::new()
+        } else {
+            "\nWARNING: this is a non-loopback bind serving plain HTTP, so that token travels \
+             in cleartext. Put apexe behind a TLS-terminating reverse proxy before using it \
+             across a network."
+                .to_string()
+        };
         format!(
             "Bearer token authentication enabled. Connect to http://{host}:{port} with header:\n\
              \x20   Authorization: Bearer {token}\n\
              Pass --auth-token or set APEXE_AUTH_TOKEN to pin your own value, or --auth none to \
-             disable."
+             disable.{caveat}"
         )
     }
 
@@ -886,5 +901,29 @@ mod tests {
     fn test_announce_auth_writes_nothing_when_auth_is_disabled() {
         let auth = resolve_auth("stdio", "127.0.0.1", &AuthOptions::default()).unwrap();
         assert!(announce(&auth).is_empty());
+    }
+
+    #[test]
+    fn test_generated_token_notice_warns_that_a_public_bind_is_cleartext() {
+        // `resolve_auth` warns through `tracing`, which the operator can
+        // redirect or filter out by level. This notice is the line they
+        // copy — at `--log-level error` it would otherwise read "connect to
+        // http://..." with nothing saying the token crosses the wire in the
+        // clear, which is exactly the gap that makes the auth default moot.
+        let notice = McpServerBuilder::generated_token_notice("deadbeef", "0.0.0.0", 9000);
+        assert!(notice.contains("cleartext"), "{notice}");
+        assert!(notice.contains("reverse proxy"), "{notice}");
+    }
+
+    #[test]
+    fn test_generated_token_notice_stays_quiet_on_loopback() {
+        // A local dev server is the case the generated token exists to make
+        // painless; its traffic reaches no network interface.
+        let notice = McpServerBuilder::generated_token_notice("deadbeef", "127.0.0.1", 9000);
+        assert!(!notice.contains("cleartext"), "{notice}");
+        assert!(
+            notice.contains("Authorization: Bearer deadbeef"),
+            "{notice}"
+        );
     }
 }

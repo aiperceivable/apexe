@@ -176,11 +176,39 @@ pub fn resolve_auth(
     }
 
     let loopback = is_loopback_host(host);
-    match opts.mode.unwrap_or(AuthMode::Token) {
+    let resolved = match opts.mode.unwrap_or(AuthMode::Token) {
         AuthMode::None => resolve_none(host, loopback, opts.allow_unauthenticated_bind),
         AuthMode::Token => Ok(resolve_token(opts.token.clone())),
         AuthMode::Jwt => resolve_jwt(opts.jwt_secret.as_deref()),
+    }?;
+    warn_if_credential_crosses_the_network(&resolved, host, loopback);
+    Ok(resolved)
+}
+
+/// Warn that a credential on a non-loopback bind travels in cleartext.
+///
+/// apexe serves plain HTTP — apcore-mcp terminates no TLS, and neither does
+/// apexe — so on a non-loopback bind the bearer token or JWT is readable by
+/// anything on the path. Whoever reads it holds exactly the remote-execution
+/// entry point the credential was added to close, which makes this the one
+/// failure that silently undoes the whole of the auth default.
+///
+/// It is a warning rather than a refusal because the standard deployment is
+/// correct and undetectable from here: apexe behind a TLS-terminating reverse
+/// proxy sees a plain non-loopback bind and nothing distinguishes it from a
+/// naked one. Refusing would break the right answer to force the wrong one.
+///
+/// Loopback is exempt because the traffic never reaches a network interface.
+fn warn_if_credential_crosses_the_network(resolved: &ResolvedAuth, host: &str, loopback: bool) {
+    if loopback || !resolved.require_auth() {
+        return;
     }
+    tracing::warn!(
+        host,
+        "This bind serves plain HTTP, so the credential it requires is sent in cleartext and \
+         anything on the path can replay it. Put apexe behind a TLS-terminating reverse proxy, \
+         or bind to 127.0.0.1 and reach it through a tunnel."
+    );
 }
 
 /// `--auth none`: allowed on loopback with a warning, refused elsewhere unless
@@ -322,6 +350,7 @@ impl Authenticator for StaticTokenAuthenticator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     fn bearer(value: &str) -> HashMap<String, String> {
         HashMap::from([("authorization".to_string(), format!("Bearer {value}"))])
@@ -381,6 +410,111 @@ mod tests {
             }
             _ => panic!("expected the supplied token"),
         }
+    }
+
+    /// Collect the `tracing` output `run` emits on this thread.
+    ///
+    /// The subscriber is thread-local (`with_default`), so tests asserting on
+    /// warnings stay independent under the parallel test harness.
+    fn capture_warnings(run: impl FnOnce()) -> String {
+        #[derive(Clone)]
+        struct Buffer(Arc<Mutex<Vec<u8>>>);
+
+        impl std::io::Write for Buffer {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("test buffer").extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Buffer {
+            type Writer = Self;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let buffer = Buffer(Arc::new(Mutex::new(Vec::new())));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buffer.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, run);
+        let bytes = buffer.0.lock().expect("test buffer").clone();
+        String::from_utf8(bytes).expect("tracing output is UTF-8")
+    }
+
+    /// A credential on a non-loopback bind is the one failure that silently
+    /// undoes the whole auth default: apexe terminates no TLS, so the token
+    /// that guards a remote-execution surface is readable on the wire, and
+    /// whoever reads it holds the surface.
+    #[test]
+    fn test_resolve_auth_warns_that_a_remote_credential_is_sent_in_cleartext() {
+        let warnings = capture_warnings(|| {
+            resolve_auth("http", "0.0.0.0", &AuthOptions::default())
+                .expect("a generated token needs no acknowledgement");
+        });
+        assert!(
+            warnings.contains("cleartext"),
+            "a token on a non-loopback bind must warn about the wire: {warnings}"
+        );
+        assert!(
+            warnings.contains("reverse proxy"),
+            "the warning must name the remedy: {warnings}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_auth_warns_for_jwt_on_a_non_loopback_bind_too() {
+        // The concern is the transport, not which credential format rides it.
+        let opts = AuthOptions {
+            mode: Some(AuthMode::Jwt),
+            jwt_secret: Some("s3cret".to_string()),
+            ..AuthOptions::default()
+        };
+        let warnings = capture_warnings(|| {
+            resolve_auth("http", "0.0.0.0", &opts).expect("a supplied secret is enough");
+        });
+        assert!(
+            warnings.contains("cleartext"),
+            "JWT on a non-loopback bind must warn too: {warnings}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_auth_stays_quiet_about_the_wire_on_loopback() {
+        // Loopback traffic never reaches a network interface, so the warning
+        // would be noise on every local dev server — the case the generated
+        // token exists to make painless.
+        let warnings = capture_warnings(|| {
+            resolve_auth("http", "127.0.0.1", &AuthOptions::default())
+                .expect("loopback defaults to a generated token");
+        });
+        assert!(
+            !warnings.contains("cleartext"),
+            "loopback must not warn about the wire: {warnings}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_auth_does_not_claim_cleartext_when_no_credential_is_required() {
+        // `--auth none` already refuses or warns on its own terms; adding a
+        // warning about a credential there would name one that does not exist.
+        let opts = AuthOptions {
+            mode: Some(AuthMode::None),
+            allow_unauthenticated_bind: true,
+            ..AuthOptions::default()
+        };
+        let warnings = capture_warnings(|| {
+            resolve_auth("http", "0.0.0.0", &opts).expect("acknowledged");
+        });
+        assert!(
+            !warnings.contains("cleartext"),
+            "there is no credential to send in cleartext: {warnings}"
+        );
     }
 
     #[test]
