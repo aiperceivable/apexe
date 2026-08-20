@@ -72,7 +72,7 @@ src/
 |-------|---------|-------|
 | `apcore` | 0.27 | Module trait, Registry, ACL, ModuleError, ErrorCode, Context, Config |
 | `apcore-toolkit` | 0.10 | ScannedModule, YAMLWriter, Verifier, ModuleAnnotations, `deduplicate_ids` |
-| `apcore-mcp` | 0.18 | APCoreMCP server (stdio, streamable-http, SSE, Explorer UI) |
+| `apcore-mcp` | 0.18.1 | APCoreMCP server (stdio, streamable-http, SSE, Explorer UI) |
 | `apcore-a2a` | 0.5 | A2A agent server (`async_serve` / `build_app`, `Authenticator`) |
 | `apcore-cli` | 0.10 | `--man` page generation (`build_program_man_page`) |
 

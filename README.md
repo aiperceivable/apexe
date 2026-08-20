@@ -30,7 +30,7 @@ Outside-In CLI-to-Agent Bridge — automatically wraps existing CLI tools into g
 |-------|------|
 | [apcore](https://github.com/aiperceivable/apcore-rust) 0.27 | Module trait, Registry, ACL, ModuleError, Context |
 | [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit-rust) 0.10 | ScannedModule, YAMLWriter, DisplayResolver |
-| [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) 0.18 | MCP server with middleware, auth, Explorer UI |
+| [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) 0.18.1 | MCP server with middleware, auth, Explorer UI |
 | [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust) 0.5 | A2A agent server sharing the same governed `Executor` |
 | [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) 0.10 | `--man` page generation |
 

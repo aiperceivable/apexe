@@ -484,3 +484,77 @@ fn test_man_flag_emits_a_man_page() {
     );
     assert!(man.contains("apexe"), "the page must name the program");
 }
+
+// --------------------------------------------------------------------------
+// Explorer Try-It prefill (issue #38)
+// --------------------------------------------------------------------------
+
+/// The manual's account of the Explorer prefill must match what is served.
+///
+/// §10 tells a reader the Try-It editor emits only the `required` keys, with a
+/// `null` placeholder that `Validate` deliberately refuses. That is
+/// `mcp-embedded-ui`'s behaviour, reached through apcore-mcp — apexe only
+/// serves the page — so it can go stale on a dependency bump with nothing in
+/// this repo noticing. `mcp-embedded-ui` 0.4 filled every property with `""` /
+/// `0` / `false`, which satisfied both `required` and the declared type, so
+/// `Validate` certified an empty call and `Execute` sent it.
+///
+/// Asserted against the page the running server actually returns, not against
+/// a vendored copy: what a reader sees in their browser is what has to match.
+#[test]
+fn test_the_explorer_prefills_only_required_keys() {
+    let port = 8_931;
+    let mut server = std::process::Command::new(env!("CARGO_BIN_EXE_apexe"))
+        .args([
+            "serve",
+            "--transport",
+            "http",
+            "--port",
+            &port.to_string(),
+            "--explorer",
+            "--auth",
+            "none",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("the server binary starts");
+
+    let url = format!("http://127.0.0.1:{port}/explorer");
+    let html = (0..80)
+        .find_map(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::process::Command::new("curl")
+                .args(["-sf", &url])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        })
+        .unwrap_or_default();
+    let _ = server.kill();
+    let _ = server.wait();
+
+    assert!(
+        html.contains("function defaultFromSchema"),
+        "the served page must carry the Try-It prefill"
+    );
+    assert!(
+        html.contains("var required = schema.required;"),
+        "the prefill must read `required` rather than every property"
+    );
+    // Each of these fabricates a value that satisfies the declared type, which
+    // is what let `Validate` greenlight an untouched prefill.
+    for fabricated in [
+        "result[key] = '';",
+        "result[key] = 0;",
+        "result[key] = false;",
+        "result[key] = [];",
+        "result[key] = {};",
+    ] {
+        assert!(
+            !html.contains(fabricated),
+            "the served prefill fabricates a type-based value again: {fabricated}"
+        );
+    }
+}

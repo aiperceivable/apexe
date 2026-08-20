@@ -18,7 +18,7 @@ async-trait = "0.1"
 apcore = "0.27"
 apcore-a2a = "0.5"
 apcore-cli = "0.10"
-apcore-mcp = "0.18"
+apcore-mcp = "0.18.1"
 apcore-toolkit = { version = "0.10", default-features = false }
 # RFC 3339 timestamps for the governance audit records apexe writes itself
 # (see `governance::audit`). Already in the graph via apcore; declared here so

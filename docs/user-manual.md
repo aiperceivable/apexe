@@ -820,6 +820,20 @@ apexe serve --transport http --port 8000 --explorer
 
 Provides a browser-based interface to explore available tools, view schemas, and test invocations.
 
+> **The Try-It editor prefills only what a call needs.** It emits exactly the
+> keys in the tool's `required` list — each with its declared `default` when the
+> schema has one, and `null` otherwise — and omits every optional property. For
+> `cli.curl`, whose contract has 257 properties, that is `{"url": null}` rather
+> than 259 lines of blanks.
+>
+> A `null` placeholder is deliberately **not** valid against a typed property,
+> so `Validate` refuses an untouched prefill and names the field you still have
+> to fill. That is the point: an earlier version filled every string with `""`
+> and every number with `0`, which satisfied both `required` and the declared
+> types, so `Validate` certified an empty call as correct and `Execute` sent it
+> — the wrapped tool was the first thing to object. Needs apcore-mcp 0.18.1 or
+> later (`mcp-embedded-ui` 0.5).
+
 ### OpenAI Tools Export
 
 Export tool definitions in OpenAI function calling format (programmatic API):
