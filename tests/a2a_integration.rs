@@ -12,6 +12,8 @@ use std::path::Path;
 
 use apcore_toolkit::ScannedModule;
 use apexe::a2a::A2aServerBuilder;
+use apexe::adapter::CliToolConverter;
+use apexe::models::ScannedCLITool;
 use apexe::output::YamlOutput;
 use serde_json::json;
 use tempfile::TempDir;
@@ -234,4 +236,99 @@ async fn test_a2a_filter_that_admits_nothing_leaves_an_empty_registry() {
         result.is_err(),
         "a filter admitting nothing must leave no registered module"
     );
+}
+
+/// Every apexe skill must advertise `application/json` and nothing else.
+///
+/// §11 tells a reader to send a DataPart and to trust the skill's own
+/// `inputModes` rather than the card's agent-level `defaultInputModes`, which
+/// apcore-a2a hardcodes to `["text/plain", "application/json"]` and apexe
+/// cannot narrow. That advice only holds while the per-skill computation stays
+/// correct — it is apcore-a2a's `compute_input_modes`, derived from the schema
+/// root, so an upstream change would make the manual wrong with nothing here
+/// noticing.
+///
+/// The premise is pinned separately by
+/// `test_a_scanned_tool_always_yields_an_object_rooted_schema` below — the
+/// fixture here writes its own schema, so it cannot speak for what
+/// `build_input_schema` produces.
+#[tokio::test]
+async fn test_every_skill_advertises_json_only_input() {
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+
+    let card = A2aServerBuilder::new()
+        .modules_dir(dir.path())
+        .agent_card()
+        .await
+        .expect("agent card should build from bindings");
+
+    let skills = card["skills"].as_array().expect("the card lists skills");
+    assert!(
+        !skills.is_empty(),
+        "the fixture registers one skill: {card}"
+    );
+
+    for skill in skills {
+        let modes: Vec<&str> = skill["inputModes"]
+            .as_array()
+            .expect("every skill declares inputModes")
+            .iter()
+            .filter_map(|m| m.as_str())
+            .collect();
+        assert_eq!(
+            modes,
+            ["application/json"],
+            "an apexe skill takes a JSON object, so prose in a TextPart is not a \
+             mode it can honour: {skill}"
+        );
+    }
+
+    // The agent-level default is upstream's and stays broad. Asserted so the
+    // manual's explanation of *why* the two disagree cannot go stale silently.
+    let default_modes: Vec<&str> = card["defaultInputModes"]
+        .as_array()
+        .expect("the card declares defaultInputModes")
+        .iter()
+        .filter_map(|m| m.as_str())
+        .collect();
+    assert!(
+        default_modes.contains(&"text/plain"),
+        "if upstream narrowed the agent default, §11's caveat should be deleted \
+         rather than left explaining a disagreement that no longer exists: {card}"
+    );
+}
+
+/// `build_input_schema` must keep producing an object-rooted schema.
+///
+/// This is the premise the whole `inputModes` story rests on: apcore-a2a's
+/// `compute_input_modes` returns `["application/json", "text/plain"]` for a
+/// string-rooted schema and `["application/json"]` for anything else, so a
+/// string root is what would make §11's "prose never works" advice wrong. It is
+/// asserted against the real converter rather than a hand-written fixture.
+#[test]
+fn test_a_scanned_tool_always_yields_an_object_rooted_schema() {
+    use apexe::models::{ScannedFlag, ValueType};
+
+    let tool = ScannedCLITool {
+        name: "probe".to_string(),
+        description: "A tool with exactly one string flag".to_string(),
+        binary_path: "/usr/bin/true".to_string(),
+        global_flags: vec![ScannedFlag {
+            long_name: Some("--only".to_string()),
+            description: "The single option.".to_string(),
+            value_type: ValueType::String,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    for module in CliToolConverter::new().convert(&tool) {
+        assert_eq!(
+            module.input_schema["type"], "object",
+            "a string-rooted schema would make the skill advertise text/plain, \
+             which apexe cannot honour: {}",
+            module.input_schema
+        );
+    }
 }

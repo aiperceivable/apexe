@@ -869,6 +869,48 @@ apexe a2a --url http://0.0.0.0:9000 --allow-unauthenticated-bind
 apexe a2a --acl ~/.apexe/acl.yaml               # governed by an ACL policy
 ```
 
+### Calling a skill: send a DataPart, not prose
+
+Every apexe skill takes a JSON object — `build_input_schema` always produces
+`"type": "object"` — so its arguments ride in a **DataPart**, and the skill's
+`skillId` goes in the message metadata:
+
+```bash
+curl -X POST http://127.0.0.1:8000/ -H 'content-type: application/json' -d '{
+  "jsonrpc": "2.0", "id": 1, "method": "message/send",
+  "params": { "message": {
+    "role": "user",
+    "messageId": "m1",
+    "metadata": { "skillId": "cli.cp" },
+    "parts": [ { "kind": "data", "data": { "source_file": ["/tmp/a"], "target": "/tmp/b" } } ]
+  } }
+}'
+```
+
+A **TextPart carrying prose does not work**, and the error says why in terms of
+the mechanism rather than the remedy:
+
+```
+TextPart text is not valid JSON: expected value at line 1 column 1
+```
+
+For an object-typed skill, apcore-a2a parses a TextPart's `text` *as* JSON — so
+`{"kind": "text", "text": "{\"source_file\": [...]}"}` is accepted and
+`{"kind": "text", "text": "copy this file"}` is not. That rule is shared with
+apcore-a2a's Python and TypeScript siblings; a DataPart is the direct way to
+say the same thing.
+
+> **The agent card's per-skill `inputModes` is the field to read.** Each skill
+> advertises `["application/json"]`, computed from its own schema. The card also
+> carries an agent-level `defaultInputModes` of `["text/plain",
+> "application/json"]` — that is apcore-a2a's hardcoded default and describes
+> what the *framework* can accept, not this agent: apexe never produces a
+> string-rooted skill, so `text/plain` is unreachable here. Per the A2A spec a
+> skill's own `inputModes` overrides the default, so a client that reads it gets
+> the right answer; one that reads only the agent default will try prose and hit
+> the error above. apexe cannot narrow the default — `APCoreA2AConfig` exposes
+> no field for it.
+
 ### Endpoints
 
 | Endpoint | Purpose |
