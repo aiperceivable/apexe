@@ -151,7 +151,7 @@ impl CliModule {
     /// F5 §4.3. No raw argument values are persisted — the record names the
     /// call, not what was in it — and `trace_id` is what joins it to the ACL
     /// decision that permitted it.
-    fn audit_execution(
+    async fn audit_execution(
         &self,
         ctx: &Context<Value>,
         status: &str,
@@ -159,14 +159,16 @@ impl CliModule {
         duration_ms: u64,
     ) {
         if let Some(ref audit) = self.audit {
-            audit.log_execution(
-                &self.module_id,
-                &ctx.trace_id,
-                ctx.identity.as_ref().map(|id| id.id()),
-                status,
-                exit_code,
-                duration_ms,
-            );
+            audit
+                .log_execution(
+                    &self.module_id,
+                    &ctx.trace_id,
+                    ctx.identity.as_ref().map(|id| id.id()),
+                    status,
+                    exit_code,
+                    duration_ms,
+                )
+                .await;
         }
     }
 
@@ -181,13 +183,13 @@ impl CliModule {
     /// must still appear in the audit trail; the `rm -rf`-that-timed-out case
     /// is exactly what an operator needs to see. The exit code is unknown, so
     /// it is recorded as -1.
-    fn abandon_run(
+    async fn abandon_run(
         &self,
         error: ModuleError,
         ctx: &Context<Value>,
         elapsed_ms: u64,
     ) -> ModuleError {
-        self.audit_execution(ctx, "error", -1, elapsed_ms);
+        self.audit_execution(ctx, "error", -1, elapsed_ms).await;
         if error.code == ErrorCode::ModuleTimeout {
             error.with_retryable(self.annotations.idempotent)
         } else {
@@ -329,7 +331,7 @@ impl Module for CliModule {
         let user_args = executor::build_argv(kwargs, Some(&self.input_schema))?;
         let args: Vec<String> = self.assemble_arguments(user_args);
 
-        let output = executor::execute_subprocess(
+        let output = match executor::execute_subprocess(
             &self.binary_path,
             &args,
             self.json_flag.as_deref(),
@@ -337,7 +339,13 @@ impl Module for CliModule {
             self.max_output_bytes,
         )
         .await
-        .map_err(|e| self.abandon_run(e, ctx, start.elapsed().as_millis() as u64))?;
+        {
+            Ok(output) => output,
+            Err(e) => {
+                let elapsed_ms = start.elapsed().as_millis() as u64;
+                return Err(self.abandon_run(e, ctx, elapsed_ms).await);
+            }
+        };
 
         let duration_ms = start.elapsed().as_millis() as u64;
         let result = self.build_result(&output, ctx, duration_ms);
@@ -355,7 +363,8 @@ impl Module for CliModule {
         } else {
             "error"
         };
-        self.audit_execution(ctx, status, output.exit_code, duration_ms);
+        self.audit_execution(ctx, status, output.exit_code, duration_ms)
+            .await;
 
         Ok(Value::Object(result))
     }

@@ -191,7 +191,7 @@ impl ApprovalGate {
     /// reporting none. `approval_id` is `Some` only from
     /// [`check_approval`](Self::check_approval)'s refusal path — see that
     /// method's doc comment and [`APPROVAL_TOKEN_LOOKUP_MODULE_ID`].
-    fn audit_refusal(
+    async fn audit_refusal(
         &self,
         module_id: &str,
         trace_id: &str,
@@ -201,18 +201,20 @@ impl ApprovalGate {
         let Some(ref audit) = self.audit else {
             return;
         };
-        audit.log_refusal(
-            module_id,
-            trace_id,
-            caller_id,
-            approval_id,
-            ErrorCode::ApprovalDenied,
-            0,
-        );
+        audit
+            .log_refusal(
+                module_id,
+                trace_id,
+                caller_id,
+                approval_id,
+                ErrorCode::ApprovalDenied,
+                0,
+            )
+            .await;
     }
 
     /// Record a refusal for a request that carries its own context.
-    fn audit_request_refusal(&self, request: &ApprovalRequest) {
+    async fn audit_request_refusal(&self, request: &ApprovalRequest) {
         let context = request.context.as_ref();
         self.audit_refusal(
             &request.module_id,
@@ -221,7 +223,8 @@ impl ApprovalGate {
                 .and_then(|ctx| ctx.identity.as_ref())
                 .map(|id| id.id()),
             None,
-        );
+        )
+        .await;
     }
 }
 
@@ -283,7 +286,7 @@ impl ApprovalHandler for ApprovalGate {
                 );
             }
         }
-        self.audit_request_refusal(request);
+        self.audit_request_refusal(request).await;
         Ok(result)
     }
 
@@ -325,7 +328,8 @@ impl ApprovalHandler for ApprovalGate {
             reason = ?result.reason,
             "Refusing an approval-token lookup: this gate holds no pending approvals"
         );
-        self.audit_refusal(APPROVAL_TOKEN_LOOKUP_MODULE_ID, "", None, Some(approval_id));
+        self.audit_refusal(APPROVAL_TOKEN_LOOKUP_MODULE_ID, "", None, Some(approval_id))
+            .await;
         Ok(result)
     }
 }

@@ -1068,8 +1068,8 @@ mod tests {
         assert!(suggest_similar("cli.c*", &registered(&["cli.cp"])).is_empty());
     }
 
-    #[test]
-    fn test_acl_decision_recorded_via_audit_logger() {
+    #[tokio::test]
+    async fn test_acl_decision_recorded_via_audit_logger() {
         // F5: with an audit logger attached, ACL allow/deny decisions are
         // persisted (so an operator can answer "who was denied which module").
         use std::sync::Arc;
@@ -1088,7 +1088,19 @@ mod tests {
         let allowed = acl.check(Some("@external"), "cli.rm", None);
         assert!(!allowed);
 
-        let content = std::fs::read_to_string(&audit_path).unwrap();
+        // `log_acl_decision` offloads its write via a fire-and-forget
+        // `spawn_blocking` (it is invoked from apcore's synchronous `ACL`
+        // callback, which has no `.await` point to offload onto), so it can
+        // still be in flight when `check` returns. Poll briefly rather than
+        // asserting immediately.
+        let mut content = String::new();
+        for _ in 0..200 {
+            content = std::fs::read_to_string(&audit_path).unwrap_or_default();
+            if !content.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
         assert!(
             content.contains("\"decision\""),
             "ACL decision not recorded: {content}"

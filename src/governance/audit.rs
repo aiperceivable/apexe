@@ -102,7 +102,7 @@ impl AuditManager {
     }
 
     /// Record a call that reached the wrapped binary.
-    pub fn log_execution(
+    pub async fn log_execution(
         &self,
         module_id: &str,
         trace_id: &str,
@@ -122,7 +122,8 @@ impl AuditManager {
             exit_code: Some(exit_code),
             error_code: None,
             duration_ms,
-        });
+        })
+        .await;
     }
 
     /// Record a call refused before the wrapped binary ran.
@@ -154,7 +155,7 @@ impl AuditManager {
     /// a caller-supplied approval-token lookup, where `module_id` is a fixed
     /// sentinel rather than a real module id (see that call site's own doc
     /// comment for why). Every other caller passes `None`.
-    pub fn log_refusal(
+    pub async fn log_refusal(
         &self,
         module_id: &str,
         trace_id: &str,
@@ -174,7 +175,8 @@ impl AuditManager {
             exit_code: None,
             error_code: Some(error_code),
             duration_ms,
-        });
+        })
+        .await;
     }
 
     /// RFC 3339 UTC with a trailing `Z`, matching apcore's ACL entry format.
@@ -183,7 +185,7 @@ impl AuditManager {
     }
 
     /// Serialize and append one record, best-effort.
-    fn append<T: Serialize>(&self, record: &T) {
+    async fn append<T: Serialize>(&self, record: &T) {
         let line = match serde_json::to_string(record) {
             Ok(line) => line,
             Err(e) => {
@@ -191,7 +193,7 @@ impl AuditManager {
                 return;
             }
         };
-        self.append_line(&line, "audit record");
+        self.append_line(&line, "audit record").await;
     }
 
     /// Append an ACL allow/deny decision to the same audit log (JSONL).
@@ -200,6 +202,12 @@ impl AuditManager {
     /// governance decision; recording it here is what lets an operator answer
     /// "who was denied which module, and when". Best-effort: a write failure is
     /// logged and dropped rather than failing the request.
+    ///
+    /// Stays synchronous and fire-and-forget rather than `async`: apcore's
+    /// `set_audit_logger` callback type is `Fn(&AuditEntry) + Send + Sync`, a
+    /// plain synchronous closure with no `.await` point to offload onto. The
+    /// write itself still moves off the caller's thread via `spawn_blocking`,
+    /// just without anything here to await its completion.
     pub fn log_acl_decision(&self, entry: &AuditEntry) {
         let line = match serde_json::to_string(entry) {
             Ok(l) => l,
@@ -208,16 +216,33 @@ impl AuditManager {
                 return;
             }
         };
-        self.append_line(&line, "ACL audit entry");
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            Self::write_line_blocking(&path, &line, "ACL audit entry");
+        });
     }
 
-    /// Append one already-serialized line as a single write.
+    /// Append one already-serialized line as a single write, off the async
+    /// executor.
     ///
-    /// `what` names the record kind for the failure message. Best-effort
-    /// throughout: an audit write that cannot land is logged and dropped rather
-    /// than failing the caller's request, because refusing to serve because the
-    /// log is unwritable is a worse outcome than serving unlogged — and the
-    /// warning is what tells an operator to fix it.
+    /// `what` names the record kind for the failure message.
+    async fn append_line(&self, line: &str, what: &str) {
+        let path = self.path.clone();
+        let line = line.to_string();
+        let what = what.to_string();
+        if tokio::task::spawn_blocking(move || Self::write_line_blocking(&path, &line, &what))
+            .await
+            .is_err()
+        {
+            tracing::warn!("Audit write task panicked");
+        }
+    }
+
+    /// Perform the blocking open-and-write. Best-effort throughout: an audit
+    /// write that cannot land is logged and dropped rather than failing the
+    /// caller's request, because refusing to serve because the log is
+    /// unwritable is a worse outcome than serving unlogged — and the warning
+    /// is what tells an operator to fix it.
     ///
     /// **One `write_all`, never `writeln!`.** `writeln!` on an unbuffered
     /// `File` issues two `write(2)` calls — the body, then the newline — and
@@ -228,7 +253,7 @@ impl AuditManager {
     /// blank. Measured at 400 concurrent writes: 107 unparseable lines and 133
     /// blank ones. A single `write(2)` under `O_APPEND` is atomic for a regular
     /// file, which is the guarantee append-only JSONL relies on.
-    fn append_line(&self, line: &str, what: &str) {
+    fn write_line_blocking(path: &Path, line: &str, what: &str) {
         // Keep the audit log owner-only so caller identities and denied targets
         // aren't world-readable on shared hosts. `mode()` applies only when the
         // file is created, which closes the window a post-open `set_permissions`
@@ -241,7 +266,7 @@ impl AuditManager {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        match options.open(&self.path) {
+        match options.open(path) {
             Ok(mut file) => {
                 let mut record = String::with_capacity(line.len() + 1);
                 record.push_str(line);
@@ -273,24 +298,40 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn test_audit_manager_creates_file() {
+    /// Poll for a fire-and-forget write (`log_acl_decision`) to land.
+    async fn wait_for_records(path: &Path, expected: usize) -> Vec<serde_json::Value> {
+        for _ in 0..200 {
+            let found = std::fs::read_to_string(path).unwrap_or_default();
+            if found.lines().count() >= expected {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        records(path)
+    }
+
+    #[tokio::test]
+    async fn test_audit_manager_creates_file() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("audit.jsonl");
 
-        AuditManager::new(&path).log_execution("cli.git.status", "t1", None, "success", 0, 10);
+        AuditManager::new(&path)
+            .log_execution("cli.git.status", "t1", None, "success", 0, 10)
+            .await;
 
         assert!(path.exists());
     }
 
-    #[test]
-    fn test_audit_manager_appends_jsonl() {
+    #[tokio::test]
+    async fn test_audit_manager_appends_jsonl() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("audit.jsonl");
         let mgr = AuditManager::new(&path);
 
-        mgr.log_execution("cli.git.status", "t1", None, "success", 0, 10);
-        mgr.log_execution("cli.git.commit", "t2", None, "error", 1, 25);
+        mgr.log_execution("cli.git.status", "t1", None, "success", 0, 10)
+            .await;
+        mgr.log_execution("cli.git.commit", "t2", None, "error", 1, 25)
+            .await;
 
         assert_eq!(records(&path).len(), 2);
     }
@@ -314,14 +355,16 @@ mod tests {
         for i in 0..WRITERS {
             let audit = audit.clone();
             handles.push(tokio::spawn(async move {
-                audit.log_execution(
-                    "cli.probe",
-                    &format!("trace{i:040}"),
-                    Some("@external"),
-                    "success",
-                    0,
-                    1,
-                );
+                audit
+                    .log_execution(
+                        "cli.probe",
+                        &format!("trace{i:040}"),
+                        Some("@external"),
+                        "success",
+                        0,
+                        1,
+                    )
+                    .await;
             }));
         }
         for handle in handles {
@@ -346,8 +389,8 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn test_the_trail_is_owner_only_from_its_very_first_write() {
+    #[tokio::test]
+    async fn test_the_trail_is_owner_only_from_its_very_first_write() {
         // The mode is set through `OpenOptions::mode`, which applies at
         // creation. A post-open `set_permissions` left the file world-readable
         // for the window in between — long enough for a local process on a
@@ -356,7 +399,9 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("audit.jsonl");
-        AuditManager::new(&path).log_execution("cli.ls", "t", None, "success", 0, 1);
+        AuditManager::new(&path)
+            .log_execution("cli.ls", "t", None, "success", 0, 1)
+            .await;
 
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(
@@ -365,19 +410,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_log_execution_names_the_call_and_its_trace() {
+    #[tokio::test]
+    async fn test_log_execution_names_the_call_and_its_trace() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("audit.jsonl");
 
-        AuditManager::new(&path).log_execution(
-            "cli.git.push",
-            "trace-abc",
-            Some("apexe-token"),
-            "success",
-            0,
-            42,
-        );
+        AuditManager::new(&path)
+            .log_execution(
+                "cli.git.push",
+                "trace-abc",
+                Some("apexe-token"),
+                "success",
+                0,
+                42,
+            )
+            .await;
 
         let entry = records(&path).remove(0);
         assert_eq!(entry["event"], "execution");
@@ -392,22 +439,24 @@ mod tests {
         assert!(entry["timestamp"].as_str().unwrap().ends_with('Z'));
     }
 
-    #[test]
-    fn test_log_refusal_records_a_call_that_never_ran() {
+    #[tokio::test]
+    async fn test_log_refusal_records_a_call_that_never_ran() {
         // Regression for the audit gap: a schema rejection, an option-injection
         // refusal, an ACL denial and an approval denial all end before
         // `CliModule`, so the trail used to hold nothing at all for them.
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("audit.jsonl");
 
-        AuditManager::new(&path).log_refusal(
-            "cli.cp",
-            "trace-xyz",
-            Some("u1"),
-            None,
-            ErrorCode::ACLDenied,
-            3,
-        );
+        AuditManager::new(&path)
+            .log_refusal(
+                "cli.cp",
+                "trace-xyz",
+                Some("u1"),
+                None,
+                ErrorCode::ACLDenied,
+                3,
+            )
+            .await;
 
         let entry = records(&path).remove(0);
         assert_eq!(entry["event"], "refusal");
@@ -421,12 +470,14 @@ mod tests {
         assert!(entry["exit_code"].is_null());
     }
 
-    #[test]
-    fn test_anonymous_caller_omits_the_field_rather_than_naming_nobody() {
+    #[tokio::test]
+    async fn test_anonymous_caller_omits_the_field_rather_than_naming_nobody() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("audit.jsonl");
 
-        AuditManager::new(&path).log_execution("cli.ls", "t1", None, "success", 0, 1);
+        AuditManager::new(&path)
+            .log_execution("cli.ls", "t1", None, "success", 0, 1)
+            .await;
 
         let entry = records(&path).remove(0);
         assert!(
@@ -436,8 +487,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_both_record_kinds_share_one_file_and_one_timestamp_format() {
+    #[tokio::test]
+    async fn test_both_record_kinds_share_one_file_and_one_timestamp_format() {
         // The join an audit trail exists to support: an ACL decision and the
         // execution it permitted, correlated by `trace_id`, parsed by one
         // reader.
@@ -457,9 +508,14 @@ mod tests {
         }))
         .expect("AuditEntry should deserialize from its own wire shape");
         mgr.log_acl_decision(&decision);
-        mgr.log_execution("cli.ls", "shared-trace", Some("u1"), "success", 0, 7);
+        mgr.log_execution("cli.ls", "shared-trace", Some("u1"), "success", 0, 7)
+            .await;
 
-        let entries = records(&path);
+        // `log_acl_decision` is a fire-and-forget offload (it is invoked from
+        // apcore's synchronous `ACL` callback, which has no `.await` point to
+        // offload onto), so its write can still be in flight after this call
+        // returns. Poll briefly rather than asserting immediately.
+        let entries = wait_for_records(&path, 2).await;
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0]["trace_id"], entries[1]["trace_id"]);
         for entry in &entries {
@@ -468,6 +524,55 @@ mod tests {
                 "one timestamp format across both record kinds: {entry}"
             );
         }
+    }
+
+    /// `log_execution` used to open and write the audit file synchronously,
+    /// inline in the caller's task — a blocking call the async runtime cannot
+    /// preempt, indistinguishable from any other blocking I/O made from async
+    /// code. A FIFO makes the stall observable and deterministic: opening one
+    /// for writing blocks the OS thread until a reader shows up. This test
+    /// drives the call from a single-threaded runtime on its own OS thread and
+    /// bounds the wait from *outside* that runtime, because once the runtime's
+    /// only thread is stuck in a blocking syscall, nothing on that runtime —
+    /// including its own timers — can fire to report the hang; only a
+    /// different thread can detect it never completed.
+    #[cfg(unix)]
+    #[test]
+    fn test_log_execution_offloads_its_write_instead_of_blocking_the_runtime() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let fifo = tmp.path().join("audit.jsonl");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo must be available on a unix test host");
+        assert!(status.success(), "mkfifo failed to create the test fifo");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let mgr = AuditManager::new(&fifo);
+                tokio::spawn(async move {
+                    mgr.log_execution("cli.ls", "t1", None, "success", 0, 1)
+                        .await;
+                });
+                tokio::task::yield_now().await;
+                let other_task_ran = tokio::spawn(async { 42 }).await;
+                let _ = tx.send(other_task_ran.expect("the concurrent task must not panic"));
+            });
+        });
+
+        let other_task_ran = rx
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .expect(
+                "a concurrent task on the same single-threaded runtime must complete \
+                 while the audit write is in flight; it never ran, which means the \
+                 write is blocking the runtime's only thread",
+            );
+        assert_eq!(other_task_ran, 42);
     }
 
     #[test]

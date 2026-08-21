@@ -235,14 +235,16 @@ impl Middleware for FailureLogMiddleware {
             // names the calling *module* in a nested chain and is `None` for
             // every inbound request by apcore's contract, so it would record
             // every refusal against nobody.
-            audit.log_refusal(
-                module_id,
-                &ctx.trace_id,
-                ctx.identity.as_ref().map(|id| id.id()),
-                None,
-                error.code,
-                duration_ms as u64,
-            );
+            audit
+                .log_refusal(
+                    module_id,
+                    &ctx.trace_id,
+                    ctx.identity.as_ref().map(|id| id.id()),
+                    None,
+                    error.code,
+                    duration_ms as u64,
+                )
+                .await;
         }
         Ok(None)
     }
