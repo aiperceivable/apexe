@@ -232,6 +232,25 @@ fn collect_bracketed_operands(line: &str, found: &mut Vec<(usize, ScannedArg)>) 
     }
 }
 
+/// Characters that glue a bare all-caps token to the placeholder immediately
+/// before it, rather than starting a new one of its own: `SOURCE_IMAGE[:TAG]`,
+/// `NAME|ID` and `PRIVATE_PORT[/PROTO]` are each one operand with a
+/// punctuation-joined suffix or alternative spelling, not two or three.
+const OPERAND_GLUE_CHARS: &[char] = &[':', '|', '/', '=', ','];
+
+/// Whether the token starting at `start` is glued to whatever precedes it.
+///
+/// Checking only the predecessor (not also the successor) is deliberate: the
+/// token that comes first in a glued run (`SOURCE_IMAGE` in
+/// `SOURCE_IMAGE[:TAG]`) is the real operand name and must still be
+/// accepted; it is the token(s) glued onto its tail (`TAG`) that this rejects.
+fn glued_to_predecessor(line: &str, start: usize) -> bool {
+    line[..start]
+        .chars()
+        .next_back()
+        .is_some_and(|c| OPERAND_GLUE_CHARS.contains(&c))
+}
+
 /// Bare operands: `file`, `FILE...`.
 fn collect_bare_operands(
     line: &str,
@@ -244,7 +263,10 @@ fn collect_bare_operands(
             continue;
         };
         let name = normalize_name(name_match.as_str());
-        if belongs_to_an_option(line, name_match.start(), &name) || ranges.covers(whole.start()) {
+        if belongs_to_an_option(line, name_match.start(), &name)
+            || ranges.covers(whole.start())
+            || glued_to_predecessor(line, name_match.start())
+        {
             continue;
         }
         // An all-caps word inside brackets was already taken by the bracketed
@@ -316,6 +338,36 @@ mod tests {
         assert_eq!(args[0].name, "file");
         assert!(args[0].required);
         assert!(!args[0].variadic);
+    }
+
+    #[test]
+    fn test_bare_operands_do_not_split_a_punctuation_joined_placeholder() {
+        // Regression: `docker tag SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]` must
+        // report exactly the two real operands, not four -- TAG is a
+        // bracketed suffix on the preceding placeholder, not a third and
+        // fourth operand.
+        let args =
+            extract_args_from_usage_line("docker tag SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]");
+        let names: Vec<&str> = args.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["SOURCE_IMAGE", "TARGET_IMAGE"]);
+    }
+
+    #[test]
+    fn test_bare_operands_collapse_a_pipe_alternation_to_one_operand() {
+        // `docker inspect [OPTIONS] NAME|ID [NAME|ID...]` names one operand,
+        // spelled two ways -- not two independently required operands.
+        let args = extract_args_from_usage_line("docker inspect [OPTIONS] NAME|ID [NAME|ID...]");
+        let names: Vec<&str> = args.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["NAME"]);
+    }
+
+    #[test]
+    fn test_bare_operands_do_not_split_a_bracketed_slash_suffix() {
+        // `docker port CONTAINER [PRIVATE_PORT[/PROTO]]` has two operands;
+        // PROTO is a bracketed suffix of PRIVATE_PORT, not a third operand.
+        let args = extract_args_from_usage_line("docker port CONTAINER [PRIVATE_PORT[/PROTO]]");
+        let names: Vec<&str> = args.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["CONTAINER", "PRIVATE_PORT"]);
     }
 
     #[test]
