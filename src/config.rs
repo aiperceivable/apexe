@@ -85,7 +85,7 @@ impl ApexeConfig {
     }
 }
 
-/// Load configuration with three-tier resolution.
+/// Load configuration with two-tier resolution.
 ///
 /// 1. Start with defaults
 /// 2. If config file exists, parse YAML and merge it over the defaults
@@ -93,12 +93,16 @@ impl ApexeConfig {
 ///    `ApexeConfig`'s `#[serde(default)]`)
 /// 3. Check env vars (APEXE_MODULES_DIR, APEXE_CACHE_DIR, APEXE_LOG_LEVEL,
 ///    APEXE_TIMEOUT) and override matching fields
-/// 4. Apply cli_overrides
-/// 5. Return ApexeConfig
-pub fn load_config(
-    config_path: Option<&Path>,
-    cli_overrides: Option<&std::collections::HashMap<String, String>>,
-) -> anyhow::Result<ApexeConfig> {
+/// 4. Return ApexeConfig
+///
+/// CLI-flag overrides are applied separately, after this returns: `--timeout`
+/// via `ApexeConfig::with_timeout_override` (called from `Cli::run`),
+/// `--scan-depth`/`--log-level`/`--modules-dir` via clap's own typed flags on
+/// each subcommand. There is no third, map-based override mechanism here --
+/// there used to be one (`apply_cli_overrides`, taking a
+/// `HashMap<String, String>`), but every production caller passed `None` for
+/// it; the typed flags above were, and remain, the only wired path.
+pub fn load_config(config_path: Option<&Path>) -> anyhow::Result<ApexeConfig> {
     let mut config = ApexeConfig::default();
 
     let file_path = config_path
@@ -107,7 +111,6 @@ pub fn load_config(
     apply_file_config(&mut config, &file_path)?;
 
     apply_env_overrides(&mut config);
-    apply_cli_overrides(&mut config, cli_overrides);
     load_core_config(&mut config);
 
     Ok(config)
@@ -156,40 +159,6 @@ fn apply_env_overrides(config: &mut ApexeConfig) {
     }
 }
 
-/// Override `config` from range-validated CLI flag overrides, when present.
-fn apply_cli_overrides(
-    config: &mut ApexeConfig,
-    cli_overrides: Option<&std::collections::HashMap<String, String>>,
-) {
-    let Some(overrides) = cli_overrides else {
-        return;
-    };
-    if let Some(val) = overrides.get("modules_dir") {
-        config.modules_dir = PathBuf::from(val);
-    }
-    if let Some(val) = overrides.get("log_level") {
-        config.log_level = val.clone();
-    }
-    if let Some(val) = overrides.get("scan_depth") {
-        if let Ok(d) = val.parse::<u32>() {
-            if (1..=5).contains(&d) {
-                config.scan_depth = d;
-            } else {
-                warn!("Invalid scan_depth override: {d}, must be 1-5");
-            }
-        }
-    }
-    if let Some(val) = overrides.get("timeout") {
-        if let Ok(t) = val.parse::<u64>() {
-            if t > 0 {
-                config.default_timeout = t;
-            } else {
-                warn!("Invalid timeout override: {t}, must be > 0");
-            }
-        }
-    }
-}
-
 /// Load the optional apcore `CoreConfig` from `<config_dir>/apcore.yaml`.
 fn load_core_config(config: &mut ApexeConfig) {
     let core_config_path = config.config_dir.join("apcore.yaml");
@@ -208,7 +177,6 @@ fn load_core_config(config: &mut ApexeConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use std::sync::Mutex;
     use tempfile::TempDir;
 
@@ -256,7 +224,7 @@ mod tests {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("nonexistent.yaml");
-        let config = load_config(Some(config_path.as_path()), None).unwrap();
+        let config = load_config(Some(config_path.as_path())).unwrap();
         assert_eq!(config.log_level, "info");
         assert_eq!(config.default_timeout, 30);
     }
@@ -280,7 +248,7 @@ mod tests {
         let yaml = serde_yaml::to_string(&default).unwrap();
         std::fs::write(&config_path, &yaml).unwrap();
 
-        let config = load_config(Some(config_path.as_path()), None).unwrap();
+        let config = load_config(Some(config_path.as_path())).unwrap();
         assert_eq!(config.log_level, "debug");
         assert_eq!(config.default_timeout, 60);
         assert_eq!(config.scan_depth, 3);
@@ -299,7 +267,7 @@ mod tests {
         let config_path = tmp.path().join("config.yaml");
         std::fs::write(&config_path, "default_timeout: 99\n").unwrap();
 
-        let config = load_config(Some(config_path.as_path()), None).unwrap();
+        let config = load_config(Some(config_path.as_path())).unwrap();
         assert_eq!(
             config.default_timeout, 99,
             "the field set in the partial config.yaml must take effect"
@@ -318,7 +286,7 @@ mod tests {
         let config_path = tmp.path().join("config.yaml");
         std::fs::write(&config_path, "this is not: [valid: yaml: config").unwrap();
 
-        let config = load_config(Some(config_path.as_path()), None).unwrap();
+        let config = load_config(Some(config_path.as_path())).unwrap();
         // Should fall back to defaults
         assert_eq!(config.log_level, "info");
         assert_eq!(config.default_timeout, 30);
@@ -332,7 +300,7 @@ mod tests {
 
         let unique_dir = "/tmp/apexe_test_modules_dir_unique";
         unsafe { std::env::set_var("APEXE_MODULES_DIR", unique_dir) };
-        let config = load_config(Some(config_path.as_path()), None).unwrap();
+        let config = load_config(Some(config_path.as_path())).unwrap();
         unsafe { std::env::remove_var("APEXE_MODULES_DIR") };
 
         assert_eq!(config.modules_dir, PathBuf::from(unique_dir));
@@ -346,7 +314,7 @@ mod tests {
 
         let unique_dir = "/tmp/apexe_test_cache_dir_unique";
         unsafe { std::env::set_var("APEXE_CACHE_DIR", unique_dir) };
-        let config = load_config(Some(config_path.as_path()), None).unwrap();
+        let config = load_config(Some(config_path.as_path())).unwrap();
         unsafe { std::env::remove_var("APEXE_CACHE_DIR") };
 
         assert_eq!(config.cache_dir, PathBuf::from(unique_dir));
@@ -359,7 +327,7 @@ mod tests {
         let config_path = tmp.path().join("nonexistent.yaml");
 
         unsafe { std::env::set_var("APEXE_LOG_LEVEL", "trace") };
-        let config = load_config(Some(config_path.as_path()), None).unwrap();
+        let config = load_config(Some(config_path.as_path())).unwrap();
         unsafe { std::env::remove_var("APEXE_LOG_LEVEL") };
 
         assert_eq!(config.log_level, "trace");
@@ -372,7 +340,7 @@ mod tests {
         let config_path = tmp.path().join("nonexistent.yaml");
 
         unsafe { std::env::set_var("APEXE_TIMEOUT", "120") };
-        let config = load_config(Some(config_path.as_path()), None).unwrap();
+        let config = load_config(Some(config_path.as_path())).unwrap();
         unsafe { std::env::remove_var("APEXE_TIMEOUT") };
 
         assert_eq!(config.default_timeout, 120);
@@ -385,44 +353,10 @@ mod tests {
         let config_path = tmp.path().join("nonexistent.yaml");
 
         unsafe { std::env::set_var("APEXE_TIMEOUT", "not_a_number") };
-        let config = load_config(Some(config_path.as_path()), None).unwrap();
+        let config = load_config(Some(config_path.as_path())).unwrap();
         unsafe { std::env::remove_var("APEXE_TIMEOUT") };
 
         assert_eq!(config.default_timeout, 30);
-    }
-
-    #[test]
-    fn test_cli_overrides_take_priority() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let tmp = TempDir::new().unwrap();
-        let config_path = tmp.path().join("nonexistent.yaml");
-
-        let mut overrides = HashMap::new();
-        overrides.insert("modules_dir".to_string(), "/cli/modules".to_string());
-        overrides.insert("log_level".to_string(), "error".to_string());
-        overrides.insert("scan_depth".to_string(), "5".to_string());
-
-        let config = load_config(Some(config_path.as_path()), Some(&overrides)).unwrap();
-        assert_eq!(config.modules_dir, PathBuf::from("/cli/modules"));
-        assert_eq!(config.log_level, "error");
-        assert_eq!(config.scan_depth, 5);
-    }
-
-    #[test]
-    fn test_cli_overrides_beat_env_vars() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let tmp = TempDir::new().unwrap();
-        let config_path = tmp.path().join("nonexistent.yaml");
-
-        unsafe { std::env::set_var("APEXE_LOG_LEVEL", "debug") };
-
-        let mut overrides = HashMap::new();
-        overrides.insert("log_level".to_string(), "warn".to_string());
-
-        let config = load_config(Some(config_path.as_path()), Some(&overrides)).unwrap();
-        unsafe { std::env::remove_var("APEXE_LOG_LEVEL") };
-
-        assert_eq!(config.log_level, "warn");
     }
 
     #[test]
@@ -453,7 +387,7 @@ mod tests {
         let config_path = tmp.path().join("nonexistent.yaml");
 
         unsafe { std::env::set_var("APEXE_SCAN_DEPTH", "3") };
-        let config = load_config(Some(config_path.as_path()), None).unwrap();
+        let config = load_config(Some(config_path.as_path())).unwrap();
         unsafe { std::env::remove_var("APEXE_SCAN_DEPTH") };
 
         assert_eq!(config.scan_depth, 3);
@@ -466,22 +400,10 @@ mod tests {
         let config_path = tmp.path().join("nonexistent.yaml");
 
         unsafe { std::env::set_var("APEXE_SCAN_DEPTH", "10") };
-        let config = load_config(Some(config_path.as_path()), None).unwrap();
+        let config = load_config(Some(config_path.as_path())).unwrap();
         unsafe { std::env::remove_var("APEXE_SCAN_DEPTH") };
 
         assert_eq!(config.scan_depth, 2); // default
-    }
-
-    #[test]
-    fn test_cli_timeout_override() {
-        let tmp = TempDir::new().unwrap();
-        let config_path = tmp.path().join("nonexistent.yaml");
-
-        let mut overrides = HashMap::new();
-        overrides.insert("timeout".to_string(), "60".to_string());
-
-        let config = load_config(Some(config_path.as_path()), Some(&overrides)).unwrap();
-        assert_eq!(config.default_timeout, 60);
     }
 
     #[test]
@@ -489,7 +411,7 @@ mod tests {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("nonexistent.yaml");
-        let config = load_config(Some(config_path.as_path()), None).unwrap();
+        let config = load_config(Some(config_path.as_path())).unwrap();
         assert!(config.core_config.is_none());
     }
 
@@ -547,41 +469,5 @@ mod tests {
         assert!(config.modules_dir.exists());
         assert!(config.cache_dir.exists());
         assert!(config.config_dir.exists());
-    }
-
-    #[test]
-    fn test_cli_scan_depth_override_invalid_range_ignored() {
-        let tmp = TempDir::new().unwrap();
-        let config_path = tmp.path().join("nonexistent.yaml");
-
-        let mut overrides = HashMap::new();
-        overrides.insert("scan_depth".to_string(), "10".to_string());
-
-        let config = load_config(Some(config_path.as_path()), Some(&overrides)).unwrap();
-        assert_eq!(config.scan_depth, 2); // default, override rejected
-    }
-
-    #[test]
-    fn test_cli_scan_depth_override_zero_rejected() {
-        let tmp = TempDir::new().unwrap();
-        let config_path = tmp.path().join("nonexistent.yaml");
-
-        let mut overrides = HashMap::new();
-        overrides.insert("scan_depth".to_string(), "0".to_string());
-
-        let config = load_config(Some(config_path.as_path()), Some(&overrides)).unwrap();
-        assert_eq!(config.scan_depth, 2); // default
-    }
-
-    #[test]
-    fn test_cli_timeout_override_zero_rejected() {
-        let tmp = TempDir::new().unwrap();
-        let config_path = tmp.path().join("nonexistent.yaml");
-
-        let mut overrides = HashMap::new();
-        overrides.insert("timeout".to_string(), "0".to_string());
-
-        let config = load_config(Some(config_path.as_path()), Some(&overrides)).unwrap();
-        assert_eq!(config.default_timeout, 30); // default, override rejected
     }
 }

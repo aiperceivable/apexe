@@ -53,7 +53,7 @@ impl Cli {
     }
 
     pub fn run(self) -> anyhow::Result<()> {
-        let config = load_config(None, None)?.with_timeout_override(self.timeout);
+        let config = load_config(None)?.with_timeout_override(self.timeout);
         config.ensure_dirs()?;
 
         match self.command {

@@ -35,7 +35,7 @@ fn print_man_page_if_requested(raw_args: &[String]) -> bool {
 /// importer does `JSON.parse(stdout)`), and interleaved log lines would make
 /// every such parse fail.
 fn init_logging(cli: &Cli) {
-    let config_level = apexe::config::load_config(None, None)
+    let config_level = apexe::config::load_config(None)
         .map(|c| c.log_level)
         .unwrap_or_else(|_| "info".to_string());
     let fallback_level = cli.effective_log_level(&config_level);
