@@ -21,8 +21,10 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
+      # dtolnay/rust-toolchain@stable tracks a rolling branch rather than
+      # tagged releases; pinned to the branch HEAD at the time this was added.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: ${{ matrix.rust }}
           components: rustfmt, clippy
