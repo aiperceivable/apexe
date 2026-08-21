@@ -6,10 +6,10 @@
 
 **Version:** 0.6.0 — Full apcore ecosystem integration (MCP + A2A) plus curated tool overlays and variant-aware scanning.
 
-**Status:** All features implemented. 894 tests passing, 0 failures.
+**Status:** All features implemented. 940 tests passing, 0 failures, 2 ignored (require `git`/`docker` on PATH).
 
 > The section headings below tagged "(v0.1.0 …)" record when each piece first
-> landed; the crate is now **0.5.1**. For the authoritative current state see
+> landed; the crate is now **0.6.0**. For the authoritative current state see
 > [`CHANGELOG.md`](../CHANGELOG.md) and [`docs/user-manual.md`](user-manual.md).
 
 ## Architecture (v0.1.0)
@@ -35,11 +35,16 @@ CLI Tool Binary
 
 ```
 src/
+├── a2a/             A2A agent server integration
+│   └── server       A2aServerBuilder wrapping apcore_a2a; bind-URL validation
 ├── adapter/         ScannedCLITool → ScannedModule conversion
 │   ├── converter    CliToolConverter (tree flattening, module ID generation)
 │   ├── schema       JSON Schema from flags/args (extracted from v0.1.x)
-│   └── annotations  ModuleAnnotations inference (readonly/destructive/idempotent)
-├── cli/             clap CLI entry point (scan/serve/list/config)
+│   ├── annotations  ModuleAnnotations inference (readonly/destructive/idempotent)
+│   └── overlay      ToolOverlay: curated flag/arg descriptions, apply_overlay
+├── auth             Transport authentication for the HTTP-family MCP/A2A
+│                    transports (token/JWT, loopback-bind detection)
+├── cli/             clap CLI entry point (scan/serve/a2a/list/config)
 │   └── config_gen   Claude Desktop / Cursor config snippet generation
 ├── config           ApexeConfig + apcore CoreConfig integration
 ├── errors           ApexeError + From<ApexeError> for ModuleError
@@ -52,18 +57,30 @@ src/
 ├── models/          ScannedCLITool, ScannedCommand, ScannedFlag, ScannedArg
 ├── module/          apcore Module trait implementation
 │   ├── cli_module   CliModule (subprocess execution via Module trait)
-│   └── executor     Argument building, injection prevention, env scrubbing,
-│                     tokio::process (timeout + kill_on_drop)
+│   ├── executor     Argument building, validation, env scrubbing,
+│   │                 tokio::process (timeout + kill_on_drop)
+│   ├── approval     ApprovalGate wrapping apcore's approval handlers
+│   ├── breaker      HealthOnlyCircuitBreaker middleware
+│   ├── failure_log  Payload-free failure/refusal logging middleware
+│   └── registry     build_executor: load bindings, wire middleware/ACL/approval
 ├── output/          Binding file I/O
 │   ├── yaml         YamlOutput wrapping apcore_toolkit::YAMLWriter
-│   └── loader       load_modules_from_dir (reads .binding.yaml)
+│   ├── loader       load_modules_from_dir (reads .binding.yaml)
+│   └── skill        SkillOutput: writes a Claude Skill (SKILL.md) per module
 └── scanner/         3-tier deterministic CLI scanner engine
-    ├── orchestrator  ScanOrchestrator (top-level coordinator)
-    ├── pipeline      ParserPipeline (priority-based parser selection)
-    ├── parsers/      Man, BSD Usage, GNU, Click, Cobra, Clap format parsers
-    ├── discovery     SubcommandDiscovery (recursive subcommand scanning)
-    ├── cache         ScanCache (JSON filesystem caching)
-    └── resolver      ToolResolver (binary path + version + format detection)
+    ├── orchestrator    ScanOrchestrator (top-level coordinator)
+    ├── pipeline        ParserPipeline (priority-based parser selection)
+    ├── parsers/        Man, BSD Usage, GNU, Click, Cobra, Clap format parsers
+    ├── discovery       SubcommandDiscovery (recursive subcommand scanning)
+    ├── cache           ScanCache (JSON filesystem caching)
+    ├── resolver        ToolResolver (binary path + version + format detection)
+    ├── exec            run_with_timeout: bounded subprocess probes
+    ├── man_page        Man-page section/option/example extraction
+    ├── variant         Tool variant detection (bsd/gnu/apple/busybox)
+    ├── overlay_store   Built-in + user overlay loading and matching
+    ├── value_placeholder  Shared placeholder → ValueType inference table
+    ├── completion      Shell-completion-script subcommand discovery
+    └── protocol        ParsedHelp / CliParser: the shared parser contract
 ```
 
 ## apcore Ecosystem Integration
@@ -95,8 +112,8 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 ### Module Executor (v0.1.0 new)
 - `CliModule`: implements apcore `Module` trait for CLI subprocess execution
 - Async execution via `tokio::process::Command` with `tokio::time::timeout` and `kill_on_drop(true)`
-- Shell injection prevention (`;|&$\`'"` blocked)
-- Preflight validation on all string inputs
+- No shell is ever invoked — argv is built as a `Vec<String>` and passed straight to `execve`, so shell metacharacters (`;|&$\`'"`) are inert data, not something the argument path needs to block. The actual guard rejects a value that would be parsed as an *option* by the wrapped binary (a leading `-`, unless the schema declares `--` support) and rejects control characters.
+- Argument validation happens inline in `executor::build_argv` (there is no separate `preflight` step)
 
 ### Output Layer (v0.1.0 new, replaces v0.1.x binding generator)
 - `YamlOutput`: wraps apcore-toolkit `YAMLWriter` with verification
@@ -106,7 +123,8 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 - `McpServerBuilder`: modules_dir → Registry → Executor → APCoreMCP
 - Transports: stdio, streamable-http (was "http"), SSE
 - Full MCP protocol compliance via apcore-mcp
-- Explorer UI (HTTP transports); transport authentication via the apcore library API (localhost bind by default)
+- Explorer UI (HTTP transports)
+- Transport authentication is a first-class CLI surface (`--auth token|jwt|none`, `--auth-token`, `--jwt-secret`), required by default on the HTTP-family transports; a non-loopback bind without an explicit acknowledgement (`--allow-unauthenticated-bind`) refuses to start. See `docs/user-manual.md` §9.
 
 ### Governance (v0.1.0 rewritten)
 - `AclManager`: wraps `apcore::ACL`, generates default rules from annotations; fails closed when a configured ACL is missing/malformed

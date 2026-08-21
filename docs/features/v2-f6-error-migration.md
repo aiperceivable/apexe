@@ -33,17 +33,29 @@ The boundary rule: **scanner code produces `ApexeError`, module/output/governanc
 
 ## 3. ErrorCode Mapping
 
+**Table updated for apcore 0.27's `ErrorCode` names** — apcore renamed several
+variants after this table was first written (`InternalError` →
+`GeneralInternalError`, `Timeout` → `ModuleTimeout`, `ValidationFailed` →
+`GeneralInvalidInput`, `Unauthorized` → `ACLDenied`), and `SerializationError`
+was removed entirely, so `Yaml`/`Json` map to `GeneralInternalError` like the
+other internal-failure variants.
+
 | ApexeError Variant | ErrorCode | retryable | ai_guidance |
 |---|---|---|---|
 | `ToolNotFound { tool_name }` | `ModuleNotFound` | false | "The tool '{tool_name}' is not installed. Install it and try again." |
-| `ScanError(msg)` | `InternalError` | false | "An internal scanning error occurred: {msg}" |
-| `ScanTimeout { command, timeout }` | `Timeout` | true | "The command took too long. Try with simpler arguments or increase timeout." |
-| `ScanPermission { command }` | `Unauthorized` | false | "Permission denied. Check file permissions or run with appropriate privileges." |
-| `CommandInjection { param_name, chars }` | `ValidationFailed` | false | "Remove shell metacharacters ({chars:?}) from parameter '{param_name}'." |
-| `ParseError(msg)` | `InternalError` | false | "Help text parsing failed: {msg}. The tool may use a non-standard help format." |
-| `Io(err)` | `InternalError` | false | "I/O error: {err}" |
-| `Yaml(err)` | `SerializationError` | false | "YAML processing error: {err}" |
-| `Json(err)` | `SerializationError` | false | "JSON processing error: {err}" |
+| `ScanError(msg)` | `GeneralInternalError` | false | "An internal scanning error occurred: {msg}" |
+| `ScanTimeout { command, timeout }` | `ModuleTimeout` | true | "The command took too long. Try with simpler arguments or increase timeout." |
+| `ScanPermission { command }` | `ACLDenied`¹ | false | "Permission denied. Check file permissions or run with appropriate privileges." |
+| `CommandInjection { param_name, chars }` | `GeneralInvalidInput` | false | "Remove shell metacharacters ({chars:?}) from parameter '{param_name}'." |
+| `ParseError(msg)` | `GeneralInternalError` | false | "Help text parsing failed: {msg}. The tool may use a non-standard help format." |
+| `Io(err)` | `GeneralInternalError` | false | "I/O error: {err}" |
+| `Yaml(err)` | `GeneralInternalError` | false | "YAML processing error: {err}" |
+| `Json(err)` | `GeneralInternalError` | false | "JSON processing error: {err}" |
+
+¹ `ACLDenied` is also the code `apcore::ACL`'s own governance-denial path
+writes to the audit trail (see F5 §4), so a filesystem permission error
+during a scan and an actual ACL policy denial currently render with the
+same code. Tracked as a known mismatch, not yet corrected.
 
 ---
 
@@ -51,131 +63,31 @@ The boundary rule: **scanner code produces `ApexeError`, module/output/governanc
 
 ### 4.1 From Trait Implementation
 
-```rust
-// src/errors.rs (additions)
+**`ModuleError` in apcore 0.27 is constructed through a builder
+(`ModuleError::new(code, message).with_details(...).with_retryable(...)
+.with_ai_guidance(...)`), not the struct-literal shape shown in earlier
+drafts of this section. The full, current match arm for every variant lives
+in `src/errors.rs`'s `impl From<ApexeError> for ModuleError`; §3's table
+above is the up-to-date summary of what each arm produces. Representative
+arm, for the shape:**
 
+```rust
+// src/errors.rs
 use apcore::{ErrorCode, ModuleError};
 
 impl From<ApexeError> for ModuleError {
     fn from(err: ApexeError) -> ModuleError {
         match err {
-            ApexeError::ToolNotFound { ref tool_name } => ModuleError {
-                code: ErrorCode::ModuleNotFound,
-                message: err.to_string(),
-                details: Some(serde_json::json!({
-                    "tool_name": tool_name,
-                })),
-                trace_id: None,
-                retryable: false,
-                ai_guidance: Some(format!(
-                    "The tool '{}' is not installed. Install it and try again.",
-                    tool_name
-                )),
-            },
-
-            ApexeError::ScanError(ref msg) => ModuleError {
-                code: ErrorCode::InternalError,
-                message: err.to_string(),
-                details: Some(serde_json::json!({
-                    "scan_error": msg,
-                })),
-                trace_id: None,
-                retryable: false,
-                ai_guidance: Some(format!(
-                    "An internal scanning error occurred: {}",
-                    msg
-                )),
-            },
-
-            ApexeError::ScanTimeout { ref command, timeout } => ModuleError {
-                code: ErrorCode::Timeout,
-                message: err.to_string(),
-                details: Some(serde_json::json!({
-                    "command": command,
-                    "timeout_seconds": timeout,
-                })),
-                trace_id: None,
-                retryable: true,
-                ai_guidance: Some(
-                    "The command took too long. Try with simpler arguments or increase timeout."
-                        .into(),
-                ),
-            },
-
-            ApexeError::ScanPermission { ref command } => ModuleError {
-                code: ErrorCode::Unauthorized,
-                message: err.to_string(),
-                details: Some(serde_json::json!({
-                    "command": command,
-                })),
-                trace_id: None,
-                retryable: false,
-                ai_guidance: Some(
-                    "Permission denied. Check file permissions or run with appropriate privileges."
-                        .into(),
-                ),
-            },
-
-            ApexeError::CommandInjection {
-                ref param_name,
-                ref chars,
-            } => ModuleError {
-                code: ErrorCode::ValidationFailed,
-                message: err.to_string(),
-                details: Some(serde_json::json!({
-                    "param_name": param_name,
-                    "prohibited_chars": chars.iter().map(|c| c.to_string()).collect::<Vec<_>>(),
-                })),
-                trace_id: None,
-                retryable: false,
-                ai_guidance: Some(format!(
-                    "Remove shell metacharacters ({:?}) from parameter '{}'.",
-                    chars, param_name
-                )),
-            },
-
-            ApexeError::ParseError(ref msg) => ModuleError {
-                code: ErrorCode::InternalError,
-                message: err.to_string(),
-                details: Some(serde_json::json!({
-                    "parse_error": msg,
-                })),
-                trace_id: None,
-                retryable: false,
-                ai_guidance: Some(format!(
-                    "Help text parsing failed: {}. The tool may use a non-standard help format.",
-                    msg
-                )),
-            },
-
-            ApexeError::Io(ref e) => ModuleError {
-                code: ErrorCode::InternalError,
-                message: err.to_string(),
-                details: Some(serde_json::json!({
-                    "io_error_kind": format!("{:?}", e.kind()),
-                })),
-                trace_id: None,
-                retryable: false,
-                ai_guidance: Some(format!("I/O error: {}", e)),
-            },
-
-            ApexeError::Yaml(_) => ModuleError {
-                code: ErrorCode::SerializationError,
-                message: err.to_string(),
-                details: None,
-                trace_id: None,
-                retryable: false,
-                ai_guidance: Some(format!("YAML processing error: {}", err)),
-            },
-
-            ApexeError::Json(_) => ModuleError {
-                code: ErrorCode::SerializationError,
-                message: err.to_string(),
-                details: None,
-                trace_id: None,
-                retryable: false,
-                ai_guidance: Some(format!("JSON processing error: {}", err)),
-            },
+            ApexeError::ToolNotFound { ref tool_name } => {
+                ModuleError::new(ErrorCode::ModuleNotFound, err.to_string())
+                    .with_details(details([("tool_name", serde_json::json!(tool_name))]))
+                    .with_retryable(false)
+                    .with_ai_guidance(format!(
+                        "The tool '{}' is not installed. Install it and try again.",
+                        tool_name
+                    ))
+            }
+            // ... one arm per ApexeError variant; see §3 for the full mapping.
         }
     }
 }
@@ -184,14 +96,12 @@ impl From<ApexeError> for ModuleError {
 ### 4.2 Convenience Constructor
 
 ```rust
-// src/errors.rs (additions)
-
+// src/errors.rs
 impl ApexeError {
     /// Convert to ModuleError with an attached trace_id.
     pub fn into_module_error_with_trace(self, trace_id: String) -> ModuleError {
-        let mut err: ModuleError = self.into();
-        err.trace_id = Some(trace_id);
-        err
+        let module_err: ModuleError = self.into();
+        module_err.with_trace_id(trace_id)
     }
 }
 ```

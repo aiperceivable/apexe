@@ -269,7 +269,7 @@ Additional inference:
 - **Duplicate module IDs** after flattening: Use `apcore_toolkit::deduplicate_ids()` to append numeric suffixes.
 - **Empty description**: Set description to `"Execute {full_command}"`.
 - **Flags with no long or short name**: Use `canonical_name()` which returns `"unknown"` -- deduplicate will disambiguate.
-- **Unicode in tool names**: Preserve as-is in module_id (apcore module IDs support UTF-8).
+- **Unicode in tool names**: `sanitize_id_segment` folds the id to apcore's module-id charset (`[a-z0-9_.]`), so a unicode tool name does NOT survive into `module_id` as-is — apcore's `module_id_pattern` does not accept UTF-8 there. The original name is preserved verbatim in `metadata.command_path` instead. See `test_converter_preserves_unicode_tool_name_outside_the_id`.
 
 ---
 

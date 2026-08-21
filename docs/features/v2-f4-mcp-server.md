@@ -17,7 +17,7 @@
 
 ## 1. Purpose
 
-Replace the custom MCP JSON-RPC server (6 files, ~1,200 LOC) with apcore-mcp's `APCoreMCP` builder. This gains full MCP protocol compliance, streamable-http transport, Explorer UI, and middleware integration without maintaining a custom implementation. (Transport-level authentication is available via the apcore library API, not a CLI flag in v0.x — servers bind localhost by default; see §4.1.)
+Replace the custom MCP JSON-RPC server (6 files, ~1,200 LOC) with apcore-mcp's `APCoreMCP` builder. This gains full MCP protocol compliance, streamable-http transport, Explorer UI, and middleware integration without maintaining a custom implementation. (Transport-level authentication shipped as a first-class CLI flag set — `--auth`, `--auth-token`, `--jwt-secret`, `--allow-unauthenticated-bind` — required by default on the HTTP-family transports; see §4.1.)
 
 ---
 
@@ -126,11 +126,12 @@ impl ServeArgs {
             "stdio" => "stdio",
             "http" => "streamable-http",
             "sse" => "sse",
-            other => return Err(ModuleError {
-                code: ErrorCode::ValidationFailed,
-                message: format!("Unsupported transport: {}", other),
-                ..Default::default()
-            }),
+            other => {
+                return Err(ModuleError::new(
+                    ErrorCode::GeneralInvalidInput,
+                    format!("Unsupported transport: {other}"),
+                ))
+            }
         };
 
         let mut builder = APCoreMCP::builder()
@@ -150,15 +151,20 @@ impl ServeArgs {
             builder = builder.include_explorer(true);
         }
 
-        // No `--require-auth` wiring: MCP stdio has no auth concept and HTTP-
-        // transport auth is delegated to the transport layer (configured via
-        // the library API, not a CLI flag in v0.x). Servers bind localhost by
-        // default. See §4.1 note.
+        // Superseded by implementation: authentication shipped as a
+        // first-class CLI surface, not a roadmap item deferred to the
+        // library API. `resolve_auth` (src/auth.rs) picks a default per
+        // transport (stdio -> disabled; HTTP-family -> a generated bearer
+        // token unless `--auth` says otherwise) and refuses to start on a
+        // non-loopback bind with no credential unless
+        // `--allow-unauthenticated-bind` explicitly acknowledges it. See
+        // §4.1 (revised below) and `docs/user-manual.md` §9.
 
-        let server = builder.build().map_err(|e| ModuleError {
-            code: ErrorCode::InternalError,
-            message: format!("Failed to build MCP server: {}", e),
-            ..Default::default()
+        let server = builder.build().map_err(|e| {
+            ModuleError::new(
+                ErrorCode::GeneralInternalError,
+                format!("Failed to build MCP server: {e}"),
+            )
         })?;
 
         // Step 7: Serve (blocking)
@@ -205,15 +211,18 @@ pub struct ServeArgs {
     pub name: String,
     #[arg(long)]
     pub show_config: Option<String>,
-    // Revised: no `--sandbox` or `--require-auth` flags.
+    // Revised: no `--sandbox` flag, and authentication shipped as its own
+    // flag set rather than the `--require-auth` toggle this draft proposed.
     // - Subprocess isolation is ALWAYS-ON (timeout, output cap, no-shell, env
     //   scrubbing) in the executor — there is no unsandboxed mode to toggle.
     //   See F5 §5.
-    // - Authentication is delegated to the transport layer: apcore-a2a exposes
-    //   an `Authenticator` (JWT/Bearer) via the library API, and MCP stdio has
-    //   no auth concept. Servers bind localhost (127.0.0.1) by default, so the
-    //   practical v0.x posture is "bind loopback + file/transport-level auth".
-    //   A first-class `--require-auth` for HTTP transports is roadmap, not v0.x.
+    // - Authentication: `--auth <token|jwt|none>`, `--auth-token`,
+    //   `--jwt-secret`, `--allow-unauthenticated-bind`. Required by default
+    //   on HTTP-family transports (a bearer token is generated if none is
+    //   supplied); MCP stdio has no network boundary so `--auth` is a no-op
+    //   there. A non-loopback bind with no credential refuses to start
+    //   unless `--allow-unauthenticated-bind` explicitly acknowledges it.
+    //   See `src/auth.rs` and `docs/user-manual.md` §9.
 }
 ```
 
@@ -265,7 +274,7 @@ v0.1.x had a basic root endpoint with server metadata. apcore-mcp's Explorer UI 
 | `test_mcp_serve_starts_with_no_modules` | Empty modules dir | Server starts, tools/list returns empty |
 | `test_mcp_serve_loads_binding_files` | Dir with git.binding.yaml | tools/list returns git modules |
 | `test_mcp_serve_tools_call_executes` | Call "cli.echo.echo" with message | Returns stdout with message |
-| `test_mcp_serve_tools_call_injection_blocked` | Call with shell metacharacters | Error response with ValidationFailed |
+| `test_mcp_tools_call_passes_shell_metacharacters_through` | Call with shell metacharacters | Value reaches the child verbatim — no shell is invoked, so this is not injection (§3, `build_arguments`) |
 | `test_mcp_serve_explorer_http_only` | --explorer with stdio transport | Warning logged, explorer not available |
 | `test_mcp_serve_invalid_transport` | --transport "invalid" | Error before server starts |
 
@@ -278,7 +287,7 @@ exist — see §4.1). The serve request path is instead covered end-to-end:
 |---|---|---|
 | `test_mcp_server_builds_and_exposes_scanned_tools` | Build server from bindings | Scanned module exposed as a tool |
 | `test_mcp_tools_call_executes` | tools/call on a scanned module | CLI executes; stdout returned |
-| `test_mcp_tools_call_injection_blocked` | tools/call with a shell metacharacter | Rejected on the request path |
+| `test_mcp_tools_call_option_injection_blocked` | tools/call with a value the wrapped command would parse as an option (leading `-`) | Rejected on the request path — this, not shell metacharacters, is the actual guard (§3) |
 | `test_mcp_tools_call_unknown_module_errors` | tools/call for an unscanned module | Error, no execution |
 
 ---

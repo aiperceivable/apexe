@@ -26,136 +26,69 @@ Replace apexe's custom binding generator (`BindingGenerator`, `SchemaGenerator`,
 
 ```rust
 pub mod loader;
-pub mod registry;
+pub mod skill;
 pub mod yaml;
 
 pub use loader::load_modules_from_dir;
-pub use registry::RegistryOutput;
+pub use skill::SkillOutput;
 pub use yaml::YamlOutput;
 ```
 
+**`RegistryOutput` (originally planned for this module, §2.3 in earlier
+drafts) was never built** — registration into an apcore `Registry` is
+instead `crate::module::build_executor` (`src/module/registry.rs`), which
+reads the on-disk `.binding.yaml` files written by `YamlOutput` rather than
+registering directly from `Vec<ScannedModule>`, and has no `dry_run`
+parameter. `SkillOutput` (writing a Claude Skill `SKILL.md` per module) was
+added instead, later than this spec, and is not described here — see
+`src/output/skill.rs`.
+
 ### 2.2 `src/output/yaml.rs` -- YamlOutput
+
+**One file per module, not grouped by tool** — an earlier draft of this
+section proposed grouping (`"cli.git.commit"` and `"cli.docker.container.ls"`
+into `git.binding.yaml` / `docker.binding.yaml`); that was never built.
+`YamlOutput` writes `{sanitized_module_id}.binding.yaml` per module, and
+`verify` is a constructor choice (`new()` vs. `without_verification()`), not
+a per-call parameter.
 
 ```rust
 use std::path::Path;
 use apcore::ModuleError;
-use apcore_toolkit::{ScannedModule, WriteResult, YAMLWriter, YAMLVerifier, SyntaxVerifier, Verifier};
+use apcore_toolkit::{ScannedModule, WriteResult, YAMLWriter, YAMLVerifier, Verifier};
 
-/// Writes ScannedModules to .binding.yaml files using apcore-toolkit's YAMLWriter.
+/// Wraps apcore-toolkit's YAMLWriter to write ScannedModules as `.binding.yaml` files.
 pub struct YamlOutput {
-    /// Underlying toolkit writer.
     writer: YAMLWriter,
-    /// Verifiers to run before writing.
-    verifiers: Vec<Box<dyn Verifier>>,
+    verify: bool,
 }
 
 impl YamlOutput {
-    /// Create a new YamlOutput with default verifiers (YAML syntax + structure).
+    /// Create a new YamlOutput with verification enabled.
     pub fn new() -> Self {
-        Self {
-            writer: YAMLWriter,
-            verifiers: vec![
-                Box::new(YAMLVerifier),
-                Box::new(SyntaxVerifier),
-            ],
-        }
+        Self { writer: YAMLWriter, verify: true }
     }
 
-    /// Create a YamlOutput with no verifiers (for testing or speed).
+    /// Create a new YamlOutput with verification disabled.
     pub fn without_verification() -> Self {
-        Self {
-            writer: YAMLWriter,
-            verifiers: vec![],
-        }
+        Self { writer: YAMLWriter, verify: false }
     }
 
-    /// Write modules to YAML binding files in the given directory.
+    /// Write modules to YAML binding files in `output_dir`.
     ///
-    /// Steps:
-    /// 1. Group modules by tool name (extracted from module_id prefix).
-    /// 2. For each group, call YAMLWriter::write() with the module list.
-    /// 3. If verify is true, run all verifiers on the output.
-    /// 4. Return Vec<WriteResult> with paths and verification status.
+    /// Each module is written to its own file:
+    /// `{sanitized_module_id}.binding.yaml`. Returns a `WriteResult` per
+    /// module written.
     pub fn write(
         &self,
         modules: &[ScannedModule],
         output_dir: &Path,
         dry_run: bool,
-        verify: bool,
     ) -> Result<Vec<WriteResult>, ModuleError>;
 }
 ```
 
-**Write logic**:
-
-```
-1. Create output_dir if it does not exist.
-2. Group modules by extracting tool name from module_id:
-   "cli.git.commit" -> tool_name = "git"
-   "cli.docker.container.ls" -> tool_name = "docker"
-3. For each tool group:
-   a. filename = "{tool_name}.binding.yaml"
-   b. Call self.writer.write(
-        &group_modules,
-        output_dir,
-        dry_run,
-        verify,
-        &self.verifiers,
-      )
-   c. Collect WriteResults
-4. Return all WriteResults.
-```
-
-### 2.3 `src/output/registry.rs` -- RegistryOutput
-
-```rust
-use std::sync::Arc;
-use apcore::{ModuleError, Registry};
-use apcore_toolkit::{RegistryWriter, ScannedModule, HandlerFactory};
-
-use crate::module::CliModule;
-use crate::governance::AuditManager;
-
-/// Registers ScannedModules directly into an apcore Registry as CliModules.
-pub struct RegistryOutput {
-    writer: RegistryWriter,
-}
-
-impl RegistryOutput {
-    /// Create a new RegistryOutput with a handler factory that produces CliModules.
-    pub fn new(
-        timeout_ms: u64,
-        audit: Option<Arc<AuditManager>>,
-    ) -> Self {
-        let timeout = timeout_ms;
-        let au = audit.clone();
-
-        let factory: HandlerFactory = Box::new(move |module: &ScannedModule| {
-            Box::new(CliModule::from_scanned(module, timeout, au.clone())?)
-        });
-
-        Self {
-            writer: RegistryWriter::with_handler_factory(factory),
-        }
-    }
-
-    /// Register all modules into the given registry.
-    ///
-    /// Steps:
-    /// 1. For each ScannedModule, create a CliModule via the handler factory.
-    /// 2. Register the CliModule in the registry.
-    /// 3. Return count of registered modules or error.
-    pub fn register(
-        &self,
-        modules: &[ScannedModule],
-        registry: &Registry,
-        dry_run: bool,
-        verify: bool,
-    ) -> Result<usize, ModuleError>;
-}
-```
-
-### 2.4 `src/output/loader.rs` -- Module Loader
+### 2.3 `src/output/loader.rs` -- Module Loader
 
 ```rust
 use std::path::Path;
@@ -263,8 +196,7 @@ impl ScanArgs {
 
 | Test Name | Scenario | Expected |
 |---|---|---|
-| `test_yaml_output_writes_file` | 3 modules from "git" tool | `git.binding.yaml` created |
-| `test_yaml_output_groups_by_tool` | Modules from "git" and "docker" | Two files: `git.binding.yaml`, `docker.binding.yaml` |
+| `test_yaml_output_writes_file` | 3 modules from "git" tool | 3 files, one per module (§2.2 — grouping by tool was never implemented) |
 | `test_yaml_output_file_is_valid_yaml` | Write and re-read | Deserialized modules match originals |
 | `test_yaml_output_dry_run_no_files` | dry_run = true | No files created, WriteResults returned |
 | `test_yaml_output_verify_catches_invalid` | Malformed module (empty module_id) | WriteResult.verification_error set |
@@ -273,14 +205,18 @@ impl ScanArgs {
 | `test_yaml_output_empty_modules` | Empty module list | No files created, empty results |
 | `test_yaml_output_without_verification` | Use without_verification() | No verification errors even for edge cases |
 
-### 5.2 RegistryOutput Tests
+### 5.2 Registration Tests
+
+**There is no `RegistryOutput` type or `dry_run` at registration (§2.1) —
+registration is `crate::module::build_executor` (`src/module/registry.rs`),
+which reads bindings from disk rather than taking `Vec<ScannedModule>`
+directly.**
 
 | Test Name | Scenario | Expected |
 |---|---|---|
-| `test_registry_output_registers_modules` | 3 modules | Registry contains 3 entries |
-| `test_registry_output_dry_run` | dry_run = true | Registry unchanged, returns count |
-| `test_registry_output_creates_cli_modules` | Register and execute | Module executes CLI command |
-| `test_registry_output_duplicate_ids_handled` | Two modules with same ID | Deduplication applied |
+| registration-count coverage | 3 bindings on disk | `Registry::count()` and descriptor fields match — see `registry.rs`'s own `build_executor` tests |
+| `test_mcp_tools_call_executes` (`tests/mcp_integration.rs`) | Register and execute | Module executes CLI command |
+| duplicate-id handling at registration | Two bindings resolving to the same `module_id` | Currently untested at the registration layer — `deduplicate_ids` runs upstream in `CliToolConverter::convert` (single-tool only, see F1 §5); `register_modules` warns and drops the loser but no test drives that path directly |
 
 ### 5.3 Loader Tests
 
@@ -301,7 +237,7 @@ impl ScanArgs {
 | v0.1.x Type | Replacement |
 |---|---|
 | `GeneratedBinding` | `ScannedModule` from apcore-toolkit |
-| `GeneratedBindingFile` | Vec<ScannedModule> grouped by tool |
+| `GeneratedBindingFile` | `Vec<ScannedModule>`, one `.binding.yaml` file per module |
 | `BindingGenerator` | `CliToolConverter` (F1) + `YamlOutput` |
 | `SchemaGenerator` | `adapter::schema` module (F1) |
 | `BindingYAMLWriter` | `YamlOutput` wrapping `YAMLWriter` |

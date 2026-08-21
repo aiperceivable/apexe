@@ -492,10 +492,18 @@ See Feature Spec F5 for full details.
 
 ### 5.6 CLI Module Execution (New: Module Trait Implementation)
 
-This is the central new component. Each CLI command becomes an apcore `Module`:
+This is the central new component. Each CLI command becomes an apcore `Module`.
+**The sketch below predates implementation and is kept only for the shape of
+the idea — see Feature Spec F2 §2.2-2.4 for the current, accurate
+`CliModule` and `Module` impl.** In particular: there is no `SandboxManager`
+field (subprocess isolation is always-on in `module/executor.rs`, not a
+pluggable/optional component); `input_schema`/`output_schema` return `Value`
+directly, not `Option<Value>`; `execute`'s parameters are
+`(inputs: Value, ctx: &Context<Value>)`; and there is no `preflight` method
+(validation is inline in argument building — F2 §3.4).
 
 ```rust
-// src/module/cli_module.rs
+// src/module/cli_module.rs — see F2 §2.2 for the current field list
 pub struct CliModule {
     module_id: String,
     description: String,
@@ -506,29 +514,7 @@ pub struct CliModule {
     command_parts: Vec<String>,
     json_flag: Option<String>,
     timeout_ms: u64,
-    sandbox: Option<Arc<SandboxManager>>,
     audit: Option<Arc<AuditManager>>,
-}
-
-#[async_trait]
-impl Module for CliModule {
-    async fn execute(&self, ctx: &Context<SharedData>, input: Value) -> Result<Value, ModuleError> {
-        // 1. Validate input against input_schema
-        // 2. Check ACL via ctx
-        // 3. Build command arguments from input (reuses executor logic)
-        // 4. Validate no injection
-        // 5. Execute subprocess (via sandbox if enabled)
-        // 6. Log audit entry
-        // 7. Parse and return output
-    }
-
-    fn input_schema(&self) -> Option<Value> { Some(self.input_schema.clone()) }
-    fn output_schema(&self) -> Option<Value> { Some(self.output_schema.clone()) }
-    fn description(&self) -> &str { &self.description }
-
-    fn preflight(&self, input: &Value) -> Result<(), ModuleError> {
-        // Validate injection prevention before execution
-    }
 }
 ```
 
@@ -544,38 +530,18 @@ See Feature Spec F2 for full details.
 
 **Current**: `ApexeError` enum with 7 variants (thiserror).
 
-**New**: `ApexeError` remains for scanner-internal errors. A new conversion layer maps to `ModuleError` at the boundary:
+**New**: `ApexeError` remains for scanner-internal errors. A new conversion layer maps to `ModuleError` at the boundary — the full, current mapping (apcore 0.27 `ErrorCode` names, builder-style `ModuleError::new(...).with_details(...)` construction rather than the struct-literal shape shown in earlier drafts) lives in **Feature Spec F6 §3-4**; do not use the snippet below as a reference, it predates the apcore 0.26→0.27 rename:
 
 ```rust
-// src/errors.rs (modified)
+// src/errors.rs — see F6 §3 for the authoritative ErrorCode table
 impl From<ApexeError> for ModuleError {
     fn from(err: ApexeError) -> ModuleError {
         match err {
-            ApexeError::ToolNotFound { tool_name } => ModuleError {
-                code: ErrorCode::ModuleNotFound,
-                message: format!("CLI tool '{}' not found on PATH", tool_name),
-                details: None,
-                trace_id: None,
-                retryable: false,
-                ai_guidance: Some(format!("The tool '{}' is not installed. Install it and try again.", tool_name)),
-            },
-            ApexeError::ScanTimeout { command, timeout } => ModuleError {
-                code: ErrorCode::Timeout,
-                message: format!("Command '{}' timed out after {}s", command, timeout),
-                details: None,
-                trace_id: None,
-                retryable: true,
-                ai_guidance: Some("The command took too long. Try with simpler arguments or increase timeout.".into()),
-            },
-            ApexeError::CommandInjection { param_name, chars } => ModuleError {
-                code: ErrorCode::ValidationFailed,
-                message: format!("Parameter '{}' contains prohibited characters: {:?}", param_name, chars),
-                details: None,
-                trace_id: None,
-                retryable: false,
-                ai_guidance: Some("Remove shell metacharacters from the input.".into()),
-            },
-            // ... remaining mappings
+            ApexeError::ToolNotFound { ref tool_name } => {
+                ModuleError::new(ErrorCode::ModuleNotFound, err.to_string())
+                    .with_ai_guidance(format!("The tool '{tool_name}' is not installed. Install it and try again."))
+            }
+            // ... one arm per ApexeError variant; see F6 §3 for the full mapping.
         }
     }
 }

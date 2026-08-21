@@ -176,17 +176,26 @@ pub fn generate_default(modules: &[ScannedModule]) -> ACL {
 
 ## 4. AuditManager
 
+**This section describes apexe's own hand-rolled JSONL writer, not a wrapper
+around `apcore_cli::AuditLogger` — that design was superseded during
+implementation. Deliberately absent from the record: no `input` and no
+`output`, hashed or otherwise. See `docs/user-manual.md` §9.2 for the
+rationale (a governance trail that captured call arguments would itself
+become a sensitive-data store).**
+
 ### 4.1 Type Definition
 
 ```rust
 // src/governance/audit.rs
-use std::path::Path;
-use apcore_cli::AuditLogger;
-use serde_json::Value;
+use std::path::{Path, PathBuf};
 
-/// Manages append-only JSONL audit logging for CLI module executions.
+/// apexe's own append-only JSONL audit trail (log file created `0o600`).
+/// Covers three event kinds: `execution` (a call reached the wrapped
+/// binary), `refusal` (the pipeline stopped it first — approval denial,
+/// validation failure, timeout, ...), and ACL allow/deny decisions
+/// (delegated to `apcore::ACL`'s own audit-logger hook).
 pub struct AuditManager {
-    logger: AuditLogger,
+    path: PathBuf,
 }
 ```
 
@@ -194,33 +203,42 @@ pub struct AuditManager {
 
 ```rust
 impl AuditManager {
-    /// Create a new AuditManager writing to the given file path.
-    ///
-    /// The file is created if it does not exist.
-    /// Entries are appended (never truncated).
-    pub fn new(audit_path: &Path) -> Self {
-        Self {
-            logger: AuditLogger::new(audit_path),
-        }
-    }
+    /// Bind to a file path. No existence/writability check at construction —
+    /// see the doc comment on `append_line` for why: a server that refused
+    /// to serve because the log is unwritable is a worse failure mode than
+    /// serving unlogged with a warning per dropped record.
+    pub fn new(audit_path: &Path) -> Self;
 
-    /// Log a module execution event.
-    ///
-    /// Writes a JSONL entry with:
-    /// - timestamp (ISO 8601)
-    /// - module_id
-    /// - input (JSON)
-    /// - output (JSON, truncated if large)
-    /// - duration_ms
-    /// - exit_code (extracted from output)
-    /// - success (exit_code == 0)
+    /// Append one `event: "execution"` record for a call that reached the
+    /// wrapped binary: `timestamp`, `event`, `trace_id` (omitted if empty),
+    /// `caller_id` (omitted if `None`), `module_id`, `status`, `exit_code`,
+    /// `duration_ms`. No `input`, no `output`.
     pub fn log_execution(
         &self,
         module_id: &str,
-        input: &Value,
-        output: &Value,
+        trace_id: &str,
+        caller_id: Option<&str>,
+        status: &str,
+        exit_code: i32,
         duration_ms: u64,
     );
+
+    /// Append one `event: "refusal"` record for a call the pipeline stopped
+    /// before the binary ran (approval denial, validation failure, ACL
+    /// deny escalated outside apcore's own audit hook, timeout). Same shape
+    /// as `log_execution`, with `error_code` in place of `exit_code`.
+    pub fn log_refusal(
+        &self,
+        module_id: &str,
+        trace_id: &str,
+        caller_id: Option<&str>,
+        error_code: apcore::ErrorCode,
+        duration_ms: u64,
+    );
+
+    /// Append apcore's own `AuditEntry` for one ACL allow/deny decision,
+    /// wired via `ACL::set_audit_logger`.
+    pub fn log_acl_decision(&self, entry: &apcore::AuditEntry);
 
     /// Return the path to the audit log file.
     pub fn log_path(&self) -> &Path;
@@ -229,16 +247,19 @@ impl AuditManager {
 
 ### 4.3 Integration with CliModule
 
-The `AuditManager` is called inside `CliModule::execute()` after subprocess completion:
+`CliModule::execute()` logs an `execution`/`refusal` record on both the
+success and error paths, and `ApprovalGate` logs a `refusal` record for
+every approval denial (including a caller-token lookup with no matching
+pending approval):
 
 ```rust
-// Inside CliModule::execute()
+// Inside CliModule::execute(), success and error paths alike
 let start = std::time::Instant::now();
-let result = execute_subprocess(...).await?;
+// ... build_argv, execute_subprocess ...
 let duration_ms = start.elapsed().as_millis() as u64;
 
 if let Some(ref audit) = self.audit {
-    audit.log_execution(&self.module_id, &input, &result, duration_ms);
+    audit.log_execution(&self.module_id, &ctx.trace_id, caller_id, status, exit_code, duration_ms);
 }
 ```
 
