@@ -268,8 +268,17 @@ impl CliToolConverter {
     }
 
     /// Convert multiple ScannedCLITools into ScannedModules.
+    ///
+    /// Deduplicates and resolves display metadata over the FLATTENED batch,
+    /// not per tool: `convert()`'s own dedup pass only sees one tool's
+    /// leaves, so two tools that resolve to the same command (e.g. `apexe
+    /// scan ls /bin/ls`, two path arguments naming the same binary) would
+    /// otherwise each produce "cli.ls" with nothing to disambiguate them.
     pub fn convert_all(&self, tools: &[ScannedCLITool]) -> Vec<ScannedModule> {
-        tools.iter().flat_map(|t| self.convert(t)).collect()
+        let modules: Vec<ScannedModule> =
+            tools.iter().flat_map(|t| self.build_modules(t)).collect();
+        let modules = deduplicate_ids(modules);
+        Self::apply_display_resolver(modules)
     }
 
     /// Recursively collect leaf commands (commands with no subcommands).
@@ -833,6 +842,30 @@ mod tests {
         let ids: Vec<&str> = modules.iter().map(|m| m.module_id.as_str()).collect();
         assert!(ids.contains(&"cli.tool1.cmd1"));
         assert!(ids.contains(&"cli.tool2.cmd2"));
+    }
+
+    #[test]
+    fn test_convert_all_deduplicates_module_ids_across_tools() {
+        // Regression: `apexe scan ls /bin/ls` (two path arguments that
+        // resolve to the same command) produces two ScannedCLITool entries
+        // both named "ls". convert() dedupes within one tool's own leaves;
+        // convert_all flat_mapped convert() per tool, so a collision ACROSS
+        // tools survived into the returned Vec -- e.g. two files on disk
+        // both carrying module_id "cli.ls", which the registry then refuses
+        // to register both halves of (registers one, warns and drops the
+        // other) while `apexe list` still counts both.
+        let tool1 = make_tool("ls", vec![]);
+        let tool2 = make_tool("ls", vec![]);
+        let converter = CliToolConverter::new();
+        let modules = converter.convert_all(&[tool1, tool2]);
+
+        assert_eq!(modules.len(), 2);
+        let ids: Vec<&str> = modules.iter().map(|m| m.module_id.as_str()).collect();
+        assert!(ids.contains(&"cli.ls"), "{ids:?}");
+        assert!(
+            ids.contains(&"cli.ls_2"),
+            "the second tool's collision must be disambiguated, not left duplicate: {ids:?}"
+        );
     }
 
     #[test]
