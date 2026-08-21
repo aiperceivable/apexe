@@ -265,23 +265,33 @@ pub fn extract_man_synopsis(text: &str) -> String {
 fn section_body<'a>(text: &'a str, header: &str) -> Option<&'a str> {
     let mut start: Option<usize> = None;
     let mut offset = 0usize;
-    for line in text.lines() {
+    // `split_inclusive('\n')` keeps each line's terminator attached, so
+    // `raw_line.len()` is always the EXACT number of bytes consumed --
+    // correct for both `\n` and `\r\n` alike, and for a final line with no
+    // trailing newline. That makes every `offset` value land exactly on a
+    // boundary between two of `text`'s own substrings, which rules out both
+    // a byte-index-out-of-range and a not-a-char-boundary panic; neither
+    // needs a `.min(text.len())` guard as a result. The previous
+    // `line.len() + 1` arithmetic assumed a one-byte terminator, which
+    // undercounts CRLF input by one byte per line.
+    for raw_line in text.split_inclusive('\n') {
+        let line = raw_line.trim_end_matches(['\r', '\n']);
         let line_start = offset;
-        offset += line.len() + 1;
+        offset += raw_line.len();
         match start {
             None => {
                 if line.trim() == header {
-                    start = Some(offset.min(text.len()));
+                    start = Some(offset);
                 }
             }
             Some(begin) => {
                 if is_section_header(line) {
-                    return Some(&text[begin..line_start.min(text.len())]);
+                    return Some(&text[begin..line_start]);
                 }
             }
         }
     }
-    start.map(|begin| &text[begin.min(text.len())..])
+    start.map(|begin| &text[begin..])
 }
 
 /// Extract flags from a man page's option list.
@@ -618,6 +628,32 @@ mod tests {
     /// Build the overstrike encoding `man -P cat` produces for bold text.
     fn bold(text: &str) -> String {
         text.chars().map(|c| format!("{c}\u{8}{c}")).collect()
+    }
+
+    #[test]
+    fn test_section_body_computes_correct_offsets_on_crlf_input() {
+        // Regression: section_body used `line.len() + 1` as each line's byte
+        // width, which is 1 byte short per line under CRLF (`.lines()`
+        // strips the `\r` before this code ever sees it). The drift
+        // accumulates across every line before the target section, so the
+        // returned slice started and ended in the wrong place.
+        let text = "NAME\r\n  tool - do a thing\r\nDESCRIPTION\r\n  This is what it does.\r\nSYNOPSIS\r\n  tool [options]\r\n";
+        assert_eq!(
+            section_body(text, "DESCRIPTION"),
+            Some("  This is what it does.\r\n")
+        );
+    }
+
+    #[test]
+    fn test_section_body_handles_a_multibyte_character_near_a_crlf_section_boundary() {
+        // The undercounted offset can also land inside a multi-byte UTF-8
+        // character rather than merely producing a wrong-but-valid slice,
+        // which panics instead of returning bad data.
+        let text = "NAME\r\n  na\u{e9}ve tool\r\nDESCRIPTION\r\n  Uses \u{e9} throughout.\r\nSYNOPSIS\r\n  naive [options]\r\n";
+        assert_eq!(
+            section_body(text, "DESCRIPTION"),
+            Some("  Uses \u{e9} throughout.\r\n")
+        );
     }
 
     #[test]
