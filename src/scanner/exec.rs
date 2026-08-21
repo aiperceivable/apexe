@@ -15,10 +15,37 @@ use std::time::{Duration, Instant};
 /// completion while the other stays unread deadlocks the child once its pipe
 /// buffer fills. A read error yields whatever arrived before it — the exit
 /// status is the outcome that matters here.
+/// Highest number of bytes [`drain_pipe`] will buffer from a single stream.
+///
+/// Any realistic probe output — even `curl --help all`, the largest case
+/// this scanner is known to hit — is well under 100 KiB. This cap is
+/// deliberately generous headroom while still bounding worst-case memory
+/// when a scanned binary streams indefinitely (e.g. `yes --help`).
+const MAX_PROBE_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Drain a pipe on its own thread, up to [`MAX_PROBE_OUTPUT_BYTES`].
+///
+/// Both pipes are read concurrently with the wait loop: reading one to
+/// completion while the other stays unread deadlocks the child once its pipe
+/// buffer fills. A read error yields whatever arrived before it — the exit
+/// status is the outcome that matters here. Once the cap is reached, this
+/// thread stops reading; the child then blocks on its next `write()` (pipe
+/// backpressure), which the wall-clock deadline in `run_with_timeout`'s poll
+/// loop will still catch and kill.
 fn drain_pipe(mut pipe: impl io::Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
         let mut buf = Vec::new();
-        let _ = pipe.read_to_end(&mut buf);
+        let mut chunk = [0u8; 64 * 1024];
+        loop {
+            if buf.len() >= MAX_PROBE_OUTPUT_BYTES {
+                break;
+            }
+            let to_read = chunk.len().min(MAX_PROBE_OUTPUT_BYTES - buf.len());
+            match pipe.read(&mut chunk[..to_read]) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        }
         buf
     })
 }
@@ -101,6 +128,42 @@ mod tests {
     fn test_run_with_timeout_nonexistent_program() {
         let result = run_with_timeout("zzz_no_such_binary_xyz", &[], Duration::from_secs(5));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_drain_pipe_caps_output_instead_of_buffering_unbounded_data() {
+        // Regression: a source producing far more than the cap must be
+        // truncated by drain_pipe rather than buffered in full. Unbounded
+        // buffering is how a subprocess that streams forever (e.g.
+        // `yes --help`) exhausts memory before the wall-clock deadline in
+        // run_with_timeout's poll loop is ever consulted — the deadline
+        // governs try_wait, not the reader thread.
+        struct FiniteButLargeReader {
+            remaining: usize,
+        }
+        impl io::Read for FiniteButLargeReader {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.remaining == 0 {
+                    return Ok(0);
+                }
+                let n = buf.len().min(self.remaining);
+                for b in &mut buf[..n] {
+                    *b = b'x';
+                }
+                self.remaining -= n;
+                Ok(n)
+            }
+        }
+        let source = FiniteButLargeReader {
+            remaining: MAX_PROBE_OUTPUT_BYTES * 2,
+        };
+        let bytes = drain_pipe(source).join().unwrap();
+        assert!(
+            bytes.len() <= MAX_PROBE_OUTPUT_BYTES,
+            "drain_pipe buffered {} bytes, more than the {}-byte cap",
+            bytes.len(),
+            MAX_PROBE_OUTPUT_BYTES
+        );
     }
 
     #[test]
