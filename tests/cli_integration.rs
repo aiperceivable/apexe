@@ -572,11 +572,17 @@ fn test_the_explorer_prefills_only_required_keys() {
 #[test]
 fn test_scan_dry_run_writes_nothing() {
     let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
     let out = tmp.path().join("modules");
     let skills = tmp.path().join("skills");
 
-    let stdout = Command::cargo_bin("apexe")
+    // Progress messages go through `tracing` (stderr), the same channel the
+    // real (non-dry-run) write path already uses -- see
+    // test_dry_run_progress_messages_do_not_pollute_json_stdout below for why
+    // that matters.
+    let output = Command::cargo_bin("apexe")
         .unwrap()
+        .env("HOME", &home)
         .args([
             "scan",
             "ls",
@@ -589,22 +595,65 @@ fn test_scan_dry_run_writes_nothing() {
         .assert()
         .success()
         .get_output()
-        .stdout
         .clone();
 
-    let report = String::from_utf8(stdout).expect("stdout is UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
     assert!(
-        report.contains("Would write binding"),
-        "a dry run must still name the bindings it skipped: {report}"
+        stderr.contains("Would write binding"),
+        "a dry run must still name the bindings it skipped: {stderr}"
     );
     assert!(
-        report.contains("Would write ACL policy"),
-        "the ACL is a deliverable too: {report}"
+        stderr.contains("Would write ACL policy"),
+        "the ACL is a deliverable too: {stderr}"
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    assert!(
+        !stdout.contains("Would write"),
+        "dry-run progress messages must not land on stdout, apexe's \
+         machine-readable channel: {stdout}"
     );
 
     let created = |dir: &std::path::Path| -> usize { walk_files(dir).len() };
     assert_eq!(created(&out), 0, "no binding may be written");
     assert_eq!(created(&skills), 0, "no skill may be written");
+}
+
+#[test]
+fn test_dry_run_progress_messages_do_not_pollute_json_stdout() {
+    // Regression: the three dry-run branches used `println!`, sharing stdout
+    // with print_results' `--format json` document. `apexe scan --dry-run
+    // --format json` is exactly the pipeline/CI combination the flag exists
+    // for, and it produced a stream that was not valid JSON.
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let out = tmp.path().join("modules");
+
+    let stdout = Command::cargo_bin("apexe")
+        .unwrap()
+        .env("HOME", &home)
+        .args([
+            "scan",
+            "ls",
+            "--output-dir",
+            out.to_str().unwrap(),
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let report = String::from_utf8(stdout).expect("stdout is UTF-8");
+    let parsed: Result<serde_json::Value, _> = serde_json::from_str(&report);
+    assert!(
+        parsed.is_ok(),
+        "stdout must be valid JSON under --dry-run --format json, got: {report}\nerror: {:?}",
+        parsed.err()
+    );
 }
 
 /// Count files under `dir`, treating a missing directory as empty.

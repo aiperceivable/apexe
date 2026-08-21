@@ -219,10 +219,10 @@ impl ScanArgs {
             // A dry run reports no path — nothing was created — so the
             // module id is what identifies the deliverable.
             match (&wr.path, self.dry_run) {
-                (_, true) => println!(
-                    "Would write binding for {} under {}",
-                    wr.module_id,
-                    output_dir.display()
+                (_, true) => info!(
+                    module_id = %wr.module_id,
+                    dir = %output_dir.display(),
+                    "Would write binding"
                 ),
                 (Some(path), false) => info!(path, "Generated binding"),
                 (None, false) => {
@@ -286,7 +286,7 @@ impl ScanArgs {
     ) -> anyhow::Result<()> {
         let acl_path = config.config_dir.join("acl.yaml");
         if self.dry_run {
-            println!("Would write ACL policy: {}", acl_path.display());
+            info!(path = %acl_path.display(), "Would write ACL policy");
             return Ok(());
         }
         let acl_manager = if acl_path.exists() {
@@ -306,10 +306,10 @@ impl ScanArgs {
             return Ok(());
         };
         if self.dry_run {
-            println!(
-                "Would write {} skill file(s) under {}",
-                modules.len(),
-                skills_dir.join(".claude").join("skills").display()
+            info!(
+                count = modules.len(),
+                dir = %skills_dir.join(".claude").join("skills").display(),
+                "Would write skill file(s)"
             );
             return Ok(());
         }
