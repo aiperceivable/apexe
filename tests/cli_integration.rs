@@ -1,10 +1,30 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 
+/// Build an `apexe` invocation rooted in a fresh, isolated `$HOME`.
+///
+/// `ApexeConfig::default()` derives every governance path -- `config_dir`
+/// (where `acl.yaml` and `apcore.yaml` live) and `audit_log` -- from
+/// `dirs::home_dir()`, and neither has a CLI flag or an `APEXE_*` env
+/// override. Without this, every test that spawns the real binary reads and
+/// writes the developer's own `~/.apexe`: `apexe scan` merges into
+/// `~/.apexe/acl.yaml`, and `apexe serve` appends to `~/.apexe/audit.jsonl`.
+/// `--output-dir` / `--modules-dir` only redirect bindings, never those two.
+///
+/// The temporary directory backing `$HOME` is deliberately not cleaned up
+/// (`TempDir::keep`): it must outlive the returned `Command`, and a leaked
+/// few-KB directory per test run is a fair trade against every call site
+/// having to thread a guard value through.
+fn apexe() -> Command {
+    let home = tempfile::tempdir().unwrap().keep();
+    let mut cmd = Command::cargo_bin("apexe").unwrap();
+    cmd.env("HOME", home);
+    cmd
+}
+
 #[test]
 fn test_help_shows_subcommands() {
-    Command::cargo_bin("apexe")
-        .unwrap()
+    apexe()
         .arg("--help")
         .assert()
         .success()
@@ -17,8 +37,7 @@ fn test_help_shows_subcommands() {
 
 #[test]
 fn test_version_flag() {
-    Command::cargo_bin("apexe")
-        .unwrap()
+    apexe()
         .arg("--version")
         .assert()
         .success()
@@ -27,8 +46,7 @@ fn test_version_flag() {
 
 #[test]
 fn test_scan_help_shows_expected_flags() {
-    Command::cargo_bin("apexe")
-        .unwrap()
+    apexe()
         .args(["scan", "--help"])
         .assert()
         .success()
@@ -41,8 +59,7 @@ fn test_scan_help_shows_expected_flags() {
 
 #[test]
 fn test_serve_help_shows_expected_flags() {
-    Command::cargo_bin("apexe")
-        .unwrap()
+    apexe()
         .args(["serve", "--help"])
         .assert()
         .success()
@@ -57,8 +74,7 @@ fn test_a2a_help_shows_expected_flags() {
     // Regression for the WARNING finding: `apexe a2a` had no CLI integration
     // test at all, unlike `apexe serve`. Mirrors
     // test_serve_help_shows_expected_flags for the a2a subcommand's flags.
-    Command::cargo_bin("apexe")
-        .unwrap()
+    apexe()
         .args(["a2a", "--help"])
         .assert()
         .success()
@@ -73,8 +89,7 @@ fn test_a2a_help_shows_expected_flags() {
 
 #[test]
 fn test_scan_no_args_fails() {
-    Command::cargo_bin("apexe")
-        .unwrap()
+    apexe()
         .arg("scan")
         .assert()
         .failure()
@@ -83,8 +98,7 @@ fn test_scan_no_args_fails() {
 
 #[test]
 fn test_config_show_succeeds() {
-    Command::cargo_bin("apexe")
-        .unwrap()
+    apexe()
         .args(["config", "--show"])
         .assert()
         .success()
@@ -94,8 +108,7 @@ fn test_config_show_succeeds() {
 
 #[test]
 fn test_config_no_flags_succeeds() {
-    Command::cargo_bin("apexe")
-        .unwrap()
+    apexe()
         .arg("config")
         .assert()
         .success();
@@ -110,8 +123,7 @@ fn test_config_no_flags_succeeds() {
 fn test_scan_writes_bindings_for_the_tools_that_succeeded() {
     let out = tempfile::tempdir().unwrap();
 
-    let assert = Command::cargo_bin("apexe")
-        .unwrap()
+    let assert = apexe()
         .args(["scan", "echo", "zzz_no_such_tool_xyz", "ls"])
         .args(["--no-cache", "--output-dir"])
         .arg(out.path())
@@ -152,8 +164,7 @@ fn test_scan_writes_bindings_for_the_tools_that_succeeded() {
 
 /// Run `apexe serve --show-config …` and parse stdout as JSON.
 fn show_config(extra: &[&str]) -> serde_json::Value {
-    let output = Command::cargo_bin("apexe")
-        .unwrap()
+    let output = apexe()
         .args(["serve", "--show-config"])
         .args(extra)
         .assert()
@@ -223,8 +234,7 @@ fn test_show_config_cursor_honours_http_transport() {
 /// config file's body.
 #[test]
 fn test_show_config_unknown_format_fails_without_writing_stdout() {
-    let assert = Command::cargo_bin("apexe")
-        .unwrap()
+    let assert = apexe()
         .args(["serve", "--show-config", "vscode"])
         .assert()
         .failure();
@@ -275,8 +285,7 @@ fn test_show_config_never_echoes_credentials() {
 /// It is gone; passing it must fail loudly rather than be accepted as a no-op.
 #[test]
 fn test_serve_rejects_removed_skip_validation_flag() {
-    Command::cargo_bin("apexe")
-        .unwrap()
+    apexe()
         .args(["serve", "--skip-validation"])
         .assert()
         .failure()
@@ -347,8 +356,7 @@ fn test_manual_acl_example_carries_no_unregistered_condition() {
 fn test_scan_fails_outright_when_no_tool_can_be_scanned() {
     let out = tempfile::tempdir().unwrap();
 
-    Command::cargo_bin("apexe")
-        .unwrap()
+    apexe()
         .args(["scan", "zzz_no_such_tool_xyz", "zzz_also_missing_xyz"])
         .args(["--no-cache", "--output-dir"])
         .arg(out.path())
@@ -412,8 +420,7 @@ fn test_a_non_zero_exit_is_not_reported_as_an_mcp_error() {
         "\n",
     );
 
-    let output = Command::cargo_bin("apexe")
-        .unwrap()
+    let output = apexe()
         .args([
             "serve",
             "--transport",
@@ -467,8 +474,7 @@ fn test_a_non_zero_exit_is_not_reported_as_an_mcp_error() {
 /// silently.
 #[test]
 fn test_man_flag_emits_a_man_page() {
-    let output = Command::cargo_bin("apexe")
-        .unwrap()
+    let output = apexe()
         .arg("--man")
         .assert()
         .success()
@@ -504,7 +510,9 @@ fn test_man_flag_emits_a_man_page() {
 #[test]
 fn test_the_explorer_prefills_only_required_keys() {
     let port = 8_931;
+    let home = tempfile::tempdir().unwrap().keep();
     let mut server = std::process::Command::new(env!("CARGO_BIN_EXE_apexe"))
+        .env("HOME", home)
         .args([
             "serve",
             "--transport",
@@ -572,7 +580,6 @@ fn test_the_explorer_prefills_only_required_keys() {
 #[test]
 fn test_scan_dry_run_writes_nothing() {
     let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().join("home");
     let out = tmp.path().join("modules");
     let skills = tmp.path().join("skills");
 
@@ -580,9 +587,7 @@ fn test_scan_dry_run_writes_nothing() {
     // real (non-dry-run) write path already uses -- see
     // test_dry_run_progress_messages_do_not_pollute_json_stdout below for why
     // that matters.
-    let output = Command::cargo_bin("apexe")
-        .unwrap()
-        .env("HOME", &home)
+    let output = apexe()
         .args([
             "scan",
             "ls",
@@ -626,12 +631,9 @@ fn test_dry_run_progress_messages_do_not_pollute_json_stdout() {
     // --format json` is exactly the pipeline/CI combination the flag exists
     // for, and it produced a stream that was not valid JSON.
     let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().join("home");
     let out = tmp.path().join("modules");
 
-    let stdout = Command::cargo_bin("apexe")
-        .unwrap()
-        .env("HOME", &home)
+    let stdout = apexe()
         .args([
             "scan",
             "ls",
@@ -679,8 +681,7 @@ fn test_scan_without_dry_run_writes_the_binding() {
     let tmp = tempfile::tempdir().unwrap();
     let out = tmp.path().join("modules");
 
-    Command::cargo_bin("apexe")
-        .unwrap()
+    apexe()
         .args(["scan", "ls", "--output-dir", out.to_str().unwrap()])
         .assert()
         .success();
@@ -702,8 +703,7 @@ fn test_explorer_on_stdio_warns_that_it_does_nothing() {
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#,
         "\n",
     );
-    let stderr = Command::cargo_bin("apexe")
-        .unwrap()
+    let stderr = apexe()
         .args(["serve", "--transport", "stdio", "--explorer"])
         .write_stdin(session)
         .assert()
