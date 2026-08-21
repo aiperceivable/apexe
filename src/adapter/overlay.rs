@@ -873,7 +873,16 @@ fn merged_flag(existing: &ScannedFlag, curated: ScannedFlag) -> ScannedFlag {
     if !sources.contains(&FlagSource::Overlay) {
         sources.push(FlagSource::Overlay);
     }
-    merged.confidence = merged.confidence.max(Confidence::from_sources(&sources));
+    // `merged.confidence` already carries the overlay's DECLARED confidence
+    // (stamped by `OverlayFlag::to_scanned` before this function runs), which
+    // is the whole point of an overlay author setting `confidence:`. Only
+    // raise it further when the pre-existing scanned flag had already earned
+    // a higher confidence on its own -- never derive it from `sources` here:
+    // `sources` always contains `FlagSource::Overlay` at this point, and
+    // `Confidence::from_sources` treats that as `Verified` unconditionally,
+    // which silently promoted every merge-mode overlay to `verified`
+    // regardless of what it declared.
+    merged.confidence = merged.confidence.max(existing.confidence);
     merged.sources = sources;
     merged
 }
@@ -1188,6 +1197,50 @@ mod tests {
         );
         assert_eq!(flag.confidence, Confidence::Verified);
         assert_eq!(flag.sources, vec![FlagSource::Help, FlagSource::Overlay]);
+    }
+
+    #[test]
+    fn test_apply_overlay_merge_does_not_promote_a_low_confidence_overlay_to_verified() {
+        // Regression: a merge-mode overlay declaring `confidence: low` (the
+        // documented way to record an unreviewed, model-guessed addition --
+        // see CLAUDE.md's overlay guidance) must not have that declaration
+        // silently overridden to `verified` just because merging stamps
+        // FlagSource::Overlay onto the sources list.
+        let mut low_confidence_overlay = overlay(OverlayMode::Merge);
+        low_confidence_overlay.confidence = Confidence::Low;
+
+        let mut tool = ScannedCLITool {
+            name: "ls".to_string(),
+            global_flags: vec![scanned_flag(Some("-l"), Some("--long"), "long")],
+            ..Default::default()
+        };
+        apply_overlay(&mut tool, &low_confidence_overlay);
+
+        assert_eq!(
+            tool.global_flags[0].confidence,
+            Confidence::Low,
+            "a merge-mode overlay's declared confidence must not be silently promoted"
+        );
+    }
+
+    #[test]
+    fn test_apply_overlay_merge_keeps_the_higher_of_declared_and_existing_confidence() {
+        // A merge should never LOWER a flag's confidence below what the scan
+        // had already independently earned it.
+        let mut low_confidence_overlay = overlay(OverlayMode::Merge);
+        low_confidence_overlay.confidence = Confidence::Low;
+
+        let mut high_confidence_flag = scanned_flag(Some("-l"), Some("--long"), "long");
+        high_confidence_flag.confidence = Confidence::High;
+
+        let mut tool = ScannedCLITool {
+            name: "ls".to_string(),
+            global_flags: vec![high_confidence_flag],
+            ..Default::default()
+        };
+        apply_overlay(&mut tool, &low_confidence_overlay);
+
+        assert_eq!(tool.global_flags[0].confidence, Confidence::High);
     }
 
     #[test]
