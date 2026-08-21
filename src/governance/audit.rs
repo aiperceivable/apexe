@@ -59,6 +59,14 @@ pub(crate) struct ExecutionRecord<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) caller_id: Option<&'a str>,
     pub(crate) module_id: &'a str,
+    /// The caller-supplied token for an approval-*token-lookup* refusal
+    /// (`ApprovalGate::check_approval`) -- the one path where `module_id` is
+    /// a fixed sentinel rather than a real module id, because the value
+    /// reaching that path is unvalidated caller input and must never be
+    /// written into the field a governance record's identity depends on.
+    /// `None` for every other record kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) approval_id: Option<&'a str>,
     /// `"success"`, `"error"` (the binary ran and failed) or `"refused"` (the
     /// call never reached the binary).
     pub(crate) status: &'a str,
@@ -109,6 +117,7 @@ impl AuditManager {
             trace_id: (!trace_id.is_empty()).then_some(trace_id),
             caller_id,
             module_id,
+            approval_id: None,
             status,
             exit_code: Some(exit_code),
             error_code: None,
@@ -139,11 +148,18 @@ impl AuditManager {
     /// with the same `trace_id` and a richer field set (`matched_rule`,
     /// `matched_rule_index`, `roles`). Emitting a second row for it would
     /// double-count denials for anyone tallying the file.
+    ///
+    /// `approval_id` is `Some` for exactly one caller —
+    /// [`ApprovalGate::check_approval`](crate::module::ApprovalGate) auditing
+    /// a caller-supplied approval-token lookup, where `module_id` is a fixed
+    /// sentinel rather than a real module id (see that call site's own doc
+    /// comment for why). Every other caller passes `None`.
     pub fn log_refusal(
         &self,
         module_id: &str,
         trace_id: &str,
         caller_id: Option<&str>,
+        approval_id: Option<&str>,
         error_code: ErrorCode,
         duration_ms: u64,
     ) {
@@ -153,6 +169,7 @@ impl AuditManager {
             trace_id: (!trace_id.is_empty()).then_some(trace_id),
             caller_id,
             module_id,
+            approval_id,
             status: "refused",
             exit_code: None,
             error_code: Some(error_code),
@@ -387,6 +404,7 @@ mod tests {
             "cli.cp",
             "trace-xyz",
             Some("u1"),
+            None,
             ErrorCode::ACLDenied,
             3,
         );

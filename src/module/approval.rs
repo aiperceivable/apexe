@@ -59,6 +59,16 @@ const NO_PROMPT_REASONS: [&str; 2] = [
 /// exists to prevent.
 const NO_ANSWER_REASON: &str = "Elicitation returned no response";
 
+/// `module_id` recorded for a [`ApprovalGate::check_approval`] refusal.
+///
+/// `check_approval` receives only a caller-supplied, unvalidated token —
+/// apcore dispatches to it straight from `tools/call` arguments, ahead of
+/// `input_validation` — so that token must never become the audit record's
+/// `module_id`: doing so would let any caller write an arbitrary string into
+/// the field a governance record's identity depends on. The token itself is
+/// still recorded, in `ExecutionRecord::approval_id`.
+const APPROVAL_TOKEN_LOOKUP_MODULE_ID: &str = "<approval-token-lookup>";
+
 /// What the gate does with one outcome from the upstream handler.
 #[derive(Debug, PartialEq, Eq)]
 enum Disposition {
@@ -178,12 +188,27 @@ impl ApprovalGate {
     ///
     /// `duration_ms` is 0: the gate runs before anything is timed, and inventing
     /// an elapsed time for a call that never started would be worse than
-    /// reporting none.
-    fn audit_refusal(&self, module_id: &str, trace_id: &str, caller_id: Option<&str>) {
+    /// reporting none. `approval_id` is `Some` only from
+    /// [`check_approval`](Self::check_approval)'s refusal path — see that
+    /// method's doc comment and [`APPROVAL_TOKEN_LOOKUP_MODULE_ID`].
+    fn audit_refusal(
+        &self,
+        module_id: &str,
+        trace_id: &str,
+        caller_id: Option<&str>,
+        approval_id: Option<&str>,
+    ) {
         let Some(ref audit) = self.audit else {
             return;
         };
-        audit.log_refusal(module_id, trace_id, caller_id, ErrorCode::ApprovalDenied, 0);
+        audit.log_refusal(
+            module_id,
+            trace_id,
+            caller_id,
+            approval_id,
+            ErrorCode::ApprovalDenied,
+            0,
+        );
     }
 
     /// Record a refusal for a request that carries its own context.
@@ -195,6 +220,7 @@ impl ApprovalGate {
             context
                 .and_then(|ctx| ctx.identity.as_ref())
                 .map(|id| id.id()),
+            None,
         );
     }
 }
@@ -279,9 +305,13 @@ impl ApprovalHandler for ApprovalGate {
     /// arriving over MCP are external input.
     ///
     /// The record carries no trace or identity: an `ApprovalHandler` receives
-    /// only the id on this path. `module_id` is recorded as the approval id it
-    /// was asked about, which is the only thing that distinguishes one such
-    /// refusal from another.
+    /// only the id on this path. That id is caller-supplied and unvalidated —
+    /// `input_validation` has not run yet (see above) — so it is recorded in
+    /// `approval_id`, never in `module_id`: writing unvalidated input into the
+    /// field a governance record's identity depends on would let a caller
+    /// frame an arbitrary module_id as having been denied.
+    /// [`APPROVAL_TOKEN_LOOKUP_MODULE_ID`] is what `module_id` carries
+    /// instead, on every record this method produces.
     async fn check_approval(&self, approval_id: &str) -> Result<ApprovalResult, ModuleError> {
         let result = self.inner.check_approval(approval_id).await?;
         if matches!(
@@ -295,7 +325,7 @@ impl ApprovalHandler for ApprovalGate {
             reason = ?result.reason,
             "Refusing an approval-token lookup: this gate holds no pending approvals"
         );
-        self.audit_refusal(approval_id, "", None);
+        self.audit_refusal(APPROVAL_TOKEN_LOOKUP_MODULE_ID, "", None, Some(approval_id));
         Ok(result)
     }
 }
@@ -453,9 +483,20 @@ mod tests {
         let entry: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
         assert_eq!(entry["event"], "refusal");
         assert_eq!(entry["error_code"], "APPROVAL_DENIED");
+        // Regression: the caller-supplied token used to be written straight
+        // into `module_id` -- apcore reads `_approval_token` from `tools/call`
+        // arguments and dispatches here *before* `input_validation`, so a
+        // caller could write an arbitrary string into the governance trail's
+        // `module_id` field (e.g. framing another module as having been
+        // denied). `module_id` must stay a fixed sentinel; the caller's token
+        // is recorded separately, where it cannot be mistaken for one.
         assert_eq!(
-            entry["module_id"], "caller-supplied-token",
-            "the id is the only thing distinguishing one such refusal from another"
+            entry["module_id"], "<approval-token-lookup>",
+            "a caller-supplied token must never become the audit record's module_id: {entry}"
+        );
+        assert_eq!(
+            entry["approval_id"], "caller-supplied-token",
+            "the token must still be recorded, just not as module_id: {entry}"
         );
         assert!(
             entry.get("trace_id").is_none(),

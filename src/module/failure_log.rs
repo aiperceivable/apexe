@@ -239,6 +239,7 @@ impl Middleware for FailureLogMiddleware {
                 module_id,
                 &ctx.trace_id,
                 ctx.identity.as_ref().map(|id| id.id()),
+                None,
                 error.code,
                 duration_ms as u64,
             );
