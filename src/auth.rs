@@ -244,7 +244,17 @@ fn resolve_none(
 
 /// `--auth token`: use the supplied token, or mint one.
 fn resolve_token(supplied: Option<String>) -> ResolvedAuth {
-    let (token, generated) = match supplied.filter(|t| !t.is_empty()) {
+    // Trimmed before the emptiness check and before it is stored: the
+    // presented side of the comparison in `StaticTokenAuthenticator::
+    // authenticate` is already trimmed, so a configured value left
+    // untrimmed here could never match anything a client presents. A
+    // trailing newline or space is the common way this secret arrives (a
+    // Docker --env-file, a Kubernetes secret created from a file, a
+    // hand-edited systemd Environment= line).
+    let (token, generated) = match supplied
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+    {
         Some(token) => (token, false),
         None => (generate_token(), true),
     };
@@ -410,6 +420,67 @@ mod tests {
             }
             _ => panic!("expected the supplied token"),
         }
+    }
+
+    #[test]
+    fn test_resolve_auth_trims_whitespace_from_a_supplied_token() {
+        // Regression: a trailing newline or space is the classic way a
+        // secret arrives from a Docker --env-file, a Kubernetes secret
+        // created from a file, or a hand-edited systemd Environment= line.
+        // The presented side is already trimmed in `authenticate` (below);
+        // without trimming here too, the stored and presented values would
+        // never match and every request would 401 with no diagnostic
+        // mentioning whitespace.
+        let opts = AuthOptions {
+            token: Some(" supplied-secret\n".to_string()),
+            ..AuthOptions::default()
+        };
+        match resolve_auth("http", "0.0.0.0", &opts).unwrap() {
+            ResolvedAuth::Token { token, .. } => {
+                assert_eq!(token, "supplied-secret");
+            }
+            _ => panic!("expected the supplied token"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_auth_treats_a_whitespace_only_token_as_absent() {
+        // A whitespace-only value must fall through to the generated-token
+        // path rather than becoming an unusable stored secret nobody can
+        // ever present a match for.
+        let opts = AuthOptions {
+            token: Some("   ".to_string()),
+            ..AuthOptions::default()
+        };
+        match resolve_auth("http", "0.0.0.0", &opts).unwrap() {
+            ResolvedAuth::Token {
+                token, generated, ..
+            } => {
+                assert!(
+                    generated,
+                    "a whitespace-only token must be treated as absent"
+                );
+                assert_eq!(token.len(), 64);
+            }
+            _ => panic!("expected a generated token"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_a_configured_token_with_surrounding_whitespace_still_authenticates() {
+        // End-to-end: APEXE_AUTH_TOKEN="abc123\n" must still let a client
+        // presenting the clean "abc123" bearer token through.
+        let opts = AuthOptions {
+            token: Some(" abc123\n".to_string()),
+            ..AuthOptions::default()
+        };
+        let resolved = resolve_auth("http", "0.0.0.0", &opts).unwrap();
+        let authenticator = resolved.authenticator().expect("token mode installs one");
+        let identity = authenticator
+            .authenticate(&bearer("abc123"))
+            .await
+            .expect("the trimmed configured token must match the presented one");
+        assert_eq!(identity.id(), TOKEN_IDENTITY_ID);
     }
 
     /// Collect the `tracing` output `run` emits on this thread.
