@@ -47,19 +47,40 @@ fn init_logging(cli: &Cli) {
         .init();
 }
 
-/// Report a failed run, using the richer `ModuleError` rendering when the cause
-/// is an [`ApexeError`] — that is where the actionable suggestion lives.
-fn report_error(error: anyhow::Error) {
-    match error.downcast::<ApexeError>() {
-        Ok(apexe_err) => {
-            let module_err: ModuleError = apexe_err.into();
-            eprintln!("Error: {}", module_err.message);
-            if let Some(ref guidance) = module_err.ai_guidance {
-                eprintln!("Suggestion: {guidance}");
-            }
-        }
-        Err(error) => eprintln!("Error: {error}"),
+/// Render the `Error: ...` / `Suggestion: ...` lines for a failed run.
+///
+/// The crate's two domain error types reach here at different points in
+/// their journey. `ApexeError` is what the scanner/resolver layer raises,
+/// but every call site downstream today converts or stringifies it before
+/// `main` ever sees it (`ScanOrchestrator::scan` renders it into a `String`
+/// inside `ScanFailure`) — so a bare `ApexeError` is not currently
+/// reachable here. `ModuleError` (e.g. from `ApexeConfig::ensure_dirs`)
+/// reaches here as itself. Checking for both, and converting `ApexeError`
+/// into `ModuleError` before rendering, means this renders correctly
+/// regardless of which one a call site propagates, today or in the future,
+/// rather than depending on one specific error's current path staying
+/// exactly as it is.
+///
+/// Split out from `report_error` so the rendering logic is testable without
+/// capturing the process's actual stderr.
+fn render_error(error: anyhow::Error) -> String {
+    let module_err = match error.downcast::<ModuleError>() {
+        Ok(module_err) => module_err,
+        Err(error) => match error.downcast::<ApexeError>() {
+            Ok(apexe_err) => apexe_err.into(),
+            Err(error) => return format!("Error: {error}"),
+        },
+    };
+    let mut rendered = format!("Error: {}", module_err.message);
+    if let Some(ref guidance) = module_err.ai_guidance {
+        rendered.push_str(&format!("\nSuggestion: {guidance}"));
     }
+    rendered
+}
+
+/// Report a failed run to stderr.
+fn report_error(error: anyhow::Error) {
+    eprintln!("{}", render_error(error));
 }
 
 fn main() {
@@ -76,5 +97,61 @@ fn main() {
     if let Err(e) = cli.run() {
         report_error(e);
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_report_error_renders_guidance_for_a_module_error() {
+        // Regression: report_error's rich-rendering branch only matched
+        // downcast::<ApexeError>(), but no production path ever propagates a
+        // bare ApexeError to main() -- ApexeConfig::ensure_dirs, for one,
+        // already converts to ModuleError before returning. The guidance
+        // every ModuleError carries was never shown, and the fallback
+        // branch's Display impl leaked the internal error-code tag instead.
+        let module_err = ModuleError::new(
+            apcore::ErrorCode::GeneralInternalError,
+            "failed to create /no/such/dir: Not a directory (os error 20)",
+        )
+        .with_ai_guidance("Check that the parent path is a directory you can write to.");
+        let error: anyhow::Error = module_err.into();
+
+        let rendered = render_error(error);
+
+        assert!(rendered.contains("failed to create /no/such/dir"), "{rendered}");
+        assert!(
+            rendered.contains("Suggestion: Check that the parent path"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("GeneralInternalError"),
+            "the internal error-code tag must not leak to the user: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_report_error_converts_an_apexe_error_to_module_error_for_rendering() {
+        let error: anyhow::Error = ApexeError::ToolNotFound {
+            tool_name: "zzz".to_string(),
+        }
+        .into();
+
+        let rendered = render_error(error);
+
+        assert!(rendered.starts_with("Error:"), "{rendered}");
+        assert!(
+            rendered.contains("Suggestion:"),
+            "ToolNotFound carries ai_guidance: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_report_error_falls_back_to_display_for_an_untyped_anyhow_error() {
+        let error = anyhow::anyhow!("plain io failure");
+        let rendered = render_error(error);
+        assert_eq!(rendered, "Error: plain io failure");
     }
 }
