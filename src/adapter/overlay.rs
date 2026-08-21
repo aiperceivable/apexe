@@ -116,6 +116,7 @@ pub enum ProbeExpectation {
 /// macOS" from the system BSD binary, so it cannot be replaced by any path
 /// heuristic.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProbeMatcher {
     /// Arguments to pass to the binary (e.g. `["--version"]`).
     pub args: Vec<String>,
@@ -139,6 +140,7 @@ pub struct ProbeOutcome {
 
 /// Conditions under which an overlay applies.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OverlayMatch {
     /// Host platforms this overlay is valid on, named as
     /// [`std::env::consts::OS`] names them. Empty means "any".
@@ -173,6 +175,7 @@ pub enum MatchStrength {
 
 /// A curated flag definition.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OverlayFlag {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub long: Option<String>,
@@ -227,6 +230,7 @@ pub struct OverlayFlag {
 
 /// A curated positional argument definition.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OverlayArg {
     pub name: String,
     #[serde(rename = "type", default)]
@@ -279,6 +283,7 @@ pub enum EvidenceSource {
 /// (`checked_on`) — because a verification against an older release cannot
 /// know about flags added after it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OverlayProvenance {
     /// Platform the reference installation ran on.
     pub platform: Platform,
@@ -312,6 +317,7 @@ pub struct OverlayProvenance {
 
 /// A curated description of one command variant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolOverlay {
     /// Format version; only [`OVERLAY_SCHEMA_VERSION`] is accepted.
     pub schema_version: String,
@@ -1517,6 +1523,67 @@ mod tests {
         .collect();
         actual.sort();
         assert_eq!(declared, actual);
+    }
+
+    #[test]
+    fn test_deserializing_an_overlay_rejects_an_unknown_top_level_key() {
+        // Regression: a typo'd key (`flagz` for `flags`) must be a load
+        // error, not silently dropped. schemas/tool-overlay.schema.json
+        // already declares `additionalProperties: false`; nothing at
+        // runtime enforced it before this fix, so an authoritative overlay
+        // with this typo produced zero flags with no diagnostic.
+        let json = r#"{
+            "schema_version": "1.0",
+            "command": "ls",
+            "variant": "bsd",
+            "flagz": [{"short": "-l", "type": "boolean", "description": "long"}]
+        }"#;
+        let result: Result<ToolOverlay, serde_json::Error> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "an unrecognized top-level key must fail to deserialize"
+        );
+    }
+
+    #[test]
+    fn test_deserializing_an_overlay_flag_rejects_an_unknown_key() {
+        let json = r#"{"short": "-l", "type": "boolean", "description": "long", "typo_field": true}"#;
+        let result: Result<OverlayFlag, serde_json::Error> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deserializing_an_overlay_arg_rejects_an_unknown_key() {
+        let json = r#"{"name": "file", "type": "path", "typo_field": true}"#;
+        let result: Result<OverlayArg, serde_json::Error> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deserializing_overlay_provenance_rejects_an_unknown_key() {
+        let json = r#"{
+            "platform": "macos",
+            "tool_version": "9.7",
+            "source": "man-page",
+            "checked_on": "2026-07-27",
+            "typo_field": true
+        }"#;
+        let result: Result<OverlayProvenance, serde_json::Error> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deserializing_overlay_match_rejects_an_unknown_key() {
+        let json = r#"{"platform": ["macos"], "typo_field": true}"#;
+        let result: Result<OverlayMatch, serde_json::Error> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deserializing_probe_matcher_rejects_an_unknown_key() {
+        let json = r#"{"args": ["--version"], "expect": "success", "typo_field": true}"#;
+        let result: Result<ProbeMatcher, serde_json::Error> = serde_json::from_str(json);
+        assert!(result.is_err());
     }
 
     #[test]
