@@ -358,6 +358,12 @@ impl McpServerBuilder {
         }
 
         let auth = resolve_auth(&self.transport, &self.host, &self.auth)?;
+        Self::refuse_unauthenticated_explorer(
+            self.explorer,
+            &self.host,
+            transport,
+            self.auth.allow_unauthenticated_bind,
+        )?;
         Self::announce_auth(&auth, &self.host, self.port, &mut std::io::stderr());
 
         let builder = APCoreMCP::builder()
@@ -423,6 +429,47 @@ impl McpServerBuilder {
             builder = builder.approval_store(store);
         }
         builder
+    }
+
+    /// Refuse `--explorer` on a non-loopback bind unless separately
+    /// acknowledged.
+    ///
+    /// apcore-mcp exempts Explorer browsing (`GET /explorer/tools`,
+    /// `GET /explorer/tools/{name}`) from the authenticator regardless of
+    /// `--auth` — the exemption is unconditional, so a bearer token or JWT
+    /// requirement does nothing to protect it. Those routes disclose every
+    /// registered module's id, description and full argument JSON Schema,
+    /// which is strictly more than `/metrics` discloses; `exempt_paths`
+    /// deliberately withholds `/metrics` for exactly that reason. Mirrors
+    /// `resolve_none`'s acknowledgement pattern in `crate::auth` rather than
+    /// only warning, because unlike a cleartext-credential warning (where the
+    /// standard deployment behind a TLS proxy is indistinguishable from here),
+    /// there is no configuration in which this exemption is the operator's
+    /// intended outcome.
+    #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
+    fn refuse_unauthenticated_explorer(
+        explorer: bool,
+        host: &str,
+        transport: &str,
+        acknowledged: bool,
+    ) -> Result<(), ModuleError> {
+        if !Self::serves_explorer(explorer, transport) {
+            return Ok(());
+        }
+        if crate::auth::is_loopback_host(host) || acknowledged {
+            return Ok(());
+        }
+        Err(ModuleError::new(
+            ErrorCode::GeneralInvalidInput,
+            format!(
+                "Refusing to start: `--explorer` on the non-loopback bind '{host}' serves the \
+                 full tool inventory (GET /explorer/tools and /explorer/tools/{{name}}, \
+                 including every argument's JSON Schema) over unauthenticated GET — apcore-mcp \
+                 exempts Explorer browsing from the authenticator regardless of `--auth`. Bind \
+                 to 127.0.0.1, drop `--explorer`, or pass `--allow-unauthenticated-bind` to \
+                 state that you mean it."
+            ),
+        ))
     }
 
     /// Whether `--explorer` actually mounts anything on this transport.
@@ -838,6 +885,48 @@ mod tests {
             result.is_err(),
             "--auth none on a public bind must refuse to start"
         );
+    }
+
+    #[test]
+    fn test_mcp_server_builder_refuses_unauthenticated_explorer_on_public_bind() {
+        // apcore-mcp exempts Explorer browsing (GET /explorer/...) from the
+        // authenticator regardless of --auth, so --explorer on a non-loopback
+        // bind discloses the full tool inventory to any unauthenticated
+        // caller even when --auth token is on (the default).
+        let result = McpServerBuilder::new()
+            .transport("http")
+            .host("0.0.0.0")
+            .explorer(true)
+            .build();
+        assert!(
+            result.is_err(),
+            "--explorer on a public bind must refuse to start unless \
+             --allow-unauthenticated-bind was passed"
+        );
+    }
+
+    #[test]
+    fn test_mcp_server_builder_allows_unauthenticated_explorer_when_acknowledged() {
+        use crate::auth::AuthOptions;
+        let result = McpServerBuilder::new()
+            .transport("http")
+            .host("0.0.0.0")
+            .explorer(true)
+            .auth(AuthOptions {
+                allow_unauthenticated_bind: true,
+                ..AuthOptions::default()
+            })
+            .build();
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[test]
+    fn test_mcp_server_builder_allows_explorer_on_loopback_without_acknowledgement() {
+        let result = McpServerBuilder::new()
+            .transport("http")
+            .explorer(true)
+            .build();
+        assert!(result.is_ok(), "{:?}", result.err());
     }
 
     #[test]
