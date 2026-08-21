@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
-## [Unreleased]
+## [0.6.0] - 2026-08-21
 
 ### Changed
 
@@ -88,10 +88,6 @@ credential by default.
 
 - **BREAKING (HTTP/SSE only):** an existing `apexe serve --transport http` deployment now needs a bearer token. stdio — how most users run apexe — is untouched. A breaking change for a security default is a defensible use of the same 0.x latitude 0.6.0 already spent on four of them.
 - **`isError: false` on a non-zero exit is now documented as deliberate**, rather than left to be discovered. ([#39](https://github.com/aiperceivable/apexe/issues/39)) A wrapped command that ran and exited non-zero is a successful *call*: `grep` exits 1 when it finds nothing, `diff` exits 1 when files differ, `test` exits 1 for a false predicate, and reporting all three as tool failures would be wrong. `isError: true` stays reserved for the call never reaching the binary — schema, ACL and approval refusals. The manual now says so, with the A2A equivalent (`TASK_STATE_COMPLETED` carrying a non-zero `exit_code` in the artifact), so a client author keys on `exit_code` rather than on `isError`.
-
----
-
-## [0.6.0] - 2026-07-29
 
 Every tool apexe served over MCP was uncallable, and most of the ones that could
 be called were spelled wrong on the command line. Both are fixed here, along with
