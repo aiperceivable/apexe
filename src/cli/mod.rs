@@ -274,6 +274,11 @@ impl ScanArgs {
         Ok(())
     }
 
+    /// Write the ACL policy, merging into an existing file rather than
+    /// replacing it wholesale — `apexe scan` covers only the tools named on
+    /// this command line, so overwriting would discard every earlier scan's
+    /// rules (and any the operator hand-authored). See
+    /// [`AclManager::merge_default`](crate::governance::AclManager::merge_default).
     fn write_acl(
         &self,
         modules: &[apcore_toolkit::ScannedModule],
@@ -284,7 +289,12 @@ impl ScanArgs {
             println!("Would write ACL policy: {}", acl_path.display());
             return Ok(());
         }
-        let acl_manager = crate::governance::AclManager::generate_default(modules);
+        let acl_manager = if acl_path.exists() {
+            crate::governance::AclManager::merge_default(&acl_path, modules)
+                .map_err(|e| anyhow::anyhow!("Failed to load existing ACL for merge: {e}"))?
+        } else {
+            crate::governance::AclManager::generate_default(modules)
+        };
         acl_manager
             .write_config(&acl_path)
             .map_err(|e| anyhow::anyhow!("Failed to write ACL: {e}"))?;
@@ -1687,6 +1697,60 @@ mod tests {
         assert!(
             result.is_err(),
             "write_bindings must surface a write failure, not swallow it"
+        );
+    }
+
+    #[test]
+    fn test_write_acl_merges_with_an_existing_policy_instead_of_overwriting_it() {
+        // Regression: a second `apexe scan` used to truncate-overwrite
+        // acl.yaml from the current batch alone, discarding every rule an
+        // earlier scan (or the operator by hand) had put there. `apexe scan
+        // ls` then `apexe scan echo` must leave cli.ls's allow rule intact.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = ApexeConfig {
+            config_dir: tmp.path().to_path_buf(),
+            ..ApexeConfig::default()
+        };
+        let args = ScanArgs {
+            verify: false,
+            dry_run: false,
+            tools: vec!["ls".to_string()],
+            output_dir: None,
+            depth: 1,
+            no_cache: true,
+            format: "table".to_string(),
+            skills_dir: None,
+            overlay: None,
+        };
+
+        let mut readonly_module = apcore_toolkit::ScannedModule::new(
+            "cli.ls".to_string(),
+            "List".to_string(),
+            serde_json::json!({"type": "object"}),
+            serde_json::json!({"type": "object"}),
+            vec!["cli".to_string()],
+            "exec:///bin/ls".to_string(),
+        );
+        readonly_module.annotations = Some(apcore::module::ModuleAnnotations {
+            readonly: true,
+            ..Default::default()
+        });
+        args.write_acl(&[readonly_module], &config).unwrap();
+
+        let echo_module = apcore_toolkit::ScannedModule::new(
+            "cli.echo".to_string(),
+            "Echo".to_string(),
+            serde_json::json!({"type": "object"}),
+            serde_json::json!({"type": "object"}),
+            vec!["cli".to_string()],
+            "exec:///bin/echo".to_string(),
+        );
+        args.write_acl(&[echo_module], &config).unwrap();
+
+        let acl_yaml = std::fs::read_to_string(config.config_dir.join("acl.yaml")).unwrap();
+        assert!(
+            acl_yaml.contains("cli.ls"),
+            "the earlier scan's allow rule must survive a later scan: {acl_yaml}"
         );
     }
 
