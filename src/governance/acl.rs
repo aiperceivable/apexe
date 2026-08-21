@@ -102,7 +102,10 @@ impl AclManager {
     /// different tool) is carried over unchanged, in its original position.
     /// `default_effect` is likewise taken from the existing file, not reset.
     #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
-    pub fn merge_default(existing_path: &Path, modules: &[ScannedModule]) -> Result<Self, ModuleError> {
+    pub fn merge_default(
+        existing_path: &Path,
+        modules: &[ScannedModule],
+    ) -> Result<Self, ModuleError> {
         let existing = Self::from_config(existing_path)?;
         let batch_ids: std::collections::HashSet<&str> =
             modules.iter().map(|m| m.module_id.as_str()).collect();
@@ -142,7 +145,10 @@ impl AclManager {
 
         let default_effect = existing.default_effect.clone();
         let acl = ACL::new(rules, &default_effect, None);
-        Ok(Self { acl, default_effect })
+        Ok(Self {
+            acl,
+            default_effect,
+        })
     }
 
     fn readonly_ids(modules: &[ScannedModule]) -> Vec<String> {
@@ -786,7 +792,10 @@ mod tests {
         let path = tmp.path().join("does-not-exist.yaml");
         let batch = vec![make_module_with_annotations("cli.ls", true, false)];
         let result = AclManager::merge_default(&path, &batch);
-        assert!(result.is_err(), "merging against a missing file should error, not silently start from empty");
+        assert!(
+            result.is_err(),
+            "merging against a missing file should error, not silently start from empty"
+        );
     }
 
     #[test]

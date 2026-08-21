@@ -1600,7 +1600,8 @@ mod tests {
 
     #[test]
     fn test_deserializing_an_overlay_flag_rejects_an_unknown_key() {
-        let json = r#"{"short": "-l", "type": "boolean", "description": "long", "typo_field": true}"#;
+        let json =
+            r#"{"short": "-l", "type": "boolean", "description": "long", "typo_field": true}"#;
         let result: Result<OverlayFlag, serde_json::Error> = serde_json::from_str(json);
         assert!(result.is_err());
     }

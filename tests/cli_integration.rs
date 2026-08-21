@@ -89,11 +89,7 @@ fn test_a2a_help_shows_expected_flags() {
 
 #[test]
 fn test_scan_no_args_fails() {
-    apexe()
-        .arg("scan")
-        .assert()
-        .failure()
-        .code(2);
+    apexe().arg("scan").assert().failure().code(2);
 }
 
 #[test]
@@ -108,10 +104,7 @@ fn test_config_show_succeeds() {
 
 #[test]
 fn test_config_no_flags_succeeds() {
-    apexe()
-        .arg("config")
-        .assert()
-        .success();
+    apexe().arg("config").assert().success();
 }
 
 /// Regression: one unscannable name used to abort the whole batch.

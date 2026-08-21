@@ -346,8 +346,7 @@ mod tests {
         // report exactly the two real operands, not four -- TAG is a
         // bracketed suffix on the preceding placeholder, not a third and
         // fourth operand.
-        let args =
-            extract_args_from_usage_line("docker tag SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]");
+        let args = extract_args_from_usage_line("docker tag SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]");
         let names: Vec<&str> = args.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names, vec!["SOURCE_IMAGE", "TARGET_IMAGE"]);
     }

@@ -121,7 +121,10 @@ mod tests {
 
         let rendered = render_error(error);
 
-        assert!(rendered.contains("failed to create /no/such/dir"), "{rendered}");
+        assert!(
+            rendered.contains("failed to create /no/such/dir"),
+            "{rendered}"
+        );
         assert!(
             rendered.contains("Suggestion: Check that the parent path"),
             "{rendered}"
