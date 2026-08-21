@@ -196,23 +196,37 @@ fn extract_cobra_flags(help_text: &str, section_header: &str) -> Vec<ScannedFlag
     flags
 }
 
+/// Extract positional args from Cobra's usage block, never from the
+/// description paragraph that always precedes it.
+///
+/// Cobra prints `Usage:` on its own line, followed by one or more indented
+/// usage forms, then a blank line. Reading every line of the help text (the
+/// old behaviour) let a bare all-caps word in the description -- ordinary
+/// prose, not a placeholder -- be mistaken for a required operand, and the
+/// loop would stop there before ever reaching the real usage line.
 fn extract_cobra_args(help_text: &str) -> Vec<ScannedArg> {
     let mut args = Vec::new();
+    let mut lines = help_text.lines();
 
-    for line in help_text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("Usage:") {
-            // Skip the "Usage:" prefix line, check the next indented line
-            continue;
+    // Skip everything up to and including the "Usage:" header line.
+    for line in lines.by_ref() {
+        if line.trim().starts_with("Usage:") {
+            break;
         }
-        // Cobra usage lines are often indented: "  tool [command] <arg>"
-        if help_text.contains("Usage:") {
-            args.extend(super::positional_args::extract_args_from_usage_line(
-                trimmed,
-            ));
-            if !args.is_empty() {
-                break;
-            }
+    }
+
+    // The usage block is the indented line(s) immediately following the
+    // header; a blank or unindented line ends it.
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || !line.starts_with(' ') {
+            break;
+        }
+        args.extend(super::positional_args::extract_args_from_usage_line(
+            trimmed,
+        ));
+        if !args.is_empty() {
+            break;
         }
     }
 
@@ -302,6 +316,39 @@ Global Flags:
         let parser = CobraHelpParser;
         let result = parser.parse(COBRA_HELP, "kubectl").unwrap();
         assert!(result.description.contains("Kubernetes"));
+    }
+
+    const COBRA_HELP_WITH_CAPS_IN_DESCRIPTION: &str = r#"A command line tool that manages TLS certificates.
+
+Usage:
+  certctl [command] <resource>
+
+Available Commands:
+  issue       Issue a certificate
+
+Flags:
+  -h, --help   help for certctl
+"#;
+
+    #[test]
+    fn test_cobra_positional_args_ignore_the_description_paragraph() {
+        // Regression: the description above contains the bare all-caps token
+        // "TLS" (and the leading "A"), which BARE_OPERAND_RE happily matches
+        // as a required operand if the extractor ever looks at prose before
+        // "Usage:". The description always comes first in real Cobra output,
+        // so a naive line-by-line scan finds it before the real usage line
+        // and invents operands the tool does not have. Only the real usage
+        // line's <resource> placeholder is a positional argument.
+        let parser = CobraHelpParser;
+        let result = parser
+            .parse(COBRA_HELP_WITH_CAPS_IN_DESCRIPTION, "certctl")
+            .unwrap();
+        let names: Vec<&str> = result
+            .positional_args
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["resource"], "{:?}", result.positional_args);
     }
 
     #[test]
