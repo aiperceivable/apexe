@@ -258,6 +258,152 @@ async fn test_find_f_option_carries_a_dash_leading_path() {
     );
 }
 
+/// Where this host keeps `ls`. Both layouts are in use — macOS has `/bin/ls`,
+/// and a merged-`/usr` Linux resolves `/bin` to `/usr/bin`.
+fn ls_binary() -> Option<&'static str> {
+    ["/bin/ls", "/usr/bin/ls"]
+        .into_iter()
+        .find(|path| binary_exists(path))
+}
+
+/// A directory holding one subdirectory, so a colourising `ls` has something to
+/// colour and the escape is evidence rather than an artefact of the layout.
+fn listable_dir() -> tempfile::TempDir {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    std::fs::create_dir(dir.path().join("sub")).expect("subdirectory");
+    std::fs::write(dir.path().join("plain.txt"), b"x").expect("file");
+    dir
+}
+
+/// A schema shaped the way the `ls` overlays describe `--color`. The marker is
+/// the only difference between the two, which is the point: it is what decides
+/// the spelling.
+fn ls_color_schema(value_optional: bool) -> Value {
+    let mut color = json!({ "type": "string", "x-apexe-flag": "--color" });
+    if value_optional {
+        color = json!({
+            "type": ["string", "boolean"],
+            "x-apexe-flag": "--color",
+            "x-apexe-value-optional": true,
+        });
+    }
+    json!({
+        "type": "object",
+        "properties": {
+            "color": color,
+            "file": { "type": "array", "x-apexe-positional": 0 },
+        }
+    })
+}
+
+/// Regression (#40): an option whose value is *optional* accepts only the
+/// attached spelling, and the marker has to reach the binary.
+///
+/// `--color` is optional-valued on the BSD and the GNU `ls` alike, so this runs
+/// on either host. Both words are exercised because "no escape" on its own
+/// proves nothing — stdout is a pipe here, and an `ls` that ignored the option
+/// entirely would also emit none. `always` producing one and `never` producing
+/// none is what shows the value actually landed.
+#[tokio::test]
+async fn test_ls_optional_value_flag_renders_attached_and_takes_effect() {
+    let Some(ls) = ls_binary() else {
+        eprintln!("skipping: no `ls` on this host");
+        return;
+    };
+    let dir = listable_dir();
+    let path = dir.path().to_string_lossy().to_string();
+
+    let render = |when: &str| {
+        build_arguments(
+            &kwargs(&[("color", json!(when)), ("file", json!([path.clone()]))]),
+            Some(&ls_color_schema(true)),
+        )
+        .expect("an `ls --color` invocation must render")
+    };
+
+    let always = render("always");
+    assert!(
+        always.contains(&"--color=always".to_string()),
+        "an optional value must be attached: {always:?}"
+    );
+
+    let coloured = execute_subprocess(ls, &always, None, 10_000, DEFAULT_MAX_OUTPUT_BYTES)
+        .await
+        .expect("ls should run");
+    if coloured.exit_code != 0 {
+        eprintln!(
+            "skipping: this host's `ls` has no --color: {}",
+            coloured.stderr
+        );
+        return;
+    }
+    assert!(
+        coloured.stdout.contains('\x1b'),
+        "`--color=always` must colourise, or the probe below proves nothing: {:?}",
+        coloured.stdout
+    );
+
+    let plain = execute_subprocess(ls, &render("never"), None, 10_000, DEFAULT_MAX_OUTPUT_BYTES)
+        .await
+        .expect("ls should run");
+    assert_eq!(
+        plain.exit_code, 0,
+        "ls rejected `--color=never`: {}",
+        plain.stderr
+    );
+    assert!(
+        !plain.stdout.contains('\x1b'),
+        "`--color=never` must disable colour: {:?}",
+        plain.stdout
+    );
+}
+
+/// The premise of the test above, asserted rather than assumed: without the
+/// marker the same call renders `--color never`, and the binary reads that as
+/// "no value, and here is an operand".
+///
+/// This is the shape every curated overlay shipped in 0.6.0, and it fails in
+/// two directions at once — `never` is submitted as a file that does not exist,
+/// and the colour the caller asked to disable stays on, because a bare
+/// `--color` means "always". A wrong answer, not a refusal.
+#[tokio::test]
+async fn test_ls_separated_value_is_lost_and_inverts_the_request() {
+    let Some(ls) = ls_binary() else {
+        eprintln!("skipping: no `ls` on this host");
+        return;
+    };
+    let dir = listable_dir();
+    let path = dir.path().to_string_lossy().to_string();
+
+    let args = build_arguments(
+        &kwargs(&[("color", json!("never")), ("file", json!([path]))]),
+        Some(&ls_color_schema(false)),
+    )
+    .expect("the unmarked schema must still render");
+    assert_eq!(
+        args.iter().filter(|arg| *arg == "never").count(),
+        1,
+        "without the marker the word is a separate argv entry: {args:?}"
+    );
+
+    let out = execute_subprocess(ls, &args, None, 10_000, DEFAULT_MAX_OUTPUT_BYTES)
+        .await
+        .expect("ls should run");
+    if !out.stderr.contains("never") {
+        eprintln!("skipping: this host's `ls` has no --color: {}", out.stderr);
+        return;
+    }
+    assert_ne!(
+        out.exit_code, 0,
+        "`--color never` was expected to fail on the phantom operand: {out:?}"
+    );
+    assert!(
+        out.stdout.contains('\x1b'),
+        "the request was inverted, not dropped: a bare `--color` colourises: {:?}",
+        out.stdout
+    );
+}
+
 /// The default must not move: a tool whose overlay has not stated that it
 /// honours `--` keeps refusing a value that begins with `-`. Guessing where the
 /// separator goes would turn a clean refusal into a failing invocation —

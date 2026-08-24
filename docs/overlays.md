@@ -419,13 +419,48 @@ It reaches `ScannedFlag.value_optional` and then the emitted contract as
 supplies a value. Without the union one of the two is unreachable, which is what
 makes this a correctness field rather than a documentation one.
 
-Two rules for setting it:
+Omitting it is not the safe default. The marker is what makes the executor
+render `--flag=value`; without it the value is emitted as a separate argv entry,
+and an optional-value option reads that as *"no value, and here is an operand"*.
+The result is a wrong answer rather than a refusal, in two directions at once:
 
-- **Check both spellings against the binary.** Run the bare form and the
-  `=value` form and confirm they do different things. A flag whose value is
-  *required* is not this: it rejects the bare form outright.
+```
+ls --color never .     # lists a file called `never`, AND leaves colour ON
+ls --color=never .     # what the caller asked for
+mkdir --context ctx d  # exit 0, having created a spurious directory `ctx`
+```
+
+Four rules for setting it:
+
+- **Probe both spellings against the binary.** Run `<tool> --flag VALUE
+  <operands>` and `<tool> --flag=VALUE <operands>`. The value is optional when
+  the separated form loses `VALUE` into the operand list; it is required when
+  both forms behave the same. Bare-form-works is a weaker signal — probe the
+  separated form, because that is the one apexe would otherwise emit.
+- **An enum is not evidence.** The temptation is to infer the marker from
+  `enum_values`, and it goes the wrong way on real flags: GNU `ls --sort=WORD`
+  and `sort --sort=WORD` are both enum-valued with a *required* value, while
+  `--color` is enum-valued and optional. The distinction is documented per flag
+  and is not derivable from the schema.
+- **Never carry it across variants.** BSD `grep --context` takes an optional
+  value; GNU `grep --context=NUM` requires one. Same flag, same name, opposite
+  argv shape.
 - **It is about arity, not about the value's type.** `value_name` and `type`
   still describe the value when one is given.
+
+On GNU tools `--help` states the answer outright — `--opt[=VAL]` is optional and
+`--opt=VAL` is required — which is why the GNU overlays record `source: help`.
+BSD man pages have no such notation, so there the probe is the only evidence.
+Either way, run it: the notation is a claim, not a result.
+
+Note that the marker travels with the *long* form. apexe emits the long literal
+when a flag has both (`x-apexe-flag`), and the short form's arity is frequently
+different: `diff`'s help line reads `-c, -C NUM, --context[=NUM]`, so `-C` takes
+a required, separated value while `--context` does not.
+
+A change to any of this is a change to what apexe understands about an unchanged
+binary, so it also needs `SCAN_FORMAT_VERSION` bumped in `src/scanner/cache.rs`
+— otherwise an existing install keeps serving the cached, pre-fix contract.
 
 ---
 

@@ -63,8 +63,14 @@ impl ScanCache {
     }
 }
 
-/// How this build parses a tool. Bump whenever a scanner change alters the
-/// result for an unchanged binary.
+/// What this build knows about a tool. Bump whenever a change alters the result
+/// for an unchanged binary — a scanner change or a curated-overlay one.
+///
+/// The overlays count because they are compiled in with `include_str!` and, in
+/// `authoritative` mode, *are* the answer for the tools they cover: correcting
+/// one changes the emitted contract for a binary whose name, variant and
+/// version are all unchanged, which is precisely the case this key exists to
+/// catch.
 ///
 /// A cache entry records what apexe *understood*, not just what the tool is, so
 /// the key has to name both. Without this component an upgrade was invisible to
@@ -80,7 +86,10 @@ impl ScanCache {
 /// - 1: 0.6.0 and earlier.
 /// - 2: man-page parsing at Tier 1, overstrike stripping at capture, option
 ///   name/placeholder repairs, and operand/flag placement.
-const SCAN_FORMAT_VERSION: u32 = 2;
+/// - 3: `value_optional` on the 34 curated flags whose value may be omitted
+///   (#40). Without a bump a cached entry keeps rendering `--color never`,
+///   which these tools read as "no value, and here is an operand".
+const SCAN_FORMAT_VERSION: u32 = 3;
 
 /// Build the on-disk cache file name for one scan result.
 ///

@@ -311,6 +311,21 @@ fn repeatable_flag_schema(flag: &ScannedFlag) -> JsonValue {
     });
     // On `items`, not on the array: it is each element that is a path.
     apply_items_type_hints(&mut schema, flag.value_type);
+    // Also on `items`, and for the same reason: the allowed values constrain
+    // each occurrence of the flag, not the list of them.
+    if let Some(admitted) = enum_constraint(flag, false) {
+        schema["items"]["enum"] = admitted;
+    }
+    // Arity and value-arity are independent facts, and this branch used to
+    // carry only the first. A repeatable flag whose value is *optional* still
+    // accepts no spelling but `--flag=value`, so dropping the marker here
+    // reproduced #40 one branch along: every element rendered as a separate
+    // argv entry the tool reads as an operand. The marker sits on the property
+    // because that is where `value_must_be_attached` reads it, and the executor
+    // then attaches every element.
+    if flag.value_optional {
+        schema["x-apexe-value-optional"] = json!(true);
+    }
     if !flag.description.is_empty() {
         schema["description"] = json!(flag.description);
     }
@@ -348,14 +363,40 @@ fn scalar_flag_schema(flag: &ScannedFlag) -> JsonValue {
         schema["description"] = json!(flag.description);
     }
     apply_default(&mut schema, flag);
-    if let Some(ref enum_values) = flag.enum_values {
-        schema["enum"] = json!(enum_values);
+    if let Some(admitted) = enum_constraint(flag, flag.value_optional) {
+        schema["enum"] = admitted;
     }
     apply_long_running(&mut schema, flag);
     apply_flag_literal(&mut schema, flag);
     apply_flag_placement(&mut schema, flag);
     apply_sensitive_flag(&mut schema, flag);
     schema
+}
+
+/// The flag's `enum` constraint, or `None` when it declares no allowed values.
+///
+/// `widen` admits the bare (`true`) and omitted (`false`) spellings alongside
+/// the words, and is set exactly where the accompanying `type` is the union
+/// `[base, "boolean"]`. `enum` and `type` are independent assertions a value
+/// has to satisfy both of, so a words-only list under that union contradicts
+/// it: `ls --color` is legal argv and `true` is how a caller spells it, but a
+/// validator reading `enum: ["always", "auto", "never"]` rejects it, leaving
+/// the bare form unreachable through the contract.
+///
+/// It is deliberately NOT widened on the repeatable branch. There the words
+/// constrain each *element*, whose type is not a union, and the executor has no
+/// spelling for a bare occurrence inside an array — it renders every element as
+/// `--flag=<element>`, so a `true` element would become the literal
+/// `--flag=true`. Admitting a boolean there would advertise a form that renders
+/// wrongly, which is worse than one that is simply unavailable.
+fn enum_constraint(flag: &ScannedFlag, widen: bool) -> Option<JsonValue> {
+    let enum_values = flag.enum_values.as_ref()?;
+    let mut admitted: Vec<JsonValue> = enum_values.iter().map(|value| json!(value)).collect();
+    if widen {
+        admitted.push(json!(true));
+        admitted.push(json!(false));
+    }
+    Some(JsonValue::Array(admitted))
 }
 
 /// Build the JSON Schema property one flag contributes.
@@ -876,6 +917,131 @@ mod tests {
         assert_eq!(schema["properties"]["format"]["type"], "string");
         let enum_vals = schema["properties"]["format"]["enum"].as_array().unwrap();
         assert_eq!(enum_vals, &[json!("json"), json!("text")]);
+    }
+
+    #[test]
+    fn test_schema_optional_value_enum_flag_admits_the_bare_form() {
+        // 23 of the shipped overlays' optional-value flags are enum-valued, and
+        // `enum` and `type` are independent assertions a value has to satisfy
+        // both of. Listing only the words alongside `["string", "boolean"]`
+        // would advertise a bare form that no validator accepts: `ls --color`
+        // is legal argv, `true` is how a caller spells it, and
+        // `enum: ["always", "auto", "never"]` rejects it.
+        let mut flag = make_flag(
+            Some("--color"),
+            "Colorize the output",
+            ValueType::Enum,
+            false,
+            None,
+            Some(vec![
+                "always".to_string(),
+                "auto".to_string(),
+                "never".to_string(),
+            ]),
+            false,
+        );
+        flag.value_optional = true;
+        let cmd = make_command(vec![flag], vec![]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
+        let color = &schema["properties"]["color"];
+
+        assert_eq!(color["type"], json!(["string", "boolean"]));
+        assert_eq!(color["x-apexe-value-optional"], json!(true));
+        assert_eq!(
+            color["enum"].as_array().unwrap(),
+            &[
+                json!("always"),
+                json!("auto"),
+                json!("never"),
+                json!(true),
+                json!(false),
+            ],
+            "the bare and omitted forms must satisfy `enum` as well as `type`"
+        );
+    }
+
+    #[test]
+    fn test_schema_required_value_enum_flag_keeps_a_words_only_enum() {
+        // The other direction: an enum is not evidence of optionality. GNU
+        // `sort --sort=WORD` and `ls --sort=WORD` both require their value, and
+        // widening their enum would advertise a bare form the binary rejects.
+        let flag = make_flag(
+            Some("--sort"),
+            "Sort according to WORD",
+            ValueType::Enum,
+            false,
+            None,
+            Some(vec!["general-numeric".to_string(), "version".to_string()]),
+            false,
+        );
+        let cmd = make_command(vec![flag], vec![]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
+        let sort = &schema["properties"]["sort"];
+
+        assert_eq!(sort["type"], "string");
+        assert!(sort.get("x-apexe-value-optional").is_none());
+        assert_eq!(
+            sort["enum"].as_array().unwrap(),
+            &[json!("general-numeric"), json!("version")]
+        );
+    }
+
+    #[test]
+    fn test_schema_repeatable_optional_value_flag_keeps_the_marker() {
+        // DEMONSTRATION of the defect: `flag_to_schema` sends a repeatable flag
+        // down a builder that was written independently of the scalar one, and
+        // the array branch never learned about `value_optional`. Without the
+        // marker the executor renders `--flag value` per element, which is the
+        // #40 defect exactly: the value becomes an operand.
+        let flag = ScannedFlag {
+            long_name: Some("--decorate".to_string()),
+            description: "Print ref names...".to_string(),
+            value_type: ValueType::Enum,
+            enum_values: Some(vec!["short".to_string(), "full".to_string()]),
+            repeatable: true,
+            value_optional: true,
+            ..Default::default()
+        };
+        let cmd = make_command(vec![flag], vec![]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
+        let decorate = &schema["properties"]["decorate"];
+
+        assert_eq!(decorate["type"], "array");
+        assert_eq!(
+            decorate["x-apexe-value-optional"],
+            json!(true),
+            "a repeatable flag whose value is optional still needs `--flag=value`"
+        );
+        assert_eq!(
+            decorate["items"]["enum"].as_array().unwrap(),
+            &[json!("short"), json!("full")],
+            "the allowed values constrain each element and must reach the contract"
+        );
+    }
+
+    #[test]
+    fn test_schema_repeatable_required_value_flag_stays_unmarked() {
+        // The near-miss on the repeatable branch. `grep --exclude GLOB` repeats
+        // and its value is required, so it must keep rendering separated; the
+        // items enum stays words-only because an array has no bare spelling.
+        let flag = ScannedFlag {
+            long_name: Some("--exclude".to_string()),
+            description: "Skip files matching GLOB...".to_string(),
+            value_type: ValueType::Enum,
+            enum_values: Some(vec!["a".to_string(), "b".to_string()]),
+            repeatable: true,
+            ..Default::default()
+        };
+        let cmd = make_command(vec![flag], vec![]);
+        let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
+        let exclude = &schema["properties"]["exclude"];
+
+        assert!(exclude.get("x-apexe-value-optional").is_none());
+        assert_eq!(
+            exclude["items"]["enum"].as_array().unwrap(),
+            &[json!("a"), json!("b")],
+            "widening an array's element enum would advertise `--flag=true`"
+        );
     }
 
     #[test]

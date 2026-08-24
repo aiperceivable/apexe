@@ -19,11 +19,11 @@
     "checked_on": "2026-07-27",
     "command": "docker run --rm debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd mv --help",
     "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
-    "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention. The -f/-i/-n exclusion is stated outright in that output: 'If you specify more than one of -i, -f, -n, only the final one takes effect.' Enum values for --update and --backup come from the explanatory paragraphs in the same --help output."
+    "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention. The -f/-i/-n exclusion is stated outright in that output: 'If you specify more than one of -i, -f, -n, only the final one takes effect.' Enum values for --update and --backup come from the explanatory paragraphs in the same --help output. value_optional was added on 2026-08-24, read off the reference build recorded above. GNU --help spells an optional option argument as `--opt[=VAL]` and a required one as `--opt=VAL`; every flag marked here shows the bracketed form and was then run in BOTH spellings, because the notation alone is not evidence. `mv --backup numbered g.txt d/m1` is \"mv: target 'd/m1': No such file or directory\" (exit 1) while `mv --backup=numbered g.txt d/m1` succeeds; --update behaves the same. --context was tested and NOT marked: like ls, mv spells it '-Z, --context' and it takes no value."
   },
   "description": "Rename SOURCE to DEST, or move SOURCE(s) to DIRECTORY. Mandatory arguments to long options are mandatory for short options too.",
   "flags": [
-    { "long": "--backup", "type": "enum", "value_name": "CONTROL", "enum_values": ["none", "off", "numbered", "t", "existing", "nil", "simple", "never"], "description": "Make a backup of each existing destination file. The version control method may also be selected through the VERSION_CONTROL environment variable. The value is optional." },
+    { "long": "--backup", "type": "enum", "value_name": "CONTROL", "value_optional": true, "enum_values": ["none", "off", "numbered", "t", "existing", "nil", "simple", "never"], "description": "Make a backup of each existing destination file. The version control method may also be selected through the VERSION_CONTROL environment variable. The value is optional." },
     { "short": "-b", "type": "boolean", "description": "Like --backup but does not accept an argument." },
     { "long": "--debug", "type": "boolean", "description": "Explain how a file is copied. Implies -v." },
     { "long": "--exchange", "type": "boolean", "description": "Exchange source and destination." },
@@ -35,7 +35,7 @@
     { "short": "-S", "long": "--suffix", "type": "string", "value_name": "SUFFIX", "description": "Override the usual backup suffix. The default is '~', unless set with SIMPLE_BACKUP_SUFFIX." },
     { "short": "-t", "long": "--target-directory", "type": "path", "value_name": "DIRECTORY", "conflicts_with": ["-T"], "description": "Move all SOURCE arguments into DIRECTORY." },
     { "short": "-T", "long": "--no-target-directory", "type": "boolean", "conflicts_with": ["-t"], "description": "Treat DEST as a normal file." },
-    { "long": "--update", "type": "enum", "value_name": "UPDATE", "enum_values": ["all", "none", "none-fail", "older"], "description": "Control which existing files are updated. 'all' replaces every existing destination file; 'none' skips them without failing; 'none-fail' skips and diagnoses them; 'older' (the default when --update is given) replaces files older than the source." },
+    { "long": "--update", "type": "enum", "value_name": "UPDATE", "value_optional": true, "enum_values": ["all", "none", "none-fail", "older"], "description": "Control which existing files are updated. 'all' replaces every existing destination file; 'none' skips them without failing; 'none-fail' skips and diagnoses them; 'older' (the default when --update is given) replaces files older than the source." },
     { "short": "-u", "type": "boolean", "description": "Equivalent to --update=older." },
     { "short": "-v", "long": "--verbose", "type": "boolean", "description": "Explain what is being done." },
     { "short": "-Z", "long": "--context", "type": "boolean", "description": "Set SELinux security context of destination file to default type." },

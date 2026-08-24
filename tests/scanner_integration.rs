@@ -254,6 +254,129 @@ fn test_shipped_find_overlays_declare_operand_and_flag_placement() {
     }
 }
 
+/// Regression (#40): every shipped overlay flag whose value is optional must
+/// say so, asserted on the JSON without needing the matching host.
+///
+/// `value_optional` is what makes the executor render `--flag=value`; without
+/// it the value is emitted as a separate argv entry, which these tools read as
+/// "no value, and here is an operand". `ls --color never .` then lists a file
+/// called `never` and leaves colour ON — the caller's request inverted, not
+/// merely dropped — and `mkdir --context ctx d` silently creates a spurious
+/// directory. The marker reached the loader, the schema and the executor a
+/// release before any overlay carried it, so the whole curated surface rendered
+/// the wrong spelling with the suite green.
+///
+/// Each entry below was established by running the flag in both spellings
+/// against the build its overlay's provenance records; see `docs/overlays.md`.
+#[test]
+fn test_shipped_overlays_mark_every_optional_value_flag() {
+    // (overlay, flags whose value is optional and therefore must be attached)
+    const OPTIONAL: &[(&str, &[&str])] = &[
+        (
+            "cp@gnu",
+            &[
+                "--backup",
+                "--preserve",
+                "--reflink",
+                "--update",
+                "--context",
+            ],
+        ),
+        ("df@gnu", &["--output"]),
+        ("diff@bsd", &["--context", "--unified", "--color"]),
+        ("diff@gnu", &["--context", "--unified", "--color"]),
+        ("grep@bsd", &["--context", "--color", "--colour"]),
+        ("grep@gnu", &["--color", "--colour"]),
+        ("ln@gnu", &["--backup"]),
+        ("ls@bsd", &["--color"]),
+        ("ls@gnu", &["--color", "--classify", "--hyperlink"]),
+        ("mkdir@gnu", &["--context"]),
+        ("mv@gnu", &["--backup", "--update"]),
+        ("rm@gnu", &["--interactive", "--preserve-root"]),
+        ("sort@apple", &["--check"]),
+        ("tail@gnu", &["--follow"]),
+        ("uniq@bsd", &["--all-repeated"]),
+        ("uniq@gnu", &["--all-repeated", "--group"]),
+        ("xargs@gnu", &["--eof", "--replace"]),
+    ];
+
+    let mut marked = 0;
+    for (overlay, flags) in OPTIONAL {
+        for long in *flags {
+            let flag = overlay_flag(overlay, long);
+            assert_eq!(
+                flag["value_optional"], true,
+                "{overlay}: {long} takes an optional value, so it must render as \
+                 `{long}=<value>`; without the marker the value becomes an operand"
+            );
+            marked += 1;
+        }
+    }
+    assert_eq!(
+        marked, 34,
+        "the verified set is 34 flags across 17 overlays"
+    );
+}
+
+/// The other half of #40, and the reason the fix is a per-flag fact rather than
+/// a heuristic: an enum is not evidence that a value is optional.
+///
+/// Every flag here is enum- or word-valued and looks exactly like the ones
+/// above, yet each takes a *required* value — `ls --sort time .` and
+/// `sort --sort general-numeric f` both work — so marking them would break the
+/// spelling that currently works. `ls --context` and `mv --context` are listed
+/// for a third reason: `-Z, --context` takes no value at all. Pinning the
+/// near-misses is what stops the tempting "enum implies optional" shortcut from
+/// being introduced later.
+#[test]
+fn test_shipped_overlays_leave_required_value_flags_unmarked() {
+    const REQUIRED: &[(&str, &[&str])] = &[
+        ("du@gnu", &["--time-style"]),
+        ("grep@bsd", &["--after-context", "--before-context"]),
+        ("grep@gnu", &["--context"]),
+        (
+            "ls@gnu",
+            &[
+                "--sort",
+                "--format",
+                "--time-style",
+                "--quoting-style",
+                "--indicator-style",
+                "--context",
+            ],
+        ),
+        ("mv@gnu", &["--context"]),
+        ("sort@apple", &["--sort"]),
+        ("sort@gnu", &["--sort"]),
+        ("uniq@bsd", &["--skip-fields", "--skip-chars"]),
+    ];
+
+    for (overlay, flags) in REQUIRED {
+        for long in *flags {
+            let flag = overlay_flag(overlay, long);
+            assert!(
+                flag.get("value_optional").is_none(),
+                "{overlay}: {long} takes a required value (or none at all), so it must \
+                 render as `{long} <value>`; marking it would break a spelling that works"
+            );
+        }
+    }
+}
+
+/// Read one flag out of a shipped overlay, by its long name.
+fn overlay_flag(overlay: &str, long: &str) -> serde_json::Value {
+    let path = format!("overlays/{overlay}.json");
+    let raw = std::fs::read_to_string(&path).expect("overlay should be readable");
+    let doc: serde_json::Value = serde_json::from_str(&raw).expect("overlay should parse");
+    doc["flags"]
+        .as_array()
+        .expect("flags")
+        .iter()
+        .find(|flag| flag["long"] == long)
+        .unwrap_or_else(|| panic!("{path}: no flag named {long}"))
+        .clone()
+}
+
 // T46: Graceful degradation test
 #[test]
 fn test_graceful_degradation() {

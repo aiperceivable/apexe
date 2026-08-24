@@ -1562,6 +1562,30 @@ mod tests {
     }
 
     #[test]
+    fn test_build_arguments_repeatable_optional_value_flag_attaches_every_element() {
+        // The marker sits on the array property, and every occurrence has to be
+        // attached — one separated element is one lost value, the same defect
+        // as a scalar one. `x-apexe-value-optional` used to be dropped for any
+        // repeatable flag, so this rendered `--decorate short --decorate full`
+        // and the tool read both words as operands.
+        let schema = schema_with(json!({
+            "decorate": {
+                "type": "array",
+                "items": { "type": "string", "enum": ["short", "full"] },
+                "x-apexe-flag": "--decorate",
+                "x-apexe-value-optional": true,
+            },
+        }));
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("decorate".to_string(), json!(["short", "full"]));
+
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            vec!["--decorate=short", "--decorate=full"]
+        );
+    }
+
+    #[test]
     fn test_build_arguments_optional_value_short_flag_stays_separate() {
         // The `=` spelling is a long-option form only: `-I=PATTERN` would pass
         // a value that begins with `=`, so a short option keeps two entries
