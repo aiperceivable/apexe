@@ -332,3 +332,222 @@ fn test_a_scanned_tool_always_yields_an_object_rooted_schema() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// #41 — a governance refusal must say why, over the real request path
+// ---------------------------------------------------------------------------
+
+/// Write an ACL that denies every caller access to `module_id`.
+fn write_denying_acl(dir: &Path, module_id: &str) -> std::path::PathBuf {
+    let path = dir.join("acl.yaml");
+    std::fs::write(
+        &path,
+        format!(
+            "version: \"1.0\"\ndefault_effect: allow\nrules:\n  - effect: deny\n    \
+             callers: [\"*\"]\n    targets: [\"{module_id}\"]\n    reason: \"denied for the test\"\n"
+        ),
+    )
+    .expect("acl should be written");
+    path
+}
+
+/// Drive one JSON-RPC request through the A2A router apexe would serve, and
+/// return the decoded response body.
+///
+/// Builds the router from the exact governed `Executor` `serve` assembles
+/// (`A2aServerBuilder::executor`), so the ACL, the audit sink and the denial
+/// relay are all the ones a live `apexe a2a` would apply.
+async fn post_jsonrpc(builder: A2aServerBuilder, request: serde_json::Value) -> serde_json::Value {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let executor = builder.executor().expect("executor should build");
+    let (router, _card) = apcore_a2a::build_app(
+        apcore_a2a::BackendSource::Executor(executor),
+        apcore_a2a::APCoreA2AConfig {
+            name: "apexe-test".to_string(),
+            ..apcore_a2a::APCoreA2AConfig::default()
+        },
+    )
+    .await
+    .expect("A2A app should build");
+
+    let response = router
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(request.to_string()))
+                .expect("request should build"),
+        )
+        .await
+        .expect("router should respond");
+
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body should read")
+        .to_bytes();
+    serde_json::from_slice(&bytes).expect("response should be JSON")
+}
+
+/// A `message/send` naming `skill_id`, shaped as §11 of the manual documents.
+fn send_request(skill_id: &str) -> serde_json::Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "message/send",
+        "params": {
+            "message": {
+                "messageId": "m-1",
+                "role": "ROLE_USER",
+                "parts": [{ "data": { "message": "hello" } }],
+                "metadata": { "skillId": skill_id }
+            }
+        }
+    })
+}
+
+/// The text of a FAILED task's status message.
+fn failure_text(response: &serde_json::Value) -> String {
+    assert_eq!(
+        response["result"]["status"]["state"], "TASK_STATE_FAILED",
+        "a denied call must end in a FAILED task: {response}"
+    );
+    response["result"]["status"]["message"]["parts"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("status message should carry text: {response}"))
+        .to_string()
+}
+
+#[tokio::test]
+async fn test_a2a_acl_denial_tells_the_caller_it_was_denied() {
+    // #41: the refusal arrived as `Task not found` — the one thing that was
+    // fine — so an agent retried the call, or resent it under a fresh message
+    // id, and was refused identically every time. The two failures call for
+    // opposite next moves, so the caller has to be able to tell them apart.
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let acl_path = write_denying_acl(dir.path(), "cli.echo");
+
+    let response = post_jsonrpc(
+        A2aServerBuilder::new()
+            .modules_dir(dir.path())
+            .acl_path(&acl_path),
+        send_request("cli.echo"),
+    )
+    .await;
+
+    let text = failure_text(&response);
+    assert!(
+        !text.contains("Task not found"),
+        "the refusal must not be reported as a missing task id: {text}"
+    );
+    assert!(
+        text.contains("ACLDenied"),
+        "the caller must learn the refusal class, as it does over MCP: {text}"
+    );
+    assert!(
+        text.contains("Access denied"),
+        "the caller must get apcore's own reason: {text}"
+    );
+    assert!(
+        text.contains("cli.echo"),
+        "the caller must learn which skill was refused: {text}"
+    );
+    assert!(
+        text.contains("retrying") || text.contains("Retrying"),
+        "the guidance must close the retry loop the old message provoked: {text}"
+    );
+}
+
+#[tokio::test]
+async fn test_a2a_still_reports_an_unknown_skill_as_not_found() {
+    // The counterpart the relay must not blur: a skill that genuinely does not
+    // exist has to keep saying so, or the fix trades one indistinguishable pair
+    // for another.
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+
+    let response = post_jsonrpc(
+        A2aServerBuilder::new().modules_dir(dir.path()),
+        send_request("cli.nosuchtool"),
+    )
+    .await;
+
+    let text = failure_text(&response);
+    assert!(
+        text.contains("Skill not found"),
+        "an unknown skill must still read as missing: {text}"
+    );
+    assert!(
+        !text.contains("Access denied"),
+        "a missing skill is not a policy refusal: {text}"
+    );
+}
+
+#[tokio::test]
+async fn test_a2a_allowed_call_is_unaffected_by_the_relay() {
+    // The relay only ever fires on a refusal; an allowed call still runs.
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let acl_path = write_denying_acl(dir.path(), "cli.echo");
+
+    // Same ACL file, but the module it denies is excluded from this server, so
+    // nothing is refused — `default_effect: allow` carries the call.
+    let response = post_jsonrpc(
+        A2aServerBuilder::new()
+            .modules_dir(dir.path())
+            .acl_path(&acl_path),
+        send_request("cli.echo"),
+    )
+    .await;
+    assert_eq!(response["result"]["status"]["state"], "TASK_STATE_FAILED");
+
+    let response = post_jsonrpc(
+        A2aServerBuilder::new().modules_dir(dir.path()),
+        send_request("cli.echo"),
+    )
+    .await;
+    assert_eq!(
+        response["result"]["status"]["state"], "TASK_STATE_COMPLETED",
+        "an unrefused call must still run: {response}"
+    );
+}
+
+#[tokio::test]
+async fn test_a2a_agent_card_carries_the_url_and_protocol_version() {
+    // #41, third incidental note: the card was read as omitting
+    // `protocolVersion`, `url` and `preferredTransport`. It does not — A2A 1.0
+    // replaced those three top-level 0.3 fields with `supportedInterfaces`,
+    // one entry per transport endpoint carrying `url`, `protocolBinding` and
+    // `protocolVersion`. Pinned so a reader who expects the 0.3 shape can see
+    // where the fields went, and so a regression in the `url` apexe stamps
+    // (the value `--url` validates) fails here.
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+
+    let card = A2aServerBuilder::new()
+        .name("apexe-test")
+        .url("http://127.0.0.1:8793")
+        .modules_dir(dir.path())
+        .agent_card()
+        .await
+        .expect("agent card should build from bindings");
+
+    let interfaces = card["supportedInterfaces"]
+        .as_array()
+        .unwrap_or_else(|| panic!("card should list its interfaces: {card}"));
+    let interface = interfaces
+        .first()
+        .unwrap_or_else(|| panic!("card should expose at least one interface: {card}"));
+
+    assert_eq!(interface["url"], "http://127.0.0.1:8793");
+    assert_eq!(interface["protocolBinding"], "JSONRPC");
+    assert!(
+        interface["protocolVersion"].is_string(),
+        "each interface must state the protocol version it speaks: {interface}"
+    );
+}

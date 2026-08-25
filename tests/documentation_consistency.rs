@@ -114,6 +114,7 @@ fn test_user_manual_names_the_wired_circuit_breaker() {
             enable_circuit_breaker: enabled,
             enable_retry: false,
             approval_store: None,
+            relay_denial_reason: false,
         };
         build_executor(&opts)
             .expect("an executor with no modules still builds")
@@ -315,6 +316,7 @@ async fn test_user_manual_states_that_filters_gate_execution() {
         enable_circuit_breaker: false,
         enable_retry: false,
         approval_store: None,
+        relay_denial_reason: false,
     })
     .unwrap();
 
@@ -508,40 +510,56 @@ fn test_every_dependency_table_states_the_required_version() {
     }
 }
 
-/// The manual's account of an A2A denial must match what apcore-a2a maps.
+/// The manual's account of an A2A denial must match what a caller is told.
 ///
-/// §9.1 tells the reader that an ACL denial reaches an A2A caller as `-32001
-/// Task not found` — a claim about upstream, not about apexe, and therefore
-/// one that can silently become false on an `apcore-a2a` bump. The advice that
-/// depends on it ("check `audit.jsonl`, not the response") would then send an
-/// operator to the wrong place, so the claim is anchored to the mapper itself.
+/// §9.1 quotes the text an ACL denial now reaches an A2A caller as. Two things
+/// have to hold for that quote to stay true, and neither is apexe's alone:
 ///
-/// If this fails because upstream started reporting the real reason, that is
-/// good news: delete the caveat from §9.1 rather than restoring the mapping.
+/// 1. apcore-a2a still masks a bare `ACL_DENIED` (`-32001 Task not found`).
+///    That is the premise of [`DenialReasonRelay`] — if upstream starts
+///    reporting the reason itself, the relay is redundant and both it and
+///    §9.1's account of *why* apexe relays should go.
+/// 2. The relayed error still lands in the half of upstream's mapper that
+///    forwards a message. If a bump narrows that set, the relay silently stops
+///    working and §9.1 would be describing text nobody receives.
 #[test]
-fn test_user_manual_matches_the_a2a_denial_apcore_actually_maps() {
+fn test_user_manual_matches_the_a2a_denial_a_caller_actually_receives() {
+    use apexe::module::DenialReasonRelay;
+
     let denial = apcore::ModuleError::new(
         apcore::ErrorCode::ACLDenied,
         "Access denied: caller 'None' cannot access module 'cli.cp'".to_string(),
     );
-    let mapped = apcore_a2a::ErrorMapper::to_jsonrpc_error(&denial);
-
     let manual = include_str!("../docs/user-manual.md");
-    assert!(
-        manual.contains(&format!("`-{}`", -mapped.code)),
-        "docs/user-manual.md must state the JSON-RPC code {} that apcore-a2a maps an ACL \
-         denial to",
-        mapped.code
+
+    // (1) The premise: upstream still withholds the reason on its own.
+    let masked = apcore_a2a::ErrorMapper::to_jsonrpc_error(&denial);
+    assert_eq!(
+        masked.message, "Task not found",
+        "upstream now reports the reason itself; drop the relay and rewrite \u{a7}9.1"
     );
     assert!(
-        manual.contains(&format!("`{}`", mapped.message)),
-        "docs/user-manual.md must quote the message apcore-a2a returns: {:?}",
-        mapped.message
+        manual.contains(&format!("`-{} {}`", -masked.code, masked.message)),
+        "docs/user-manual.md must state the masked mapping ({} {:?}) apexe relays away from",
+        masked.code,
+        masked.message
+    );
+
+    // (2) The result: the relayed refusal reaches the caller, and the manual
+    //     quotes what it says.
+    let relayed = DenialReasonRelay::relay(&denial).expect("an ACL denial must be relayed");
+    let delivered = apcore_a2a::ErrorMapper::to_jsonrpc_error(&relayed).message;
+    assert!(
+        delivered
+            .contains("[ACLDenied] Access denied: caller 'None' cannot access module 'cli.cp'"),
+        "the relayed reason must survive the mapper: {delivered:?}"
     );
     assert!(
-        !mapped.message.contains("cli.cp"),
-        "the caveat exists because the reason is withheld; upstream now leaks the module \
-         name, so §9.1 needs rewriting: {:?}",
-        mapped.message
+        manual.contains("[ACLDenied] Access denied: caller 'None' cannot access module"),
+        "docs/user-manual.md must quote the reason an A2A caller now receives"
+    );
+    assert!(
+        manual.contains("Invalid input:"),
+        "docs/user-manual.md must show the prefix apcore-a2a puts on the relayed message"
     );
 }

@@ -44,10 +44,17 @@ openssl = { version = "0.10.76", features = ["vendored"] }
 
 [dev-dependencies]
 assert_cmd = "2"
+# Drive the apcore-a2a axum Router in-process (`tests/a2a_integration.rs`), so
+# what a refused caller is actually told is asserted over the real request path
+# rather than through the error mapper alone. Already in the graph via
+# apcore-a2a; declared here because the tests call them directly.
+axum = "0.8"
+http-body-util = "0.1"
 predicates = "3"
 rstest = "0.23"
 tempfile = "3"
 tokio-test = "0.4"
+tower = { version = "0.5", features = ["util"] }
 
 [[bin]]
 name = "apexe"

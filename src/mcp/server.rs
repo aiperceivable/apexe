@@ -299,6 +299,8 @@ impl McpServerBuilder {
             enable_circuit_breaker: self.enable_circuit_breaker,
             enable_retry: self.enable_retry,
             approval_store: self.approval_store.clone(),
+            // MCP reports `[ACLDenied] …` faithfully; nothing to relay.
+            relay_denial_reason: false,
         }
     }
 

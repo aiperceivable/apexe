@@ -11,16 +11,52 @@ Outside-In CLI-to-Agent Bridge — automatically wraps existing CLI tools into g
 
 ## What is apexe?
 
-`apexe` scans any CLI tool on your system (e.g., `git`, `curl`, `ls`, `jq`), deterministically extracts its command structure, flags, and arguments — then exposes them as governed MCP tools that AI agents can invoke safely.
+Your agent needs `git`, `kubectl`, and your internal deploy script. Today it
+reaches them through a shell, and the only thing between it and an irreversible
+command is a permission list that matches command strings.
 
-**No LLM required for scanning. No changes to the CLI tools. Zero-config governance.**
+String matching loses to string variation. Compound commands, path aliases, and
+delegated sub-agents have all been shown to slip past such lists in practice —
+and after the hundredth approval prompt, the documented response is to switch
+prompting off entirely. The premise this tool starts from is narrower than it
+sounds: a constraint expressed in an instruction is a request; only a constraint
+enforced where the process is spawned is a fact.
+
+`apexe` never parses a command line. It scans a CLI deterministically
+(`--help` → man pages → shell completions, no LLM) and turns it into a governed
+[apcore](https://github.com/aiperceivable) module with a real JSON Schema. Every
+call is then validated against that schema, and argv goes straight to `execve`
+with no shell anywhere on the path — so shell metacharacters are inert bytes
+rather than something to blacklist.
+
+On top of that contract you opt into policy keyed on what an operation **is**,
+not on how it is spelled. The scan annotates each command `readonly`,
+`destructive` or `idempotent`; `apexe scan` generates an ACL from those
+annotations with `default_effect: deny`, so anything it could not classify is
+refused rather than allowed:
+
+```bash
+apexe serve --acl ~/.apexe/acl.yaml --enable-approval
+```
+
+Read-only work then runs unattended, irreversible work is gated on a human, and
+either way it leaves an audit record. Both flags are opt-in — without `--acl`
+there is no access control, only the contract and the isolation.
+
+**No LLM required for scanning. No changes to the CLI tools. The policy is
+generated for you — reviewing and enabling it is yours.**
+
+> **`apexe` is not a sandbox.** It decides what should be attempted and records
+> what was; it does not contain what runs. Run it *inside* one.
+> **[Threat model](docs/threat-model.md)** — what this stops, and the longer
+> list of what it does not.
 
 ### Key capabilities
 
 - **Scan** — Three-tier deterministic engine (--help → man pages → shell completions) with 6 built-in parsers (Man, BSD Usage, GNU, Click, Cobra, Clap)
 - **Schema** — Generates JSON Schema with type mapping, format hints (`path`, `uri`), defaults, enums, and required fields
 - **Serve** — MCP server via [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) (stdio / streamable-http / SSE) with an Explorer UI, plus an A2A agent server via [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust). Transport authentication is a first-class CLI surface (`--auth token|jwt|none`) required by default on the HTTP-family transports; a non-loopback bind with no credential refuses to start unless explicitly acknowledged
-- **Govern** — Behavioral annotations (readonly/destructive/idempotent), flag boosting (`--force` → requires_approval), **fail-closed** default-deny ACL, a JSONL audit trail of executions, refusals **and** ACL allow/deny decisions (no input values, hashed or otherwise; log `0600`), `Module::preview()` dry-run for destructive commands
+- **Govern** — Behavioral annotations (readonly/destructive/idempotent), flag boosting (`--force` → requires_approval), a generated **fail-closed** default-deny ACL (enforced when passed via `--acl`; see the [threat model](docs/threat-model.md)), a JSONL audit trail of executions, refusals **and** ACL allow/deny decisions (no input values, hashed or otherwise; log `0600`), `Module::preview()` dry-run for destructive commands
 - **Isolate** — every wrapped subprocess runs with the environment **scrubbed** to a base allowlist (secrets don't leak to tools), no shell (argv goes straight to `execve`, so shell metacharacters are inert data — the actual guard rejects a value that would be parsed as an option), output capped at 64 MiB, and a hard timeout that actually kills the process (`kill_on_drop`); circuit breaker + retry middleware on by default, optional `/metrics` + `/usage`
 - **AI Guidance** — Every error includes `ai_guidance` to help agents self-correct; non-zero exit codes return stderr context
 
@@ -438,6 +474,8 @@ gh workflow run release.yml -f tag=rust/vX.Y.Z
 |----------|-------------|
 | **[Quick Start](docs/quickstart.md)** | Get running in 30 seconds |
 | **[User Manual](docs/user-manual.md)** | Full reference — commands, config, scanning, schema generation, annotations, governance, MCP server, AI integration, error handling |
+| **[Threat Model](docs/threat-model.md)** | What apexe enforces, how, and what it explicitly does not cover — read before relying on it |
+| **[Security Policy](SECURITY.md)** | How to report a vulnerability privately, and what counts as one |
 | **[Authoring Tool Overlays](docs/overlays.md)** | How to write and verify a curated overlay — required reading before adding one |
 | **[Examples](examples/README.md)** | Shell script walkthrough + Rust library API usage |
 | **[Changelog](CHANGELOG.md)** | Release history and migration notes |

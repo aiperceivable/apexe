@@ -355,6 +355,19 @@ impl A2aServerBuilder {
         self
     }
 
+    /// The governed `Executor` this builder will hand to apcore-a2a.
+    ///
+    /// Runs the exact `serve` assembly — ACL, audit sink, middleware stack and
+    /// the [`DenialReasonRelay`](crate::module::DenialReasonRelay) — without
+    /// binding a port, so a caller (or a test) can drive a real
+    /// `Executor::call` through the same governance a live A2A request meets.
+    /// The in-process counterpart of [`agent_card`](Self::agent_card), which
+    /// exercises the same assembly from the discovery side.
+    #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
+    pub fn executor(&self) -> Result<Arc<Executor>, ModuleError> {
+        self.prepare().map(|(executor, _config)| executor)
+    }
+
     /// The surface filter this builder will register modules through.
     ///
     /// Exposed so a test can pin the CLI-to-builder wiring without binding a
@@ -397,6 +410,11 @@ impl A2aServerBuilder {
             enable_circuit_breaker: self.enable_circuit_breaker,
             enable_retry: self.enable_retry,
             approval_store: self.approval_store.clone(),
+            // apcore-a2a reports an ACL denial as `Task not found` and an
+            // approval denial as `Internal server error`, both of which send an
+            // agent off to retry a call that will never succeed. See
+            // [`DenialReasonRelay`](crate::module::DenialReasonRelay).
+            relay_denial_reason: true,
         }
     }
 

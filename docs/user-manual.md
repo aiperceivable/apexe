@@ -464,26 +464,42 @@ Rule ordering is **first match wins**, not most-specific-wins: an
 `allow` rule for `cli.*` placed before a `deny` rule for `cli.rm` lets `cli.rm`
 through. Put the narrow denials above the broad allows.
 
-**A denial reads very differently on the two transports.** Over MCP the caller
-gets the real reason:
+**A denial says why on both transports.** Over MCP the caller gets:
 
 ```
 [ACLDenied] Access denied: caller 'None' cannot access module 'cli.cp'
 ```
 
-Over A2A it gets a JSON-RPC `-32001` with the fixed message `Task not found`,
-and the task lands in `TASK_STATE_FAILED`. That mapping is apcore-a2a's, shared
-with its Python and TypeScript siblings and locked by an upstream test: it
-withholds the reason so an unauthorized caller cannot enumerate what exists,
-the same reasoning that returns HTTP 404 instead of 403.
+Over A2A the task lands in `TASK_STATE_FAILED` carrying the same reason in
+`status.message`, followed by what to do about it:
 
-Know it before you debug an ACL over A2A. An agent reading `Task not found`
-concludes its *task id* was wrong — the one thing that was fine — and an
-operator watching it concludes the ACL is broken and removes it. The denial is
-working; only the message is uninformative. `audit.jsonl` records the real
-decision on both transports (§9.2), with `decision: deny`, the matched rule
-index and the same `trace_id` the caller saw, so check there rather than trying
-to read the outcome off the A2A response.
+```
+Invalid input: [ACLDenied] Access denied: caller 'None' cannot access module
+'cli.cp' (An access-control rule refuses this call. The task id is fine —
+retrying it, or resending with a new message id, produces the same refusal.
+Pick a different skill, or ask the operator to change the ACL policy.)
+```
+
+apcore-a2a on its own reports an ACL denial as `-32001 Task not found` and an
+approval denial as `-32603 Internal server error` — it withholds the reason so
+an unauthorized caller cannot enumerate what exists, the reasoning that returns
+HTTP 404 instead of 403. apexe relays the reason anyway
+([#41](https://github.com/aiperceivable/apexe/issues/41)), because on this
+server the masking protects nothing and costs a great deal: apcore-a2a already
+ACL-filters the agent card, so a denied skill is absent from it and the refusal
+confirms nothing; `apexe a2a` wires no authenticator, so every caller is the
+same anonymous `@external` principal and there is no privileged caller to keep a
+secret from; and an agent told `Task not found` retries the one thing that was
+fine, indefinitely. The `Invalid input:` prefix is apcore-a2a's — it is the
+mapping apexe re-codes the refusal into so the message survives at all.
+
+The same applies to an approval denial and an approval timeout (§9.6); an
+approval *pending* is untouched and still arrives as
+`TASK_STATE_INPUT_REQUIRED` carrying its `approval_id`.
+
+`audit.jsonl` remains the record of what was decided and why (§9.2), with
+`decision: deny`, the matched rule index and the same `trace_id` the caller
+saw — the response now agrees with it instead of pointing elsewhere.
 
 ### 9.2 Audit Trail
 

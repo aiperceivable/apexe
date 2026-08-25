@@ -55,6 +55,7 @@ fn exec_opts(dir: &Path) -> ExecutorOptions<'_> {
         enable_circuit_breaker: false,
         enable_retry: false,
         approval_store: None,
+        relay_denial_reason: false,
     }
 }
 
