@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::executor;
+use crate::governance::path_guard::AccessMode;
 use crate::governance::AuditManager;
 
 /// Configuration for constructing a `CliModule`.
@@ -240,6 +241,19 @@ impl CliModule {
         }
         result
     }
+    /// What the path guard holds this module's path arguments to.
+    ///
+    /// A module annotated `readonly` may name a system directory — `cat
+    /// /etc/hosts` and `ls /usr/bin` are ordinary work, and refusing them
+    /// protected nothing an agent's own file tools do not already reach. The
+    /// credential directories bind it regardless, because reading a private
+    /// key is the exfiltration this guard exists to stop.
+    ///
+    /// An unannotated module reads as `Write`, which is the safe direction:
+    /// a command nobody classified is assumed able to destroy.
+    fn access_mode(&self) -> AccessMode {
+        AccessMode::from_readonly(self.annotations.readonly)
+    }
 }
 
 #[async_trait]
@@ -293,18 +307,20 @@ impl Module for CliModule {
         change.target = self.binary_path.clone();
         change.summary = match inputs.as_object() {
             None => "Cannot preview: input must be a JSON object.".to_string(),
-            Some(kwargs) => match executor::build_argv(kwargs, Some(&self.input_schema)) {
-                Err(e) => format!("Cannot preview: invalid arguments ({}).", e.message),
-                Ok(user_args) => {
-                    let mut full_command = vec![self.binary_path.clone()];
-                    full_command.extend(self.assemble_arguments(user_args));
-                    format!(
-                        "This will run: {}. Destructive command — apexe cannot statically \
+            Some(kwargs) => {
+                match executor::build_argv(kwargs, Some(&self.input_schema), self.access_mode()) {
+                    Err(e) => format!("Cannot preview: invalid arguments ({}).", e.message),
+                    Ok(user_args) => {
+                        let mut full_command = vec![self.binary_path.clone()];
+                        full_command.extend(self.assemble_arguments(user_args));
+                        format!(
+                            "This will run: {}. Destructive command — apexe cannot statically \
                          predict the exact effects of an arbitrary CLI tool.",
-                        full_command.join(" ")
-                    )
+                            full_command.join(" ")
+                        )
+                    }
                 }
-            },
+            }
         };
 
         let mut preview = PreviewResult::default();
@@ -328,7 +344,7 @@ impl Module for CliModule {
         );
 
         let start = std::time::Instant::now();
-        let user_args = executor::build_argv(kwargs, Some(&self.input_schema))?;
+        let user_args = executor::build_argv(kwargs, Some(&self.input_schema), self.access_mode())?;
         let args: Vec<String> = self.assemble_arguments(user_args);
 
         let output = match executor::execute_subprocess(
@@ -452,7 +468,8 @@ mod tests {
             .expect("object literal")
             .clone();
 
-        let rendered = executor::build_argv(&kwargs, Some(&module.input_schema)).unwrap();
+        let rendered =
+            executor::build_argv(&kwargs, Some(&module.input_schema), AccessMode::Write).unwrap();
         let args = module.assemble_arguments(rendered);
 
         assert_eq!(args, vec!["-C", "/repo", "cat-file", "-t"]);
@@ -468,7 +485,8 @@ mod tests {
             .expect("object literal")
             .clone();
 
-        let rendered = executor::build_argv(&kwargs, Some(&module.input_schema)).unwrap();
+        let rendered =
+            executor::build_argv(&kwargs, Some(&module.input_schema), AccessMode::Write).unwrap();
         let args = module.assemble_arguments(rendered);
 
         assert_eq!(args, vec!["hello", "--n"]);
@@ -783,7 +801,7 @@ mod tests {
 
     #[test]
     fn test_cli_module_preview_surfaces_argument_validation_failure() {
-        // Same as above, but for the build_arguments() failure path (here: a
+        // Same as above, but for the build_arguments(, AccessMode::Write) failure path (here: a
         // value the wrapped command would parse as an option). Any rejected
         // input works -- this covers preview's error branch, not the specific
         // validation rule.

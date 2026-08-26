@@ -9,6 +9,7 @@
 //! when it is not met: a Linux CI box has GNU `find` with no `-f`, and a
 //! container image may ship no `curl` at all.
 
+use apexe::governance::path_guard::AccessMode;
 use apexe::module::executor::{build_arguments, execute_subprocess, DEFAULT_MAX_OUTPUT_BYTES};
 use serde_json::{json, Value};
 
@@ -99,6 +100,7 @@ async fn test_curl_accepts_a_separated_long_option_value() {
             ("user_agent", json!("apexe")),
         ]),
         Some(&curl_schema()),
+        AccessMode::Write,
     )
     .expect("a curl invocation with two valued long options must render");
 
@@ -179,6 +181,7 @@ async fn test_find_expression_operand_reaches_the_binary() {
             ("expression", json!(["-name", "*.txt"])),
         ]),
         Some(&find_schema(true)),
+        AccessMode::Write,
     )
     .expect("an expression of primaries must render once `--` is available");
 
@@ -230,6 +233,7 @@ async fn test_find_f_option_carries_a_dash_leading_path() {
     let args = build_arguments(
         &kwargs(&[("f", json!(["-weird-dir"])), ("name", json!("*.txt"))]),
         Some(&find_schema(true)),
+        AccessMode::Write,
     )
     .expect("`-f` exists precisely for a path that begins with '-'");
 
@@ -317,6 +321,7 @@ async fn test_ls_optional_value_flag_renders_attached_and_takes_effect() {
         build_arguments(
             &kwargs(&[("color", json!(when)), ("file", json!([path.clone()]))]),
             Some(&ls_color_schema(true)),
+            AccessMode::Write,
         )
         .expect("an `ls --color` invocation must render")
     };
@@ -378,6 +383,7 @@ async fn test_ls_separated_value_is_lost_and_inverts_the_request() {
     let args = build_arguments(
         &kwargs(&[("color", json!("never")), ("file", json!([path]))]),
         Some(&ls_color_schema(false)),
+        AccessMode::Write,
     )
     .expect("the unmarked schema must still render");
     assert_eq!(
@@ -416,6 +422,7 @@ fn test_option_like_values_stay_refused_without_the_marker() {
             ("expression", json!(["-name", "*.txt"])),
         ]),
         Some(&find_schema(false)),
+        AccessMode::Write,
     )
     .expect_err("without the marker the guard must still refuse");
 

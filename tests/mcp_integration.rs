@@ -402,6 +402,94 @@ async fn test_mcp_tools_call_option_injection_blocked() {
     );
 }
 
+/// A binding whose operand is typed as a path, in the shape a real scan
+/// produces: `x-apexe-path` sits on `items`, not on the property. Verified
+/// against `apexe scan rm`, whose `file` operand renders exactly this.
+fn write_path_operand_binding(dir: &Path) {
+    let module = ScannedModule::new(
+        "cli.pathtool".to_string(),
+        "Take a path".to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "array",
+                    "items": { "type": "string", "x-apexe-path": true },
+                    "x-apexe-positional": 0
+                }
+            },
+            "additionalProperties": false
+        }),
+        json!({ "type": "object" }),
+        vec!["cli".to_string()],
+        "exec:///bin/echo".to_string(),
+    );
+    YamlOutput::without_verification()
+        .write(&[module], dir, false)
+        .expect("binding should be written");
+}
+
+#[tokio::test]
+async fn test_mcp_tools_call_refuses_a_path_operand_in_a_system_directory() {
+    // The whole request path, not just `build_arguments`: a caller naming a
+    // protected system directory is refused before anything is spawned.
+    let dir = TempDir::new().unwrap();
+    write_path_operand_binding(dir.path());
+    let executor = build_test_executor(dir.path());
+
+    let result = executor
+        .call(
+            "cli.pathtool",
+            json!({ "file": ["/etc/passwd"] }),
+            None,
+            None,
+        )
+        .await;
+
+    let error = result.expect_err("a protected path must be refused");
+    assert_eq!(error.code, apcore::ErrorCode::ACLDenied);
+}
+
+#[tokio::test]
+async fn test_mcp_tools_call_refuses_a_relative_path_that_climbs_into_a_system_directory() {
+    // The case that motivated resolving before comparing: nothing in this
+    // string looks protected until it is joined to the working directory and
+    // normalized.
+    let dir = TempDir::new().unwrap();
+    write_path_operand_binding(dir.path());
+    let executor = build_test_executor(dir.path());
+
+    let climb = "../".repeat(12) + "etc/passwd";
+    let result = executor
+        .call("cli.pathtool", json!({ "file": [climb] }), None, None)
+        .await;
+
+    let error = result.expect_err("a climb out of the workspace must be refused");
+    assert_eq!(error.code, apcore::ErrorCode::ACLDenied);
+}
+
+#[tokio::test]
+async fn test_mcp_tools_call_allows_a_path_operand_inside_the_workspace() {
+    // The guard must not become a blanket refusal of path-valued operands.
+    let dir = TempDir::new().unwrap();
+    write_path_operand_binding(dir.path());
+    let executor = build_test_executor(dir.path());
+
+    let result = executor
+        .call(
+            "cli.pathtool",
+            json!({ "file": ["notes/todo.txt"] }),
+            None,
+            None,
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "an ordinary relative path must pass: {result:?}"
+    );
+}
+
 #[tokio::test]
 async fn test_mcp_tools_call_passes_shell_metacharacters_through() {
     // The counterpart: a payload full of shell metacharacters reaches the

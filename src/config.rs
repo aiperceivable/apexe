@@ -24,6 +24,18 @@ pub struct ApexeConfig {
     pub scan_depth: u32,
     pub json_output_preference: bool,
 
+    /// Filesystem locations to deny *in addition to* the compiled-in baseline.
+    ///
+    /// Additive by construction: [`crate::governance::PathGuard::new`] starts
+    /// from `BASELINE_DENIED_PATHS` and appends this, and there is no field
+    /// that subtracts. An operator can extend the boundary to cover a data
+    /// directory this deployment cares about; nobody can edit a YAML file to
+    /// expose `/etc`.
+    ///
+    /// Entries may be relative, in which case they resolve against the same
+    /// working directory the guard resolves caller-supplied paths against.
+    pub additional_denied_paths: Vec<PathBuf>,
+
     /// apcore core configuration for ecosystem integration.
     #[serde(skip)]
     pub core_config: Option<CoreConfig>,
@@ -42,6 +54,7 @@ impl Default for ApexeConfig {
             default_timeout: 30,
             scan_depth: 2,
             json_output_preference: true,
+            additional_denied_paths: Vec::new(),
             core_config: None,
         }
     }

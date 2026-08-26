@@ -1,5 +1,7 @@
 use apcore::{ErrorCode, ModuleError};
 use serde_json::Value;
+
+use crate::governance::path_guard::AccessMode;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
@@ -93,7 +95,11 @@ pub struct ValueLocation<'a> {
 
 impl ValueLocation<'_> {
     /// Render this location as the subject of a sentence.
-    fn describe(&self) -> String {
+    ///
+    /// Public because the path guard reports against the same subject, and a
+    /// caller told "Element 0 of parameter 'file'" by one check and something
+    /// else by the other would have to learn two vocabularies for one input.
+    pub fn describe(&self) -> String {
         match self.index {
             Some(index) => format!("Element {index} of parameter '{}'", self.param_name),
             None => format!("Parameter '{}'", self.param_name),
@@ -330,6 +336,31 @@ fn value_must_be_attached(input_schema: Option<&Value>, key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether this property's values name filesystem paths.
+///
+/// `x-apexe-path` sits on `items` for an array property and on the property
+/// itself for a scalar one, because it is each element that names a path
+/// rather than the list of them (see `apply_path_marker` in
+/// [`crate::adapter::schema`]). Both spellings are read here, so a variadic
+/// operand like `rm`'s `file` is guarded exactly as a single one is.
+///
+/// A schema that carries no marker — anything generated before the marker
+/// existed, or a value the scanner could not type — reads as "not a path" and
+/// is left to [`validate_argument_value`] alone. The guard cannot invent the
+/// type information; what it must not do is guess, and silently treating every
+/// string as a path would refuse `grep` patterns that happen to start with `/`.
+fn value_is_path(input_schema: Option<&Value>, key: &str) -> bool {
+    let property = input_schema
+        .and_then(|s| s.get("properties"))
+        .and_then(|p| p.get(key));
+    let marked = |node: Option<&Value>| {
+        node.and_then(|n| n.get("x-apexe-path"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    };
+    marked(property) || marked(property.and_then(|p| p.get("items")))
+}
+
 /// Whether a value will actually reach the command line.
 ///
 /// `false` and null render nothing, so naming such a key is not "sending" the
@@ -515,6 +546,19 @@ impl ArgvGroups {
     }
 }
 
+/// What the input schema says about how one property's values render.
+///
+/// Two independent facts read from the same property node, bundled so the
+/// renderer keeps one argument for them rather than growing a boolean per
+/// schema marker.
+#[derive(Clone, Copy)]
+struct PropertyRules {
+    /// The value must be attached to its flag with `=`.
+    attached: bool,
+    /// The values name filesystem paths, so each goes through the path guard.
+    is_path: bool,
+}
+
 /// Render one property's value or values into argv tokens.
 ///
 /// `attached` selects the `--flag=value` spelling. An option whose value is
@@ -533,13 +577,18 @@ impl ArgvGroups {
 /// beginning with `=` — so they take the separated form here too.
 ///
 /// Every value is validated before it is emitted; `saw_dash` is set when one
-/// begins with `-` under a schema that declares [`END_OF_OPTIONS`].
+/// begins with `-` under a schema that declares [`END_OF_OPTIONS`]. A value the
+/// schema types as a path is additionally put to the path guard under `mode`,
+/// which is where a request to reach a protected location is refused — every
+/// protected location for a writer, the credential directories alone for a
+/// reader.
 #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
 fn render_property_tokens(
     key: &str,
     value: &Value,
     form: &ArgForm,
-    attached: bool,
+    rules: PropertyRules,
+    mode: AccessMode,
     honours_separator: bool,
     saw_dash: &mut bool,
 ) -> Result<Vec<String>, ModuleError> {
@@ -556,11 +605,14 @@ fn render_property_tokens(
             index: indexed.then_some(position),
         };
         validate_argument_value(location, &text, item.is_number(), honours_separator)?;
+        if rules.is_path {
+            crate::governance::path_guard::active().check(&location.describe(), &text, mode)?;
+        }
         if honours_separator && text.starts_with('-') {
             *saw_dash = true;
         }
         match *form {
-            ArgForm::Flag(ref literal, _) if attached && literal.starts_with("--") => {
+            ArgForm::Flag(ref literal, _) if rules.attached && literal.starts_with("--") => {
                 tokens.push(format!("{literal}={text}"));
             }
             ArgForm::Flag(ref literal, _) => {
@@ -582,6 +634,7 @@ fn render_property_tokens(
 fn collect_argv_groups(
     kwargs: &serde_json::Map<String, Value>,
     input_schema: Option<&Value>,
+    mode: AccessMode,
     honours_separator: bool,
 ) -> Result<ArgvGroups, ModuleError> {
     let mut groups = ArgvGroups::default();
@@ -602,11 +655,16 @@ fn collect_argv_groups(
             continue;
         }
 
+        let rules = PropertyRules {
+            attached: value_must_be_attached(input_schema, key),
+            is_path: value_is_path(input_schema, key),
+        };
         let tokens = render_property_tokens(
             key,
             value,
             &form,
-            value_must_be_attached(input_schema, key),
+            rules,
+            mode,
             honours_separator,
             &mut groups.saw_dash_leading_value,
         )?;
@@ -648,8 +706,9 @@ fn needs_end_of_options(
 pub fn build_arguments(
     kwargs: &serde_json::Map<String, Value>,
     input_schema: Option<&Value>,
+    mode: AccessMode,
 ) -> Result<Vec<String>, ModuleError> {
-    Ok(build_argv(kwargs, input_schema)?.into_flat())
+    Ok(build_argv(kwargs, input_schema, mode)?.into_flat())
 }
 
 /// Build CLI args from JSON kwargs, spelling each one the way `input_schema`
@@ -686,11 +745,12 @@ pub fn build_arguments(
 pub fn build_argv(
     kwargs: &serde_json::Map<String, Value>,
     input_schema: Option<&Value>,
+    mode: AccessMode,
 ) -> Result<RenderedArgv, ModuleError> {
     reject_conflicting_flags(kwargs, input_schema)?;
 
     let honours_separator = honours_end_of_options(input_schema);
-    let groups = collect_argv_groups(kwargs, input_schema, honours_separator)?;
+    let groups = collect_argv_groups(kwargs, input_schema, mode, honours_separator)?;
 
     // The separator marks where the tool stops reading options, which is ahead
     // of whichever operand group its grammar puts first.
@@ -833,6 +893,13 @@ fn spawn_isolated(
     let mut command = Command::new(binary_path);
     command
         .args(args)
+        // Pinned to the path guard's root rather than inherited. Inheriting
+        // made the meaning of every relative argument depend on which
+        // directory the operator happened to launch `apexe serve` from, and
+        // left the guard resolving `../../etc` against a cwd the child could
+        // in principle no longer share. Setting it from the same value the
+        // guard resolves against makes the two impossible to disagree.
+        .current_dir(crate::governance::path_guard::active().root())
         .env_clear()
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -933,7 +1000,7 @@ mod tests {
     fn test_build_arguments_string_value() {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("file".to_string(), json!("test.txt"));
-        let args = build_arguments(&kwargs, None).unwrap();
+        let args = build_arguments(&kwargs, None, AccessMode::Write).unwrap();
         assert_eq!(args, vec!["--file", "test.txt"]);
     }
 
@@ -941,7 +1008,7 @@ mod tests {
     fn test_build_arguments_boolean_true() {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("all".to_string(), json!(true));
-        let args = build_arguments(&kwargs, None).unwrap();
+        let args = build_arguments(&kwargs, None, AccessMode::Write).unwrap();
         assert_eq!(args, vec!["--all"]);
     }
 
@@ -949,7 +1016,7 @@ mod tests {
     fn test_build_arguments_boolean_false() {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("all".to_string(), json!(false));
-        let args = build_arguments(&kwargs, None).unwrap();
+        let args = build_arguments(&kwargs, None, AccessMode::Write).unwrap();
         assert!(args.is_empty());
     }
 
@@ -976,7 +1043,7 @@ mod tests {
         kwargs.insert("path".to_string(), json!(["sandbox"]));
 
         assert_eq!(
-            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
             vec!["sandbox", "-name", "*.txt"]
         );
     }
@@ -1010,7 +1077,7 @@ mod tests {
         kwargs.insert("L".to_string(), json!(true));
 
         assert_eq!(
-            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
             vec!["-L", "sandbox", "-name", "*.txt"],
             "options precede the path, primaries follow it"
         );
@@ -1039,7 +1106,7 @@ mod tests {
         kwargs.insert("f".to_string(), json!("extra"));
 
         assert_eq!(
-            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
             vec!["-f", "extra", "sandbox"]
         );
     }
@@ -1064,7 +1131,7 @@ mod tests {
         kwargs.insert("path".to_string(), json!(["dir"]));
 
         assert_eq!(
-            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
             vec!["dir", "-name", "*.txt"]
         );
     }
@@ -1085,7 +1152,7 @@ mod tests {
         kwargs.insert("l".to_string(), json!(true));
 
         assert_eq!(
-            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
             vec!["-l", "dir"]
         );
     }
@@ -1119,7 +1186,7 @@ mod tests {
         kwargs.insert("start".to_string(), json!("first"));
 
         assert_eq!(
-            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
             vec!["first", "second", "-v", "last"]
         );
     }
@@ -1141,7 +1208,7 @@ mod tests {
         kwargs.insert("proxy".to_string(), json!(true));
         kwargs.insert("connect_timeout".to_string(), json!(true));
 
-        let err = build_arguments(&kwargs, Some(&schema))
+        let err = build_arguments(&kwargs, Some(&schema), AccessMode::Write)
             .expect_err("a value-taking option must not render bare");
         assert_eq!(err.code, ErrorCode::GeneralInvalidInput);
         assert!(
@@ -1159,14 +1226,17 @@ mod tests {
         });
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("verbose".to_string(), json!(true));
-        assert_eq!(build_arguments(&kwargs, Some(&schema)).unwrap(), vec!["-v"]);
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
+            vec!["-v"]
+        );
     }
 
     #[test]
     fn test_build_arguments_null_skipped() {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("x".to_string(), json!(null));
-        let args = build_arguments(&kwargs, None).unwrap();
+        let args = build_arguments(&kwargs, None, AccessMode::Write).unwrap();
         assert!(args.is_empty());
     }
 
@@ -1174,7 +1244,7 @@ mod tests {
     fn test_build_arguments_array_values() {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("include".to_string(), json!(["a", "b"]));
-        let args = build_arguments(&kwargs, None).unwrap();
+        let args = build_arguments(&kwargs, None, AccessMode::Write).unwrap();
         assert_eq!(args, vec!["--include", "a", "--include", "b"]);
     }
 
@@ -1182,7 +1252,7 @@ mod tests {
     fn test_build_arguments_underscore_to_hyphen() {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("no_cache".to_string(), json!(true));
-        let args = build_arguments(&kwargs, None).unwrap();
+        let args = build_arguments(&kwargs, None, AccessMode::Write).unwrap();
         assert_eq!(args, vec!["--no-cache"]);
     }
 
@@ -1190,7 +1260,7 @@ mod tests {
     fn test_build_arguments_integer_value() {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("count".to_string(), json!(5));
-        let args = build_arguments(&kwargs, None).unwrap();
+        let args = build_arguments(&kwargs, None, AccessMode::Write).unwrap();
         assert_eq!(args, vec!["--count", "5"]);
     }
 
@@ -1201,7 +1271,7 @@ mod tests {
         // curl write to an arbitrary file.
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("data".to_string(), json!("--output=/etc/passwd"));
-        let result = build_arguments(&kwargs, None);
+        let result = build_arguments(&kwargs, None, AccessMode::Write);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ErrorCode::GeneralInvalidInput);
     }
@@ -1213,7 +1283,7 @@ mod tests {
         // element is exactly where a variadic option would absorb it as a flag.
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("tags".to_string(), json!(["ok", "-K/etc/shadow"]));
-        let result = build_arguments(&kwargs, None);
+        let result = build_arguments(&kwargs, None, AccessMode::Write);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ErrorCode::GeneralInvalidInput);
     }
@@ -1225,17 +1295,20 @@ mod tests {
         // and jq unable to receive any filter at all.
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("data".to_string(), json!(r#"{"name":"apexe"}"#));
-        let args = build_arguments(&kwargs, None).expect("a JSON body must be passable");
+        let args = build_arguments(&kwargs, None, AccessMode::Write)
+            .expect("a JSON body must be passable");
         assert_eq!(args, vec!["--data", r#"{"name":"apexe"}"#]);
 
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("data".to_string(), json!("name=apexe&lang=rust"));
-        let args = build_arguments(&kwargs, None).expect("a form body must be passable");
+        let args = build_arguments(&kwargs, None, AccessMode::Write)
+            .expect("a form body must be passable");
         assert_eq!(args, vec!["--data", "name=apexe&lang=rust"]);
 
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("filter".to_string(), json!(r#".items[] | select(.n > $x)"#));
-        let args = build_arguments(&kwargs, None).expect("a jq filter must be passable");
+        let args = build_arguments(&kwargs, None, AccessMode::Write)
+            .expect("a jq filter must be passable");
         assert_eq!(args, vec!["--filter", r#".items[] | select(.n > $x)"#]);
     }
 
@@ -1244,7 +1317,7 @@ mod tests {
         for bad in ["a\nb", "a\rb", "a\0b"] {
             let mut kwargs = serde_json::Map::new();
             kwargs.insert("msg".to_string(), json!(bad));
-            let result = build_arguments(&kwargs, None);
+            let result = build_arguments(&kwargs, None, AccessMode::Write);
             assert!(
                 result.is_err(),
                 "control character in {bad:?} must be rejected"
@@ -1267,7 +1340,7 @@ mod tests {
         ] {
             let mut kwargs = serde_json::Map::new();
             kwargs.insert("msg".to_string(), json!(bad));
-            let err = build_arguments(&kwargs, None)
+            let err = build_arguments(&kwargs, None, AccessMode::Write)
                 .expect_err("a Unicode line terminator must be rejected");
             assert_eq!(err.code, ErrorCode::GeneralInvalidInput);
             assert!(
@@ -1288,7 +1361,7 @@ mod tests {
             let mut kwargs = serde_json::Map::new();
             kwargs.insert("data".to_string(), json!(allowed));
             assert!(
-                build_arguments(&kwargs, None).is_ok(),
+                build_arguments(&kwargs, None, AccessMode::Write).is_ok(),
                 "{allowed:?} must still be passable"
             );
         }
@@ -1321,7 +1394,7 @@ mod tests {
         kwargs.insert("paginate".to_string(), json!(true));
         kwargs.insert("oneline".to_string(), json!(true));
 
-        let argv = build_argv(&kwargs, Some(&schema)).unwrap();
+        let argv = build_argv(&kwargs, Some(&schema), AccessMode::Write).unwrap();
         assert_eq!(argv.before_subcommand, vec!["-C", "/repo", "--paginate"]);
         assert_eq!(argv.after_subcommand, vec!["--oneline"]);
     }
@@ -1337,7 +1410,7 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("oneline".to_string(), json!(true));
 
-        let argv = build_argv(&kwargs, Some(&schema)).unwrap();
+        let argv = build_argv(&kwargs, Some(&schema), AccessMode::Write).unwrap();
         assert!(argv.before_subcommand.is_empty());
         assert_eq!(argv.after_subcommand, vec!["--oneline"]);
     }
@@ -1371,7 +1444,7 @@ mod tests {
         kwargs.insert("path".to_string(), json!(["root"]));
         kwargs.insert("name".to_string(), json!("*.txt"));
 
-        let argv = build_argv(&kwargs, Some(&schema)).unwrap();
+        let argv = build_argv(&kwargs, Some(&schema), AccessMode::Write).unwrap();
         assert_eq!(argv.before_subcommand, vec!["-C", "/repo"]);
         assert_eq!(
             argv.after_subcommand,
@@ -1399,7 +1472,7 @@ mod tests {
         kwargs.insert("C".to_string(), json!("/repo"));
 
         assert_eq!(
-            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
             vec!["-C", "/repo", "--oneline"]
         );
     }
@@ -1410,7 +1483,7 @@ mod tests {
         // legitimate negative number survives the `-` prefix rule.
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("offset".to_string(), json!(-5));
-        let args = build_arguments(&kwargs, None).unwrap();
+        let args = build_arguments(&kwargs, None, AccessMode::Write).unwrap();
         assert_eq!(args, vec!["--offset", "-5"]);
     }
 
@@ -1420,7 +1493,7 @@ mod tests {
         // text, and a leading `-` in text is the ambiguity being closed.
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("offset".to_string(), json!("-5"));
-        assert!(build_arguments(&kwargs, None).is_err());
+        assert!(build_arguments(&kwargs, None, AccessMode::Write).is_err());
     }
 
     /// A schema shaped like the scanner emits, for the given properties.
@@ -1441,7 +1514,7 @@ mod tests {
         kwargs.insert("l".to_string(), json!(true));
         kwargs.insert("a".to_string(), json!(true));
 
-        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        let args = build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap();
         assert_eq!(args, vec!["-l", "-a"]);
     }
 
@@ -1457,7 +1530,7 @@ mod tests {
         kwargs.insert("l".to_string(), json!(true));
         kwargs.insert("1".to_string(), json!(true));
 
-        let err = build_arguments(&kwargs, Some(&schema)).unwrap_err();
+        let err = build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap_err();
         assert_eq!(err.code, ErrorCode::GeneralInvalidInput);
         assert!(
             err.message.contains('l') && err.message.contains('1'),
@@ -1481,7 +1554,7 @@ mod tests {
                 kwargs.insert(key.to_string(), json!(true));
             }
             assert!(
-                build_arguments(&kwargs, Some(&schema)).is_err(),
+                build_arguments(&kwargs, Some(&schema), AccessMode::Write).is_err(),
                 "order {keys:?} must be rejected too"
             );
         }
@@ -1499,7 +1572,10 @@ mod tests {
         kwargs.insert("l".to_string(), json!(true));
         kwargs.insert("1".to_string(), json!(false));
 
-        assert_eq!(build_arguments(&kwargs, Some(&schema)).unwrap(), vec!["-l"]);
+        assert_eq!(
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
+            vec!["-l"]
+        );
     }
 
     #[test]
@@ -1515,7 +1591,7 @@ mod tests {
         kwargs.insert("1".to_string(), json!(true));
 
         assert_eq!(
-            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
             vec!["-l", "-1"]
         );
     }
@@ -1535,7 +1611,7 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("classify".to_string(), json!("never"));
 
-        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        let args = build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap();
         assert_eq!(args, vec!["--classify=never"]);
     }
 
@@ -1556,7 +1632,7 @@ mod tests {
         kwargs.insert("user_agent".to_string(), json!("apexe"));
 
         assert_eq!(
-            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
             vec!["--max-time", "1", "--user-agent", "apexe"]
         );
     }
@@ -1580,7 +1656,7 @@ mod tests {
         kwargs.insert("decorate".to_string(), json!(["short", "full"]));
 
         assert_eq!(
-            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
             vec!["--decorate=short", "--decorate=full"]
         );
     }
@@ -1601,7 +1677,7 @@ mod tests {
         kwargs.insert("I".to_string(), json!("*.tmp"));
 
         assert_eq!(
-            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
             vec!["-I", "*.tmp"]
         );
     }
@@ -1621,7 +1697,7 @@ mod tests {
         kwargs.insert("exec_path".to_string(), json!(true));
 
         assert_eq!(
-            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
             vec!["--exec-path"]
         );
     }
@@ -1669,7 +1745,7 @@ mod tests {
         kwargs.insert("expression".to_string(), json!(["-name", "*.txt"]));
 
         assert_eq!(
-            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
             vec!["--", "sandbox", "-name", "*.txt"]
         );
     }
@@ -1686,7 +1762,7 @@ mod tests {
         kwargs.insert("name".to_string(), json!("*.txt"));
 
         assert_eq!(
-            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
             vec!["-f", "-weird-dir", "--", "-name", "*.txt"]
         );
     }
@@ -1709,7 +1785,7 @@ mod tests {
         kwargs.insert("i".to_string(), json!(true));
 
         assert_eq!(
-            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
             vec!["-i", "--", "-weird-name"]
         );
     }
@@ -1734,7 +1810,7 @@ mod tests {
             .expect("object literal")
             .clone();
 
-        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        let args = build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap();
         assert_eq!(args, vec!["-f", "sandbox", "--", "-name", "*.txt"]);
     }
 
@@ -1755,7 +1831,7 @@ mod tests {
             .expect("object literal")
             .clone();
 
-        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        let args = build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap();
         assert_eq!(args, vec!["sandbox", "-name", "*.txt"]);
     }
 
@@ -1769,7 +1845,7 @@ mod tests {
         kwargs.insert("name".to_string(), json!("*.txt"));
 
         assert_eq!(
-            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
             vec!["sandbox", "-name", "*.txt"]
         );
     }
@@ -1794,7 +1870,7 @@ mod tests {
         kwargs.insert("path".to_string(), json!(["sandbox"]));
         kwargs.insert("expression".to_string(), json!(["-name", "*.txt"]));
 
-        let err = build_arguments(&kwargs, Some(&schema))
+        let err = build_arguments(&kwargs, Some(&schema), AccessMode::Write)
             .expect_err("without the marker the guard must still refuse");
         assert_eq!(err.code, ErrorCode::GeneralInvalidInput);
     }
@@ -1811,7 +1887,8 @@ mod tests {
             json!(["(", "-name", "*.txt", ")"]),
         );
 
-        let err = build_arguments(&kwargs, None).expect_err("the element must be refused");
+        let err = build_arguments(&kwargs, None, AccessMode::Write)
+            .expect_err("the element must be refused");
         assert!(
             err.message.contains("Element 1 of parameter 'expression'"),
             "the message must name the element and its index: {}",
@@ -1831,7 +1908,8 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("data".to_string(), json!("--output=/etc/passwd"));
 
-        let err = build_arguments(&kwargs, None).expect_err("the value must be refused");
+        let err = build_arguments(&kwargs, None, AccessMode::Write)
+            .expect_err("the value must be refused");
         assert!(
             err.message.starts_with("Parameter 'data' is"),
             "a scalar names no index: {}",
@@ -1849,7 +1927,7 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("I".to_string(), json!("*.tmp"));
 
-        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        let args = build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap();
         assert_eq!(args, vec!["-I", "*.tmp"]);
     }
 
@@ -1863,7 +1941,7 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("daystart".to_string(), json!(true));
 
-        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        let args = build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap();
         assert_eq!(args, vec!["-daystart"]);
     }
 
@@ -1879,7 +1957,7 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("file".to_string(), json!(["/tmp", "/var"]));
 
-        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        let args = build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap();
         assert_eq!(args, vec!["/tmp", "/var"]);
     }
 
@@ -1897,7 +1975,7 @@ mod tests {
         kwargs.insert("target".to_string(), json!("/dst"));
         kwargs.insert("source".to_string(), json!("/src"));
 
-        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        let args = build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap();
         assert_eq!(args, vec!["/src", "/dst"]);
     }
 
@@ -1913,7 +1991,7 @@ mod tests {
         kwargs.insert("file".to_string(), json!("/tmp"));
         kwargs.insert("l".to_string(), json!(true));
 
-        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        let args = build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap();
         assert_eq!(args, vec!["-l", "/tmp"]);
     }
 
@@ -1927,7 +2005,9 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("file".to_string(), json!(true));
 
-        assert!(build_arguments(&kwargs, Some(&schema)).unwrap().is_empty());
+        assert!(build_arguments(&kwargs, Some(&schema), AccessMode::Write)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -1939,11 +2019,11 @@ mod tests {
         kwargs.insert("no_cache".to_string(), json!(true));
 
         assert_eq!(
-            build_arguments(&kwargs, Some(&schema)).unwrap(),
+            build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap(),
             vec!["--no-cache"]
         );
         assert_eq!(
-            build_arguments(&kwargs, None).unwrap(),
+            build_arguments(&kwargs, None, AccessMode::Write).unwrap(),
             vec!["--no-cache"],
             "no schema at all must behave the same as an unannotated one"
         );
@@ -1959,7 +2039,7 @@ mod tests {
         let mut kwargs = serde_json::Map::new();
         kwargs.insert("foo_bar".to_string(), json!("v"));
 
-        let args = build_arguments(&kwargs, Some(&schema)).unwrap();
+        let args = build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap();
         assert_eq!(args, vec!["--foo_bar", "v"]);
     }
 
@@ -1977,6 +2057,98 @@ mod tests {
         let result = validate_no_injection("arg", "a;b");
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, ErrorCode::GeneralInvalidInput);
+    }
+
+    /// The guard reads `x-apexe-path` off `items` for an array property, which
+    /// is where the schema builder puts it for a variadic operand like `rm`'s
+    /// `file`. This is the shape a real binding has.
+    #[test]
+    fn test_build_arguments_refuses_a_path_operand_inside_a_system_directory() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "array",
+                    "x-apexe-positional": 0,
+                    "items": { "type": "string", "x-apexe-path": true }
+                }
+            }
+        });
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("file".to_string(), json!(["/etc/passwd"]));
+
+        let error = build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::ACLDenied);
+        assert!(
+            error.message.contains("Element 0 of parameter 'file'"),
+            "the refusal must name the offending element: {}",
+            error.message
+        );
+    }
+
+    /// A scalar path-valued flag carries the marker on the property itself.
+    #[test]
+    fn test_build_arguments_refuses_a_path_flag_inside_a_system_directory() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "output": {
+                    "type": "string",
+                    "x-apexe-flag": "--output",
+                    "x-apexe-path": true
+                }
+            }
+        });
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("output".to_string(), json!("/usr/bin/payload"));
+
+        let error = build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap_err();
+        assert_eq!(error.code, ErrorCode::ACLDenied);
+    }
+
+    /// A read-only module may name a system directory. This is the `cat
+    /// /etc/hosts` case: refusing it protected nothing, because the file is
+    /// world-readable and the agent's own file tools reach it regardless.
+    #[test]
+    fn test_build_arguments_lets_a_reader_name_a_system_directory() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "array",
+                    "x-apexe-positional": 0,
+                    "items": { "type": "string", "x-apexe-path": true }
+                }
+            }
+        });
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("file".to_string(), json!(["/etc/hosts"]));
+
+        let args = build_arguments(&kwargs, Some(&schema), AccessMode::ReadOnly).unwrap();
+        assert_eq!(args, vec!["/etc/hosts"]);
+
+        // The same value under the same schema, from a module that can write.
+        let error = build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap_err();
+        assert_eq!(error.code, ErrorCode::ACLDenied);
+    }
+
+    /// The guard applies to what the schema types as a path, and to nothing
+    /// else. A `grep` pattern that happens to look like one is still a pattern:
+    /// treating every string as a path would refuse `grep /etc/hosts logfile`.
+    #[test]
+    fn test_build_arguments_leaves_an_unmarked_value_to_the_argv_checks_alone() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "pattern": { "type": "string", "x-apexe-flag": "-e" }
+            }
+        });
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert("pattern".to_string(), json!("/etc/passwd"));
+
+        let args = build_arguments(&kwargs, Some(&schema), AccessMode::Write).unwrap();
+        assert_eq!(args, vec!["-e", "/etc/passwd"]);
     }
 
     #[test]

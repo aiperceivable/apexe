@@ -55,6 +55,7 @@ impl Cli {
     pub fn run(self) -> anyhow::Result<()> {
         let config = load_config(None)?.with_timeout_override(self.timeout);
         config.ensure_dirs()?;
+        install_path_guard(&config)?;
 
         match self.command {
             Commands::Scan(args) => args.execute(&config),
@@ -64,6 +65,40 @@ impl Cli {
             Commands::Config(args) => args.execute(&config),
         }
     }
+}
+
+/// Install the process-wide path guard from configuration.
+///
+/// Called before any subcommand runs, so every path a wrapped tool receives is
+/// checked whichever surface delivered it. The guard is not optional and there
+/// is no flag to disable it: `config.yaml` can only lengthen the denied list
+/// (see [`ApexeConfig::additional_denied_paths`]), and skipping this call would
+/// leave the compiled-in baseline in force rather than nothing at all.
+///
+/// A refused installation — something already read the guard and pinned the
+/// default — is only an error when the operator configured extra paths. Their
+/// protection is the part that would go missing, and running on under a policy
+/// the operator wrote and the process never loaded is exactly the false sense
+/// of safety §5.3 of the threat model warns about. With no extra paths
+/// configured the compiled-in baseline is identical either way, so there is
+/// nothing to refuse over.
+fn install_path_guard(config: &crate::config::ApexeConfig) -> anyhow::Result<()> {
+    let additional = &config.additional_denied_paths;
+    let guard = crate::governance::PathGuard::from_env(additional);
+    tracing::debug!(
+        root = %guard.root().display(),
+        additional = additional.len(),
+        "Installing path guard"
+    );
+    if !crate::governance::path_guard::install(guard) && !additional.is_empty() {
+        anyhow::bail!(
+            "path guard was already installed, so the {} configured \
+             `additional_denied_paths` entries are not in force; refusing to \
+             start rather than run under a policy that was not loaded",
+            additional.len()
+        );
+    }
+    Ok(())
 }
 
 /// Scan CLI tools and generate apcore binding files.

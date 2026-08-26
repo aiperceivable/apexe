@@ -161,6 +161,113 @@ permitted.
 It deliberately holds **no argument values**, hashed or otherwise. See §5.5 for
 what that costs.
 
+### 4.8 Path guard on path-valued arguments
+
+`--acl` decides *whether a module may be called*. It cannot decide *what a call
+may touch*: apcore's ACL matches on `callers` and `targets` (module ids), and
+its condition keys — `identity_types`, `roles`, `max_call_depth`, `$or`, `$not`
+— are all facts about the principal, never about an argument. So an ACL can say
+"`cli.rm` is allowed" or "`cli.rm` is denied", and nothing in between.
+
+The realistic policy is in between. `rm` is not a command to forbid outright;
+`rm /etc` is a command to forbid. `src/governance/path_guard.rs` closes that
+gap: every argument the input schema types as a filesystem path
+(`x-apexe-path`, emitted by the schema builder for `ValueType::Path`) is
+resolved and checked before it becomes argv.
+
+**Two baselines, because reading and writing are different risks.** A single
+list forced one answer onto two unrelated questions and got both wrong:
+`cat /etc/hosts` was refused, which buys nothing — the file is world-readable
+and the agent's own file-reading tool reaches it anyway (§5.7) — while
+`cat ~/.ssh/id_rsa` and `rm -rf /etc` were refused for the same stated reason
+despite being nothing alike. The split follows the risk:
+
+| | System paths | Credential paths |
+|---|---|---|
+| Module annotated `readonly` | allowed | **refused** |
+| Everything else | **refused** | **refused** |
+
+- **System paths** — `/bin`, `/boot`, `/dev`, `/etc`, `/lib`, `/lib32`,
+  `/lib64`, `/proc`, `/run`, `/sbin`, `/sys`, `/usr`, `/var`, plus `/System`,
+  `/Library`, `/Applications`, `/private/etc`, `/private/var` on macOS.
+  Destruction is the risk here; legibility is not, and refusing `ls /usr/bin`
+  bought friction rather than safety.
+- **Credential paths** — `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`
+  and `~/.apexe` under the invoking user's home, refused to readers and writers
+  alike. Deleting a private key announces itself the next time the key is used;
+  copying one into a model context leaves no trace at all, so the stricter
+  treatment goes to the risk that is harder to notice. `~/.apexe` is on this
+  list rather than the other because it holds the ACL and the audit trail
+  governing the very call being made — a wrapped tool that can read the policy
+  can plan around it.
+
+The mode comes from the module's `readonly` annotation, and an unannotated
+module is treated as a writer. That inherits §5.2's caveat: a **false
+readonly** — a command whose name matches a readonly pattern but which
+writes — gets the weaker of the two treatments here as well as an explicit
+allow rule in the ACL. Both point at the same remedy, which is to correct the
+classification with an overlay.
+
+`config.yaml`'s `additional_denied_paths` appends to the **credential** list,
+so a configured path binds readers too: an operator naming a path explicitly is
+asserting it is sensitive, and the stronger of the two readings is the one that
+cannot be wrong in the dangerous direction. There is no field, flag or
+environment variable that subtracts from either list. That asymmetry is the
+design: the configuration surface can only tighten the boundary.
+
+**Comparison happens on the resolved path, never the supplied string.** Three
+transformations sit between what a caller sends and what the kernel acts on,
+and skipping any one makes the guard decorative:
+
+1. **Relative paths** are joined to the guard's root — which is also what
+   `Command::current_dir` is set to, so the guard and the child cannot disagree
+   about where `../../etc/passwd` lands. Before this, the child inherited
+   apexe's own working directory, and the meaning of every relative argument
+   depended on where the operator happened to launch `apexe serve` from.
+2. **Symlinks** are followed. `/tmp/x -> /etc` makes `rm -rf /tmp/x/` a request
+   to delete `/etc`, and no string comparison on `/tmp/x` sees it. The longest
+   existing prefix is canonicalized, so a destination that does not exist yet
+   (a `mkdir -p` target, a `cp` destination) is still judged.
+3. **`..` components** are folded — but only across the non-existent tail, and
+   only *after* the symlinks ahead of them are resolved. `std::path::absolute`
+   preserves `..` because POSIX requires it, and collapsing it lexically first
+   is wrong: `/tmp/link/..` is the parent of link's target, not `/tmp`.
+
+**The check runs in both directions, and only one of them binds a reader.**
+*Containment* — the path sits inside a protected location, `/etc/passwd` under
+`/etc` — applies to both modes, and is what refuses `cat ~/.ssh/id_rsa`.
+*Ancestry* — the path sits above one — applies to writers only, because it
+exists for the recursive operation that takes the protected directory with it:
+`rm -rf /` never names `/etc` and destroys it regardless. Holding a reader to
+it would refuse `ls ~` and `ls /` on the grounds that a home directory contains
+`.ssh`, which is most of what a reader legitimately does; the resulting gap is
+§5.8's third bullet. Matching is by whole path component either way, so
+`/etcetera` does not collide with `/etc`.
+
+**One carve-out exists, and it is compiled in.** On macOS the per-user
+temporary directory *is* `/var/folders/<x>/<y>/T`, so guarding `/var` would
+otherwise refuse every use of the directory whose purpose is being written to.
+`config.yaml` cannot extend the carve-out list, and a `TMPDIR` that equals or
+contains a *system* location is discarded rather than honoured. The credential
+list is deliberately not weighed there: a home directory under `$TMPDIR` is
+ordinary in a sandbox, and counting it would void the carve-out and re-arm
+`/var` across the whole temp directory. Specificity already refuses a
+credential path nested inside a carve-out. Where a denied
+entry and the carve-out both cover a path, the more specific one decides; a tie
+is a refusal.
+
+A refusal is `ACL_DENIED`, carrying the requested path, the resolved path and
+the protected location that matched. The resolved path is in the message
+because the requested one frequently does not look protected — that is the
+whole point of resolving — and a caller told only "denied" cannot tell a
+mistake from a misconfiguration. Being a governance code rather than an input
+code also keeps it out of circuit-breaker health (`breaker.rs` excludes
+governance refusals), so a caller repeatedly probing `/etc` cannot open a
+circuit and deny `cli.rm` to everyone else.
+
+Unlike `--acl` and `--enable-approval`, this is **on by default and has no
+off switch** (§5.3 does not apply to it).
+
 ---
 
 ## 5. What apexe does not stop
@@ -264,6 +371,44 @@ coverage varies by tool. Curated overlays exist for this reason.
   is a signal and not a defence
 - Anything that happens after the wrapped tool starts running
 
+### 5.8 The path guard sees types, not intent
+
+The guard checks the arguments the input schema types as paths, at the strength
+the module's `readonly` annotation selects. Five limits follow directly, and
+none of them is a bug to be fixed later:
+
+- **A schema that does not mark a value as a path leaves it unchecked.** The
+  marker comes from the scanner's `ValueType::Path` inference or from an
+  overlay's `"type": "path"`. A tool whose help text does not reveal that an
+  option takes a filename yields an unmarked value, and the guard has nothing
+  to act on. Guessing is not the alternative — treating every string as a path
+  would refuse `grep /etc/hosts logfile`, whose first argument is a pattern.
+- **It bounds arguments, not what the tool does with them.** `find . -delete`,
+  a config file that names a target, a tool that reads paths from stdin, and
+  any shell-out the wrapped tool performs itself are all past the boundary.
+  The last bullet of §5.7 — nothing after the wrapped tool starts running —
+  still holds in full.
+- **The mode is per module, not per argument.** `cp /etc/hosts ~/backup` is
+  refused even though `/etc/hosts` is only being *read*, because `cp` is not a
+  `readonly` module and both its operands are judged at the module's strength.
+  Distinguishing a source operand from a destination would need a
+  per-argument direction the scanner cannot infer and no overlay declares. The
+  failure direction is a refusal rather than a permit, so this is friction
+  rather than exposure.
+- **A recursive read rooted above a credential directory is not caught.**
+  Ancestry binds writers only (§4.8), so `grep -r … /` and `ls -R ~` pass the
+  guard even though a recursive read can reach `~/.ssh`. The alternative was
+  refusing `ls ~` outright, which is most of what a read-only tool is for. The
+  guard sees paths, not the `-r` that changes what a path means — closing this
+  needs flag semantics it does not have.
+- **Glob expansion never happens** (§4.1: no shell), so `rm /etc/*` reaches the
+  guard as a single literal path and is refused. That is the safe direction,
+  but it is a consequence of having no shell, not something the guard verifies.
+
+The guard raises the floor for the case that actually recurs — an agent
+pointing a legitimate destructive command at a system directory. It is not a
+sandbox, and §5.1 and §6 still apply in full.
+
 ---
 
 ## 6. Recommended deployment
@@ -280,6 +425,9 @@ coverage varies by tool. Curated overlays exist for this reason.
 
 4. Confirm your MCP client supports elicitation, or the approval gate refuses
    rather than prompts (§5.3.1). On A2A there is no gate at all — use the ACL.
+   The path guard (§4.8) needs no wiring: it is on by default on every surface.
+   Extend it with `additional_denied_paths` if this deployment has data
+   directories worth the same protection.
 5. Keep `--auth` at its default on HTTP transports. A non-loopback bind with no
    credential refuses to start unless explicitly acknowledged; do not acknowledge
    it casually.

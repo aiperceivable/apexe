@@ -243,6 +243,10 @@ log_level: info
 default_timeout: 30
 scan_depth: 2
 json_output_preference: true
+
+# Appended to the compiled-in path-guard baseline. See section 9.5.
+additional_denied_paths:
+  - /srv/production-data
 ```
 
 | Field | Type | Default | Description |
@@ -254,6 +258,7 @@ json_output_preference: true
 | `default_timeout` | integer | `30` | CLI subprocess timeout (seconds) |
 | `scan_depth` | integer | `2` | Default subcommand recursion depth |
 | `json_output_preference` | boolean | `true` | Prefer JSON output from CLI tools when available |
+| `additional_denied_paths` | list of paths | `[]` | Locations to deny **in addition to** the path-guard baseline (§9.5). Additive only — nothing here removes a baseline entry |
 
 ### Environment variables
 
@@ -660,6 +665,119 @@ immediately, and a separate mechanism you build resolves the decision later via
 > the rendered argv is tracked separately.
 
 There is no CLI flag for this — `apcore-mcp`'s `InMemoryApprovalStore` is documented as unsuitable for production (state isn't shared across process invocations, so a hypothetical `apexe approval resolve` command couldn't reach a running server's store anyway). Embed apexe as a library and supply your own persistent store (Redis, a database, etc.) to use this for real.
+
+---
+
+### 9.7 Path Guard (always-on)
+
+The ACL (§9.1) decides *whether a module may be called*. It cannot decide *what
+a call may touch* — apcore ACL rules match on caller and target module id, not
+on argument values. `rm` is not a command to forbid outright; `rm /etc` is.
+
+The path guard covers that gap. Every argument the module's input schema types
+as a filesystem path is resolved and checked before the subprocess is built.
+It is **on by default on every surface**, needs no flag, and has no off switch.
+
+**Two lists, because reading and writing are different risks.** Which one binds
+a call comes from the module's `readonly` annotation (§8):
+
+| | System paths | Credential paths |
+|---|---|---|
+| **`readonly` module** — `cat` `ls` `grep` `find` | allowed | **refused** |
+| **Everything else** — `rm` `mv` `cp` `chmod` | **refused** | **refused** |
+
+| List | Locations | Compiled in |
+|------|-----------|-------------|
+| System | `/bin` `/boot` `/dev` `/etc` `/lib` `/lib32` `/lib64` `/proc` `/run` `/sbin` `/sys` `/usr` `/var` — plus `/System` `/Library` `/Applications` `/private/etc` `/private/var` on macOS | yes, cannot be removed |
+| Credential | `~/.ssh` `~/.aws` `~/.gnupg` `~/.kube` `~/.docker` `~/.apexe` | yes, cannot be removed |
+
+`cat /etc/hosts` and `ls /usr/bin` are ordinary work, so a `readonly` module may
+name a system path — refusing it protected nothing, since the file is
+world-readable and an agent's own file tools reach it regardless. Credential
+paths are refused to readers as well: deleting a private key announces itself
+the next time the key is used, while copying one into a model context leaves no
+trace, so the stricter treatment goes to the risk that is harder to notice.
+`~/.apexe` is on that list because it holds the ACL and audit trail governing
+the call being made.
+
+A module with no `readonly` annotation is treated as a writer. Note that §9.1's
+caveat carries over: a command misclassified as readonly gets the weaker
+treatment here too — fix it with an overlay.
+
+`~/.config` is deliberately **not** guarded. It holds ordinary application
+settings a wrapped tool has legitimate reason to touch.
+
+`/` is not an entry either — every absolute path starts with it, so listing it
+would refuse the whole filesystem. `rm /` is still refused, because for a
+writer a target that *contains* a protected location is refused too.
+
+**Extend it in `config.yaml`:**
+
+```yaml
+additional_denied_paths:
+  - /srv/production-data
+  - ~/customer-exports
+```
+
+Configured entries join the **credential** list, so they bind readers as well
+as writers: naming a path explicitly asserts that it is sensitive. This list
+only ever grows the boundary — there is no configuration, flag or environment
+variable that removes a baseline entry.
+
+**What gets compared.** Not the string the caller sent — the path the kernel
+would act on. A relative path is joined to the working directory the subprocess
+actually runs in, symlinks are followed, and `..` is folded afterwards. All
+three matter:
+
+```jsonc
+// cli.rm (writer)
+{ "file": ["/etc/passwd"] }          // Refused: resolves into /etc
+{ "file": ["../../../etc/passwd"] }  // Refused: climbs out of the workspace
+{ "file": ["/tmp/x/hosts"] }         // Refused: /tmp/x is a symlink to /etc
+{ "file": ["/"] }                    // Refused: contains a protected location
+{ "file": ["/etcetera/notes"] }      // Allowed: /etcetera is not /etc
+
+// cli.cat (readonly)
+{ "file": ["/etc/hosts"] }           // Allowed: system paths are legible
+{ "file": ["~/.ssh/id_rsa"] }        // Refused: credentials bind readers too
+{ "file": ["/"] }                    // Allowed: ancestry binds writers only
+```
+
+A refusal is `ACL_DENIED` and names all three of the requested path, the
+resolved path and the protected location that matched:
+
+```json
+{
+  "code": "ACL_DENIED",
+  "message": "Element 0 of parameter 'file' resolves to '/private/etc/passwd', which is protected by '/private/etc'",
+  "details": {
+    "requested_path": "../../../etc/passwd",
+    "resolved_path": "/private/etc/passwd",
+    "protected_path": "/private/etc"
+  }
+}
+```
+
+The requested path alone is often not enough to see the problem — that is the
+point of resolving it — so both are reported.
+
+**The temp directory stays writable.** On macOS `$TMPDIR` lives under
+`/var/folders/`, which the `/var` baseline would otherwise refuse. A compiled-in
+carve-out keeps it usable. The carve-out list is not configurable, and a
+`TMPDIR` pointing at a system location is discarded rather than honoured. A
+credential path nested inside the temp directory — a sandboxed `HOME` — is
+still refused, by the more-specific-rule-wins tiebreak rather than by voiding
+the carve-out.
+
+**Limits.** The guard acts on values the schema *types* as paths. A tool whose
+help text never reveals that an option takes a filename yields an unmarked
+value the guard cannot see; nothing bounds what the tool does after it starts
+(`find . -delete` is past the boundary); because ancestry binds writers only, a
+recursive *read* rooted above a credential directory — `grep -r … /` — is not
+caught; and the mode is per module rather than per argument, so
+`cp /etc/hosts ~/backup` is refused even though the system path is only being
+read. See [`docs/threat-model.md`](threat-model.md) §4.8 and §5.8 for
+the full accounting.
 
 ---
 
