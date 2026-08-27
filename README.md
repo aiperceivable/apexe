@@ -310,8 +310,9 @@ apexe a2a --cors-origin https://example.com     # Allow a browser origin
 List registered modules.
 
 ```bash
-apexe list                  # Table format
-apexe list --format json    # JSON format
+apexe list                     # Table format
+apexe list --format json       # JSON format
+apexe list --available-only    # Only binaries reachable on this machine
 ```
 
 ### `apexe config`

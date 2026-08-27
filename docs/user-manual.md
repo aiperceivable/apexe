@@ -207,6 +207,9 @@ apexe list [OPTIONS]
 |--------|---------|-------------|
 | `--format <FMT>` | `table` | Output format: `table` or `json` |
 | `--modules-dir <DIR>` | `~/.apexe/modules/` | Directory to read binding files from |
+| `--verbose` | off | Print each module's behavioral annotations and, with `--acl`, the ACL decision an unauthenticated caller would get |
+| `--acl <PATH>` | `<config_dir>/acl.yaml` if present | ACL policy file to evaluate against in `--verbose` output. Read-only report — does not enable enforcement anywhere |
+| `--available-only` | off | Only list modules whose binary is reachable on this machine right now. `apexe serve`/`apexe a2a` apply this check unconditionally; here it is opt-in so the plain listing still shows everything ever scanned — see [Availability Filtering](#availability-filtering) |
 
 ### 4.5 `apexe config`
 
@@ -989,6 +992,34 @@ For per-caller rules, use `--acl` (§9.2).
 > differently scanned machines), but if the filter excludes every loaded
 > module apexe logs a **warning** saying so, rather than the `admitted=0` info
 > line that looked identical to an empty modules directory.
+
+### Availability Filtering
+
+Registration also drops any module whose binary is not actually reachable on
+this machine — checked against the `target` (`exec://{binary_path} ...`)
+recorded in its binding file at scan time. A binding file can outlive the tool
+it wraps: uninstalled since, moved, or the `modules_dir` copied to a different
+host. Unlike `--tags`/`--prefix`, this check is **unconditional** and has no
+opt-out flag — `apexe serve` and `apexe a2a` share the same `build_executor`,
+so it applies to both, and it is not optional because an MCP/A2A client has no
+graceful way to recover from a tool it was told exists failing every call with
+`ModuleNotFound`/"not installed".
+
+An excluded module logs a warning naming the `module_id` and the target that
+could not be resolved:
+
+```
+WARN apexe::module::registry: Binary not reachable on this machine; excluding
+from the registered tool surface module_id="cli.ghost" target="exec:///..."
+```
+
+`apexe list` shows binding files as-is by default (useful for reviewing what
+was ever scanned, e.g. before moving `modules_dir` to a new host); pass
+`--available-only` to apply the same check there:
+
+```bash
+apexe list --available-only              # only binaries reachable right now
+```
 
 ### Explorer UI
 

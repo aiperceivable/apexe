@@ -157,9 +157,10 @@ pub fn build_executor(opts: &ExecutorOptions<'_>) -> Result<Arc<Executor>, Modul
         .map(|p| Arc::new(crate::governance::AuditManager::new(p)));
 
     let admitted = admit_modules(modules, &opts.filter);
+    let available = filter_available(admitted);
 
     let registry = Registry::new();
-    register_modules(&admitted, &registry, opts.timeout_ms, audit.clone());
+    register_modules(&available, &registry, opts.timeout_ms, audit.clone());
     tracing::info!(count = registry.count(), "Registered CLI modules");
     // Snapshot the ids that survived registration (a module whose `CliModule`
     // failed to build is logged and skipped), taken before the registry moves
@@ -225,6 +226,32 @@ fn admit_modules(modules: Vec<ScannedModule>, filter: &ModuleFilter) -> Vec<Scan
         );
     }
     admitted
+}
+
+/// Drop modules whose binary is no longer reachable on this machine.
+///
+/// A module's `target` is a snapshot taken at `apexe scan` time; the binding
+/// file can outlive the tool it wraps (uninstalled since, moved, or the
+/// `modules_dir` copied to a different host). Registering it anyway would
+/// advertise a tool over MCP/A2A that fails every call with
+/// `ModuleNotFound`/"not installed" -- worse for an external caller than
+/// simply not being offered it in the first place.
+///
+/// Unlike [`ModuleFilter`], this is not optional and has no opt-out flag: a
+/// server's advertised tool surface must be a subset of what it can actually
+/// run.
+fn filter_available(modules: Vec<ScannedModule>) -> Vec<ScannedModule> {
+    let (available, missing): (Vec<_>, Vec<_>) = modules
+        .into_iter()
+        .partition(|m| crate::scanner::resolver::target_is_available(&m.target));
+    for module in &missing {
+        tracing::warn!(
+            module_id = module.module_id,
+            target = module.target,
+            "Binary not reachable on this machine; excluding from the registered tool surface"
+        );
+    }
+    available
 }
 
 /// Install the logging and resilience middleware the options ask for.
@@ -1015,6 +1042,72 @@ mod tests {
             .expect("module should be registered");
         assert_eq!(descriptor.module_id, "echo.hello");
         assert_eq!(descriptor.description, "Echo hello");
+    }
+
+    #[test]
+    fn test_build_executor_excludes_module_whose_binary_is_missing() {
+        // A binding file outlives the tool it wraps -- uninstalled, moved, or
+        // copied to a different host. It must not be registered (and so must
+        // not be advertised over MCP/A2A) once its binary is unreachable.
+        let dir = TempDir::new().unwrap();
+        let modules = vec![ScannedModule::new(
+            "cli.ghost".to_string(),
+            "A tool that no longer exists here".to_string(),
+            json!({"type": "object"}),
+            json!({"type": "object"}),
+            vec!["cli".to_string()],
+            "exec:///nonexistent/zzz_no_such_binary_xyz".to_string(),
+        )];
+        YamlOutput::without_verification()
+            .write(&modules, dir.path(), false)
+            .unwrap();
+
+        let executor = build_executor(&opts(Some(dir.path()))).unwrap();
+        assert_eq!(executor.registry().count(), 0);
+        assert!(executor
+            .registry()
+            .get_definition("cli.ghost")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn test_build_executor_keeps_available_and_drops_unavailable_together() {
+        let dir = TempDir::new().unwrap();
+        let modules = vec![
+            ScannedModule::new(
+                "cli.real".to_string(),
+                "Exists".to_string(),
+                json!({"type": "object"}),
+                json!({"type": "object"}),
+                vec!["cli".to_string()],
+                "exec:///bin/echo hello".to_string(),
+            ),
+            ScannedModule::new(
+                "cli.ghost".to_string(),
+                "Does not exist".to_string(),
+                json!({"type": "object"}),
+                json!({"type": "object"}),
+                vec!["cli".to_string()],
+                "exec:///nonexistent/zzz_no_such_binary_xyz".to_string(),
+            ),
+        ];
+        YamlOutput::without_verification()
+            .write(&modules, dir.path(), false)
+            .unwrap();
+
+        let executor = build_executor(&opts(Some(dir.path()))).unwrap();
+        assert_eq!(executor.registry().count(), 1);
+        assert!(executor
+            .registry()
+            .get_definition("cli.real")
+            .unwrap()
+            .is_some());
+        assert!(executor
+            .registry()
+            .get_definition("cli.ghost")
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

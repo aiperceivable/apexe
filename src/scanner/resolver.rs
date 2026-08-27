@@ -60,6 +60,39 @@ pub fn extract_version_from_line(line: &str) -> Option<String> {
         .map(|m| m.as_str().to_string())
 }
 
+/// Extract the binary path from a scanned module's `exec://{binary_path}
+/// {command_parts...}` target. Mirrors the parsing `CliModule::from_scanned`
+/// does, without constructing a whole `CliModule` just to read one field.
+pub fn extract_binary_path(target: &str) -> Option<&str> {
+    target.strip_prefix("exec://")?.split_whitespace().next()
+}
+
+/// Whether `binary_path` is reachable on this machine right now.
+///
+/// A path containing a separator is checked directly on disk -- this is what
+/// a scan-time `which` resolution produces, and is the common case for a
+/// binding file. A bare name is re-resolved against the current `PATH`.
+///
+/// Deliberately just a filesystem/PATH lookup, not a `--version` probe like
+/// [`ToolResolver::resolve`]: this can run once per listed or registered
+/// module, so it has to stay cheap and side-effect-free rather than spawn a
+/// subprocess per tool.
+pub fn binary_is_reachable(binary_path: &str) -> bool {
+    if binary_path.contains(std::path::MAIN_SEPARATOR) {
+        std::path::Path::new(binary_path).is_file()
+    } else {
+        which::which(binary_path).is_ok()
+    }
+}
+
+/// Whether the binary named by a scanned module's `target` is reachable on
+/// this machine. A target that doesn't parse is treated as unavailable --
+/// [`CliModule::from_scanned`](crate::module::CliModule::from_scanned) would
+/// refuse it too.
+pub fn target_is_available(target: &str) -> bool {
+    extract_binary_path(target).is_some_and(binary_is_reachable)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +172,47 @@ mod tests {
     #[test]
     fn test_extract_version_empty() {
         assert_eq!(extract_version_from_line(""), None);
+    }
+
+    #[test]
+    fn test_extract_binary_path_strips_scheme_and_command_parts() {
+        assert_eq!(
+            extract_binary_path("exec:///usr/bin/git cat-file -p"),
+            Some("/usr/bin/git")
+        );
+        assert_eq!(extract_binary_path("exec:///bin/ls"), Some("/bin/ls"));
+    }
+
+    #[test]
+    fn test_extract_binary_path_rejects_non_exec_target() {
+        assert_eq!(extract_binary_path("http:///bin/ls"), None);
+        assert_eq!(extract_binary_path("exec://"), None);
+    }
+
+    #[test]
+    fn test_binary_is_reachable_for_existing_absolute_path() {
+        // /bin/sh exists on every Unix apexe targets; this is the scan-time
+        // snapshot format binding files actually store.
+        assert!(binary_is_reachable("/bin/sh"));
+    }
+
+    #[test]
+    fn test_binary_is_reachable_false_for_missing_absolute_path() {
+        assert!(!binary_is_reachable("/nonexistent/zzz_no_such_binary_xyz"));
+    }
+
+    #[test]
+    fn test_binary_is_reachable_resolves_bare_name_on_path() {
+        assert!(binary_is_reachable("sh"));
+        assert!(!binary_is_reachable("zzz_no_such_tool_xyz"));
+    }
+
+    #[test]
+    fn test_target_is_available_end_to_end() {
+        assert!(target_is_available("exec:///bin/sh"));
+        assert!(!target_is_available(
+            "exec:///nonexistent/zzz_no_such_binary_xyz"
+        ));
+        assert!(!target_is_available("not-a-valid-target"));
     }
 }

@@ -836,16 +836,40 @@ pub struct ListArgs {
     /// `serve`/`a2a`, naming a file here does not enable enforcement anywhere.
     #[arg(long)]
     pub acl: Option<PathBuf>,
+
+    /// Only list modules whose underlying binary is still reachable on this
+    /// machine.
+    ///
+    /// A binding file's `target` is a snapshot taken at `apexe scan` time --
+    /// the tool it names can be uninstalled, moved, or the `modules_dir`
+    /// copied to a different host since. Off by default so `list` still shows
+    /// everything ever scanned (e.g. to review before moving to a new
+    /// machine); `apexe serve`/`apexe a2a` apply this check unconditionally,
+    /// since a server should never advertise a tool it cannot run.
+    #[arg(long)]
+    pub available_only: bool,
 }
 
 impl ListArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
         let modules_dir = self.modules_dir.as_ref().unwrap_or(&config.modules_dir);
 
-        let modules = self.load_modules(modules_dir)?;
+        let mut modules = self.load_modules(modules_dir)?;
         if modules.is_empty() {
             println!("No modules found. Run 'apexe scan <tool>' first.");
             return Ok(());
+        }
+
+        if self.available_only {
+            let loaded = modules.len();
+            modules.retain(|m| crate::scanner::resolver::target_is_available(&m.target));
+            if modules.is_empty() {
+                println!(
+                    "No modules found. {loaded} scanned module(s) exist but none of their \
+                     binaries are reachable on this machine."
+                );
+                return Ok(());
+            }
         }
 
         if self.verbose {
@@ -1859,6 +1883,68 @@ mod tests {
     }
 
     #[test]
+    fn test_list_available_only_flag_defaults_false() {
+        let cli = Cli::try_parse_from(["apexe", "list"]).unwrap();
+        if let Commands::List(args) = cli.command {
+            assert!(!args.available_only);
+        } else {
+            panic!("expected Commands::List");
+        }
+    }
+
+    #[test]
+    fn test_list_available_only_flag_parses() {
+        let cli = Cli::try_parse_from(["apexe", "list", "--available-only"]).unwrap();
+        if let Commands::List(args) = cli.command {
+            assert!(args.available_only);
+        } else {
+            panic!("expected Commands::List");
+        }
+    }
+
+    #[test]
+    fn test_list_available_only_excludes_modules_with_missing_binaries() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let modules = vec![
+            apcore_toolkit::ScannedModule::new(
+                "cli.real".to_string(),
+                "Exists".to_string(),
+                serde_json::json!({"type": "object"}),
+                serde_json::json!({"type": "object"}),
+                vec!["cli".to_string()],
+                "exec:///bin/echo hello".to_string(),
+            ),
+            apcore_toolkit::ScannedModule::new(
+                "cli.ghost".to_string(),
+                "Does not exist".to_string(),
+                serde_json::json!({"type": "object"}),
+                serde_json::json!({"type": "object"}),
+                vec!["cli".to_string()],
+                "exec:///nonexistent/zzz_no_such_binary_xyz".to_string(),
+            ),
+        ];
+        crate::output::YamlOutput::without_verification()
+            .write(&modules, tmp.path(), false)
+            .unwrap();
+
+        let args = ListArgs {
+            format: "table".to_string(),
+            modules_dir: Some(tmp.path().to_path_buf()),
+            verbose: false,
+            acl: None,
+            available_only: true,
+        };
+        let loaded = args.load_modules(tmp.path()).unwrap();
+        let available: Vec<_> = loaded
+            .iter()
+            .filter(|m| crate::scanner::resolver::target_is_available(&m.target))
+            .collect();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0].module_id, "cli.real");
+    }
+
+    #[test]
     fn test_list_resolve_acl_path_prefers_explicit_flag() {
         let tmp = tempfile::TempDir::new().unwrap();
         let default_acl = tmp.path().join("acl.yaml");
@@ -1875,6 +1961,7 @@ mod tests {
             modules_dir: None,
             verbose: true,
             acl: Some(explicit_acl.clone()),
+            available_only: false,
         };
         assert_eq!(args.resolve_acl_path(&config), Some(explicit_acl));
     }
@@ -1894,6 +1981,7 @@ mod tests {
             modules_dir: None,
             verbose: true,
             acl: None,
+            available_only: false,
         };
         assert_eq!(args.resolve_acl_path(&config), Some(default_acl));
     }
@@ -1910,6 +1998,7 @@ mod tests {
             modules_dir: None,
             verbose: true,
             acl: None,
+            available_only: false,
         };
         assert_eq!(args.resolve_acl_path(&config), None);
     }
@@ -2197,6 +2286,7 @@ mod tests {
             modules_dir: Some(tmp.path().to_path_buf()),
             verbose: false,
             acl: None,
+            available_only: false,
         };
         let result = args.load_modules(tmp.path());
         assert!(
