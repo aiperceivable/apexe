@@ -287,8 +287,25 @@ pub struct PathGuard {
     /// Resolved system locations, enforced against [`AccessMode::Write`] only.
     system: Vec<PathBuf>,
     /// Resolved credential locations plus whatever the operator configured,
-    /// enforced against both access modes.
+    /// enforced against both access modes. This is the list [`applicable`]
+    /// actually checks against; see [`credential_baseline`] and
+    /// [`credential_configured`] for the same entries split by provenance,
+    /// kept for introspection (`apexe policy`) rather than enforcement.
+    ///
+    /// [`applicable`]: PathGuard::applicable
+    /// [`credential_baseline`]: PathGuard::credential_baseline
+    /// [`credential_configured`]: PathGuard::credential_configured
     credential: Vec<PathBuf>,
+    /// The compiled-in half of [`credential`](PathGuard::credential), before
+    /// the operator's `additional_denied_paths` are merged in. Exists only so
+    /// `apexe policy` can report which entries are built-in versus
+    /// configured; enforcement always goes through the merged list.
+    credential_baseline: Vec<PathBuf>,
+    /// The operator's `additional_denied_paths`, resolved, before merging
+    /// into [`credential`](PathGuard::credential). See
+    /// [`credential_baseline`](PathGuard::credential_baseline) for why this
+    /// is kept separately.
+    credential_configured: Vec<PathBuf>,
     /// Resolved carve-outs that survived [`accept_exemption`]. See
     /// [`baseline_exemptions`] — this is the temp directory and nothing else.
     ///
@@ -364,7 +381,13 @@ impl PathGuard {
             })
             .collect();
 
-        credential.extend(config.denied.iter().map(|entry| resolve(entry, &root)));
+        let credential_baseline = credential.clone();
+        let credential_configured: Vec<PathBuf> = config
+            .denied
+            .iter()
+            .map(|entry| resolve(entry, &root))
+            .collect();
+        credential.extend(credential_configured.iter().cloned());
         credential.sort();
         credential.dedup();
 
@@ -383,6 +406,8 @@ impl PathGuard {
             root,
             system,
             credential,
+            credential_baseline,
+            credential_configured,
             exempt,
             allowed,
         }
@@ -410,6 +435,38 @@ impl PathGuard {
     /// The working directory relative paths resolve against.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Compiled-in system locations, refused to [`AccessMode::Write`] only.
+    /// For introspection (`apexe policy`); enforcement reads [`applicable`](Self::applicable).
+    pub fn system_baseline(&self) -> &[PathBuf] {
+        &self.system
+    }
+
+    /// Compiled-in credential locations, refused to both access modes. Does
+    /// **not** include the operator's `additional_denied_paths` — see
+    /// [`credential_configured`](Self::credential_configured) for those.
+    pub fn credential_baseline(&self) -> &[PathBuf] {
+        &self.credential_baseline
+    }
+
+    /// The operator's `additional_denied_paths`, resolved. Refused to both
+    /// access modes, same as the compiled-in credential list it is merged
+    /// into for enforcement.
+    pub fn credential_configured(&self) -> &[PathBuf] {
+        &self.credential_configured
+    }
+
+    /// The operator's `allowed_paths` carve-outs, resolved. The only setting
+    /// that relaxes the guard; see [`PathGuard::new`].
+    pub fn allowed_paths(&self) -> &[PathBuf] {
+        &self.allowed
+    }
+
+    /// Derived exemptions that are not an operator's decision — the
+    /// temp-directory carve-out described at [`baseline_exemptions`].
+    pub fn exempt_paths(&self) -> &[PathBuf] {
+        &self.exempt
     }
 
     /// Refuse `value` if it resolves into a location `mode` may not touch.
@@ -1110,6 +1167,8 @@ mod tests {
             system: Vec::new(),
             credential: vec![PathBuf::from("/home/u/.ssh")],
             exempt: vec![PathBuf::from("/home/u/.ssh")],
+            credential_baseline: Vec::new(),
+            credential_configured: Vec::new(),
             allowed: Vec::new(),
         };
         assert!(guard
@@ -1204,6 +1263,8 @@ mod tests {
             system: vec![PathBuf::from("/var")],
             credential: vec![tmp.join("fakehome/.ssh")],
             exempt: vec![tmp.clone()],
+            credential_baseline: Vec::new(),
+            credential_configured: Vec::new(),
             allowed: Vec::new(),
         };
         assert!(
@@ -1229,6 +1290,8 @@ mod tests {
             system: Vec::new(),
             credential: vec![PathBuf::from("/home/u/.ssh")],
             exempt: vec![PathBuf::from("/home/u/.ssh")],
+            credential_baseline: Vec::new(),
+            credential_configured: Vec::new(),
             allowed: Vec::new(),
         };
         assert!(guard
@@ -1243,6 +1306,8 @@ mod tests {
             system: vec![PathBuf::from("/var")],
             credential: vec![PathBuf::from("/var/scratch/golden")],
             exempt: vec![PathBuf::from("/var/scratch")],
+            credential_baseline: Vec::new(),
+            credential_configured: Vec::new(),
             allowed: Vec::new(),
         };
 
@@ -1275,6 +1340,8 @@ mod tests {
             system: vec![PathBuf::from("/data")],
             credential: Vec::new(),
             exempt: vec![PathBuf::from("/data")],
+            credential_baseline: Vec::new(),
+            credential_configured: Vec::new(),
             allowed: Vec::new(),
         };
         assert!(guard
@@ -1365,5 +1432,52 @@ mod tests {
         );
         assert!(error.details.contains_key("resolved_path"));
         assert!(error.details.contains_key("protected_path"));
+    }
+
+    // ---- Introspection accessors, for `apexe policy` --------------------
+
+    #[test]
+    fn test_credential_baseline_and_configured_are_reported_separately() {
+        // `apexe policy` must be able to say which entries are compiled in
+        // and which an operator added, even though enforcement merges both
+        // into one list.
+        let extra = PathBuf::from("/srv/production-data");
+        let guard = guard_denying(Path::new("/"), std::slice::from_ref(&extra));
+
+        assert_eq!(
+            guard.credential_baseline().len(),
+            BASELINE_CREDENTIAL_HOME_SUBPATHS.len(),
+            "the baseline list must not include the operator's addition"
+        );
+        assert_eq!(
+            guard.credential_configured(),
+            &[resolve(&extra, Path::new("/"))]
+        );
+        assert!(guard
+            .credential_baseline()
+            .iter()
+            .chain(guard.credential_configured())
+            .all(|p| p != &PathBuf::new()),);
+    }
+
+    #[test]
+    fn test_allowed_and_exempt_paths_are_exposed() {
+        let carve_out = PathBuf::from("/etc/nginx/conf.d");
+        let guard = guard_allowing(Path::new("/"), std::slice::from_ref(&carve_out));
+
+        assert_eq!(
+            guard.allowed_paths(),
+            &[resolve(&carve_out, Path::new("/"))]
+        );
+        assert_eq!(
+            guard.exempt_paths(),
+            &[resolve(&std::env::temp_dir(), Path::new("/"))]
+        );
+    }
+
+    #[test]
+    fn test_system_baseline_matches_the_compiled_in_list() {
+        let guard = guard_at(Path::new("/"));
+        assert_eq!(guard.system_baseline().len(), BASELINE_SYSTEM_PATHS.len());
     }
 }

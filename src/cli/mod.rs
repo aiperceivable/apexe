@@ -40,6 +40,9 @@ pub enum Commands {
     List(ListArgs),
     /// Show or initialize apexe configuration.
     Config(ConfigArgs),
+    /// Show the filesystem access boundary wrapped tools are checked
+    /// against, or check one path against it.
+    Policy(PolicyArgs),
 }
 
 impl Cli {
@@ -63,6 +66,7 @@ impl Cli {
             Commands::A2a(args) => args.execute(&config),
             Commands::List(args) => args.execute(&config),
             Commands::Config(args) => args.execute(&config),
+            Commands::Policy(args) => args.execute(&config),
         }
     }
 }
@@ -811,6 +815,27 @@ pub struct ListArgs {
     /// Directory containing binding files
     #[arg(long)]
     pub modules_dir: Option<PathBuf>,
+
+    /// Print each module's behavioral annotations (readonly, destructive,
+    /// idempotent, requires_approval, open_world) and, when an ACL policy is
+    /// loaded, the allow/deny decision an unauthenticated caller would get
+    /// from it.
+    ///
+    /// Rendered with apcore-cli's own `format_module_detail` -- the renderer
+    /// `apcore-cli describe` uses -- rather than a bespoke one, so a module's
+    /// annotations appear exactly as they would there; the ACL decision rides
+    /// along through the same `x-`-prefixed extension-field convention that
+    /// renderer already documents for caller-supplied metadata.
+    #[arg(long)]
+    pub verbose: bool,
+
+    /// ACL policy file to evaluate against in `--verbose` output.
+    ///
+    /// Defaults to `<config_dir>/acl.yaml` -- where `apexe scan` writes one --
+    /// when that file exists. This is a read-only report: unlike `--acl` on
+    /// `serve`/`a2a`, naming a file here does not enable enforcement anywhere.
+    #[arg(long)]
+    pub acl: Option<PathBuf>,
 }
 
 impl ListArgs {
@@ -823,7 +848,11 @@ impl ListArgs {
             return Ok(());
         }
 
-        self.print_modules(&modules)?;
+        if self.verbose {
+            self.print_verbose(&modules, config)?;
+        } else {
+            self.print_modules(&modules)?;
+        }
         Ok(())
     }
 
@@ -838,6 +867,113 @@ impl ListArgs {
             return Ok(vec![]);
         }
         crate::output::load_modules_from_dir(dir).map_err(|e| anyhow::anyhow!(e))
+    }
+
+    /// `--acl`, or `<config_dir>/acl.yaml` when `--acl` is absent and that
+    /// file exists. Neither is required: without one, `--verbose` still
+    /// prints annotations, just no ACL decision.
+    fn resolve_acl_path(&self, config: &ApexeConfig) -> Option<PathBuf> {
+        if let Some(path) = &self.acl {
+            return Some(path.clone());
+        }
+        let default_path = config.config_dir.join("acl.yaml");
+        default_path.exists().then_some(default_path)
+    }
+
+    fn print_verbose(
+        &self,
+        modules: &[apcore_toolkit::ScannedModule],
+        config: &ApexeConfig,
+    ) -> anyhow::Result<()> {
+        let acl_path = self.resolve_acl_path(config);
+        let acl_manager = match &acl_path {
+            Some(path) => Some(
+                crate::governance::AclManager::from_config(path)
+                    .map_err(|e| anyhow::anyhow!("Failed to load ACL '{}': {e}", path.display()))?,
+            ),
+            None => None,
+        };
+
+        let acl_header = match &acl_path {
+            Some(path) => format!("ACL policy: {}", path.display()),
+            None => {
+                "ACL policy: none (pass --acl, or run `apexe scan` to generate one)".to_string()
+            }
+        };
+
+        let mut sorted: Vec<&apcore_toolkit::ScannedModule> = modules.iter().collect();
+        sorted.sort_by(|a, b| a.module_id.cmp(&b.module_id));
+
+        if self.format == "json" {
+            let mut items: Vec<serde_json::Value> = Vec::with_capacity(sorted.len());
+            for module in &sorted {
+                let descriptor = Self::verbose_descriptor(module, acl_manager.as_ref())?;
+                // Round-tripped through apcore-cli's own JSON renderer so the
+                // shape matches `apcore-cli describe` exactly (including which
+                // fields it keeps and how it surfaces `x-` extensions),
+                // instead of dumping this crate's internal `ScannedModule`
+                // layout.
+                let rendered = apcore_cli::format_module_detail(&descriptor, "json");
+                items.push(serde_json::from_str(&rendered)?);
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "acl_policy": acl_path.map(|p| p.display().to_string()),
+                    "modules": items,
+                }))?
+            );
+            return Ok(());
+        }
+
+        println!("{acl_header}\n");
+        for module in sorted {
+            let descriptor = Self::verbose_descriptor(module, acl_manager.as_ref())?;
+            println!("{}", apcore_cli::format_module_detail(&descriptor, "table"));
+        }
+        Ok(())
+    }
+
+    /// A module's descriptor JSON, with the ACL decision (if any) layered on
+    /// via `x-acl-effect` / `x-acl-rule` -- apcore-cli's own extension-field
+    /// convention for caller-supplied metadata it does not otherwise know
+    /// about (see `format_module_detail`'s "Extension Metadata" section).
+    fn verbose_descriptor(
+        module: &apcore_toolkit::ScannedModule,
+        acl_manager: Option<&crate::governance::AclManager>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let mut descriptor = serde_json::to_value(module)?;
+        if let Some(manager) = acl_manager {
+            let decision = manager.explain(&module.module_id);
+            if let Some(obj) = descriptor.as_object_mut() {
+                obj.insert(
+                    "x-acl-effect".to_string(),
+                    serde_json::Value::String(decision.effect.clone()),
+                );
+                let rule = match decision.matched_rule_index {
+                    Some(idx) => {
+                        let desc = decision
+                            .matched_rule_description
+                            .as_deref()
+                            .unwrap_or("(no description)");
+                        let caveat = if decision.matched_rule_has_conditions {
+                            "; also carries `conditions`, evaluated against the real \
+                             caller's identity/role at call time -- the effect above may \
+                             not hold for every caller"
+                        } else {
+                            ""
+                        };
+                        format!("rule {idx}: {desc}{caveat}")
+                    }
+                    None => format!(
+                        "no rule matched; default_effect: {}",
+                        decision.default_effect
+                    ),
+                };
+                obj.insert("x-acl-rule".to_string(), serde_json::Value::String(rule));
+            }
+        }
+        Ok(descriptor)
     }
 
     fn print_modules(&self, modules: &[apcore_toolkit::ScannedModule]) -> anyhow::Result<()> {
@@ -903,6 +1039,146 @@ impl ConfigArgs {
             }
         }
         Ok(())
+    }
+}
+
+/// Report the filesystem boundary wrapped tools are checked against, or
+/// check one path against it directly.
+///
+/// This is the same [`crate::governance::PathGuard`] `Cli::run` installs
+/// before any subcommand executes anything (see `install_path_guard`), read
+/// through [`crate::governance::path_guard::active`] rather than rebuilt --
+/// so the summary can never describe a policy other than the one actually in
+/// force. `--path` goes one step further and calls the guard's own `check`,
+/// the exact call a wrapped tool's argument goes through, so its verdict
+/// cannot drift from what a real invocation would get.
+#[derive(Debug, clap::Args)]
+pub struct PolicyArgs {
+    /// Check this path against the guard instead of printing the whole
+    /// policy. Resolved the same way a wrapped tool's argument would be:
+    /// joined to the working directory, symlinks followed, `..` collapsed.
+    #[arg(long)]
+    pub path: Option<String>,
+
+    /// Access mode `--path` is checked under. `write` is the conservative
+    /// default every unannotated module gets; `read` is the narrower
+    /// boundary a `readonly`-annotated module is held to.
+    #[arg(long, default_value = "write", value_parser = ["read", "write"])]
+    pub mode: String,
+
+    /// Output format
+    #[arg(long, default_value = "table", value_parser = ["json", "table"])]
+    pub format: String,
+}
+
+impl PolicyArgs {
+    pub fn execute(self, _config: &ApexeConfig) -> anyhow::Result<()> {
+        let guard = crate::governance::path_guard::active();
+        match &self.path {
+            Some(path) => self.check_path(guard, path),
+            None => self.print_summary(guard),
+        }
+    }
+
+    fn access_mode(&self) -> crate::governance::AccessMode {
+        if self.mode == "read" {
+            crate::governance::AccessMode::ReadOnly
+        } else {
+            crate::governance::AccessMode::Write
+        }
+    }
+
+    fn check_path(&self, guard: &crate::governance::PathGuard, path: &str) -> anyhow::Result<()> {
+        let result = guard.check("the given --path", path, self.access_mode());
+
+        if self.format == "json" {
+            let json = match &result {
+                Ok(()) => serde_json::json!({
+                    "path": path,
+                    "mode": self.mode,
+                    "decision": "allow",
+                }),
+                Err(e) => serde_json::json!({
+                    "path": path,
+                    "mode": self.mode,
+                    "decision": "deny",
+                    "reason": e.message,
+                    "details": e.details,
+                    "ai_guidance": e.ai_guidance,
+                }),
+            };
+            println!("{}", serde_json::to_string_pretty(&json)?);
+            return Ok(());
+        }
+
+        match &result {
+            Ok(()) => println!("ALLOW  {path}  (mode: {})", self.mode),
+            Err(e) => {
+                println!("DENY   {path}  (mode: {})", self.mode);
+                println!("  {}", e.message);
+                if let Some(guidance) = &e.ai_guidance {
+                    println!("  hint: {guidance}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn print_summary(&self, guard: &crate::governance::PathGuard) -> anyhow::Result<()> {
+        if self.format == "json" {
+            let json = serde_json::json!({
+                "root": guard.root().display().to_string(),
+                "system_baseline": Self::path_list(guard.system_baseline()),
+                "credential_baseline": Self::path_list(guard.credential_baseline()),
+                "credential_configured": Self::path_list(guard.credential_configured()),
+                "allowed_paths": Self::path_list(guard.allowed_paths()),
+                "exempt_paths": Self::path_list(guard.exempt_paths()),
+            });
+            println!("{}", serde_json::to_string_pretty(&json)?);
+            return Ok(());
+        }
+
+        println!(
+            "Working directory (relative paths resolve here): {}\n",
+            guard.root().display()
+        );
+        Self::print_section(
+            "System paths (builtin; write refused, read allowed)",
+            guard.system_baseline(),
+        );
+        Self::print_section(
+            "Credential paths (builtin; refused to read and write)",
+            guard.credential_baseline(),
+        );
+        Self::print_section(
+            "Credential paths (config.yaml additional_denied_paths; refused to read and write)",
+            guard.credential_configured(),
+        );
+        Self::print_section(
+            "Carve-outs (config.yaml allowed_paths -- the only setting that relaxes the guard)",
+            guard.allowed_paths(),
+        );
+        Self::print_section(
+            "Derived exemptions (temp directory; not an operator decision)",
+            guard.exempt_paths(),
+        );
+        Ok(())
+    }
+
+    fn print_section(title: &str, paths: &[PathBuf]) {
+        println!("{title}:");
+        if paths.is_empty() {
+            println!("  (none)");
+        } else {
+            for path in paths {
+                println!("  {}", path.display());
+            }
+        }
+        println!();
+    }
+
+    fn path_list(paths: &[PathBuf]) -> Vec<String> {
+        paths.iter().map(|p| p.display().to_string()).collect()
     }
 }
 
@@ -1560,6 +1836,118 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn test_list_verbose_flag() {
+        let cli = Cli::try_parse_from(["apexe", "list", "--verbose"]).unwrap();
+        if let Commands::List(args) = cli.command {
+            assert!(args.verbose);
+            assert_eq!(args.acl, None);
+        } else {
+            panic!("expected Commands::List");
+        }
+    }
+
+    #[test]
+    fn test_list_acl_flag() {
+        let cli =
+            Cli::try_parse_from(["apexe", "list", "--verbose", "--acl", "/tmp/acl.yaml"]).unwrap();
+        if let Commands::List(args) = cli.command {
+            assert_eq!(args.acl, Some(PathBuf::from("/tmp/acl.yaml")));
+        } else {
+            panic!("expected Commands::List");
+        }
+    }
+
+    #[test]
+    fn test_list_resolve_acl_path_prefers_explicit_flag() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let default_acl = tmp.path().join("acl.yaml");
+        std::fs::write(&default_acl, "rules: []\ndefault_effect: deny\n").unwrap();
+        let explicit_acl = tmp.path().join("explicit.yaml");
+        std::fs::write(&explicit_acl, "rules: []\ndefault_effect: allow\n").unwrap();
+
+        let config = ApexeConfig {
+            config_dir: tmp.path().to_path_buf(),
+            ..ApexeConfig::default()
+        };
+        let args = ListArgs {
+            format: "table".to_string(),
+            modules_dir: None,
+            verbose: true,
+            acl: Some(explicit_acl.clone()),
+        };
+        assert_eq!(args.resolve_acl_path(&config), Some(explicit_acl));
+    }
+
+    #[test]
+    fn test_list_resolve_acl_path_defaults_to_config_dir_acl_yaml() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let default_acl = tmp.path().join("acl.yaml");
+        std::fs::write(&default_acl, "rules: []\ndefault_effect: deny\n").unwrap();
+
+        let config = ApexeConfig {
+            config_dir: tmp.path().to_path_buf(),
+            ..ApexeConfig::default()
+        };
+        let args = ListArgs {
+            format: "table".to_string(),
+            modules_dir: None,
+            verbose: true,
+            acl: None,
+        };
+        assert_eq!(args.resolve_acl_path(&config), Some(default_acl));
+    }
+
+    #[test]
+    fn test_list_resolve_acl_path_none_when_nothing_configured_or_generated() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = ApexeConfig {
+            config_dir: tmp.path().to_path_buf(),
+            ..ApexeConfig::default()
+        };
+        let args = ListArgs {
+            format: "table".to_string(),
+            modules_dir: None,
+            verbose: true,
+            acl: None,
+        };
+        assert_eq!(args.resolve_acl_path(&config), None);
+    }
+
+    #[test]
+    fn test_list_verbose_json_reports_annotations_and_acl_decision() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let acl_path = tmp.path().join("acl.yaml");
+        std::fs::write(
+            &acl_path,
+            "rules:\n  - callers: [\"*\"]\n    targets: [\"cli.ls\"]\n    effect: allow\n    description: \"Auto-allow readonly CLI commands\"\ndefault_effect: deny\n",
+        )
+        .unwrap();
+
+        let mut module = apcore_toolkit::ScannedModule::new(
+            "cli.ls".to_string(),
+            "List files".to_string(),
+            serde_json::json!({"type": "object"}),
+            serde_json::json!({"type": "object"}),
+            vec!["cli".to_string()],
+            "exec:///bin/ls".to_string(),
+        );
+        module.annotations = Some(apcore::module::ModuleAnnotations {
+            readonly: true,
+            ..Default::default()
+        });
+
+        let acl_manager = crate::governance::AclManager::from_config(&acl_path).unwrap();
+        let descriptor = ListArgs::verbose_descriptor(&module, Some(&acl_manager)).unwrap();
+
+        assert_eq!(descriptor["x-acl-effect"], "allow");
+        assert!(descriptor["x-acl-rule"]
+            .as_str()
+            .unwrap()
+            .contains("Auto-allow readonly CLI commands"));
+        assert_eq!(descriptor["annotations"]["readonly"], true);
+    }
+
     // ConfigArgs tests
     #[test]
     fn test_config_show_flag() {
@@ -1807,11 +2195,127 @@ mod tests {
         let args = ListArgs {
             format: "table".to_string(),
             modules_dir: Some(tmp.path().to_path_buf()),
+            verbose: false,
+            acl: None,
         };
         let result = args.load_modules(tmp.path());
         assert!(
             result.is_err(),
             "corrupt binding must surface, not collapse to an empty module list"
         );
+    }
+
+    // PolicyArgs tests
+    #[test]
+    fn test_policy_parses_with_no_args() {
+        let cli = Cli::try_parse_from(["apexe", "policy"]).unwrap();
+        if let Commands::Policy(args) = cli.command {
+            assert_eq!(args.path, None);
+            assert_eq!(args.mode, "write");
+            assert_eq!(args.format, "table");
+        } else {
+            panic!("expected Commands::Policy");
+        }
+    }
+
+    #[test]
+    fn test_policy_parses_path_and_mode() {
+        let cli = Cli::try_parse_from([
+            "apexe",
+            "policy",
+            "--path",
+            "/etc/hosts",
+            "--mode",
+            "read",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        if let Commands::Policy(args) = cli.command {
+            assert_eq!(args.path.as_deref(), Some("/etc/hosts"));
+            assert_eq!(args.mode, "read");
+            assert_eq!(args.format, "json");
+        } else {
+            panic!("expected Commands::Policy");
+        }
+    }
+
+    #[test]
+    fn test_policy_invalid_mode_fails() {
+        let result = Cli::try_parse_from(["apexe", "policy", "--path", "/x", "--mode", "execute"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_policy_check_path_denies_a_credential_directory() {
+        let guard = crate::governance::PathGuard::new(
+            PathBuf::from("/"),
+            crate::governance::GuardConfig::default(),
+        );
+        let home = dirs::home_dir().expect("home directory");
+        let ssh_key = home.join(".ssh/id_rsa").to_string_lossy().into_owned();
+
+        let args = PolicyArgs {
+            path: Some(ssh_key.clone()),
+            mode: "read".to_string(),
+            format: "json".to_string(),
+        };
+        args.check_path(&guard, &ssh_key).unwrap();
+        // check_path only prints; assert on the underlying guard call directly
+        // for the decision itself.
+        assert!(guard
+            .check(
+                "the given --path",
+                &ssh_key,
+                crate::governance::AccessMode::ReadOnly
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn test_policy_check_path_allows_an_ordinary_path() {
+        let guard = crate::governance::PathGuard::new(
+            PathBuf::from("/"),
+            crate::governance::GuardConfig::default(),
+        );
+        let args = PolicyArgs {
+            path: Some("/srv/data/work.txt".to_string()),
+            mode: "write".to_string(),
+            format: "json".to_string(),
+        };
+        assert!(args.check_path(&guard, "/srv/data/work.txt").is_ok());
+        assert!(guard
+            .check(
+                "the given --path",
+                "/srv/data/work.txt",
+                crate::governance::AccessMode::Write
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn test_policy_summary_lists_baseline_and_configured_paths() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let extra = tmp.path().join("secret-data");
+        let guard = crate::governance::PathGuard::new(
+            PathBuf::from("/"),
+            crate::governance::GuardConfig {
+                denied: std::slice::from_ref(&extra),
+                ..Default::default()
+            },
+        );
+        let args = PolicyArgs {
+            path: None,
+            mode: "write".to_string(),
+            format: "json".to_string(),
+        };
+        // print_summary only prints to stdout; exercise it for panics and
+        // verify the guard's own accessors carry the configured entry, since
+        // that is what the printed JSON is built from. The stored entry is
+        // resolved (symlinks followed, e.g. macOS's `/tmp` -> `/private/tmp`),
+        // so compare by suffix rather than exact equality with `extra`.
+        args.print_summary(&guard).unwrap();
+        assert_eq!(guard.credential_configured().len(), 1);
+        assert!(guard.credential_configured()[0].ends_with("secret-data"));
     }
 }

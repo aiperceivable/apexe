@@ -222,6 +222,61 @@ impl AclManager {
         self.acl
     }
 
+    /// The `default_effect` this policy falls back to when no rule matches.
+    pub fn default_effect(&self) -> &str {
+        &self.default_effect
+    }
+
+    /// Explain how this policy would decide a call to `target_id`, for
+    /// display (`apexe list --verbose`) rather than enforcement.
+    ///
+    /// Walks the rules in the same first-match-wins order [`ACL::check`]
+    /// does, reusing [`target_patterns`] (which already resolves `$or`/`$not`
+    /// against a pattern list) for both `callers` and `targets`. That reuse
+    /// is safe rather than coincidental: apcore's own `match_acl_pattern` is
+    /// a glob match identical to [`match_pattern`] for every caller spelling
+    /// this method can be asked about — the only two literals it treats
+    /// specially, `@external` and `@system`, agree with a plain glob match
+    /// once there is no real caller (`@external` has no wildcard, so glob
+    /// equality already means the same thing; `@system` needs a `Context`
+    /// identity this method never has, and neither does a glob match against
+    /// the literal string `"@external"`). So evaluating every rule against
+    /// the fixed caller `"@external"` — [`ACL::check`]'s own fallback for a
+    /// `None` caller — reproduces what an unauthenticated call would get.
+    ///
+    /// What it cannot reproduce is a rule's `conditions` block: those run
+    /// through apcore's registered condition handlers against a real
+    /// caller's identity and role, which this method has neither of.
+    /// [`AclDecision::matched_rule_has_conditions`] flags that gap rather
+    /// than silently guessing.
+    pub fn explain(&self, target_id: &str) -> AclDecision {
+        const GENERIC_CALLER: &str = "@external";
+        let rule_matches = |patterns: &[String], value: &str| {
+            target_patterns(patterns)
+                .iter()
+                .any(|p| p.negated != match_pattern(p.pattern, value))
+        };
+        for (idx, rule) in self.acl.rules().iter().enumerate() {
+            if rule_matches(&rule.callers, GENERIC_CALLER) && rule_matches(&rule.targets, target_id)
+            {
+                return AclDecision {
+                    effect: rule.effect.clone(),
+                    default_effect: self.default_effect.clone(),
+                    matched_rule_index: Some(idx),
+                    matched_rule_description: rule.description.clone(),
+                    matched_rule_has_conditions: rule.conditions.is_some(),
+                };
+            }
+        }
+        AclDecision {
+            effect: self.default_effect.clone(),
+            default_effect: self.default_effect.clone(),
+            matched_rule_index: None,
+            matched_rule_description: None,
+            matched_rule_has_conditions: false,
+        }
+    }
+
     /// Read `default_effect` from a YAML file (best-effort, falls back to "deny").
     fn read_default_effect(path: &Path) -> String {
         std::fs::read_to_string(path)
@@ -230,6 +285,25 @@ impl AclManager {
             .and_then(|v| v.get("default_effect")?.as_str().map(String::from))
             .unwrap_or_else(|| "deny".to_string())
     }
+}
+
+/// The outcome of [`AclManager::explain`] for one module id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AclDecision {
+    /// What this policy would decide: `"allow"` or `"deny"`.
+    pub effect: String,
+    /// The policy's `default_effect`, for context when no rule matched.
+    pub default_effect: String,
+    /// Index into the ACL file's `rules` list, when a rule matched rather
+    /// than the call falling through to `default_effect`.
+    pub matched_rule_index: Option<usize>,
+    /// The matched rule's `description`, if it has one.
+    pub matched_rule_description: Option<String>,
+    /// Whether the matched rule also carries a `conditions` block. Those
+    /// evaluate against a real caller's identity/role at call time, which
+    /// `explain` has no access to, so `effect` may not hold for every caller
+    /// when this is `true`.
+    pub matched_rule_has_conditions: bool,
 }
 
 /// Compound-operator sentinels apcore recognises as the FIRST element of a
@@ -1115,5 +1189,98 @@ mod tests {
             let mode = std::fs::metadata(&audit_path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600, "audit log should be owner-only");
         }
+    }
+
+    // ---- AclManager::explain, for `apexe list --verbose` -----------------
+
+    #[test]
+    fn test_explain_reports_the_generated_readonly_allow_rule() {
+        let modules = vec![make_module_with_annotations("cli.git.status", true, false)];
+        let mgr = AclManager::generate_default(&modules);
+
+        let decision = mgr.explain("cli.git.status");
+
+        assert_eq!(decision.effect, "allow");
+        assert_eq!(decision.matched_rule_index, Some(0));
+        assert_eq!(
+            decision.matched_rule_description.as_deref(),
+            Some(READONLY_RULE_DESCRIPTION)
+        );
+        assert!(!decision.matched_rule_has_conditions);
+    }
+
+    #[test]
+    fn test_explain_reports_the_generated_destructive_deny_rule() {
+        let modules = vec![make_module_with_annotations("cli.rm", false, true)];
+        let mgr = AclManager::generate_default(&modules);
+
+        let decision = mgr.explain("cli.rm");
+
+        assert_eq!(decision.effect, "deny");
+        assert_eq!(
+            decision.matched_rule_description.as_deref(),
+            Some(DESTRUCTIVE_RULE_DESCRIPTION)
+        );
+    }
+
+    #[test]
+    fn test_explain_falls_back_to_default_effect_when_no_rule_matches() {
+        let modules = vec![make_module_with_annotations("cli.echo", false, false)];
+        let mgr = AclManager::generate_default(&modules);
+
+        let decision = mgr.explain("cli.echo");
+
+        assert_eq!(decision.effect, "deny");
+        assert_eq!(decision.default_effect, "deny");
+        assert_eq!(decision.matched_rule_index, None);
+        assert_eq!(decision.matched_rule_description, None);
+    }
+
+    #[test]
+    fn test_explain_agrees_with_acl_check_for_an_external_caller() {
+        // `explain` reimplements first-match-wins for display; it must never
+        // report an effect `ACL::check` itself would disagree with.
+        let modules = vec![
+            make_module_with_annotations("cli.git.status", true, false),
+            make_module_with_annotations("cli.rm", false, true),
+            make_module_with_annotations("cli.echo", false, false),
+        ];
+        let mgr = AclManager::generate_default(&modules);
+
+        for id in ["cli.git.status", "cli.rm", "cli.echo"] {
+            let decision = mgr.explain(id);
+            let allowed = mgr.acl.check(Some("@external"), id, None);
+            assert_eq!(
+                decision.effect == "allow",
+                allowed,
+                "explain({id}) disagreed with ACL::check"
+            );
+        }
+    }
+
+    #[test]
+    fn test_explain_flags_a_matched_rule_that_carries_conditions() {
+        let rule = ACLRule {
+            callers: vec!["*".to_string()],
+            targets: vec!["cli.deploy".to_string()],
+            effect: "allow".to_string(),
+            description: Some("Ops-only deploy".to_string()),
+            conditions: Some(json!({"roles": ["ops"]})),
+        };
+        let acl = ACL::new(vec![rule], "deny", None);
+        let mgr = AclManager {
+            acl,
+            default_effect: "deny".to_string(),
+        };
+
+        let decision = mgr.explain("cli.deploy");
+
+        assert!(decision.matched_rule_has_conditions);
+    }
+
+    #[test]
+    fn test_default_effect_accessor() {
+        let mgr = AclManager::generate_default(&[]);
+        assert_eq!(mgr.default_effect(), "deny");
     }
 }
