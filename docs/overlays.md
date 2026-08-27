@@ -227,7 +227,22 @@ GNU's `-h` also affects `-s`; BSD's does not. Never copy a description across va
 5. Diff your list against the reference in both directions; sanity-check your extractor before believing a difference.
 6. Record `provenance` with a re-runnable `command` and a digest-pinned `environment`.
 7. Choose `authoritative` only if the overlay enumerates the option set completely; otherwise `merge`.
-8. Run `cargo test` — the built-in overlays are parsed and validated by the suite.
+8. Test it with `apexe scan <tool> --overlay <file> --no-cache`. **`--no-cache` is not optional here** — see below.
+9. Run `cargo test` — the built-in overlays are parsed and validated by the suite.
+
+### `--no-cache` when testing an overlay
+
+Overlays are applied at scan tier 4. A cached scan result is replayed from tier
+2, so the overlay is *loaded* and then never *applied* — and the only difference
+in the output is a `Using cached scan result` line that looks like good news:
+
+```bash
+apexe scan tar --overlay ./tar@bsd.json --no-cache --output-dir ./out
+```
+
+Confirm it actually ran by looking for `Applying curated overlay` in the log and
+`Scan tier: 4` in the summary. If you see tier 2, the overlay did nothing and
+whatever you concluded from that binding is about the scanner, not your file.
 
 ---
 
@@ -401,6 +416,81 @@ Set today on exactly four flags, all verified against the real binaries: BSD
 tool you have not checked.
 
 ---
+
+## Flag risk
+
+Two things a scan cannot infer, and the reason it cannot: help text does not
+distinguish `--exec-path=<path>`, which sets a search path, from
+`--upload-pack=<cmd>`, which runs one. Both read as "takes a value" to every
+parser apexe has. Guessing produces exactly the failure this document exists to
+prevent — a plausible, mostly-correct assertion that omits the flag that
+mattered — so the field defaults to absent and only a human raises it.
+
+```json
+{ "long": "--upload-pack", "type": "string", "risk": "executes", "description": "..." }
+{ "long": "--privileged",  "type": "boolean", "risk": "escalates", "description": "..." }
+```
+
+| `risk` | Meaning | What apexe does |
+|--------|---------|-----------------|
+| absent / `"none"` | Nobody has said. | The name-based floor decides. |
+| `"benign"` | A human checked; the floor is wrong about this flag. | The floor is overruled for this flag only. |
+| `"escalates"` | Sending it changes the operation's blast radius. | The call is put to the approval gate — but only when the flag is actually sent. |
+| `"executes"` | The value **is** a command the tool will run. | The call is refused outright. |
+
+`escalates` is for the flag that changes what an ordinary command does to the
+world: `git push --force`, `docker run --privileged`, `rm --no-preserve-root`.
+Without it the command is unremarkable, which is why marking the *command*
+would be wrong — it would prompt on every `git push`, and a gate that prompts
+constantly gets switched off. It reaches the contract as `x-apexe-escalates`.
+
+A short list of common names (`--force`, `-f`, `--all`, `--recursive`, …) is
+applied to every tool without an overlay saying anything. `escalates` exists for
+the ones no name list generalizes: nothing about the string `--privileged`
+suggests danger.
+
+`benign` is the other direction, and it exists because that name list matches on
+spelling — the only thing available without per-tool knowledge — and spelling is
+sometimes a coincidence:
+
+```json
+{ "short": "-y", "type": "boolean", "risk": "benign", "description": "Compress the archive with bzip2." }
+```
+
+`bsdtar -y` is bzip2, `sort -f` folds case, `cut -f` selects fields. None of them
+mean "yes" or "force". Before this existed, the only way to stop the prompt was
+to assert `requires_approval: false` for the whole command — which would also
+say `tar` may overwrite files unattended. `benign` suppresses one flag and
+leaves the rest of the command's gating intact.
+
+It reaches the contract as an explicit `x-apexe-escalates: false`, so the
+keyword is three-state: absent means the floor decides, `true` and `false` are
+both human assertions. It overrides the name list only — it cannot cancel a
+`destructive` command-level annotation, and writing it means you read the flag's
+documentation, the same standard every other field here holds.
+
+`executes` is stronger and is not a severity notch above `escalates` — it is a
+different claim. apexe's central guarantee is that argv reaches `execve` with no
+shell on the path, so a metacharacter is an inert byte rather than something to
+blacklist. A flag whose value becomes a command hands that guarantee back: the
+wrapped tool spawns a shell of its own with a string the caller chose, and no
+JSON Schema constrains what that string becomes. Such a parameter is therefore
+**refused, not gated** — there is nothing for a human to approve, because
+approving would mean predicting what an arbitrary string will do. It reaches the
+contract as `x-apexe-exec`.
+
+Known members of this class, none of which look dangerous in a help listing:
+
+| Tool | Flags |
+|------|-------|
+| `git` | `--upload-pack`, `--receive-pack`, `rebase --exec`, `-c core.pager=`, `-c core.sshCommand=` |
+| `tar` | `--use-compress-program`, `-I`, GNU's `--to-command`, `--checkpoint-action=exec=` |
+| `rsync` | `-e`, `--rsync-path` |
+| `find` | `-exec`, `-ok` |
+
+Verify each against a real installation before asserting it — the same rule as
+every other field here. Marking a flag `executes` that is not stops a legitimate
+call; failing to mark one that is leaves the hole open.
 
 ## Optional-value flags
 

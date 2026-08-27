@@ -1,6 +1,6 @@
 use serde_json::{json, Value as JsonValue};
 
-use crate::models::{ScannedArg, ScannedCommand, ScannedFlag, ValueType};
+use crate::models::{FlagRisk, ScannedArg, ScannedCommand, ScannedFlag, ValueType};
 
 /// Map a ValueType to the corresponding JSON Schema type string.
 fn value_type_to_json_schema(vt: ValueType) -> &'static str {
@@ -234,6 +234,34 @@ fn apply_sensitive_arg(schema: &mut JsonValue, arg: &ScannedArg) {
 /// Emitting the literal removes the guesswork: the renderer reproduces what the
 /// scan actually saw. Long form is preferred over short, matching
 /// `canonical_name`, so the key and the literal always describe the same flag.
+/// Mark what sending this flag does beyond passing its value.
+///
+/// `x-apexe-escalates` is deliberately three-state, which is why
+/// [`FlagRisk::Benign`] emits an explicit `false` rather than nothing:
+///
+/// | keyword | meaning |
+/// |---------|---------|
+/// | absent | nobody said; the name-based floor decides |
+/// | `true` | a human says this flag escalates the call |
+/// | `false` | a human says the name-based floor is wrong here |
+///
+/// Collapsing `Benign` to "write nothing" would make it indistinguishable from
+/// `None`, and `None` is exactly the case the floor is supposed to catch — the
+/// suppression would silently do nothing.
+///
+/// An `Executes` parameter gets `x-apexe-exec` and no escalation keyword: it is
+/// refused outright by [`build_argv`](crate::module::executor::build_argv), so
+/// also marking it escalating would put a human through an approval prompt for
+/// a call that cannot run either way.
+fn apply_flag_risk(schema: &mut JsonValue, flag: &ScannedFlag) {
+    match flag.risk {
+        FlagRisk::None => {}
+        FlagRisk::Benign => schema["x-apexe-escalates"] = json!(false),
+        FlagRisk::Escalates => schema["x-apexe-escalates"] = json!(true),
+        FlagRisk::Executes => schema["x-apexe-exec"] = json!(true),
+    }
+}
+
 fn apply_flag_literal(schema: &mut JsonValue, flag: &ScannedFlag) {
     if let Some(literal) = flag.long_name.as_deref().or(flag.short_name.as_deref()) {
         schema["x-apexe-flag"] = json!(literal);
@@ -401,11 +429,15 @@ fn enum_constraint(flag: &ScannedFlag, widen: bool) -> Option<JsonValue> {
 
 /// Build the JSON Schema property one flag contributes.
 fn flag_to_schema(flag: &ScannedFlag) -> JsonValue {
-    if flag.repeatable {
+    let mut schema = if flag.repeatable {
         repeatable_flag_schema(flag)
     } else {
         scalar_flag_schema(flag)
-    }
+    };
+    // Applied to both shapes: a repeatable flag whose value is executed is no
+    // less executed for arriving as an array.
+    apply_flag_risk(&mut schema, flag);
+    schema
 }
 
 /// Record that this flag belongs ahead of the command's operands.
@@ -797,6 +829,69 @@ pub fn build_output_schema(command: &ScannedCommand) -> JsonValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn flag_with_risk(long: &str, risk: FlagRisk) -> ScannedFlag {
+        ScannedFlag {
+            long_name: Some(long.to_string()),
+            risk,
+            ..Default::default()
+        }
+    }
+
+    /// An overlay is the only thing that can state this, so the marker has to
+    /// survive the trip into the schema an agent and the executor both read.
+    #[test]
+    fn test_an_executing_flag_is_marked_exec_and_not_escalating() {
+        let schema = flag_to_schema(&flag_with_risk("--upload-pack", FlagRisk::Executes));
+
+        assert_eq!(schema["x-apexe-exec"], json!(true));
+        assert!(
+            schema.get("x-apexe-escalates").is_none(),
+            "an exec parameter is refused outright; marking it escalating too \
+             would prompt a human about a call that cannot run either way"
+        );
+    }
+
+    #[test]
+    fn test_an_escalating_flag_is_marked_escalating_and_not_exec() {
+        let schema = flag_to_schema(&flag_with_risk("--privileged", FlagRisk::Escalates));
+
+        assert_eq!(schema["x-apexe-escalates"], json!(true));
+        assert!(schema.get("x-apexe-exec").is_none());
+    }
+
+    /// The suppression has to be *visible* in the schema. Writing nothing would
+    /// make it indistinguishable from "nobody said", which is exactly the case
+    /// the name-based floor is supposed to catch — the assertion would silently
+    /// do nothing.
+    #[test]
+    fn test_a_benign_flag_is_marked_with_an_explicit_false() {
+        let schema = flag_to_schema(&flag_with_risk("-y", FlagRisk::Benign));
+
+        assert_eq!(schema["x-apexe-escalates"], json!(false));
+        assert!(schema.get("x-apexe-exec").is_none());
+    }
+
+    /// The overwhelming majority of properties. A marker written here for every
+    /// flag would be noise in every binding on disk.
+    #[test]
+    fn test_an_ordinary_flag_carries_no_risk_marker() {
+        let schema = flag_to_schema(&flag_with_risk("--verbose", FlagRisk::None));
+
+        assert!(schema.get("x-apexe-exec").is_none());
+        assert!(schema.get("x-apexe-escalates").is_none());
+    }
+
+    /// A repeatable flag builds through a different branch, and an executed
+    /// value is no less executed for arriving as an array.
+    #[test]
+    fn test_a_repeatable_executing_flag_is_marked_too() {
+        let flag = ScannedFlag {
+            repeatable: true,
+            ..flag_with_risk("--exec", FlagRisk::Executes)
+        };
+        assert_eq!(flag_to_schema(&flag)["x-apexe-exec"], json!(true));
+    }
     use crate::models::{HelpFormat, StructuredOutputInfo};
 
     fn make_flag(

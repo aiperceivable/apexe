@@ -56,6 +56,45 @@ mod tests {
         assert_eq!(loaded[0].module_id, "loader_read");
     }
 
+    /// The approval gate's stand-down decision reads `annotations.extra`, and
+    /// the annotations it sees came off disk rather than out of the scan that
+    /// wrote them. A serializer that dropped `extra` would leave every
+    /// flag-derived module prompting again — safe, but the fix would be inert
+    /// and nothing else in the suite would notice.
+    #[test]
+    fn test_loader_preserves_the_approval_basis_through_a_binding_round_trip() {
+        let dir = TempDir::new().unwrap();
+        let mut module = make_test_module("cli.git.push");
+        let mut annotations = apcore::module::ModuleAnnotations {
+            requires_approval: true,
+            ..Default::default()
+        };
+        annotations.extra.insert(
+            crate::adapter::annotations::APPROVAL_BASIS_KEY.to_string(),
+            json!(crate::adapter::annotations::APPROVAL_BASIS_FLAGS),
+        );
+        annotations.extra.insert(
+            crate::adapter::annotations::ESCALATING_PARAMS_KEY.to_string(),
+            json!(["force", "prune"]),
+        );
+        module.annotations = Some(annotations);
+
+        YamlOutput::without_verification()
+            .write(&[module], dir.path(), false)
+            .unwrap();
+        let loaded = load_modules_from_dir(dir.path()).unwrap();
+
+        let extra = &loaded[0].annotations.as_ref().unwrap().extra;
+        assert_eq!(
+            extra.get(crate::adapter::annotations::APPROVAL_BASIS_KEY),
+            Some(&json!(crate::adapter::annotations::APPROVAL_BASIS_FLAGS))
+        );
+        assert_eq!(
+            extra.get(crate::adapter::annotations::ESCALATING_PARAMS_KEY),
+            Some(&json!(["force", "prune"]))
+        );
+    }
+
     #[test]
     fn test_loader_empty_directory() {
         let dir = TempDir::new().unwrap();

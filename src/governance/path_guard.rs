@@ -107,8 +107,8 @@ const BASELINE_SYSTEM_PATHS: &[&str] = &[
     "/private/var",
 ];
 
-/// Directories under the invoking user's home that no command may read *or*
-/// write, whatever its annotations say.
+/// Paths under the invoking user's home that no command may read *or* write,
+/// whatever its annotations say.
 ///
 /// Reading is the reason this list is separate. A private key copied into a
 /// model context is a compromise that leaves no trace, whereas a deleted one
@@ -119,12 +119,42 @@ const BASELINE_SYSTEM_PATHS: &[&str] = &[
 /// reason: it holds the ACL and the audit trail that govern the very call
 /// being made, and a wrapped tool that can read the policy can plan around it.
 ///
-/// `.config` is deliberately absent. It holds ordinary application settings —
-/// editor configuration, shell prompts — that a wrapped tool has legitimate
-/// reason to read and write, and refusing it would cost far more than it
-/// protects.
-const BASELINE_CREDENTIAL_HOME_SUBPATHS: &[&str] =
-    &[".ssh", ".aws", ".gnupg", ".kube", ".docker", ".apexe"];
+/// # Entries are credential *stores*, not directories that happen to hold one
+///
+/// Two of these are files and two sit under `.config`, which the first version
+/// of this list could not express — it protected `~/.ssh` and `~/.aws` while
+/// `gh`, `git` and `curl` kept their tokens somewhere else entirely. Each
+/// addition names a store whose whole content is authentication material:
+///
+/// * `.config/gh` — the GitHub CLI's `hosts.yml`, which holds the OAuth token.
+/// * `.config/gcloud` — the same role `~/.aws` and `~/.kube` already have here.
+/// * `.git-credentials` — what git's `store` credential helper writes, in
+///   plaintext, by default.
+/// * `.netrc` — read by git and curl for HTTP auth, and by much else besides.
+///
+/// `.config` itself stays deliberately absent, and the two entries under it are
+/// why the distinction matters. It otherwise holds ordinary application
+/// settings — editor configuration, shell prompts — that a wrapped tool has
+/// legitimate reason to read and write, and refusing the whole tree would cost
+/// far more than it protects.
+///
+/// Mixed config-and-credential files (`.npmrc`, `.pypirc`) are **not** here for
+/// that same reason: refusing them would block the settings a tool legitimately
+/// needs in order to protect the token sharing the file. An operator who wants
+/// them covered adds them through [`GuardConfig::denied`], which joins this
+/// list at runtime.
+const BASELINE_CREDENTIAL_HOME_SUBPATHS: &[&str] = &[
+    ".ssh",
+    ".aws",
+    ".gnupg",
+    ".kube",
+    ".docker",
+    ".apexe",
+    ".config/gh",
+    ".config/gcloud",
+    ".git-credentials",
+    ".netrc",
+];
 
 /// Whether the call being rendered can modify what its paths name.
 ///
@@ -714,6 +744,49 @@ mod tests {
 
         for sub in BASELINE_CREDENTIAL_HOME_SUBPATHS {
             let probe = home_path(sub);
+            let error = guard
+                .check("Parameter 'file'", &probe, ReadOnly)
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::ACLDenied, "{probe} must be refused");
+        }
+    }
+
+    /// `.config` holds ordinary settings and stays readable; the two credential
+    /// stores inside it do not. The distinction is the whole reason those
+    /// entries carry a path segment, and "simplifying" either one to `.config`
+    /// would refuse every editor and shell config a wrapped tool legitimately
+    /// reads — the kind of over-blocking an operator responds to by carving the
+    /// tree back open, which would take the tokens with it.
+    #[test]
+    fn test_config_stays_readable_while_its_credential_stores_do_not() {
+        let guard = guard_at(Path::new("/"));
+
+        for readable in [".config", ".config/nvim", ".config/starship.toml"] {
+            let probe = home_path(readable);
+            assert!(
+                guard.check("Parameter 'file'", &probe, ReadOnly).is_ok(),
+                "{probe} is ordinary application settings and must stay legible"
+            );
+        }
+
+        for refused in [".config/gh", ".config/gh/hosts.yml", ".config/gcloud"] {
+            let probe = home_path(refused);
+            let error = guard
+                .check("Parameter 'file'", &probe, ReadOnly)
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::ACLDenied, "{probe} must be refused");
+        }
+    }
+
+    /// The stores that motivated the file entries. `git` reads both for HTTP
+    /// auth, so a `git` module able to name them leaks a token without ever
+    /// touching `~/.ssh`.
+    #[test]
+    fn test_plaintext_credential_files_at_the_home_root_are_refused() {
+        let guard = guard_at(Path::new("/"));
+
+        for refused in [".git-credentials", ".netrc"] {
+            let probe = home_path(refused);
             let error = guard
                 .check("Parameter 'file'", &probe, ReadOnly)
                 .unwrap_err();

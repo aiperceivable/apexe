@@ -84,6 +84,69 @@ pub enum HelpFormat {
     Unknown,
 }
 
+/// What sending a flag does to the call carrying it, beyond passing a value.
+///
+/// Three of the four variants are claims about danger, ordered by severity:
+/// [`FlagRisk::Executes`] implies everything [`FlagRisk::Escalates`] does and
+/// more, so a source that can only establish the weaker fact states the weaker
+/// one. [`FlagRisk::Benign`] is the odd one out — it is a claim about *safety*,
+/// and exists because the name-based floor apexe applies to every tool is
+/// occasionally wrong in the expensive direction.
+///
+/// Nothing infers this. A scan reads help text, and help text does not reliably
+/// distinguish `--exec-path=<path>`, which sets a search path, from
+/// `--upload-pack=<cmd>`, which runs one — both read as "takes a value" to
+/// every parser apexe has. Guessing here would produce the failure mode
+/// `docs/overlays.md` exists to prevent: a plausible, mostly-correct assertion
+/// that silently omits the flag that mattered. So the default is
+/// [`FlagRisk::None`] and an overlay is the only thing that raises it, which
+/// puts the claim behind the same human verification every other
+/// `authoritative` assertion goes through.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FlagRisk {
+    /// Nobody has said. The default, and what every scan produces.
+    ///
+    /// Distinct from [`FlagRisk::Benign`]: silence here means the question was
+    /// never asked, so the name-based floor still applies.
+    #[default]
+    None,
+    /// A human checked, and the name-based floor is wrong about this flag.
+    ///
+    /// `APPROVAL_FLAGS` matches on spelling, which is the only thing available
+    /// without per-tool knowledge, and spelling is sometimes a coincidence:
+    /// `bsdtar -y` is bzip2 compression, `sort -f` folds case, `cut -f` selects
+    /// fields. None of them mean "yes" or "force", and gating on them spends
+    /// the operator's attention on a call that never needed it.
+    ///
+    /// The alternative an overlay had before this variant was to assert
+    /// `requires_approval: false` for the whole command, which is far too
+    /// coarse — it would say `tar` never needs approval, and `tar` can still
+    /// overwrite a file. This suppresses one flag and leaves the rest of the
+    /// command's gating intact.
+    ///
+    /// It only overrides the name list. It cannot cancel a `destructive`
+    /// command-level annotation, and it is not a way to mark something safe
+    /// that is not — an overlay author writing this is asserting they read the
+    /// flag's documentation, the same standard every other field here holds.
+    Benign,
+    /// Sending this flag raises *this call* to `requires_approval`.
+    ///
+    /// For the flag that decides an operation's blast radius rather than its
+    /// subject: `git push --force`, `docker run --privileged`. The command is
+    /// ordinary without it.
+    Escalates,
+    /// The value *is* a command the wrapped tool will run.
+    ///
+    /// `git --upload-pack=<cmd>`, `tar --use-compress-program=<cmd>`. These
+    /// defeat every guarantee apexe makes by construction: argv goes straight
+    /// to `execve` with no shell, and then the wrapped tool spawns a shell of
+    /// its own with a string the caller chose. No schema constrains what that
+    /// string becomes, so such a parameter is refused rather than gated — see
+    /// `docs/threat-model.md` §5.9.
+    Executes,
+}
+
 /// A single CLI flag parsed from help output.
 ///
 /// `Default` is derived so a producer can set only the fields it actually knows
@@ -119,6 +182,12 @@ pub struct ScannedFlag {
     /// before the field existed still load.
     #[serde(default)]
     pub value_optional: bool,
+    /// What sending this flag does beyond passing its value.
+    ///
+    /// Defaulted on deserialize so caches and bindings written before the field
+    /// existed still load — as [`FlagRisk::None`], which is what they meant.
+    #[serde(default)]
+    pub risk: FlagRisk,
     /// Whether this flag must be rendered *before* the command's operands.
     ///
     /// The companion to [`ScannedArg::before_flags`], and the reason placement

@@ -16,7 +16,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::models::{
-    AnnotationOverrides, Confidence, FlagSource, ScannedArg, ScannedCLITool, ScannedFlag,
+    AnnotationOverrides, Confidence, FlagRisk, FlagSource, ScannedArg, ScannedCLITool, ScannedFlag,
     ToolVariant, ValueType,
 };
 
@@ -202,6 +202,14 @@ pub struct OverlayFlag {
     pub required: bool,
     #[serde(default)]
     pub repeatable: bool,
+    /// What sending this flag does beyond passing its value.
+    ///
+    /// The one assertion here that nothing else in the pipeline can make: a
+    /// scan cannot tell `--exec-path=<path>` from `--upload-pack=<cmd>`, so
+    /// `escalates` and `executes` exist only because a human read the manual
+    /// and wrote the answer down. See [`FlagRisk`].
+    #[serde(default)]
+    pub risk: FlagRisk,
     /// Whether this flag can make the command run until it is killed.
     ///
     /// States possibility, not certainty. `tail -f` follows a regular file
@@ -761,6 +769,7 @@ impl OverlayFlag {
             default: self.default.clone(),
             enum_values: self.enum_values.clone(),
             repeatable: self.repeatable,
+            risk: self.risk,
             value_name: self.value_name.clone(),
             value_optional: self.value_optional,
             before_operands: self.before_operands,
@@ -1319,6 +1328,76 @@ mod tests {
             !tool.global_flags[1].long_running,
             "an ordinary flag must not inherit the claim"
         );
+    }
+
+    /// The end-to-end contract for writing a `git` or `docker` overlay: an
+    /// assertion nothing else in the pipeline can make has to survive into the
+    /// scanned flag, or the overlay author's work never reaches the executor.
+    #[test]
+    fn test_overlay_flag_risk_reaches_the_scanned_flag() {
+        let mut overlay = overlay(OverlayMode::Authoritative);
+        overlay.command = "git".to_string();
+        overlay.flags = vec![
+            OverlayFlag {
+                long: Some("--upload-pack".to_string()),
+                risk: FlagRisk::Executes,
+                description: "Path to git-upload-pack on the remote.".to_string(),
+                ..Default::default()
+            },
+            OverlayFlag {
+                long: Some("--force".to_string()),
+                risk: FlagRisk::Escalates,
+                description: "Force updates.".to_string(),
+                ..Default::default()
+            },
+            OverlayFlag {
+                long: Some("--verbose".to_string()),
+                description: "Be verbose.".to_string(),
+                ..Default::default()
+            },
+        ];
+        let mut tool = ScannedCLITool {
+            name: "git".to_string(),
+            ..Default::default()
+        };
+        apply_overlay(&mut tool, &overlay);
+
+        assert_eq!(tool.global_flags[0].risk, FlagRisk::Executes);
+        assert_eq!(tool.global_flags[1].risk, FlagRisk::Escalates);
+        assert_eq!(
+            tool.global_flags[2].risk,
+            FlagRisk::None,
+            "an ordinary flag must not inherit the claim"
+        );
+    }
+
+    /// The wire spellings an overlay author actually types.
+    #[test]
+    fn test_overlay_flag_risk_parses_from_kebab_case() {
+        for (document, expected) in [
+            (
+                r#"{ "long": "--upload-pack", "risk": "executes" }"#,
+                FlagRisk::Executes,
+            ),
+            (
+                r#"{ "long": "--force", "risk": "escalates" }"#,
+                FlagRisk::Escalates,
+            ),
+            (r#"{ "short": "-y", "risk": "benign" }"#, FlagRisk::Benign),
+            (r#"{ "long": "--verbose", "risk": "none" }"#, FlagRisk::None),
+        ] {
+            let flag: OverlayFlag = serde_json::from_str(document).unwrap();
+            assert_eq!(flag.risk, expected, "{document}");
+        }
+    }
+
+    /// Overlays written before the field existed must not start asserting
+    /// something their author never checked — in either direction.
+    #[test]
+    fn test_overlay_flag_risk_defaults_to_none_when_absent() {
+        let document = r#"{ "short": "-n", "type": "integer" }"#;
+        let flag: OverlayFlag = serde_json::from_str(document).unwrap();
+        assert_eq!(flag.risk, FlagRisk::None);
     }
 
     #[test]

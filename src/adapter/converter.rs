@@ -221,14 +221,21 @@ impl CliToolConverter {
             None => tool.name.as_str(),
         };
 
+        // Built once and shared: `mark_escalating_params` reads the property
+        // names off it, and those must be the names the module ships with.
+        let input_schema = schema::build_input_schema(command, &tool.global_flags, position);
+
         CommandFields {
             description: Self::command_description(
                 [command.description.as_str(), fallback],
                 fallback_name,
             ),
-            input_schema: schema::build_input_schema(command, &tool.global_flags, position),
+            input_schema: input_schema.clone(),
             output_schema: schema::build_output_schema(command),
-            annotations: apply_annotation_overrides(annotations::infer(command), tool),
+            annotations: apply_annotation_overrides(
+                mark_escalating_params(annotations::infer(command), &input_schema),
+                tool,
+            ),
             documentation: Self::command_documentation(&command.raw_help),
             examples: command.examples.clone(),
         }
@@ -354,9 +361,103 @@ fn apply_annotation_overrides(
     }
     if let Some(requires_approval) = overrides.requires_approval {
         annotations.requires_approval = requires_approval;
+        // The overlay states the answer, so a flag-derived basis no longer
+        // describes why the mark is (or is not) there. Leaving it behind would
+        // let the gate stand down on a call a human said to gate.
+        annotations.extra.remove(annotations::APPROVAL_BASIS_KEY);
+        annotations.extra.remove(annotations::ESCALATING_PARAMS_KEY);
     }
     annotations.cacheable = annotations.readonly && annotations.idempotent;
     annotations
+}
+
+/// Record which schema properties would escalate a call to `requires_approval`.
+///
+/// `requires_approval` stays a *ceiling* rather than a verdict. apcore decides
+/// whether to run the approval gate from this static annotation and never sees
+/// a call's arguments — its `ExecutionPolicy` hook resolves from `module_id`
+/// and annotations alone — so leaving the flag false for a command that accepts
+/// `--force` would remove the gate from `git push --force` outright. Marking it
+/// true and naming the properties instead lets
+/// [`ApprovalGate`](crate::module::ApprovalGate), which *is* handed the
+/// arguments, stand down for the calls that carry none of them.
+///
+/// A module already marked by [`annotations::infer`] is left alone: it is
+/// destructive by name, which no absent flag makes safe. Runs before
+/// [`apply_annotation_overrides`] so an overlay keeps the last word.
+fn mark_escalating_params(
+    mut annotations: ModuleAnnotations,
+    input_schema: &serde_json::Value,
+) -> ModuleAnnotations {
+    if annotations.requires_approval {
+        return annotations;
+    }
+    let escalating = escalating_property_names(input_schema);
+    if escalating.is_empty() {
+        return annotations;
+    }
+    annotations.requires_approval = true;
+    annotations.extra.insert(
+        annotations::APPROVAL_BASIS_KEY.to_string(),
+        json!(annotations::APPROVAL_BASIS_FLAGS),
+    );
+    annotations.extra.insert(
+        annotations::ESCALATING_PARAMS_KEY.to_string(),
+        json!(escalating),
+    );
+    annotations
+}
+
+/// The property names in `input_schema` that escalate a call.
+///
+/// Two sources, unioned. The flag-name list ([`annotations::flag_literal_escalates`])
+/// is a floor that applies to every tool without anyone writing anything down;
+/// `x-apexe-escalates` is an overlay's assertion about one specific flag, and it
+/// is the only way to reach the ones no name list can generalize — `docker run
+/// --privileged` is not called `--force` anywhere.
+///
+/// `x-apexe-exec` is deliberately *not* collected. Such a parameter is refused
+/// by `executor::reject_exec_parameters` before it can run, so listing it here
+/// would prompt a human about a call that cannot proceed either way.
+///
+/// Read off the built schema rather than `ScannedCommand::flags` because a
+/// positional argument can displace a same-named flag onto another key (see
+/// `schema::rekey_displaced_flag`), and global flags land here too. The schema
+/// is the only place the name a caller will actually send is settled.
+///
+/// Sorted so the recorded list is stable across runs — it is written into
+/// module bindings that get committed and diffed.
+fn escalating_property_names(input_schema: &serde_json::Value) -> Vec<String> {
+    let Some(properties) = input_schema.get("properties").and_then(|p| p.as_object()) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = properties
+        .iter()
+        .filter(|(_, property)| property_escalates(property))
+        .map(|(name, _)| name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+/// Whether one built property escalates the call that fills it.
+///
+/// `x-apexe-escalates` is three-state and outranks the name list in *both*
+/// directions. An explicit `false` is a human saying the floor is wrong here,
+/// and it has to win: `bsdtar -y` is bzip2 compression, not "assume yes", and a
+/// gate that prompts for it spends the operator's attention on a call that
+/// never needed it. Only an absent keyword defers to the name list.
+fn property_escalates(property: &serde_json::Value) -> bool {
+    match property
+        .get("x-apexe-escalates")
+        .and_then(serde_json::Value::as_bool)
+    {
+        Some(asserted) => asserted,
+        None => property
+            .get("x-apexe-flag")
+            .and_then(|literal| literal.as_str())
+            .is_some_and(annotations::flag_literal_escalates),
+    }
 }
 
 /// Fold one command name into a segment the apcore module-id grammar accepts.
@@ -442,6 +543,184 @@ mod tests {
             warnings: vec![],
             ..Default::default()
         }
+    }
+
+    /// Build a command that accepts `literals`, the way a scan records them.
+    fn command_accepting(name: &str, literals: &[&str]) -> ScannedCommand {
+        let flags = literals
+            .iter()
+            .map(|literal| crate::models::ScannedFlag {
+                long_name: Some((*literal).to_string()),
+                ..Default::default()
+            })
+            .collect();
+        ScannedCommand {
+            flags,
+            ..make_command(name, name)
+        }
+    }
+
+    /// The ceiling: a reader that merely *accepts* `--all` is still marked, so
+    /// apcore runs the gate at all — but the basis says why, so the gate can
+    /// stand down for the calls that send nothing escalating.
+    #[test]
+    fn test_accepted_approval_flag_marks_the_module_with_a_flag_basis() {
+        let tool = make_tool("git", vec![command_accepting("log", &["--all"])]);
+        let modules = CliToolConverter::new().convert(&tool);
+        let annotations = modules[0].annotations.as_ref().unwrap();
+
+        assert!(annotations.requires_approval, "the ceiling must stay up");
+        assert_eq!(
+            annotations.extra.get(annotations::APPROVAL_BASIS_KEY),
+            Some(&json!(annotations::APPROVAL_BASIS_FLAGS))
+        );
+        assert_eq!(
+            annotations.extra.get(annotations::ESCALATING_PARAMS_KEY),
+            Some(&json!(["all"])),
+            "the recorded name must be the schema property a caller will send"
+        );
+    }
+
+    #[test]
+    fn test_a_command_accepting_nothing_escalating_is_not_marked() {
+        let tool = make_tool("git", vec![command_accepting("log", &["--oneline"])]);
+        let modules = CliToolConverter::new().convert(&tool);
+        let annotations = modules[0].annotations.as_ref().unwrap();
+
+        assert!(!annotations.requires_approval);
+        assert!(!annotations
+            .extra
+            .contains_key(annotations::APPROVAL_BASIS_KEY));
+    }
+
+    /// Destructive-by-name carries no basis, so the gate never stands down on
+    /// it: `rm` prompts whether or not `-f` was sent.
+    #[test]
+    fn test_a_destructive_name_is_marked_without_a_flag_basis() {
+        let tool = make_tool("rm", vec![command_accepting("delete", &["--force"])]);
+        let modules = CliToolConverter::new().convert(&tool);
+        let annotations = modules[0].annotations.as_ref().unwrap();
+
+        assert!(annotations.requires_approval);
+        assert!(
+            !annotations
+                .extra
+                .contains_key(annotations::APPROVAL_BASIS_KEY),
+            "an unconditional mark must not be downgradable to a conditional one"
+        );
+    }
+
+    /// An overlay that states the answer outranks the flag list, and must take
+    /// the basis with it — otherwise the gate could stand down on a call a
+    /// human said to gate.
+    #[test]
+    fn test_an_overlay_assertion_clears_a_flag_basis() {
+        let mut tool = make_tool("git", vec![command_accepting("push", &["--force"])]);
+        tool.annotation_overrides = crate::models::AnnotationOverrides {
+            requires_approval: Some(true),
+            ..Default::default()
+        };
+        let modules = CliToolConverter::new().convert(&tool);
+        let annotations = modules[0].annotations.as_ref().unwrap();
+
+        assert!(annotations.requires_approval);
+        assert!(!annotations
+            .extra
+            .contains_key(annotations::APPROVAL_BASIS_KEY));
+        assert!(!annotations
+            .extra
+            .contains_key(annotations::ESCALATING_PARAMS_KEY));
+    }
+
+    /// The case no name list can reach: `--privileged` is not called `--force`
+    /// anywhere, so only an overlay's assertion puts it under the gate.
+    #[test]
+    fn test_an_overlay_asserted_escalating_flag_joins_the_list() {
+        let mut command = command_accepting("run", &["--privileged"]);
+        command.flags[0].risk = crate::models::FlagRisk::Escalates;
+        let tool = make_tool("docker", vec![command]);
+        let modules = CliToolConverter::new().convert(&tool);
+        let annotations = modules[0].annotations.as_ref().unwrap();
+
+        assert!(annotations.requires_approval);
+        assert_eq!(
+            annotations.extra.get(annotations::ESCALATING_PARAMS_KEY),
+            Some(&json!(["privileged"]))
+        );
+    }
+
+    /// The false positive that motivated the variant: `bsdtar -y` is bzip2
+    /// compression, and the name list reads it as "assume yes". Without a way
+    /// to say so, every `tar` overlay author's only recourse was to assert
+    /// `requires_approval: false` for the whole command — which would also say
+    /// `tar` may overwrite files unattended.
+    #[test]
+    fn test_an_overlay_asserted_benign_flag_overrides_the_name_list() {
+        let mut command = command_accepting("tar", &["-y"]);
+        command.flags[0].risk = crate::models::FlagRisk::Benign;
+        let tool = make_tool("tar", vec![command]);
+        let modules = CliToolConverter::new().convert(&tool);
+        let annotations = modules[0].annotations.as_ref().unwrap();
+
+        assert!(
+            !annotations.requires_approval,
+            "the only escalating candidate was suppressed, so nothing is left to gate"
+        );
+        assert!(!annotations
+            .extra
+            .contains_key(annotations::APPROVAL_BASIS_KEY));
+    }
+
+    /// Suppression is per flag, not per command: the rest of the gating stands.
+    #[test]
+    fn test_a_benign_flag_does_not_suppress_its_neighbours() {
+        let mut command = command_accepting("tar", &["-y", "--force"]);
+        command.flags[0].risk = crate::models::FlagRisk::Benign;
+        let tool = make_tool("tar", vec![command]);
+        let modules = CliToolConverter::new().convert(&tool);
+        let annotations = modules[0].annotations.as_ref().unwrap();
+
+        assert!(annotations.requires_approval);
+        assert_eq!(
+            annotations.extra.get(annotations::ESCALATING_PARAMS_KEY),
+            Some(&json!(["force"])),
+            "-y is suppressed; --force is not"
+        );
+    }
+
+    /// An exec parameter is refused by the executor before it can run, so
+    /// putting it under the approval gate would ask a human to decide about a
+    /// call that cannot proceed either way.
+    #[test]
+    fn test_an_exec_parameter_is_not_treated_as_merely_escalating() {
+        let mut command = command_accepting("fetch", &["--upload-pack"]);
+        command.flags[0].risk = crate::models::FlagRisk::Executes;
+        let tool = make_tool("git", vec![command]);
+        let modules = CliToolConverter::new().convert(&tool);
+        let annotations = modules[0].annotations.as_ref().unwrap();
+
+        assert!(!annotations.requires_approval);
+        assert!(!annotations
+            .extra
+            .contains_key(annotations::ESCALATING_PARAMS_KEY));
+    }
+
+    #[test]
+    fn test_escalating_property_names_are_sorted_for_a_stable_binding() {
+        let tool = make_tool(
+            "git",
+            vec![command_accepting(
+                "push",
+                &["--recursive", "--all", "--force"],
+            )],
+        );
+        let modules = CliToolConverter::new().convert(&tool);
+        let annotations = modules[0].annotations.as_ref().unwrap();
+
+        assert_eq!(
+            annotations.extra.get(annotations::ESCALATING_PARAMS_KEY),
+            Some(&json!(["all", "force", "recursive"]))
+        );
     }
 
     #[test]

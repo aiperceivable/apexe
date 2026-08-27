@@ -35,6 +35,11 @@ use apcore::{ErrorCode, ModuleError};
 use apcore_mcp::ElicitationApprovalHandler;
 use async_trait::async_trait;
 
+use crate::adapter::annotations::{
+    APPROVAL_BASIS_FLAGS, APPROVAL_BASIS_KEY, ESCALATING_PARAMS_KEY,
+};
+use crate::module::executor::is_effective;
+
 /// The reasons upstream gives when no prompt could be delivered at all.
 ///
 /// Distinct from a human declining, which needs no rewriting. Matching on
@@ -110,6 +115,58 @@ fn classify(result: &ApprovalResult) -> Disposition {
         _ => Disposition::Refused,
     }
 }
+
+/// Whether this request has to be put to a human at all.
+///
+/// A module marked `requires_approval` only because it *accepts* an escalating
+/// flag (see [`APPROVAL_FLAGS`]) needs no prompt for a call that sent none of
+/// them. apcore cannot make this call and neither can anything upstream of
+/// here: the gate runs or does not run according to a static annotation, and
+/// neither `ApprovalHandler` nor the `ExecutionPolicy` hook that can override
+/// it is passed a call's arguments. [`ApprovalRequest`] carries them, so this
+/// is the first and only place the question is answerable.
+///
+/// Every branch that cannot read the basis returns `true`. The two annotation
+/// keys are written together by `mark_escalating_params`, so a `flags` basis
+/// with no list — or with arguments that are not an object — is a corrupted
+/// annotation rather than an empty one, and standing down on it would turn
+/// corruption into a silent bypass of the gate.
+///
+/// [`APPROVAL_FLAGS`]: crate::adapter::annotations
+fn needs_prompt(request: &ApprovalRequest) -> bool {
+    let extra = &request.annotations.extra;
+    let flag_derived = extra
+        .get(APPROVAL_BASIS_KEY)
+        .and_then(|basis| basis.as_str())
+        == Some(APPROVAL_BASIS_FLAGS);
+    if !flag_derived {
+        return true;
+    }
+    let Some(escalating) = extra
+        .get(ESCALATING_PARAMS_KEY)
+        .and_then(|list| list.as_array())
+    else {
+        return true;
+    };
+    let Some(arguments) = request.arguments.as_object() else {
+        return true;
+    };
+    escalating
+        .iter()
+        .filter_map(|name| name.as_str())
+        .any(|name| arguments.get(name).is_some_and(is_effective))
+}
+
+/// The `approved_by` recorded when the gate stands down on its own.
+///
+/// Names apexe rather than a person, so an audit reader can tell a call that
+/// nobody was asked about from one a human waved through.
+const STOOD_DOWN_AUTHORITY: &str = "apexe-approval-gate";
+
+/// The `reason` recorded when the gate stands down on its own.
+const STOOD_DOWN_REASON: &str =
+    "Approved without prompting: this module is gated only because it accepts an escalating \
+     flag, and this call sent none of them.";
 
 /// What a caller is told when a prompt went out and no answer came back.
 fn no_answer_reason(module_id: &str) -> String {
@@ -248,6 +305,19 @@ impl ApprovalHandler for ApprovalGate {
         &self,
         request: &ApprovalRequest,
     ) -> Result<ApprovalResult, ModuleError> {
+        if !needs_prompt(request) {
+            tracing::debug!(
+                module_id = %request.module_id,
+                "Approval gate stood down: this call carries no escalating argument"
+            );
+            // ApprovalResult is #[non_exhaustive]; build via Default and assign
+            // fields rather than a struct literal.
+            let mut result = ApprovalResult::default();
+            result.status = "approved".to_string();
+            result.approved_by = Some(STOOD_DOWN_AUTHORITY.to_string());
+            result.reason = Some(STOOD_DOWN_REASON.to_string());
+            return Ok(result);
+        }
         let mut result = self.inner.request_approval(request).await?;
         match classify(&result) {
             Disposition::Granted => {
@@ -342,6 +412,106 @@ mod tests {
         let mut request = ApprovalRequest::default();
         request.module_id = module_id.to_string();
         request
+    }
+
+    /// A request for a module marked only because it accepts `escalating`,
+    /// called with `arguments` — the shape `mark_escalating_params` produces.
+    fn flag_derived_request(escalating: &[&str], arguments: serde_json::Value) -> ApprovalRequest {
+        let mut request = request("cli.git.push");
+        request.arguments = arguments;
+        request.annotations.requires_approval = true;
+        request.annotations.extra.insert(
+            APPROVAL_BASIS_KEY.to_string(),
+            serde_json::json!(APPROVAL_BASIS_FLAGS),
+        );
+        request.annotations.extra.insert(
+            ESCALATING_PARAMS_KEY.to_string(),
+            serde_json::json!(escalating),
+        );
+        request
+    }
+
+    /// The fatigue case: `git log` accepts `--all`, so the module is marked,
+    /// but this call sent nothing escalating and nobody should be asked.
+    #[tokio::test]
+    async fn test_the_gate_stands_down_when_no_escalating_argument_is_sent() {
+        let request = flag_derived_request(&["all", "force"], serde_json::json!({"oneline": true}));
+        assert!(!needs_prompt(&request));
+
+        let gate = ApprovalGate::wrapping(Box::new(RefusingHandler), None);
+        let result = gate.request_approval(&request).await.unwrap();
+        assert_eq!(result.status, "approved");
+        assert_eq!(result.approved_by.as_deref(), Some(STOOD_DOWN_AUTHORITY));
+    }
+
+    #[tokio::test]
+    async fn test_the_gate_prompts_when_an_escalating_argument_is_sent() {
+        let request = flag_derived_request(&["all", "force"], serde_json::json!({"force": true}));
+        assert!(needs_prompt(&request));
+    }
+
+    /// `{"force": false}` renders no flag at all, so it is not "sending" it —
+    /// the same rule `executor::is_effective` applies when building argv.
+    #[tokio::test]
+    async fn test_an_ineffective_escalating_argument_does_not_prompt() {
+        for ineffective in [serde_json::json!(false), serde_json::json!(null)] {
+            let request =
+                flag_derived_request(&["force"], serde_json::json!({"force": ineffective}));
+            assert!(
+                !needs_prompt(&request),
+                "{ineffective} renders nothing, so no escalating flag reaches argv"
+            );
+        }
+    }
+
+    /// An unconditional mark — destructive by name, or asserted by an overlay —
+    /// carries no basis, and must never be downgraded to a conditional one.
+    #[tokio::test]
+    async fn test_a_mark_without_a_flag_basis_always_prompts() {
+        let mut request = request("cli.rm");
+        request.arguments = serde_json::json!({});
+        request.annotations.requires_approval = true;
+        assert!(needs_prompt(&request));
+    }
+
+    /// The two keys are written together. A `flags` basis missing its list is a
+    /// corrupted annotation, not an empty one; standing down on it would turn
+    /// corruption into a silent bypass of the gate.
+    #[tokio::test]
+    async fn test_a_flag_basis_without_a_parameter_list_prompts() {
+        let mut request = request("cli.git.push");
+        request.arguments = serde_json::json!({});
+        request.annotations.requires_approval = true;
+        request.annotations.extra.insert(
+            APPROVAL_BASIS_KEY.to_string(),
+            serde_json::json!(APPROVAL_BASIS_FLAGS),
+        );
+        assert!(needs_prompt(&request));
+    }
+
+    #[tokio::test]
+    async fn test_non_object_arguments_prompt_rather_than_stand_down() {
+        let request = flag_derived_request(&["force"], serde_json::json!("not-an-object"));
+        assert!(needs_prompt(&request));
+    }
+
+    /// An approval handler that always refuses, so a stand-down is provably
+    /// the gate's own decision rather than the inner handler's.
+    #[derive(Debug)]
+    struct RefusingHandler;
+
+    #[async_trait]
+    impl ApprovalHandler for RefusingHandler {
+        async fn request_approval(
+            &self,
+            _request: &ApprovalRequest,
+        ) -> Result<ApprovalResult, ModuleError> {
+            Ok(result_with("rejected", Some("User action: decline")))
+        }
+
+        async fn check_approval(&self, _approval_id: &str) -> Result<ApprovalResult, ModuleError> {
+            Ok(result_with("rejected", Some("User action: decline")))
+        }
     }
 
     fn result_with(status: &str, reason: Option<&str>) -> ApprovalResult {

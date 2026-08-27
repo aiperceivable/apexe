@@ -694,7 +694,7 @@ a call comes from the module's `readonly` annotation (§8):
 | List | Locations | Compiled in |
 |------|-----------|-------------|
 | System | `/bin` `/boot` `/dev` `/etc` `/lib` `/lib32` `/lib64` `/proc` `/run` `/sbin` `/sys` `/usr` `/var` — plus `/System` `/Library` `/Applications` `/private/etc` `/private/var` on macOS | yes, cannot be removed |
-| Credential | `~/.ssh` `~/.aws` `~/.gnupg` `~/.kube` `~/.docker` `~/.apexe` | yes, cannot be removed |
+| Credential | `~/.ssh` `~/.aws` `~/.gnupg` `~/.kube` `~/.docker` `~/.apexe` `~/.config/gh` `~/.config/gcloud` `~/.git-credentials` `~/.netrc` | yes, cannot be removed |
 
 `cat /etc/hosts` and `ls /usr/bin` are ordinary work, so a `readonly` module may
 name a system path — refusing it protected nothing, since the file is

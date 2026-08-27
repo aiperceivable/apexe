@@ -72,8 +72,34 @@ const OPEN_WORLD_SUBCOMMANDS: &[&str] = &[
     "logout",
 ];
 
-/// Flags that escalate a command to requires_approval even if the command name
-/// is not in DESTRUCTIVE_PATTERNS.
+/// Flags whose *presence in a call* escalates it to `requires_approval`, even
+/// when the command name is not in [`DESTRUCTIVE_PATTERNS`].
+///
+/// # These describe an invocation, not a command
+///
+/// A scan sees the flags a command *accepts*; a call carries the flags a caller
+/// *sent*. Escalating on the former marked `git log` — which merely accepts
+/// `--all` — as needing human approval on every invocation, while `git push
+/// --upload-pack=<cmd>` earned exactly the same verdict. Of the 42 shipped
+/// overlays, 32 declare a flag on this list, and the readers among them (`ls`,
+/// `grep`, `diff`, `du`, `df`, `tail`, `cut`) stay quiet only because a human
+/// wrote `requires_approval: false` into the overlay by hand. Nothing keeps an
+/// un-overlaid tool quiet, and approval fatigue is not a cosmetic failure: the
+/// documented response to a gate that prompts on every read is to switch the
+/// gate off, which lands on the ungoverned default.
+///
+/// So the list is applied in two halves, neither of them here.
+/// [`mark_escalating_params`] names the schema properties carrying these
+/// literals and records them on the module's annotations, keeping
+/// `requires_approval` true as a *ceiling* — apcore decides whether to run the
+/// gate at all from that static flag, and neither `ApprovalHandler` nor its
+/// `ExecutionPolicy` hook is given a call's arguments. [`ApprovalGate`] then
+/// reads the recorded names against the arguments actually sent and prompts
+/// only when one is present. `git log` stops prompting; `git push --force`
+/// still does.
+///
+/// [`mark_escalating_params`]: crate::adapter::converter
+/// [`ApprovalGate`]: crate::module::ApprovalGate
 const APPROVAL_FLAGS: &[&str] = &[
     "--force",
     "-f",
@@ -87,17 +113,6 @@ const APPROVAL_FLAGS: &[&str] = &[
     "--purge",
     "--yes",
     "-y",
-];
-
-/// Flags that indicate idempotent behavior.
-const IDEMPOTENT_FLAGS: &[&str] = &[
-    "--dry-run",
-    "--check",
-    "--diff",
-    "--noop",
-    "--simulate",
-    "--whatif",
-    "--plan",
 ];
 
 /// Whether this command reaches outside the machine.
@@ -154,28 +169,21 @@ pub fn infer(command: &ScannedCommand) -> ModuleAnnotations {
     let exec_wrapper = is_exec_wrapper(command);
     let destructive = exec_wrapper || DESTRUCTIVE_PATTERNS.iter().any(|p| name_lower == *p);
     let readonly = !destructive && READONLY_PATTERNS.iter().any(|p| name_lower == *p);
-    let mut idempotent = IDEMPOTENT_PATTERNS.iter().any(|p| name_lower == *p);
-    let mut requires_approval = destructive;
+    let idempotent = IDEMPOTENT_PATTERNS.iter().any(|p| name_lower == *p);
 
-    // Flag boosting: check command flags for escalation/idempotent signals
-    for flag in &command.flags {
-        let flag_name = flag.long_name.as_deref().unwrap_or("");
-        let short_name = flag.short_name.as_deref().unwrap_or("");
-
-        if APPROVAL_FLAGS
-            .iter()
-            .any(|p| flag_name == *p || short_name == *p)
-        {
-            requires_approval = true;
-        }
-        if IDEMPOTENT_FLAGS
-            .iter()
-            .any(|p| flag_name == *p || short_name == *p)
-        {
-            idempotent = true;
-        }
-    }
-
+    // No flag boosting here. `infer` sees the flags a command *accepts*, and
+    // both annotations a declared flag used to move are statements about a
+    // *call*: see [`APPROVAL_FLAGS`] for `requires_approval`, which is now
+    // raised one layer up so the gate can weigh it against real arguments.
+    //
+    // `idempotent` had the same defect with no such remedy. A command that
+    // accepts `--dry-run` does not run dry, so boosting on the declaration made
+    // `cacheable` true for a mutating command whenever the caller left the flag
+    // off — the reader would then be served a cached result for a call that
+    // changed something. There is no per-call hook to re-apply it to (nothing
+    // consults `idempotent` at invocation time), so the boost is simply gone;
+    // an overlay's `annotation_overrides` remains the way to assert it.
+    let requires_approval = destructive;
     let cacheable = readonly && idempotent;
 
     ModuleAnnotations {
@@ -193,6 +201,36 @@ pub fn infer(command: &ScannedCommand) -> ModuleAnnotations {
         discoverable: true,
         extra: HashMap::new(),
     }
+}
+
+/// Annotation `extra` key naming *why* a module is marked `requires_approval`.
+///
+/// Absent means the mark is unconditional — the command is destructive by name,
+/// or an overlay asserted it. [`APPROVAL_BASIS_FLAGS`] means it came from
+/// [`APPROVAL_FLAGS`] alone, and the gate may stand down for a call that
+/// carries none of the flags named under [`ESCALATING_PARAMS_KEY`].
+pub const APPROVAL_BASIS_KEY: &str = "x-apexe-approval-basis";
+
+/// The [`APPROVAL_BASIS_KEY`] value for a mark derived from accepted flags.
+pub const APPROVAL_BASIS_FLAGS: &str = "flags";
+
+/// Annotation `extra` key holding the escalating schema property names.
+///
+/// Written together with [`APPROVAL_BASIS_KEY`]; a `flags` basis without this
+/// list is a malformed annotation, not an empty one, and the gate treats it as
+/// a reason to prompt rather than to stand down.
+pub const ESCALATING_PARAMS_KEY: &str = "x-apexe-escalating-params";
+
+/// Whether a flag literal escalates the call that carries it.
+///
+/// Takes the literal (`--force`, `-f`) rather than a [`ScannedFlag`] so the
+/// converter can ask about the `x-apexe-flag` value it already wrote into the
+/// built schema — the only spelling guaranteed to sit on the property name a
+/// caller will actually send.
+///
+/// [`ScannedFlag`]: crate::models::ScannedFlag
+pub fn flag_literal_escalates(literal: &str) -> bool {
+    APPROVAL_FLAGS.contains(&literal)
 }
 
 #[cfg(test)]
@@ -352,26 +390,57 @@ mod tests {
         }
     }
 
+    /// Accepting `--force` is not sending it. The escalation now lives one
+    /// layer up (`converter::mark_escalating_params`) so the gate can weigh it
+    /// against the arguments a call actually carries; raising it here made
+    /// `git log`, which merely accepts `--all`, prompt on every invocation.
     #[test]
-    fn test_annotations_force_flag_requires_approval() {
+    fn test_infer_does_not_escalate_on_a_merely_accepted_approval_flag() {
         let cmd = make_command_with_flags("push", vec![("--force", "-f")]);
         let ann = infer(&cmd);
-        assert!(ann.requires_approval);
+        assert!(
+            !ann.requires_approval,
+            "an accepted flag is a property of the command, not of a call"
+        );
     }
 
+    /// The reader that motivated the change: `log` accepts `--all`, and under
+    /// declaration-level boosting that alone demanded human approval.
     #[test]
-    fn test_annotations_dry_run_flag_is_idempotent() {
+    fn test_infer_leaves_a_reader_unescalated_despite_accepting_all() {
+        let cmd = make_command_with_flags("log", vec![("--all", "-a")]);
+        let ann = infer(&cmd);
+        assert!(!ann.requires_approval);
+        assert!(ann.readonly);
+    }
+
+    /// A command that *accepts* `--dry-run` does not run dry. Boosting
+    /// `idempotent` on the declaration made `cacheable` true for a mutating
+    /// command whenever the caller left the flag off.
+    #[test]
+    fn test_infer_does_not_mark_idempotent_from_an_accepted_dry_run_flag() {
         let cmd = make_command_with_flags("apply", vec![("--dry-run", "")]);
         let ann = infer(&cmd);
-        assert!(ann.idempotent);
+        assert!(!ann.idempotent);
+        assert!(!ann.cacheable);
+    }
+
+    /// Destructive-by-name still escalates: no absent flag makes `delete` safe.
+    #[test]
+    fn test_infer_still_escalates_a_destructive_name_without_any_flag() {
+        let cmd = make_command_with_flags("delete", vec![]);
+        let ann = infer(&cmd);
+        assert!(ann.destructive);
+        assert!(ann.requires_approval);
     }
 
     #[test]
-    fn test_annotations_combined_flags() {
-        let cmd = make_command_with_flags("deploy", vec![("--force", ""), ("--dry-run", "")]);
-        let ann = infer(&cmd);
-        assert!(ann.requires_approval);
-        assert!(ann.idempotent);
+    fn test_flag_literal_escalates_matches_long_and_short_forms() {
+        assert!(flag_literal_escalates("--force"));
+        assert!(flag_literal_escalates("-f"));
+        assert!(flag_literal_escalates("--all"));
+        assert!(!flag_literal_escalates("--verbose"));
+        assert!(!flag_literal_escalates(""));
     }
 
     /// Regression: `env` matched `READONLY_PATTERNS` on its name, so the
