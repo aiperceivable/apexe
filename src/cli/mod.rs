@@ -83,19 +83,24 @@ impl Cli {
 /// configured the compiled-in baseline is identical either way, so there is
 /// nothing to refuse over.
 fn install_path_guard(config: &crate::config::ApexeConfig) -> anyhow::Result<()> {
-    let additional = &config.additional_denied_paths;
-    let guard = crate::governance::PathGuard::from_env(additional);
+    let guard_config = crate::governance::GuardConfig {
+        denied: &config.additional_denied_paths,
+        allowed: &config.allowed_paths,
+    };
+    let configured = guard_config.denied.len() + guard_config.allowed.len();
+    let guard = crate::governance::PathGuard::from_env(guard_config);
     tracing::debug!(
         root = %guard.root().display(),
-        additional = additional.len(),
+        denied = guard_config.denied.len(),
+        allowed = guard_config.allowed.len(),
         "Installing path guard"
     );
-    if !crate::governance::path_guard::install(guard) && !additional.is_empty() {
+    if !crate::governance::path_guard::install(guard) && configured > 0 {
         anyhow::bail!(
-            "path guard was already installed, so the {} configured \
-             `additional_denied_paths` entries are not in force; refusing to \
-             start rather than run under a policy that was not loaded",
-            additional.len()
+            "path guard was already installed, so the {configured} configured \
+             `additional_denied_paths` / `allowed_paths` entries are not in \
+             force; refusing to start rather than run under a policy that was \
+             not loaded"
         );
     }
     Ok(())

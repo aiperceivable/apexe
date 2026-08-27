@@ -51,7 +51,7 @@
   ],
   "annotations": {
     "readonly": false,
-    "destructive": false,
+    "destructive": true,
     "idempotent": false,
     "requires_approval": true
   }

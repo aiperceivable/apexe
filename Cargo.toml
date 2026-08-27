@@ -63,3 +63,7 @@ path = "src/main.rs"
 [[example]]
 name = "acl_demo"
 path = "examples/acl_demo/main.rs"
+
+[[example]]
+name = "path_guard"
+path = "examples/path_guard/main.rs"

@@ -415,6 +415,7 @@ See [examples/README.md](examples/README.md) for full details.
 | [basic](examples/basic/) | Shell script: scan → list → serve | `./examples/basic/run.sh` |
 | [programmatic](examples/programmatic.rs) | Rust library: scan → convert → export OpenAI tools → build MCP server | `cargo run --example programmatic` |
 | [acl_demo](examples/acl_demo/) | Rust library: role-based ACL rules on `CliModule` calls via `Executor` | `cargo run --example acl_demo` |
+| [path_guard](examples/path_guard/) | Rust library: the always-on path boundary — which directories a call may touch | `cargo run --example path_guard` |
 
 ---
 

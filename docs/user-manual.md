@@ -244,9 +244,13 @@ default_timeout: 30
 scan_depth: 2
 json_output_preference: true
 
-# Appended to the compiled-in path-guard baseline. See section 9.5.
+# Appended to the compiled-in path-guard baselines. See section 9.7.
 additional_denied_paths:
   - /srv/production-data
+
+# Carved OUT of those baselines. Empty by default; you own what you open.
+allowed_paths:
+  - /etc/nginx/conf.d
 ```
 
 | Field | Type | Default | Description |
@@ -258,7 +262,8 @@ additional_denied_paths:
 | `default_timeout` | integer | `30` | CLI subprocess timeout (seconds) |
 | `scan_depth` | integer | `2` | Default subcommand recursion depth |
 | `json_output_preference` | boolean | `true` | Prefer JSON output from CLI tools when available |
-| `additional_denied_paths` | list of paths | `[]` | Locations to deny **in addition to** the path-guard baseline (§9.5). Additive only — nothing here removes a baseline entry |
+| `additional_denied_paths` | list of paths | `[]` | Locations to deny **in addition to** the path-guard baselines (§9.7) |
+| `allowed_paths` | list of paths | `[]` | Carve-outs **out of** the path-guard baselines (§9.7). The only setting that relaxes the guard; you own the consequences |
 
 ### Environment variables
 
@@ -720,9 +725,48 @@ additional_denied_paths:
 ```
 
 Configured entries join the **credential** list, so they bind readers as well
-as writers: naming a path explicitly asserts that it is sensitive. This list
-only ever grows the boundary — there is no configuration, flag or environment
-variable that removes a baseline entry.
+as writers: naming a path explicitly asserts that it is sensitive.
+
+**Reopen a subtree with `allowed_paths`:**
+
+```yaml
+allowed_paths:
+  - /etc/nginx/conf.d
+```
+
+This is the **only** setting that relaxes the guard, and it is **empty by
+default** — the feature is inert until you write it down. It exists because the
+alternative is worse: an agent that legitimately has to write
+`/etc/nginx/conf.d` would otherwise have to be handed that tooling outside
+apexe entirely, which drops the audit trail and the ACL along with the path
+check.
+
+**You own what you open here.** Nothing validates that an entry is wise —
+naming `/etc`, or a credential directory, is honoured. What the guard does
+instead is make the decision visible: every carve-out is logged at startup, and
+one that opens a whole system location or exposes credentials is logged at
+`warn`.
+
+Two things worth knowing before you use it:
+
+- **Prefer the narrowest subtree that does the job.** `/etc/nginx/conf.d`, not
+  `/etc`. A carve-out grants everything beneath it.
+- **A config directory grants the service's behaviour.** Write access to
+  `/etc/nginx/conf.d` is enough to add a `proxy_pass` and redirect traffic
+  anywhere, without touching anything else under `/etc`. That is the real scope
+  of the permission, not "one directory".
+
+Carve-outs and denials share one specificity ladder, so you can open a subtree
+and still fence off part of it:
+
+```yaml
+allowed_paths:
+  - /etc/nginx/conf.d
+additional_denied_paths:
+  - /etc/nginx/conf.d/secrets   # more specific, so this wins
+```
+
+`~/.config` needs no entry here — it is not guarded in the first place.
 
 **What gets compared.** Not the string the caller sent — the path the kernel
 would act on. A relative path is joined to the working directory the subprocess

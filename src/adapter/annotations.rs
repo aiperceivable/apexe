@@ -28,6 +28,30 @@ const OPEN_WORLD_TOOLS: &[&str] = &[
     "httpie", "wscat",
 ];
 
+/// Executables whose argument list *is* another command to run.
+///
+/// These are not tools that happen to be dangerous; they are tools whose entire
+/// function is to execute something else, which makes every name-based
+/// classification downstream of them meaningless. `env` was classified
+/// `readonly` — its name is in [`READONLY_PATTERNS`] — and BSD `env` accepts
+/// `-S "rm -rf /etc"`, which splits the string into argv and runs it. That
+/// combination produced an explicit ACL *allow* on a general-purpose command
+/// executor, and the path guard never saw the `/etc` because it lives inside a
+/// `string`-typed flag rather than a path-typed one.
+///
+/// Marking them `destructive` fixes the two decisions that are actually
+/// name-driven: the generated ACL denies rather than allows them, and the path
+/// guard judges their arguments as a writer's. It does **not** make them safe.
+/// Nothing can statically decide what argv a caller-supplied string will become
+/// — see `docs/threat-model.md` §5.9, which recommends denying these outright.
+///
+/// Matched on the executable, like [`OPEN_WORLD_TOOLS`]: for these there is no
+/// benign invocation to distinguish, because passing a command is the interface.
+const EXEC_WRAPPER_TOOLS: &[&str] = &[
+    "env", "xargs", "nice", "ionice", "nohup", "timeout", "chroot", "setsid", "stdbuf", "script",
+    "watch", "time", "sudo", "doas", "su",
+];
+
 /// Subcommands that reach the network on an otherwise local tool.
 ///
 /// `git` is local until it is `git push`, and the same split holds for package
@@ -91,15 +115,7 @@ const IDEMPOTENT_FLAGS: &[&str] = &[
 /// socket under an unremarkable name is not caught, and an overlay's
 /// `annotation_overrides` remains the way to state the truth for a specific one.
 fn infer_open_world(command: &ScannedCommand) -> bool {
-    let executable = command
-        .full_command
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or_default()
-        .to_lowercase();
+    let executable = executable_name(command);
     if OPEN_WORLD_TOOLS.iter().any(|tool| executable == *tool) {
         return true;
     }
@@ -107,11 +123,36 @@ fn infer_open_world(command: &ScannedCommand) -> bool {
     OPEN_WORLD_SUBCOMMANDS.iter().any(|sub| name_lower == *sub)
 }
 
+/// The executable a scanned command belongs to, lowercased and unqualified.
+fn executable_name(command: &ScannedCommand) -> String {
+    command
+        .full_command
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_lowercase()
+}
+
+/// Whether this command's arguments are themselves a command to run.
+///
+/// See [`EXEC_WRAPPER_TOOLS`] for why this outranks the name patterns.
+fn is_exec_wrapper(command: &ScannedCommand) -> bool {
+    let executable = executable_name(command);
+    EXEC_WRAPPER_TOOLS.iter().any(|tool| executable == *tool)
+}
+
 /// Infer behavioral annotations from command name and flags.
 pub fn infer(command: &ScannedCommand) -> ModuleAnnotations {
     let name_lower = command.name.to_lowercase();
 
-    let destructive = DESTRUCTIVE_PATTERNS.iter().any(|p| name_lower == *p);
+    // An exec wrapper outranks both name lists. `env` matches READONLY_PATTERNS
+    // on its name and can run anything at all, and of the two facts only the
+    // second one matters to a policy.
+    let exec_wrapper = is_exec_wrapper(command);
+    let destructive = exec_wrapper || DESTRUCTIVE_PATTERNS.iter().any(|p| name_lower == *p);
     let readonly = !destructive && READONLY_PATTERNS.iter().any(|p| name_lower == *p);
     let mut idempotent = IDEMPOTENT_PATTERNS.iter().any(|p| name_lower == *p);
     let mut requires_approval = destructive;
@@ -158,6 +199,14 @@ pub fn infer(command: &ScannedCommand) -> ModuleAnnotations {
 mod tests {
     use super::*;
     use crate::models::{HelpFormat, StructuredOutputInfo};
+
+    /// Build a root command for `executable`, the way a scan of that binary
+    /// produces one (`full_command` is what `is_exec_wrapper` reads).
+    fn make_root_command(executable: &str) -> ScannedCommand {
+        let mut command = make_command_named(executable);
+        command.full_command = executable.to_string();
+        command
+    }
 
     fn make_command_named(name: &str) -> ScannedCommand {
         ScannedCommand {
@@ -323,5 +372,52 @@ mod tests {
         let ann = infer(&cmd);
         assert!(ann.requires_approval);
         assert!(ann.idempotent);
+    }
+
+    /// Regression: `env` matched `READONLY_PATTERNS` on its name, so the
+    /// generated ACL gave a general-purpose command executor an explicit
+    /// *allow*, and the path guard judged its arguments as a reader's. BSD
+    /// `env -S "rm -rf /etc"` splits that string into argv and runs it.
+    #[test]
+    fn test_infer_classifies_env_as_destructive_not_readonly() {
+        let annotations = infer(&make_root_command("env"));
+
+        assert!(!annotations.readonly, "env executes arbitrary commands");
+        assert!(annotations.destructive);
+        assert!(annotations.requires_approval);
+        assert!(
+            !annotations.cacheable,
+            "a command executor's output is not cacheable"
+        );
+    }
+
+    #[test]
+    fn test_infer_classifies_every_exec_wrapper_as_destructive() {
+        for tool in EXEC_WRAPPER_TOOLS {
+            let annotations = infer(&make_root_command(tool));
+            assert!(
+                annotations.destructive && !annotations.readonly,
+                "{tool} runs whatever it is handed and must not read as safe"
+            );
+        }
+    }
+
+    /// The rule keys on the executable, not on a name appearing anywhere. A
+    /// subcommand that happens to share a wrapper's name — `foo watch` — is not
+    /// a command executor, and escalating it would be a false positive with no
+    /// bound on how many tools it hits.
+    #[test]
+    fn test_infer_does_not_escalate_a_subcommand_named_like_a_wrapper() {
+        let mut command = make_command_named("watch");
+        command.full_command = "kubectl watch".to_string();
+
+        assert!(!infer(&command).destructive);
+    }
+
+    /// The escalation must not disturb an ordinary readonly classification.
+    #[test]
+    fn test_infer_still_classifies_an_ordinary_reader_as_readonly() {
+        assert!(infer(&make_root_command("cat")).readonly);
+        assert!(infer(&make_root_command("ls")).readonly);
     }
 }

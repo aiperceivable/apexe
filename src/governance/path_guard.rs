@@ -152,6 +152,20 @@ impl AccessMode {
     }
 }
 
+/// What an operator's `config.yaml` contributes to the guard.
+///
+/// A struct rather than two slice parameters on purpose: `denied` and `allowed`
+/// have the same type and opposite meanings, and a call that transposed them
+/// would turn a deny list into an allow list without a compiler error.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GuardConfig<'a> {
+    /// Appended to the credential list — refused to readers and writers alike.
+    pub denied: &'a [PathBuf],
+    /// Carve-outs *out of* the compiled-in baselines. Empty by default; see
+    /// [`PathGuard::new`] for what an operator takes on by using it.
+    pub allowed: &'a [PathBuf],
+}
+
 /// Locations that stay usable even though a denied entry contains them.
 ///
 /// Exactly one case motivates this, and it is not a policy softening: on macOS
@@ -247,23 +261,46 @@ pub struct PathGuard {
     credential: Vec<PathBuf>,
     /// Resolved carve-outs that survived [`accept_exemption`]. See
     /// [`baseline_exemptions`] — this is the temp directory and nothing else.
+    ///
+    /// Kept apart from [`PathGuard::allowed`] because the two break ties in
+    /// opposite directions, and the reason is whose decision each one is. This
+    /// list is *derived* — nobody asked for it, it exists so `$TMPDIR` under
+    /// `/var` keeps working — so an exact overlap with a protected path is a
+    /// coincidence to be refused, not an instruction.
     exempt: Vec<PathBuf>,
+    /// Resolved `allowed_paths` from the operator's configuration.
+    ///
+    /// An exact overlap with a protected path resolves in *this* list's favour,
+    /// because someone wrote the path down on purpose. `allowed_paths: ["/etc"]`
+    /// means `/etc`, and a guard that quietly declined would be overruling the
+    /// person who deployed it — see [`PathGuard::new`].
+    allowed: Vec<PathBuf>,
 }
 
 impl PathGuard {
-    /// Build a guard from the compiled-in baselines plus `additional`.
+    /// Build a guard from the compiled-in baselines plus an operator's config.
     ///
-    /// `additional` can only ever grow the denied set — there is no parameter
-    /// that removes a baseline entry, which is the whole point of the split.
     /// Every entry is resolved the same way a caller's value will be, so a
     /// configured `/var` and a caller's `/private/var/log` compare equal on
     /// macOS.
     ///
-    /// Configured entries join the **credential** list, so they are refused to
-    /// readers as well as writers. An operator naming a path explicitly is
-    /// asserting that it is sensitive, and the stronger of the two readings is
-    /// the one that cannot be wrong in the dangerous direction.
-    pub fn new(root: PathBuf, additional: &[PathBuf]) -> Self {
+    /// `config.denied` joins the **credential** list, so those paths are
+    /// refused to readers as well as writers. An operator naming a path
+    /// explicitly is asserting that it is sensitive, and the stronger of the
+    /// two readings is the one that cannot be wrong in the dangerous direction.
+    ///
+    /// `config.allowed` is the one input that *relaxes* the guard, and it is
+    /// **empty unless an operator writes it**. It exists because the real
+    /// alternative was worse: an agent that legitimately needs to write
+    /// `/etc/nginx/conf.d` had no option but to be handed the tool outside
+    /// apexe entirely, which removes the audit trail and the ACL along with the
+    /// path check. Nothing here validates that a carve-out is *wise* — an
+    /// operator can name `/etc`, or a credential directory, and the guard will
+    /// honour it. What it does instead is refuse to be quiet about it:
+    /// [`warn_about_risky_carve_outs`] logs every entry that opens a baseline
+    /// location, so the decision appears in the startup log rather than only in
+    /// a config file nobody re-reads.
+    pub fn new(root: PathBuf, config: GuardConfig<'_>) -> Self {
         let system: Vec<PathBuf> = BASELINE_SYSTEM_PATHS
             .iter()
             .map(|entry| resolve(Path::new(entry), &root))
@@ -297,15 +334,27 @@ impl PathGuard {
             })
             .collect();
 
-        credential.extend(additional.iter().map(|entry| resolve(entry, &root)));
+        credential.extend(config.denied.iter().map(|entry| resolve(entry, &root)));
         credential.sort();
         credential.dedup();
+
+        let configured: Vec<PathBuf> = config
+            .allowed
+            .iter()
+            .map(|entry| resolve(entry, &root))
+            .collect();
+        warn_about_risky_carve_outs(&configured, &system, &credential);
+
+        let mut allowed = configured;
+        allowed.sort();
+        allowed.dedup();
 
         Self {
             root,
             system,
             credential,
             exempt,
+            allowed,
         }
     }
 
@@ -316,7 +365,7 @@ impl PathGuard {
     /// guard will judge rather than somewhere it silently trusts. That is the
     /// safe direction for a failure this unusual (the cwd was deleted out from
     /// under the process).
-    pub fn from_env(additional: &[PathBuf]) -> Self {
+    pub fn from_env(config: GuardConfig<'_>) -> Self {
         let root = std::env::current_dir().unwrap_or_else(|error| {
             tracing::warn!(
                 %error,
@@ -325,7 +374,7 @@ impl PathGuard {
             );
             PathBuf::from("/")
         });
-        Self::new(root, additional)
+        Self::new(root, config)
     }
 
     /// The working directory relative paths resolve against.
@@ -376,22 +425,44 @@ impl PathGuard {
     /// Where a denied entry and a carve-out both contain `target`, the more
     /// specific one wins: `$TMPDIR` under `/var` is writable, a path the
     /// operator denied *inside* `$TMPDIR` is refused again, and each rule binds
-    /// only the subtree it names. A tie goes to the refusal.
+    /// only the subtree it names.
+    ///
+    /// An exact tie is broken by *whose* carve-out it is. A configured
+    /// `allowed_paths` entry wins, because `allowed_paths: ["/etc"]` is an
+    /// instruction and honouring it is the whole point. The derived temp-
+    /// directory exemption loses, because nobody asked for it and an exact
+    /// overlap there is a coincidence — which is what stops a `TMPDIR` pointed
+    /// at `~/.ssh` from reading a key out.
     fn denial_reason(&self, target: &Path, mode: AccessMode) -> Option<&Path> {
         if mode == AccessMode::Write {
-            if let Some(descendant) = self
-                .applicable(mode)
-                .find(|denied| denied.starts_with(target))
-            {
-                return Some(descendant.as_path());
+            // A configured carve-out covering `target` also covers everything
+            // under it, so the protected descendants it contains are the ones
+            // the operator just said to permit. Without this, opening
+            // `/etc/nginx/conf.d` would still refuse `rm -r` on that very
+            // directory whenever a denial sat inside it.
+            let carved_out = deepest_containing(target, self.allowed.iter()).is_some();
+            if !carved_out {
+                if let Some(descendant) = self
+                    .applicable(mode)
+                    .find(|denied| denied.starts_with(target))
+                {
+                    return Some(descendant.as_path());
+                }
             }
         }
 
         let denied = deepest_containing(target, self.applicable(mode))?;
-        match deepest_containing(target, self.exempt.iter()) {
-            Some(exempt) if specificity(exempt) > specificity(denied) => None,
-            _ => Some(denied.as_path()),
+        let depth = specificity(denied);
+
+        let configured_wins = deepest_containing(target, self.allowed.iter())
+            .is_some_and(|allowed| specificity(allowed) >= depth);
+        let derived_wins = deepest_containing(target, self.exempt.iter())
+            .is_some_and(|exempt| specificity(exempt) > depth);
+
+        if configured_wins || derived_wins {
+            return None;
         }
+        Some(denied.as_path())
     }
 
     /// The denied entries `mode` is held to.
@@ -425,7 +496,45 @@ pub fn install(guard: PathGuard) -> bool {
 /// calls [`install`] — a test, an embedding, a code path added later — still
 /// gets the compiled-in baseline rather than no guard at all.
 pub fn active() -> &'static PathGuard {
-    ACTIVE.get_or_init(|| PathGuard::from_env(&[]))
+    ACTIVE.get_or_init(|| PathGuard::from_env(GuardConfig::default()))
+}
+
+/// Log the configured carve-outs that open a compiled-in protection.
+///
+/// Deliberately a warning and not a refusal. The operator asked for this, and
+/// second-guessing an explicit `allowed_paths` entry would put the guard in the
+/// business of overruling the person who deployed it. What it must not do is
+/// let the decision stay invisible: a carve-out over `/etc` or over a
+/// credential directory is a material change to what the process will permit,
+/// and it belongs in the startup log where an incident review will find it.
+///
+/// The two cases are separated because they are not equally alarming. Opening a
+/// system path is the intended use — `/etc/nginx/conf.d` is exactly what this
+/// feature is for. Opening a credential path is almost certainly a mistake, and
+/// says so.
+fn warn_about_risky_carve_outs(configured: &[PathBuf], system: &[PathBuf], credential: &[PathBuf]) {
+    for entry in configured {
+        if let Some(opened) = credential.iter().find(|c| c.starts_with(entry)) {
+            tracing::warn!(
+                allowed = %entry.display(),
+                opens = %opened.display(),
+                "Configured allowed_paths entry exposes a credential directory. \
+                 Reading a private key leaves no trace; confirm this is intended."
+            );
+        } else if let Some(opened) = system.iter().find(|s| s.starts_with(entry)) {
+            tracing::warn!(
+                allowed = %entry.display(),
+                opens = %opened.display(),
+                "Configured allowed_paths entry opens an entire system location, \
+                 not a subtree of one. Narrow it if a subdirectory would do."
+            );
+        } else {
+            tracing::info!(
+                allowed = %entry.display(),
+                "Path guard carve-out configured"
+            );
+        }
+    }
 }
 
 /// Resolve `path` to the absolute location the kernel would act on.
@@ -532,9 +641,31 @@ mod tests {
 
     use AccessMode::{ReadOnly, Write};
 
-    /// A guard rooted at `root` with the baselines and nothing added.
+    /// A guard rooted at `root` with the baselines and nothing configured.
     pub(super) fn guard_at(root: &Path) -> PathGuard {
-        PathGuard::new(root.to_path_buf(), &[])
+        PathGuard::new(root.to_path_buf(), GuardConfig::default())
+    }
+
+    /// A guard with only `denied` configured.
+    fn guard_denying(root: &Path, denied: &[PathBuf]) -> PathGuard {
+        PathGuard::new(
+            root.to_path_buf(),
+            GuardConfig {
+                denied,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// A guard with only `allowed` configured.
+    fn guard_allowing(root: &Path, allowed: &[PathBuf]) -> PathGuard {
+        PathGuard::new(
+            root.to_path_buf(),
+            GuardConfig {
+                allowed,
+                ..Default::default()
+            },
+        )
     }
 
     /// The home-relative baseline entry, as a caller would spell it.
@@ -630,7 +761,7 @@ mod tests {
     fn test_check_resolves_a_relative_path_against_the_root_before_judging() {
         // The point of the root: the same string is allowed under one working
         // directory and refused under another, and only the join can tell.
-        let system = PathGuard::new(PathBuf::from("/usr"), &[]);
+        let system = guard_at(Path::new("/usr"));
         assert!(
             system.check("Parameter 'file'", "share", Write).is_err(),
             "'share' under /usr is /usr/share and must be refused to a writer"
@@ -648,7 +779,7 @@ mod tests {
     fn test_check_refuses_a_relative_path_that_climbs_out_with_parent_dirs() {
         // `std::path::absolute` keeps `..` (POSIX requires it), so a guard that
         // only joined would compare the literal string and let this through.
-        let guard = PathGuard::new(PathBuf::from("/usr/local/share"), &[]);
+        let guard = guard_at(Path::new("/usr/local/share"));
         let error = guard
             .check("Parameter 'file'", "../../../etc/passwd", Write)
             .unwrap_err();
@@ -770,10 +901,7 @@ mod tests {
         let protected = workspace.path().join("golden");
         std::fs::create_dir(&protected).expect("mkdir");
 
-        let guard = PathGuard::new(
-            workspace.path().to_path_buf(),
-            std::slice::from_ref(&protected),
-        );
+        let guard = guard_denying(workspace.path(), std::slice::from_ref(&protected));
 
         assert!(
             guard
@@ -795,10 +923,7 @@ mod tests {
         let protected = workspace.path().join("golden");
         std::fs::create_dir(&protected).expect("mkdir");
 
-        let guard = PathGuard::new(
-            workspace.path().to_path_buf(),
-            std::slice::from_ref(&protected),
-        );
+        let guard = guard_denying(workspace.path(), std::slice::from_ref(&protected));
 
         assert!(guard
             .check("Parameter 'file'", "golden/data.db", ReadOnly)
@@ -810,10 +935,7 @@ mod tests {
         // The configuration surface is additive. There is no input to `new`
         // that removes /etc, and this is the test that says so.
         let workspace = tempfile::tempdir().expect("temp dir");
-        let guard = PathGuard::new(
-            workspace.path().to_path_buf(),
-            &[workspace.path().join("golden")],
-        );
+        let guard = guard_denying(workspace.path(), &[workspace.path().join("golden")]);
 
         assert!(guard
             .check("Parameter 'file'", "/etc/passwd", Write)
@@ -821,6 +943,140 @@ mod tests {
         assert!(guard
             .check("Parameter 'file'", &home_path(".ssh/id_rsa"), ReadOnly)
             .is_err());
+    }
+
+    // ---- Configured carve-outs (`allowed_paths`) -------------------------
+
+    #[test]
+    fn test_a_configured_carve_out_reopens_a_subtree_of_a_system_path() {
+        // The motivating case: an agent that has to write /etc/nginx/conf.d.
+        let guard = guard_allowing(Path::new("/"), &[PathBuf::from("/etc/nginx/conf.d")]);
+
+        assert!(
+            guard
+                .check("Parameter 'file'", "/etc/nginx/conf.d/site.conf", Write)
+                .is_ok(),
+            "the carve-out must make its own subtree writable"
+        );
+        // And nothing outside it moves.
+        assert!(guard
+            .check("Parameter 'file'", "/etc/nginx/nginx.conf", Write)
+            .is_err());
+        assert!(guard
+            .check("Parameter 'file'", "/etc/passwd", Write)
+            .is_err());
+    }
+
+    #[test]
+    fn test_a_carve_out_is_empty_unless_configured() {
+        // No default. The feature is inert until an operator writes it down.
+        let guard = guard_at(Path::new("/"));
+        assert!(guard
+            .check("Parameter 'file'", "/etc/nginx/conf.d/site.conf", Write)
+            .is_err());
+    }
+
+    #[test]
+    fn test_a_carve_out_is_honoured_even_when_it_is_unwise() {
+        // The operator owns this decision — `allowed_paths` does not
+        // second-guess an explicit entry, it logs it. Pinning the behaviour
+        // here so a later "safety" check cannot be added without the test that
+        // documents the trade-off failing first.
+        let guard = guard_allowing(Path::new("/"), &[PathBuf::from("/etc")]);
+        assert!(guard
+            .check("Parameter 'file'", "/etc/passwd", Write)
+            .is_ok());
+    }
+
+    #[test]
+    fn test_a_carve_out_loses_to_a_more_specific_denial() {
+        // Carve-outs and denials share one specificity ladder, so an operator
+        // can open a subtree and still fence off part of it.
+        let guard = PathGuard::new(
+            PathBuf::from("/"),
+            GuardConfig {
+                denied: &[PathBuf::from("/etc/nginx/conf.d/secrets")],
+                allowed: &[PathBuf::from("/etc/nginx/conf.d")],
+            },
+        );
+
+        assert!(guard
+            .check("Parameter 'file'", "/etc/nginx/conf.d/site.conf", Write)
+            .is_ok());
+        assert!(guard
+            .check("Parameter 'file'", "/etc/nginx/conf.d/secrets/key", Write)
+            .is_err());
+    }
+
+    #[test]
+    fn test_a_configured_carve_out_may_reopen_a_credential_path() {
+        // The operator owns this. It is almost certainly a mistake — hence the
+        // warning `warn_about_risky_carve_outs` logs — but "almost certainly"
+        // is not the guard's call to make, and silently declining would leave
+        // an operator staring at a config file that appears to do nothing.
+        let key = dirs::home_dir().expect("home").join(".ssh");
+        let guard = guard_allowing(Path::new("/"), std::slice::from_ref(&key));
+
+        assert!(guard
+            .check(
+                "Parameter 'file'",
+                &key.join("id_rsa").to_string_lossy(),
+                ReadOnly
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn test_the_derived_exemption_still_loses_a_tie_to_a_credential_path() {
+        // The other half of the split: a *derived* carve-out that happens to
+        // land exactly on a protected path is a coincidence, not an
+        // instruction, so it refuses. This is what keeps `TMPDIR=~/.ssh` from
+        // reading a key out.
+        let guard = PathGuard {
+            root: PathBuf::from("/"),
+            system: Vec::new(),
+            credential: vec![PathBuf::from("/home/u/.ssh")],
+            exempt: vec![PathBuf::from("/home/u/.ssh")],
+            allowed: Vec::new(),
+        };
+        assert!(guard
+            .denial_reason(Path::new("/home/u/.ssh/id_rsa"), ReadOnly)
+            .is_some());
+    }
+
+    #[test]
+    fn test_a_writer_may_recurse_into_a_directory_the_operator_carved_out() {
+        // `rm -r /etc/nginx/conf.d` after opening it. The ancestor rule would
+        // otherwise refuse the carve-out's own root whenever a denial sat
+        // inside it.
+        let guard = PathGuard::new(
+            PathBuf::from("/"),
+            GuardConfig {
+                denied: &[PathBuf::from("/etc/nginx/conf.d/secrets")],
+                allowed: &[PathBuf::from("/etc/nginx/conf.d")],
+            },
+        );
+        assert!(guard
+            .check("Parameter 'file'", "/etc/nginx/conf.d", Write)
+            .is_ok());
+        // The fence inside it still holds for a path that names it.
+        assert!(guard
+            .check("Parameter 'file'", "/etc/nginx/conf.d/secrets/key", Write)
+            .is_err());
+    }
+
+    #[test]
+    fn test_a_carve_out_does_not_disturb_the_temp_directory_exemption() {
+        let tmp = std::env::temp_dir();
+        let guard = guard_allowing(Path::new("/"), &[PathBuf::from("/etc/nginx/conf.d")]);
+
+        assert!(guard
+            .check(
+                "Parameter 'file'",
+                &tmp.join("build.log").to_string_lossy(),
+                Write
+            )
+            .is_ok());
     }
 
     // ---- The temp-directory carve-out ------------------------------------
@@ -875,6 +1131,7 @@ mod tests {
             system: vec![PathBuf::from("/var")],
             credential: vec![tmp.join("fakehome/.ssh")],
             exempt: vec![tmp.clone()],
+            allowed: Vec::new(),
         };
         assert!(
             guard
@@ -899,6 +1156,7 @@ mod tests {
             system: Vec::new(),
             credential: vec![PathBuf::from("/home/u/.ssh")],
             exempt: vec![PathBuf::from("/home/u/.ssh")],
+            allowed: Vec::new(),
         };
         assert!(guard
             .denial_reason(Path::new("/home/u/.ssh/id_rsa"), ReadOnly)
@@ -912,6 +1170,7 @@ mod tests {
             system: vec![PathBuf::from("/var")],
             credential: vec![PathBuf::from("/var/scratch/golden")],
             exempt: vec![PathBuf::from("/var/scratch")],
+            allowed: Vec::new(),
         };
 
         // Baseline /var (2) refuses a writer.
@@ -943,6 +1202,7 @@ mod tests {
             system: vec![PathBuf::from("/data")],
             credential: Vec::new(),
             exempt: vec![PathBuf::from("/data")],
+            allowed: Vec::new(),
         };
         assert!(guard
             .denial_reason(Path::new("/data/file"), Write)
@@ -1021,7 +1281,7 @@ mod tests {
     fn test_error_names_the_requested_and_the_resolved_path() {
         // The two differ whenever a symlink or `..` is involved, and a caller
         // told only "denied" cannot tell a mistake from a misconfiguration.
-        let guard = PathGuard::new(PathBuf::from("/usr/share"), &[]);
+        let guard = guard_at(Path::new("/usr/share"));
         let error = guard
             .check("Parameter 'file'", "../../etc/hosts", Write)
             .unwrap_err();

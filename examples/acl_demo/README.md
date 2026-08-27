@@ -67,6 +67,18 @@ Or run the equivalent assertion as a test:
 cargo test --example acl_demo
 ```
 
+## This is not the only boundary
+
+The ACL decides *who may call which module*. It cannot decide *what one call
+may touch* — apcore rules match on `callers` and `targets` (module ids), and
+every registered condition key is a fact about the principal, never about an
+argument. So an ACL can say "`cli.rm` is allowed" or "denied", and nothing in
+between.
+
+The **path guard** covers that second axis, and unlike this demo's rules it is
+on by default on every surface with no flag to enable it. See
+[`examples/path_guard`](../path_guard/) for the same treatment of that layer.
+
 ## Why this calls `Executor::call` directly instead of curling a server
 
 apcore's ACL engine is transport-agnostic — it evaluates whatever

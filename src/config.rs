@@ -36,6 +36,28 @@ pub struct ApexeConfig {
     /// working directory the guard resolves caller-supplied paths against.
     pub additional_denied_paths: Vec<PathBuf>,
 
+    /// Carve-outs *out of* the compiled-in path-guard baselines.
+    ///
+    /// **Empty by default, and the only setting that relaxes the guard.**
+    /// Everything else in this file can tighten the boundary and nothing else
+    /// can loosen it; this can, which makes it the one entry an operator owns
+    /// the consequences of.
+    ///
+    /// It exists because the alternative was worse. An agent that legitimately
+    /// has to write `/etc/nginx/conf.d` previously had no option but to be
+    /// handed `nginx`-adjacent tooling outside apexe altogether — which drops
+    /// the audit trail and the ACL along with the path check. A narrow,
+    /// declared carve-out keeps the call inside the governed path.
+    ///
+    /// Nothing validates that an entry is *wise*: naming `/etc`, or a
+    /// credential directory, is honoured. What the guard does instead is log
+    /// every carve-out at startup, and warn on the ones that open a whole
+    /// system location or expose credentials. Prefer the narrowest subtree that
+    /// does the job — `/etc/nginx/conf.d`, not `/etc`.
+    ///
+    /// `~/.config` needs no entry here; it is not guarded in the first place.
+    pub allowed_paths: Vec<PathBuf>,
+
     /// apcore core configuration for ecosystem integration.
     #[serde(skip)]
     pub core_config: Option<CoreConfig>,
@@ -55,6 +77,7 @@ impl Default for ApexeConfig {
             scan_depth: 2,
             json_output_preference: true,
             additional_denied_paths: Vec::new(),
+            allowed_paths: Vec::new(),
             core_config: None,
         }
     }
@@ -189,6 +212,44 @@ fn load_core_config(config: &mut ApexeConfig) {
 
 #[cfg(test)]
 mod tests {
+
+    /// Both path-guard lists must survive a real `config.yaml`, and a file that
+    /// mentions neither must still get empty ones rather than failing to parse.
+    /// `allowed_paths` in particular is the one setting that widens what the
+    /// process will permit, so a silent deserialization failure there would
+    /// look exactly like a carve-out that does nothing.
+    #[test]
+    fn test_path_guard_lists_round_trip_through_config_yaml() {
+        let configured: ApexeConfig = serde_yaml::from_str(
+            "log_level: info\n\
+             additional_denied_paths:\n\
+             \x20 - /srv/production-data\n\
+             allowed_paths:\n\
+             \x20 - /etc/nginx/conf.d\n",
+        )
+        .expect("config with both path lists must parse");
+
+        assert_eq!(
+            configured.additional_denied_paths,
+            vec![PathBuf::from("/srv/production-data")]
+        );
+        assert_eq!(
+            configured.allowed_paths,
+            vec![PathBuf::from("/etc/nginx/conf.d")]
+        );
+        // A field-level merge, so the rest of the file keeps its defaults.
+        assert_eq!(configured.log_level, "info");
+        assert_eq!(configured.scan_depth, ApexeConfig::default().scan_depth);
+
+        let silent: ApexeConfig =
+            serde_yaml::from_str("log_level: debug\n").expect("config without them must parse");
+        assert!(silent.additional_denied_paths.is_empty());
+        assert!(
+            silent.allowed_paths.is_empty(),
+            "carve-outs must be empty unless an operator writes them"
+        );
+    }
+
     use super::*;
     use std::sync::Mutex;
     use tempfile::TempDir;

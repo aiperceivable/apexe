@@ -364,6 +364,45 @@ fn test_shipped_overlays_leave_required_value_flags_unmarked() {
 }
 
 /// Read one flag out of a shipped overlay, by its long name.
+/// An overlay's `annotations` block, or `None` when it declares none.
+fn overlay_annotations(overlay: &str) -> Option<serde_json::Value> {
+    let path = format!("overlays/{overlay}.json");
+    let raw = std::fs::read_to_string(&path).expect("overlay should be readable");
+    let doc: serde_json::Value = serde_json::from_str(&raw).expect("overlay should parse");
+    doc.get("annotations").cloned()
+}
+
+/// A curated overlay replaces the scan result, `annotations` included — so a
+/// tool the scanner correctly escalates can be *de*-escalated by an overlay
+/// that predates the rule.
+///
+/// That is exactly what happened here: `EXEC_WRAPPER_TOOLS` marks `xargs`
+/// destructive, and both `xargs` overlays kept `destructive: false`, so the
+/// shipped data quietly overrode the fix. Each overlay's own description says
+/// what the tool does — BSD's "executes utility", GNU's "Run COMMAND" — which
+/// is the whole argument for the classification.
+///
+/// Every overlay whose tool runs a caller-supplied command belongs here.
+#[test]
+fn test_shipped_overlays_mark_command_executors_destructive() {
+    const EXEC_WRAPPERS: &[&str] = &["xargs@bsd", "xargs@gnu"];
+
+    for overlay in EXEC_WRAPPERS {
+        let annotations = overlay_annotations(overlay)
+            .unwrap_or_else(|| panic!("{overlay}: a command executor must state its annotations"));
+        assert_eq!(
+            annotations["destructive"], true,
+            "{overlay}: this tool runs whatever it is handed, so the ACL must \
+             deny it by default rather than fall through"
+        );
+        assert_eq!(
+            annotations["readonly"], false,
+            "{overlay}: a command executor is never readonly — the path guard \
+             would judge its arguments as a reader's"
+        );
+    }
+}
+
 fn overlay_flag(overlay: &str, long: &str) -> serde_json::Value {
     let path = format!("overlays/{overlay}.json");
     let raw = std::fs::read_to_string(&path).expect("overlay should be readable");

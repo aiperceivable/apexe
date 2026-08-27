@@ -211,9 +211,34 @@ classification with an overlay.
 `config.yaml`'s `additional_denied_paths` appends to the **credential** list,
 so a configured path binds readers too: an operator naming a path explicitly is
 asserting it is sensitive, and the stronger of the two readings is the one that
-cannot be wrong in the dangerous direction. There is no field, flag or
-environment variable that subtracts from either list. That asymmetry is the
-design: the configuration surface can only tighten the boundary.
+cannot be wrong in the dangerous direction.
+
+`allowed_paths` is the one setting that goes the other way, and it is **empty
+unless an operator writes it**. It exists because the alternative was worse:
+an agent that legitimately has to write `/etc/nginx/conf.d` otherwise had to be
+handed that tooling outside apexe altogether, which drops the audit trail and
+the ACL along with the path check — §5.1 in miniature, reached by way of a
+control that was too rigid to use. A narrow declared carve-out keeps the call
+inside the governed path.
+
+Nothing validates that a carve-out is *wise*. Naming `/etc`, or a credential
+directory, is honoured — overruling an explicit instruction would put the guard
+in the business of second-guessing the person who deployed it, and an operator
+staring at a config file that appears to do nothing is its own failure mode.
+What the guard does instead is refuse to be quiet: every carve-out is logged at
+startup, and one that opens a whole system location or exposes credentials is
+logged at `warn`. **Two properties are worth stating plainly**: a carve-out
+grants everything beneath it, and a carve-out over a service's configuration
+directory grants that service's behaviour — write access to
+`/etc/nginx/conf.d` is enough to add a `proxy_pass` and redirect traffic,
+without touching anything else under `/etc`.
+
+Carve-outs and denials share one specificity ladder, so a subtree can be opened
+and part of it fenced off again. An exact tie is broken by whose carve-out it
+is: a configured `allowed_paths` entry wins, because it is an instruction; the
+derived temp-directory exemption loses, because nobody asked for it and an
+exact overlap there is a coincidence — which is what stops a `TMPDIR` pointed
+at `~/.ssh` from reading a key out.
 
 **Comparison happens on the resolved path, never the supplied string.** Three
 transformations sit between what a caller sends and what the kernel acts on,
@@ -302,7 +327,13 @@ The two error directions are not symmetric:
 
 Concrete example: `find` matches `READONLY_PATTERNS`, but `find … -delete` is
 destructive. Any tool whose subcommand name understates its effect is in this
-class.
+class. (The shipped `find` overlay corrects it to `destructive: true`, which is
+what overlays are for.) The sharpest instance is §5.9: `env` matched the same
+list while being a general-purpose command executor.
+
+The classification also feeds §4.8. A false readonly gets the *weaker* of the
+path guard's two treatments as well as an ACL allow, so one wrong annotation
+now moves two boundaries.
 
 **Review the generated ACL before serving it.** It is a starting point produced
 by a heuristic, not a policy you have approved. Use overlays to correct
@@ -409,6 +440,49 @@ The guard raises the floor for the case that actually recurs — an agent
 pointing a legitimate destructive command at a system directory. It is not a
 sandbox, and §5.1 and §6 still apply in full.
 
+### 5.9 A tool that runs other tools defeats every name-based control
+
+`env`, `xargs`, `nice`, `timeout`, `nohup`, `chroot`, `sudo` and their kin do
+not merely *have* dangerous options — running a caller-supplied command **is**
+their interface. Everything apexe decides from a command's name is therefore
+decided about the wrapper rather than about what it will run.
+
+This was live, and it is worth stating exactly because the shape recurs:
+
+- `env`'s name is in `READONLY_PATTERNS`, so the generated ACL gave it an
+  explicit **allow** (§5.2's "false readonly", reached by the worst possible
+  name).
+- BSD `env` takes `-S <string>`, which splits the string into argv and executes
+  it. `-S` is typed `string`, not `path`, so §4.8's guard never inspected it —
+  correctly, by its own contract, since nothing there is a path.
+- `cli.env` with `{"S": "rm -rf /etc"}` therefore passed both controls.
+
+`EXEC_WRAPPER_TOOLS` in `src/adapter/annotations.rs` now classifies these as
+`destructive`, which flips the generated ACL from allow to deny and makes the
+path guard judge their arguments as a writer's. Two overlays that carried
+`destructive: false` for `xargs` were corrected in the same change, since a
+curated overlay replaces the scan result and would otherwise have overridden
+the classification silently.
+
+**That fix is a floor, not a solution.** No static analysis can decide what
+argv a caller-supplied string will become, so the guard cannot inspect the
+command inside `-S` or the one after `xargs`. Treat these tools as equivalent
+to handing the agent a shell (§5.1):
+
+```yaml
+# In your ACL, ahead of any broad allow rule:
+- callers: ["*"]
+  targets: ["cli.env", "cli.xargs", "cli.sudo", "cli.timeout", "cli.nice"]
+  effect: deny
+  description: "Command executors — argv is caller-controlled"
+```
+
+Better still, do not scan them into the registry at all. A wrapped `env` buys
+nothing that wrapping the underlying tool directly does not, and it costs every
+control in §4.
+
+
+
 ---
 
 ## 6. Recommended deployment
@@ -436,6 +510,10 @@ sandbox, and §5.1 and §6 still apply in full.
 7. Re-review the ACL after every `apexe scan`. A rescan merges freshly generated
    rules into the existing file, so new commands arrive with heuristic
    classifications you have not read yet (§5.2).
+8. Do not wrap command executors — `env`, `xargs`, `sudo`, `timeout`, `nice`
+   and their kin (§5.9). They are classified `destructive` so the generated ACL
+   denies them, but the durable fix is to keep them out of the registry: argv
+   is caller-controlled there, and no control in §4 can see inside it.
 
 ---
 
