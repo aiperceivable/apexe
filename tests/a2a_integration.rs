@@ -344,7 +344,7 @@ fn write_denying_acl(dir: &Path, module_id: &str) -> std::path::PathBuf {
         &path,
         format!(
             "version: \"1.0\"\ndefault_effect: allow\nrules:\n  - effect: deny\n    \
-             callers: [\"*\"]\n    targets: [\"{module_id}\"]\n    reason: \"denied for the test\"\n"
+             callers: [\"*\"]\n    targets: [\"{module_id}\"]\n    description: \"denied for the test\"\n"
         ),
     )
     .expect("acl should be written");
@@ -354,23 +354,25 @@ fn write_denying_acl(dir: &Path, module_id: &str) -> std::path::PathBuf {
 /// Drive one JSON-RPC request through the A2A router apexe would serve, and
 /// return the decoded response body.
 ///
-/// Builds the router from the exact governed `Executor` `serve` assembles
-/// (`A2aServerBuilder::executor`), so the ACL, the audit sink and the denial
-/// relay are all the ones a live `apexe a2a` would apply.
+/// Builds the router from the exact governed `Executor` **and config** `serve`
+/// assembles (`A2aServerBuilder::executor` / `::config`), so the ACL, the audit
+/// sink and the refusal-disclosure policy are the ones a live `apexe a2a` would
+/// apply. Deriving either half here instead would test a server apexe does not
+/// serve — which is how the `disclose_refusal_reason` wiring first went
+/// unnoticed.
 async fn post_jsonrpc(builder: A2aServerBuilder, request: serde_json::Value) -> serde_json::Value {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     let executor = builder.executor().expect("executor should build");
-    let (router, _card) = apcore_a2a::build_app(
-        apcore_a2a::BackendSource::Executor(executor),
-        apcore_a2a::APCoreA2AConfig {
-            name: "apexe-test".to_string(),
-            ..apcore_a2a::APCoreA2AConfig::default()
-        },
-    )
-    .await
-    .expect("A2A app should build");
+    let config = apcore_a2a::APCoreA2AConfig {
+        name: "apexe-test".to_string(),
+        ..builder.config().expect("config should build")
+    };
+    let (router, _card) =
+        apcore_a2a::build_app(apcore_a2a::BackendSource::Executor(executor), config)
+            .await
+            .expect("A2A app should build");
 
     let response = router
         .oneshot(
@@ -411,10 +413,14 @@ fn send_request(skill_id: &str) -> serde_json::Value {
 }
 
 /// The text of a FAILED task's status message.
-fn failure_text(response: &serde_json::Value) -> String {
+fn failure_text(response: &serde_json::Value, expected_state: &str) -> String {
+    // apcore-a2a 0.6 separates the two outcomes: a governance refusal ends in
+    // TASK_STATE_REJECTED ("this will not be accepted"), while a missing skill
+    // stays TASK_STATE_FAILED. The old mapping could not draw that line, and a
+    // caller reading only the state could not either.
     assert_eq!(
-        response["result"]["status"]["state"], "TASK_STATE_FAILED",
-        "a denied call must end in a FAILED task: {response}"
+        response["result"]["status"]["state"], expected_state,
+        "unexpected task state: {response}"
     );
     response["result"]["status"]["message"]["parts"][0]["text"]
         .as_str()
@@ -440,15 +446,14 @@ async fn test_a2a_acl_denial_tells_the_caller_it_was_denied() {
     )
     .await;
 
-    let text = failure_text(&response);
+    let text = failure_text(&response, "TASK_STATE_REJECTED");
     assert!(
         !text.contains("Task not found"),
         "the refusal must not be reported as a missing task id: {text}"
     );
-    assert!(
-        text.contains("ACLDenied"),
-        "the caller must learn the refusal class, as it does over MCP: {text}"
-    );
+    // Since apcore-a2a 0.6 the refusal *class* is the JSON-RPC code rather
+    // than a prefix spliced into the message, and `apexe a2a` sets
+    // `disclose_refusal_reason` so apcore's own text comes through with it.
     assert!(
         text.contains("Access denied"),
         "the caller must get apcore's own reason: {text}"
@@ -457,17 +462,13 @@ async fn test_a2a_acl_denial_tells_the_caller_it_was_denied() {
         text.contains("cli.echo"),
         "the caller must learn which skill was refused: {text}"
     );
-    assert!(
-        text.contains("retrying") || text.contains("Retrying"),
-        "the guidance must close the retry loop the old message provoked: {text}"
-    );
 }
 
 #[tokio::test]
 async fn test_a2a_still_reports_an_unknown_skill_as_not_found() {
-    // The counterpart the relay must not blur: a skill that genuinely does not
-    // exist has to keep saying so, or the fix trades one indistinguishable pair
-    // for another.
+    // The counterpart a refusal must not blur: a skill that genuinely does not
+    // exist has to keep saying so — different state, different message, and
+    // the opposite next move for the agent.
     let dir = TempDir::new().unwrap();
     write_echo_binding(dir.path());
 
@@ -477,7 +478,7 @@ async fn test_a2a_still_reports_an_unknown_skill_as_not_found() {
     )
     .await;
 
-    let text = failure_text(&response);
+    let text = failure_text(&response, "TASK_STATE_FAILED");
     assert!(
         text.contains("Skill not found"),
         "an unknown skill must still read as missing: {text}"
@@ -489,8 +490,9 @@ async fn test_a2a_still_reports_an_unknown_skill_as_not_found() {
 }
 
 #[tokio::test]
-async fn test_a2a_allowed_call_is_unaffected_by_the_relay() {
-    // The relay only ever fires on a refusal; an allowed call still runs.
+async fn test_a2a_allowed_call_still_runs_under_a_denying_acl() {
+    // Refusal handling must never cost an allowed call: the same ACL file
+    // refuses one server and carries the call on another.
     let dir = TempDir::new().unwrap();
     write_echo_binding(dir.path());
     let acl_path = write_denying_acl(dir.path(), "cli.echo");
@@ -504,7 +506,7 @@ async fn test_a2a_allowed_call_is_unaffected_by_the_relay() {
         send_request("cli.echo"),
     )
     .await;
-    assert_eq!(response["result"]["status"]["state"], "TASK_STATE_FAILED");
+    assert_eq!(response["result"]["status"]["state"], "TASK_STATE_REJECTED");
 
     let response = post_jsonrpc(
         A2aServerBuilder::new().modules_dir(dir.path()),

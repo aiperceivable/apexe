@@ -268,6 +268,24 @@ allowed_paths:
 | `additional_denied_paths` | list of paths | `[]` | Locations to deny **in addition to** the path-guard baselines (§9.7) |
 | `allowed_paths` | list of paths | `[]` | Carve-outs **out of** the path-guard baselines (§9.7). The only setting that relaxes the guard; you own the consequences |
 
+The key set above is closed. A key apexe does not read is **ignored**, and it
+says so on stderr at startup, naming the key and the one it was probably meant
+to be:
+
+```
+WARN Ignoring unrecognised config key 'additional_denied_path' -- did you mean
+     'additional_denied_paths'? It has no effect. That path-guard setting is
+     NOT in force.
+```
+
+The last sentence appears only for `additional_denied_paths` and
+`allowed_paths`, because those are the two whose loss changes what the process
+will permit: a misspelled `additional_denied_paths` leaves only the path-guard
+baseline in force, and nothing else in the run would tell you.
+
+An unrecognised key does **not** stop apexe or discard the rest of the file —
+the remaining keys still apply.
+
 ### Environment variables
 
 | Variable | Overrides | Example |
@@ -484,27 +502,28 @@ through. Put the narrow denials above the broad allows.
 ```
 
 Over A2A the task lands in `TASK_STATE_FAILED` carrying the same reason in
-`status.message`, followed by what to do about it:
+`status.message`, and the JSON-RPC error carries a governance-specific code:
 
 ```
-Invalid input: [ACLDenied] Access denied: caller 'None' cannot access module
-'cli.cp' (An access-control rule refuses this call. The task id is fine —
-retrying it, or resending with a new message id, produces the same refusal.
-Pick a different skill, or ask the operator to change the ACL policy.)
+-32040  Access denied: caller 'None' cannot access module 'cli.cp'
 ```
 
-apcore-a2a on its own reports an ACL denial as `-32001 Task not found` and an
-approval denial as `-32603 Internal server error` — it withholds the reason so
-an unauthorized caller cannot enumerate what exists, the reasoning that returns
-HTTP 404 instead of 403. apexe relays the reason anyway
-([#41](https://github.com/aiperceivable/apexe/issues/41)), because on this
-server the masking protects nothing and costs a great deal: apcore-a2a already
-ACL-filters the agent card, so a denied skill is absent from it and the refusal
-confirms nothing; `apexe a2a` wires no authenticator, so every caller is the
-same anonymous `@external` principal and there is no privileged caller to keep a
-secret from; and an agent told `Task not found` retries the one thing that was
-fine, indefinitely. The `Invalid input:` prefix is apcore-a2a's — it is the
-mapping apexe re-codes the refusal into so the message survives at all.
+apcore-a2a 0.6 answers a governance refusal with its own code — `-32040`
+access-denied, `-32041` approval-denied, `-32042` approval-timeout — instead of
+the `-32001 Task not found` and `-32603 Internal server error` earlier versions
+used. That distinction is what an agent should branch on: the code itself now
+says *stop and pick a different skill*, where `Task not found` used to invite a
+retry of the one thing that was fine.
+
+By default upstream sends only the fixed per-class string (`Access denied`),
+naming no caller, target or rule. `apexe a2a` opts into the full reason
+(`disclose_refusal_reason`), because on this server the masking protects
+nothing: apcore-a2a already ACL-filters the agent card, so a denied skill is
+absent from it and the refusal confirms nothing a caller did not already know;
+and `apexe a2a` wires no authenticator, so every caller is the same anonymous
+`@external` principal and there is no privileged caller to keep a secret from.
+A deployment that puts an authenticator in front of `apexe a2a` should turn the
+flag back off.
 
 The same applies to an approval denial and an approval timeout (§9.6); an
 approval *pending* is untouched and still arrives as

@@ -152,14 +152,123 @@ pub fn load_config(config_path: Option<&Path>) -> anyhow::Result<ApexeConfig> {
     Ok(config)
 }
 
+/// The config keys whose silent loss widens what the process will permit.
+///
+/// Every unrecognised key is reported; these two additionally say what was
+/// lost, because dropping them is fail-open: an operator who misspells
+/// `additional_denied_paths` believes a location is blocked when only the
+/// path-guard baseline is in force.
+const PATH_GUARD_KEYS: &[&str] = &["additional_denied_paths", "allowed_paths"];
+
+/// The top-level `config.yaml` keys `ApexeConfig` actually reads.
+///
+/// Derived from the struct by serializing its default rather than hand-listed,
+/// so the two cannot drift: a field added to `ApexeConfig` is recognised here
+/// the moment it exists, and a `#[serde(skip)]` field (`core_config`) is
+/// correctly absent because it is not a config key.
+fn known_config_keys() -> Vec<String> {
+    match serde_yaml::to_value(ApexeConfig::default()) {
+        Ok(serde_yaml::Value::Mapping(map)) => map
+            .keys()
+            .filter_map(|k| k.as_str().map(str::to_string))
+            .collect(),
+        // INVARIANT: `ApexeConfig` is a plain struct of serializable fields, so
+        // it always serializes to a mapping. Returning an empty set degrades to
+        // "recognise nothing", which suppresses the warning rather than
+        // producing a false one.
+        _ => Vec::new(),
+    }
+}
+
+/// Fold the config-key spellings that differ only in case or separator.
+fn normalize_config_key(key: &str) -> String {
+    key.trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| *c != '_' && *c != '-')
+        .collect()
+}
+
+/// The known key `unknown` was probably meant to be, if any.
+///
+/// Deliberately not a general edit distance, for the reason
+/// `governance::acl::suggest_similar` gives: the spellings operators actually
+/// reach for here are a separator or case change (`allowed-paths`) and a
+/// singular/truncated form (`allowed_path`). Normalising separators and testing
+/// for equality or a prefix relation names exactly those, without inventing a
+/// match between two unrelated keys.
+fn suggest_config_key(unknown: &str, known: &[String]) -> Option<String> {
+    let needle = normalize_config_key(unknown);
+    if needle.is_empty() {
+        return None;
+    }
+    known.iter().find_map(|candidate| {
+        let normalized = normalize_config_key(candidate);
+        (normalized == needle || normalized.starts_with(&needle) || needle.starts_with(&normalized))
+            .then(|| candidate.clone())
+    })
+}
+
+/// Every top-level key in `contents` that `ApexeConfig` does not read, paired
+/// with the key it was probably meant to be.
+///
+/// Split out from the warning so the detection is assertable without capturing
+/// a tracing subscriber.
+fn unrecognized_config_keys(contents: &str) -> Vec<(String, Option<String>)> {
+    let Ok(serde_yaml::Value::Mapping(map)) = serde_yaml::from_str::<serde_yaml::Value>(contents)
+    else {
+        // Not a mapping at all: `serde_yaml::from_str::<ApexeConfig>` below
+        // reports that on its own, and guessing at keys here would double the
+        // diagnostics for one fault.
+        return Vec::new();
+    };
+    let known = known_config_keys();
+    map.keys()
+        .filter_map(|k| k.as_str())
+        .filter(|k| !known.iter().any(|known_key| known_key == k))
+        .map(|k| (k.to_string(), suggest_config_key(k, &known)))
+        .collect()
+}
+
 /// Merge `file_path`'s YAML over `config`, field by field. A missing or
 /// unreadable file is a no-op; a malformed file warns and leaves `config`
 /// untouched rather than failing the whole load.
+///
+/// A key `ApexeConfig` does not read is reported before the merge. serde drops
+/// it in silence — `ApexeConfig` is `#[serde(default)]` with no
+/// `deny_unknown_fields` — and for `additional_denied_paths` that silence is
+/// fail-open: an operator who misspells it believes a location is blocked when
+/// only the path-guard baseline is in force. `deny_unknown_fields` is
+/// deliberately NOT the fix, because a parse failure here degrades to
+/// `ApexeConfig::default()`, so one stray key would discard the operator's
+/// whole file — strictly worse than dropping the one key.
 fn apply_file_config(config: &mut ApexeConfig, file_path: &Path) -> anyhow::Result<()> {
     if !file_path.exists() {
         return Ok(());
     }
     let contents = std::fs::read_to_string(file_path)?;
+    for (key, suggestion) in unrecognized_config_keys(&contents) {
+        // The access clause is attached only where it is true. Appending it to
+        // every unknown key would make it boilerplate an operator skims past,
+        // on the one line where it has to land.
+        let consequence = match suggestion.as_deref() {
+            Some(known) if PATH_GUARD_KEYS.contains(&known) => {
+                " That path-guard setting is NOT in force."
+            }
+            _ => "",
+        };
+        match suggestion {
+            Some(known) => warn!(
+                path = %file_path.display(),
+                "Ignoring unrecognised config key '{key}' -- did you mean \
+                 '{known}'? It has no effect.{consequence}"
+            ),
+            None => warn!(
+                path = %file_path.display(),
+                "Ignoring unrecognised config key '{key}'. It has no effect."
+            ),
+        }
+    }
     match serde_yaml::from_str::<ApexeConfig>(&contents) {
         Ok(file_config) => *config = file_config,
         Err(e) => warn!(
@@ -212,6 +321,110 @@ fn load_core_config(config: &mut ApexeConfig) {
 
 #[cfg(test)]
 mod tests {
+
+    /// The recognised key set is the struct's own, so a field cannot be added
+    /// to `ApexeConfig` and then be reported as unrecognised.
+    #[test]
+    fn test_known_config_keys_match_the_struct_fields() {
+        let keys = known_config_keys();
+        for expected in [
+            "modules_dir",
+            "cache_dir",
+            "config_dir",
+            "audit_log",
+            "log_level",
+            "default_timeout",
+            "scan_depth",
+            "json_output_preference",
+            "additional_denied_paths",
+            "allowed_paths",
+        ] {
+            assert!(keys.iter().any(|k| k == expected), "missing {expected}");
+        }
+        assert!(
+            !keys.iter().any(|k| k == "core_config"),
+            "`core_config` is #[serde(skip)] and is not a config key"
+        );
+    }
+
+    /// The reported case: a misspelled `additional_denied_paths` is dropped by
+    /// serde in silence, and the drop is fail-open -- the operator believes a
+    /// location is blocked when only the baseline is in force.
+    #[test]
+    fn test_a_misspelled_denied_paths_key_is_reported_not_dropped_silently() {
+        let found = unrecognized_config_keys(
+            "log_level: info\n\
+             additional_denied_path:\n\
+             \x20 - /srv/production-data\n",
+        );
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].0, "additional_denied_path");
+        assert_eq!(
+            found[0].1.as_deref(),
+            Some("additional_denied_paths"),
+            "the singular form must name the plural it was meant to be"
+        );
+    }
+
+    /// A separator or case change is the other spelling operators reach for.
+    #[test]
+    fn test_a_separator_variant_is_matched_to_its_real_key() {
+        let found = unrecognized_config_keys("allowed-paths:\n\x20 - /etc/nginx\n");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].1.as_deref(), Some("allowed_paths"));
+    }
+
+    /// The path-guard consequence is stated only where it is true, so the
+    /// sentence stays a signal rather than boilerplate on every line.
+    #[test]
+    fn test_path_guard_keys_are_the_two_that_widen_permission() {
+        for key in PATH_GUARD_KEYS {
+            assert!(
+                known_config_keys().iter().any(|k| k == key),
+                "{key} must be a real config key"
+            );
+        }
+        assert_eq!(PATH_GUARD_KEYS.len(), 2);
+    }
+
+    /// A key with no plausible relative is still reported -- it just cannot be
+    /// paired with a suggestion. Inventing one would be worse than none.
+    #[test]
+    fn test_an_unrelated_key_is_reported_without_a_suggestion() {
+        let found = unrecognized_config_keys("telemetry_endpoint: https://example.test\n");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, "telemetry_endpoint");
+        assert_eq!(found[0].1, None);
+    }
+
+    /// A correct file must produce no diagnostics at all, or the warning
+    /// becomes noise an operator learns to ignore.
+    #[test]
+    fn test_a_fully_valid_config_reports_nothing() {
+        let found = unrecognized_config_keys(
+            "log_level: debug\n\
+             default_timeout: 30\n\
+             allowed_paths:\n\
+             \x20 - /etc/nginx\n",
+        );
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    /// A non-mapping document is `apply_file_config`'s existing "malformed"
+    /// path; reporting phantom keys here would double the diagnostics.
+    #[test]
+    fn test_a_non_mapping_document_reports_no_keys() {
+        assert!(unrecognized_config_keys("- just\n- a\n- list\n").is_empty());
+        assert!(unrecognized_config_keys("42\n").is_empty());
+    }
+
+    /// The suggestion must not pair two keys that merely share a prefix
+    /// boundary by accident.
+    #[test]
+    fn test_suggestion_does_not_invent_a_match_between_unrelated_keys() {
+        let known = known_config_keys();
+        assert_eq!(suggest_config_key("zzz_nothing_like_it", &known), None);
+    }
 
     /// Both path-guard lists must survive a real `config.yaml`, and a file that
     /// mentions neither must still get empty ones rather than failing to parse.

@@ -87,7 +87,6 @@ fn build_demo_executor(modules_dir: &Path) -> Arc<Executor> {
         enable_circuit_breaker: false,
         enable_retry: false,
         approval_store: None,
-        relay_denial_reason: false,
     })
     .expect("failed to build executor")
 }

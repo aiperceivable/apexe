@@ -166,17 +166,25 @@ impl AclManager {
             effect: "allow".to_string(),
             description: Some(READONLY_RULE_DESCRIPTION.to_string()),
             conditions: None,
+            // apcore 0.28 (PROTOCOL_SPEC §6.1.6) splits a rule's answer into
+            // authorization and approval requirement. Read-only commands need
+            // neither, so the second axis stays unset.
+            approval: None,
         }
     }
 
-    /// `require_approval` is not a registered apcore ACL condition key (only
-    /// `identity_types`, `roles`, `max_call_depth`, `$or`, `$not` are); a
-    /// rule with an unregistered condition key can never match (apcore
-    /// treats an unknown condition as unsatisfied), so it must not be used
-    /// here — it would silently fall through to whatever rule/default_effect
-    /// follows instead of denying. Actual approval-gating for destructive
-    /// commands happens via the Executor's ApprovalHandler (see
-    /// `crate::module::build_executor`), not the ACL layer.
+    /// Destructive commands are denied outright here rather than gated on a
+    /// human, which is deliberate for a *generated* default: apexe cannot know
+    /// at scan time which caller should be trusted to confirm.
+    ///
+    /// Since apcore 0.28 the ACL layer *can* ask rather than only refuse — a
+    /// rule may carry `approval: required` alongside `effect: allow`, and the
+    /// built-in `arguments` condition (PROTOCOL_SPEC §6.1.7) scopes it to the
+    /// calls that actually carry an escalating flag. That is the mechanism a
+    /// hand-authored ACL should use; the generated default stays a refusal so
+    /// an operator who never opens the file is not silently prompted instead
+    /// of blocked. Approval for annotation-gated modules still runs through
+    /// the Executor's ApprovalHandler (see `crate::module::build_executor`).
     fn destructive_ids(modules: &[ScannedModule]) -> Vec<String> {
         modules
             .iter()
@@ -192,6 +200,10 @@ impl AclManager {
             effect: "deny".to_string(),
             description: Some(DESTRUCTIVE_RULE_DESCRIPTION.to_string()),
             conditions: None,
+            // MUST stay `None` on a `deny` rule: §6.1.6 rule 2 rejects
+            // `approval: required` paired with `deny` at every entry point,
+            // because "refused AND put it to a human" means nothing.
+            approval: None,
         }
     }
 
@@ -738,6 +750,7 @@ mod tests {
             effect: "allow".to_string(),
             description: None,
             conditions: None,
+            approval: None,
         });
         let acl = ACL::new(rules, "allow", None);
         assert!(
@@ -896,6 +909,7 @@ mod tests {
             effect: effect.to_string(),
             description: None,
             conditions: None,
+            approval: None,
         }
     }
 
@@ -1266,6 +1280,7 @@ mod tests {
             effect: "allow".to_string(),
             description: Some("Ops-only deploy".to_string()),
             conditions: Some(json!({"roles": ["ops"]})),
+            approval: None,
         };
         let acl = ACL::new(vec![rule], "deny", None);
         let mgr = AclManager {

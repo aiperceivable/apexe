@@ -357,15 +357,26 @@ impl A2aServerBuilder {
 
     /// The governed `Executor` this builder will hand to apcore-a2a.
     ///
-    /// Runs the exact `serve` assembly — ACL, audit sink, middleware stack and
-    /// the [`DenialReasonRelay`](crate::module::DenialReasonRelay) — without
-    /// binding a port, so a caller (or a test) can drive a real
+    /// Runs the exact `serve` assembly — ACL, audit sink and middleware stack
+    /// — without binding a port, so a caller (or a test) can drive a real
     /// `Executor::call` through the same governance a live A2A request meets.
     /// The in-process counterpart of [`agent_card`](Self::agent_card), which
     /// exercises the same assembly from the discovery side.
     #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
     pub fn executor(&self) -> Result<Arc<Executor>, ModuleError> {
         self.prepare().map(|(executor, _config)| executor)
+    }
+
+    /// The `APCoreA2AConfig` this builder will hand to apcore-a2a.
+    ///
+    /// The executor is only half the assembly: since apcore-a2a 0.6 the
+    /// refusal-disclosure policy lives on the *config*, so a test that builds
+    /// its own config exercises a server apexe would never serve. Exposed for
+    /// the same reason [`executor`](Self::executor) is — to pin the wiring
+    /// without binding a port.
+    #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
+    pub fn config(&self) -> Result<APCoreA2AConfig, ModuleError> {
+        self.prepare().map(|(_executor, config)| config)
     }
 
     /// The surface filter this builder will register modules through.
@@ -410,11 +421,6 @@ impl A2aServerBuilder {
             enable_circuit_breaker: self.enable_circuit_breaker,
             enable_retry: self.enable_retry,
             approval_store: self.approval_store.clone(),
-            // apcore-a2a reports an ACL denial as `Task not found` and an
-            // approval denial as `Internal server error`, both of which send an
-            // agent off to retry a call that will never succeed. See
-            // [`DenialReasonRelay`](crate::module::DenialReasonRelay).
-            relay_denial_reason: true,
         }
     }
 
@@ -503,6 +509,22 @@ impl A2aServerBuilder {
             explorer: self.explorer,
             sys_modules: false,
             cors_origins: self.cors_origins.clone(),
+            // apcore-a2a 0.6 answers a governance refusal with its own
+            // JSON-RPC code (access-denied / approval-denied / approval-timeout)
+            // instead of the `Task not found` and `Internal server error` that
+            // used to send an agent off to retry a call that can never succeed.
+            // By default it still sends only the fixed per-class string; this
+            // opts into apcore's own message, which is what `apexe a2a` needs
+            // and what it already did through its own relay before 0.6:
+            //
+            // * the agent card is ACL-filtered per caller, so a denied skill is
+            //   absent from it and a caller naming one already had the id;
+            // * `apexe a2a` wires no authenticator, so every caller is the same
+            //   anonymous `@external` principal and there is no privileged
+            //   caller for the masking to keep a secret from.
+            //
+            // Set this to `false` if apexe ever grows an authenticator here.
+            disclose_refusal_reason: true,
             ..APCoreA2AConfig::default()
         };
 

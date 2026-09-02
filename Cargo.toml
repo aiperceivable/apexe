@@ -15,10 +15,10 @@ categories = ["command-line-utilities", "development-tools"]
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
-apcore = "0.27"
-apcore-a2a = "0.5"
-apcore-cli = "0.10"
-apcore-mcp = "0.18.1"
+apcore = "0.28"
+apcore-a2a = "0.6"
+apcore-cli = "0.11"
+apcore-mcp = "0.19"
 apcore-toolkit = { version = "0.10", default-features = false }
 # RFC 3339 timestamps for the governance audit records apexe writes itself
 # (see `governance::audit`). Already in the graph via apcore; declared here so

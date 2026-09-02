@@ -14,9 +14,7 @@ use apcore::{Config, ErrorCode, Executor, ModuleError, Registry};
 use apcore_mcp::{ApprovalStore, StorageBackedApprovalHandler};
 use apcore_toolkit::ScannedModule;
 
-use crate::module::{
-    ApprovalGate, CliModule, DenialReasonRelay, FailureLogMiddleware, HealthOnlyCircuitBreaker,
-};
+use crate::module::{ApprovalGate, CliModule, FailureLogMiddleware, HealthOnlyCircuitBreaker};
 use crate::output::load_modules_from_dir;
 
 /// Which subset of the scanned modules a server exposes.
@@ -131,15 +129,6 @@ pub struct ExecutorOptions<'a> {
     /// this for real. Leave `None` to keep the default synchronous
     /// [`ElicitationApprovalHandler`] behavior.
     pub approval_store: Option<Arc<dyn ApprovalStore>>,
-    /// Re-code an ACL or approval refusal so its reason survives apcore-a2a's
-    /// error mapper, which otherwise reports an ACL denial as `Task not found`
-    /// and an approval denial as `Internal server error`.
-    ///
-    /// Set by [`A2aServerBuilder`](crate::a2a::A2aServerBuilder) and by nothing
-    /// else: over MCP the refusal already reaches the caller intact, so
-    /// relaying there would swap an accurate `[ACLDenied]` for a re-coded one
-    /// and gain nothing. See [`DenialReasonRelay`].
-    pub relay_denial_reason: bool,
 }
 
 /// Load scanned modules, register them into a fresh [`Registry`], and wrap the
@@ -168,29 +157,12 @@ pub fn build_executor(opts: &ExecutorOptions<'_>) -> Result<Arc<Executor>, Modul
     // `discoverable: false` is still callable by id and so still needs an ACL.
     let registered_ids: Vec<String> = registry.module_ids_full(true);
 
-    let mut executor = new_executor(registry, opts.relay_denial_reason);
+    let mut executor = Executor::new(registry, Config::default());
     install_middleware(&executor, opts, audit.clone());
     install_acl(&mut executor, opts, &registered_ids, audit.as_ref())?;
     install_approval_handler(&mut executor, opts, audit.clone());
 
     Ok(Arc::new(executor))
-}
-
-/// Build the bare [`Executor`], attaching the A2A denial relay when asked.
-///
-/// [`Executor::new`] owns its `ExecutionStrategy` privately and exposes no way
-/// to reach it afterwards, so a [`StepMiddleware`](apcore::StepMiddleware) has
-/// to be attached before construction. `build_standard_strategy()` is exactly
-/// what `Executor::new` builds — the same eleven steps, bound to the same
-/// process-global toggle store — so the two executors differ by the relay and
-/// by nothing else.
-fn new_executor(registry: Registry, relay_denial_reason: bool) -> Executor {
-    if !relay_denial_reason {
-        return Executor::new(registry, Config::default());
-    }
-    let mut strategy = apcore::build_standard_strategy();
-    strategy.add_step_middleware(Arc::new(DenialReasonRelay));
-    Executor::with_strategy(registry, Config::default(), strategy)
 }
 
 /// Apply the [`ModuleFilter`] and say what it did.
@@ -563,7 +535,6 @@ mod tests {
             enable_circuit_breaker: true,
             enable_retry: true,
             approval_store: None,
-            relay_denial_reason: false,
         }
     }
 
@@ -751,37 +722,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_build_executor_relays_the_denial_reason_when_asked() {
-        // #41: without the relay apcore-a2a reports this refusal as
-        // `Task not found`, because it decides what a caller is told from the
-        // error code alone. Re-coding it is what lets the reason through.
-        let dir = TempDir::new().unwrap();
-        write_two_modules(dir.path());
-        let acl_path = write_denying_acl(dir.path(), "cli.cp");
-
-        let mut opts = opts(Some(dir.path()));
-        opts.acl_path = Some(&acl_path);
-        opts.relay_denial_reason = true;
-        let executor = build_executor(&opts).unwrap();
-
-        let err = executor
-            .call("cli.cp", json!({}), None, None)
-            .await
-            .expect_err("a denied module must not be callable");
-        assert_eq!(err.code, ErrorCode::GeneralInvalidInput);
-        assert!(
-            err.message.starts_with("[ACLDenied] Access denied:"),
-            "the original code and reason must survive: {}",
-            err.message
-        );
-        assert!(err.ai_guidance.is_some(), "an agent needs the next move");
-        assert_eq!(err.retryable, Some(false));
-    }
-
-    #[tokio::test]
-    async fn test_build_executor_leaves_the_denial_alone_by_default() {
-        // The MCP side already reports `[ACLDenied] …` from the code itself, so
-        // relaying there would replace an accurate code with a re-coded one.
+    async fn test_build_executor_leaves_the_acl_denial_intact() {
+        // apexe no longer rewrites a refusal on any transport. MCP reports
+        // `[ACLDenied] …` from the code itself, and since apcore-a2a 0.6 the
+        // A2A side answers with its own `-32040` plus apcore's message (see
+        // `A2aServerBuilder`'s `disclose_refusal_reason`), so the executor must
+        // hand both transports the untouched `ACLDenied`.
         let dir = TempDir::new().unwrap();
         write_two_modules(dir.path());
         let acl_path = write_denying_acl(dir.path(), "cli.cp");
@@ -799,16 +745,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_relay_does_not_touch_an_allowed_call() {
-        // A refusal-only rewrite: the relay must never turn a working call into
-        // an error, nor an unrelated failure into a policy refusal.
+    async fn test_an_unrelated_failure_is_not_reported_as_a_refusal() {
+        // A missing module and a refused one are different failures with
+        // opposite next moves, and an ACL in the graph must not blur them.
         let dir = TempDir::new().unwrap();
         write_two_modules(dir.path());
         let acl_path = write_denying_acl(dir.path(), "cli.cp");
 
         let mut opts = opts(Some(dir.path()));
         opts.acl_path = Some(&acl_path);
-        opts.relay_denial_reason = true;
         let executor = build_executor(&opts).unwrap();
 
         let err = executor
