@@ -337,7 +337,7 @@ impl ScanOrchestrator {
             "Applying curated overlay"
         );
         apply_overlay(tool, selection.overlay);
-        tool.scan_tier = tool.scan_tier.max(4);
+        tool.scan_tier = tool.scan_tier.max(super::MAX_SCAN_TIER);
     }
 
     fn run_help_with_timeout(&self, tool_name: &str) -> anyhow::Result<String> {

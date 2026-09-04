@@ -14,8 +14,47 @@ on:
         required: true
 
 jobs:
+  # The tag is what users are handed; the changelog section is what tells them
+  # what changed. `rust/v0.7.0` was once tagged while every one of its entries
+  # still sat under `## [Unreleased]`, and nothing in this workflow noticed.
+  # `cargo test` enforces the same rule on every push (see
+  # tests/documentation_consistency.rs), but this workflow runs on a tag and
+  # never runs the suite, so the check is repeated where the release happens.
+  verify:
+    name: Verify release metadata
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Changelog has a section for the crate version
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          echo "Cargo.toml version: ${version}"
+          if ! grep -qF "## [${version}]" CHANGELOG.md; then
+            echo "::error file=CHANGELOG.md::No '## [${version}]' section." \
+                 "Promote '## [Unreleased]' before tagging -- a release with no" \
+                 "entries tells its users nothing."
+            exit 1
+          fi
+
+      - name: Tag matches the crate version
+        if: startsWith(github.ref, 'refs/tags/rust/v')
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          tagged="${GITHUB_REF#refs/tags/rust/v}"
+          if [ "${version}" != "${tagged}" ]; then
+            echo "::error::Tag rust/v${tagged} does not match Cargo.toml ${version}."
+            exit 1
+          fi
+
   build:
     name: Build (${{ matrix.target }})
+    needs: verify
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

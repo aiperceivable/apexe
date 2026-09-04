@@ -211,7 +211,7 @@ pub struct SubprocessOutput {
 ```
 
 **Key changes from v0.1.x**:
-- Now uses `tokio::task::spawn_blocking` instead of synchronous `Command::output()`.
+- Now uses `tokio::process::Command` (fully async) instead of synchronous `std::process::Command::output()`. **Not `spawn_blocking`** — an earlier draft of this section said so, but the subprocess is driven by the async runtime directly, with `kill_on_drop(true)` so an expired timeout actually terminates the child.
 - Now uses `tokio::time::timeout` instead of ignoring the `_apexe_timeout` parameter.
 - Returns `ModuleError` instead of `ApexeError`.
 
@@ -294,7 +294,7 @@ fn parse_target(target: &str) -> Result<(String, Vec<String>), ModuleError> {
 |---|---|---|
 | `test_cli_module_from_scanned_basic` | Valid ScannedModule | CliModule created with correct fields |
 | `test_cli_module_from_scanned_no_json_flag` | Module without json_flag metadata | json_flag = None |
-| `test_cli_module_from_scanned_invalid_target` | target = "invalid" | Err(ModuleError) with ValidationFailed |
+| `test_cli_module_from_scanned_invalid_target` | target = "invalid" | Err(ModuleError) with `GeneralInvalidInput` (apcore 0.27 renamed `ValidationFailed`) |
 | `test_cli_module_from_scanned_empty_target` | target = "exec://" | Err(ModuleError) |
 | `test_cli_module_new_direct` | All parameters provided | Fields match inputs |
 
@@ -358,7 +358,7 @@ The following logic is extracted from `src/executor/mod.rs` into `src/module/exe
 - `execute_cli()` is split into `build_arguments()` + `execute_subprocess()`.
 - Timeout is now enforced via `tokio::time::timeout` (was ignored in v0.1.x).
 - Error types change from `ApexeError` to `ModuleError` (uses F6 conversions).
-- Subprocess runs via `tokio::task::spawn_blocking` (was synchronous).
+- Subprocess runs on `tokio::process::Command` (was synchronous). No `spawn_blocking` is involved.
 
 ### Code Deleted
 
@@ -370,7 +370,7 @@ The following logic is extracted from `src/executor/mod.rs` into `src/module/exe
 
 `CliModule` is `Send + Sync` because:
 - All fields are either owned values or `Arc`-wrapped.
-- `execute()` is async and uses `spawn_blocking` for the subprocess call.
+- `execute()` is async and drives the subprocess through `tokio::process`, which needs no blocking pool.
 - No interior mutability (`&self` only in all methods).
 
 This is required for registration in apcore's `Registry` and use in async handlers.

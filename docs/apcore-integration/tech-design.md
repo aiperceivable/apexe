@@ -3,32 +3,62 @@
 | Field | Value |
 |---|---|
 | **Authors** | apexe team |
-| **Status** | Draft |
+| **Status** | Historical — superseded by the shipped implementation |
 | **Created** | 2026-03-27 |
-| **Target Version** | 0.1.0 |
-| **Last Updated** | 2026-03-27 |
+| **Target Version** | 0.1.0 (shipped across 0.2.0–0.7.0) |
+| **Last Updated** | 2026-03-27; as-built note reviewed 2026-09-03 against 0.7.0 |
 
 ---
 
-> **As-built note (divergences from this design):** This is a pre-implementation
-> design doc; several proposals below were built differently. The authoritative
-> record is the current code and the `docs/features/v2-*` specs. Key divergences:
+> **This is a pre-implementation design document, kept as a record of the
+> decisions rather than as a description of the code.** Several proposals below
+> were built differently, and the governance layer has since grown past what
+> this document contemplated at all.
 >
-> - **No `SandboxManager` and no `src/governance/sandbox.rs`.** The `governance`
->   module contains only `acl` (`AclManager`) and `audit` (`AuditManager`).
-> - **No `--sandbox` and no `--require-auth` CLI flags.** Subprocess isolation is
->   always-on in `src/module/executor.rs` (`execute_subprocess`): environment
->   scrubbing (env cleared, only a base allowlist passes through), no-shell direct
->   argv with shell-metachar rejection, output cap (`max_output_bytes`, 64 MiB
->   default), timeout + `kill_on_drop`, and stdin = `/dev/null`. Stronger OS
->   sandboxing (seccomp/landlock/namespaces/cgroups) remains roadmap, not built.
-> - **Transport auth is delegated to the apcore library API** (apcore-a2a
->   `Authenticator`); MCP/A2A servers **bind localhost (127.0.0.1) by default**.
+> **For what apexe does now**, read [`docs/user-manual.md`](../user-manual.md),
+> [`docs/threat-model.md`](../threat-model.md) and
+> [`docs/FEATURE_MANIFEST.md`](../FEATURE_MANIFEST.md). Do not treat any code
+> block below as current API.
+>
+> **Divergences, as of 0.7.0:**
+>
+> - **No `SandboxManager`, no `src/governance/sandbox.rs`, no `--sandbox` flag.**
+>   Subprocess isolation is always-on in `src/module/executor.rs`
+>   (`execute_subprocess`): environment cleared to a base allowlist, direct argv
+>   with no shell anywhere on the path, output cap (64 MiB per stream), timeout
+>   with `kill_on_drop`, stdin `/dev/null`. OS-level sandboxing
+>   (seccomp/landlock/namespaces/cgroups) remains roadmap.
+> - **Shell metacharacters are *not* rejected.** An earlier revision of this note
+>   said they were. No shell is spawned, so they are inert bytes, and rejecting
+>   them broke real values (`curl --data`, every `jq` filter). The argument
+>   guards are: a leading `-` (which the wrapped tool would read as an option),
+>   NUL and five line terminators (which would corrupt the audit trail's
+>   framing), and any parameter marked `x-apexe-exec`. See F2 §3.1.
+> - **Transport auth is a first-class CLI surface, not a library-API concern.**
+>   `--auth token|jwt|none`, `--auth-token`, `--jwt-secret`, and
+>   `--allow-unauthenticated-bind`; required by default on the HTTP-family MCP
+>   transports, and a non-loopback bind with no credential refuses to start.
+>   `apexe a2a` has no authenticator and binds loopback by default. See F4 §4.1
+>   and user-manual §10.
+> - **`governance` holds three modules, not two.** `acl`, `audit`, and
+>   `path_guard` — the last added in 0.7.0, always-on with no flag, checking
+>   every argument the schema types as a filesystem path. It is the largest
+>   single control in the crate and post-dates this document entirely.
+> - **The audit trail records no input values.** An earlier revision of this note
+>   said executions were recorded with the input hashed. That hash was salted
+>   with random bytes that were then discarded, so nothing could be checked
+>   against it; the field was removed rather than kept for appearance. The trail
+>   holds three record kinds — `execution`, `refusal` and apcore's own
+>   `acl_decision` — appended as JSONL to `config.audit_log`, mode `0o600`. See
+>   user-manual §9.2.
+> - **Approval is per call, not per command.** `ApprovalGate` weighs a module's
+>   recorded escalating parameters against the arguments a call actually sent,
+>   and stands down when none are present. Opt-in via `--enable-approval`, MCP
+>   only. Post-dates this document; see user-manual §9.6.
 > - **The `nom` dependency was removed.** GNU flags are extracted via regex only
 >   (`src/scanner/parsers/gnu.rs::extract_flags`).
-> - **The audit trail is wired.** `CliModule::execute` records each execution
->   (input hashed) and `ACL::set_audit_logger` records allow/deny decisions; both
->   append JSONL to `config.audit_log` (file mode `0o600`). `--acl` fails closed.
+> - **A2A shipped.** It is listed as non-goal NG4 in §3.2 below. `apexe a2a`
+>   arrived in 0.3.0 and shares `build_executor` with `apexe serve`.
 
 ---
 

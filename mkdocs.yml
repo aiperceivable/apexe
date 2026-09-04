@@ -48,11 +48,12 @@ nav:
   - Home: index.md
   - Quick Start: quickstart.md
   - User Manual: user-manual.md
+  - Threat Model: threat-model.md
   - Authoring Overlays: overlays.md
   - Changelog: changelog.md
   - Architecture:
-      - Technical Design: apcore-integration/tech-design.md
       - Feature Manifest: FEATURE_MANIFEST.md
+      - Technical Design (historical): apcore-integration/tech-design.md
   - Feature Specs:
       - Overview: features/v2-overview.md
       - F1 - Scanner Adapter: features/v2-f1-scanner-adapter.md
@@ -62,4 +63,5 @@ nav:
       - F5 - Governance: features/v2-f5-governance.md
       - F6 - Error Migration: features/v2-f6-error-migration.md
       - F7 - Config Integration: features/v2-f7-config-integration.md
+      - F8 - Local Execution (design): features/v2-f8-local-execution.md
   - Examples: examples.md

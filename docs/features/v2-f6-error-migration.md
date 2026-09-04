@@ -144,43 +144,63 @@ The 10 existing `ApexeError` tests in `src/errors.rs` remain unchanged. They tes
 | Test Name | Scenario | Expected |
 |---|---|---|
 | `test_tool_not_found_to_module_error` | Convert ToolNotFound | code = ModuleNotFound, retryable = false |
-| `test_scan_error_to_module_error` | Convert ScanError | code = InternalError |
-| `test_scan_timeout_to_module_error` | Convert ScanTimeout | code = Timeout, retryable = true |
-| `test_scan_permission_to_module_error` | Convert ScanPermission | code = Unauthorized |
-| `test_command_injection_to_module_error` | Convert CommandInjection | code = ValidationFailed, details has param_name |
-| `test_parse_error_to_module_error` | Convert ParseError | code = InternalError |
-| `test_io_error_to_module_error` | Convert Io | code = InternalError, details has io_error_kind |
-| `test_yaml_error_to_module_error` | Convert Yaml | code = SerializationError |
-| `test_json_error_to_module_error` | Convert Json | code = SerializationError |
+| `test_scan_error_to_module_error` | Convert ScanError | code = `GeneralInternalError` |
+| `test_scan_timeout_to_module_error` | Convert ScanTimeout | code = `ModuleTimeout`, retryable = true |
+| `test_scan_permission_to_module_error` | Convert ScanPermission | code = `ACLDenied` |
+| `test_command_injection_to_module_error` | Convert CommandInjection | code = `GeneralInvalidInput`, details has param_name |
+| `test_parse_error_to_module_error` | Convert ParseError | code = `GeneralInternalError` |
+| `test_io_error_to_module_error` | Convert Io | code = `GeneralInternalError`, details has io_error_kind |
+| `test_yaml_error_to_module_error` | Convert Yaml | code = `GeneralInternalError` (`SerializationError` was removed from apcore) |
+| `test_json_error_to_module_error` | Convert Json | code = `GeneralInternalError` (`SerializationError` was removed from apcore) |
 | `test_all_variants_have_ai_guidance` | Convert each variant | ai_guidance is Some for all |
 | `test_into_module_error_with_trace` | Convert with trace_id | trace_id = Some("abc-123") |
 | `test_question_mark_operator_converts` | Use ? in function returning Result<_, ModuleError> | Compiles and converts |
 
 ---
 
-## 7. anyhow Removal
+## 7. anyhow Removal — proposed, not done
 
-With `ModuleError` as the error type for all non-scanner code, the `anyhow` dependency can be removed from `Cargo.toml`. The CLI entry point (`Cli::run()`) changes its return type:
+**This section describes a change that was not made.** `anyhow = "1"` is still a
+dependency and `Cli::run` still returns `anyhow::Result<()>`. The proposal is
+kept because the reasoning behind *not* doing it is worth recording.
 
-**Before**: `pub fn run(self) -> anyhow::Result<()>`
-**After**: `pub fn run(self) -> Result<(), ModuleError>`
+The plan was for `ModuleError` to be the error type for all non-scanner code, so
+`anyhow` could go:
 
-The `main.rs` error handling changes accordingly:
+**Proposed**: `pub fn run(self) -> Result<(), ModuleError>`
+**Actual**: `pub fn run(self) -> anyhow::Result<()>`
+
+The CLI layer raises conditions that are not module errors — a refused path-guard
+installation, a malformed `--tags` list, an unrecognised `--show-config` target —
+and forcing each into a `ModuleError` would mean inventing an `ErrorCode` for
+things no module ever returns. `anyhow` at that one boundary costs nothing and
+keeps `ModuleError` meaning what it says.
+
+What *did* land is the rendering, in `main.rs::render_error`. It downcasts to
+recover the structured error whichever type a call site propagated, so the
+`Suggestion:` line appears for a `ModuleError` and for a bare `ApexeError`
+alike, and falls back to `Display` for anything else:
 
 ```rust
-fn main() {
-    let cli = Cli::parse();
-    if let Err(e) = cli.run() {
-        eprintln!("Error: {}", e.message);
-        if let Some(guidance) = &e.ai_guidance {
-            eprintln!("Suggestion: {}", guidance);
-        }
-        std::process::exit(1);
+fn render_error(error: anyhow::Error) -> String {
+    let module_err = match error.downcast::<ModuleError>() {
+        Ok(module_err) => module_err,
+        Err(error) => match error.downcast::<ApexeError>() {
+            Ok(apexe_err) => apexe_err.into(),
+            Err(error) => return format!("Error: {error}"),
+        },
+    };
+    let mut rendered = format!("Error: {}", module_err.message);
+    if let Some(ref guidance) = module_err.ai_guidance {
+        rendered.push_str(&format!("\nSuggestion: {guidance}"));
     }
+    rendered
 }
 ```
 
-This is a slight improvement over v0.1.x because errors now include structured guidance.
+So the user-visible improvement this section was written for — structured
+guidance on every failure — is delivered; the dependency removal is not, and is
+not planned.
 
 ---
 

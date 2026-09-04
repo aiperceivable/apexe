@@ -295,6 +295,60 @@ circuit and deny `cli.rm` to everyone else.
 Unlike `--acl` and `--enable-approval`, this is **on by default and has no
 off switch** (§5.3 does not apply to it).
 
+**The boundary is inspectable without running a server.** `apexe policy` prints
+the guard as installed — both compiled-in baselines, whatever
+`additional_denied_paths` added, the `allowed_paths` carve-outs, and the derived
+temp-directory exemption — read off the live guard rather than re-derived from
+`config.yaml`, so it cannot describe a policy other than the one in force.
+`apexe policy --path <p> --mode read|write` calls the guard's own `check`, the
+same call a wrapped tool's argument goes through:
+
+```bash
+apexe policy                                   # the whole boundary
+apexe policy --path /etc/passwd                # refused to a writer
+apexe policy --path /etc/passwd --mode read    # allowed to a readonly module
+apexe policy --path ~/.ssh/id_rsa --mode read  # refused: credentials bind readers
+```
+
+This matters for review rather than enforcement: §5.2's remedy is "check the
+classification", and until now checking what a given module could actually reach
+meant standing up `apexe serve` and driving it with an MCP client.
+
+### 4.9 Flag-level risk, for the two things a scan cannot infer
+
+Help text does not distinguish `git --exec-path=<path>`, which sets a search
+path, from `git --upload-pack=<cmd>`, which runs one. Both read as "takes a
+value" to every parser apexe has, so guessing would produce exactly the
+plausible-but-wrong assertion this project exists to avoid. A curated overlay
+states it instead, and the field defaults to absent.
+
+| `risk` | Enforcement | Contract keyword |
+|---|---|---|
+| `escalates` | The call goes to the approval gate — **only when the flag is actually sent** (§5.2's approval-fatigue argument: marking the *command* would prompt on every `git push`) | `x-apexe-escalates: true` |
+| `executes` | The call is **refused** with `ACL_DENIED`, before anything spawns | `x-apexe-exec: true` |
+| `benign` | Suppresses the name-list escalation for this one flag (`bsdtar -y` is bzip2, not "assume yes") | `x-apexe-escalates: false` |
+
+`executes` is a different claim from `escalates`, not a louder one. §4.1's
+guarantee is that argv reaches `execve` with no shell on the path; a flag whose
+value *becomes* a command hands that guarantee straight back, and no JSON Schema
+constrains what the string becomes. It is refused rather than gated because an
+approval prompt would ask a human to predict what an arbitrary string will do —
+the judgement least likely to be made correctly under a stream of prompts, which
+is the same reasoning §5.9 applies to the exec wrappers. There is no
+per-parameter carve-out: an operator who needs one runs the tool outside apexe,
+which is at least a visible decision.
+
+Enforced in `executor::reject_exec_parameters`, which checks *effective* values
+only — `{"upload_pack": false}` renders no flag, so it is not sending one.
+Escalation is enforced in `ApprovalGate`, which reads the properties recorded at
+scan time against the arguments a call carries.
+
+**This is a floor and it is small.** `executes` is set today on the flags a
+human has checked, not on every flag that has the property. An unmarked flag of
+this class in an un-overlaid tool is not caught — `docs/overlays.md` lists the
+known members and requires verification against a real installation before
+asserting one.
+
 ---
 
 ## 5. What apexe does not stop
@@ -483,7 +537,31 @@ Better still, do not scan them into the registry at all. A wrapped `env` buys
 nothing that wrapping the underlying tool directly does not, and it costs every
 control in §4.
 
+### 5.10 Reserved: four limitations that arrive with local execution
 
+Not limitations of apexe today — the surface they describe does not exist yet.
+They are recorded here so they land *with* the feature rather than after it.
+[`docs/features/v2-f8-local-execution.md`](features/v2-f8-local-execution.md) §8
+makes each a release condition for its Stage 2, and each becomes a numbered
+subsection of this section when that ships:
+
+- **stdin would be an ungoverned input channel.** Every control in §4 acts on
+  argv. An inherited stdin is not schema-validated, not path-checked and not
+  recorded — and for any tool that reads a program from stdin (`python -`,
+  `awk`, `sh -s`, `sed -f -`) that is a complete bypass by a different route
+  than §5.9's. F8 requires an allowlist (`streaming_stdin_safe`, a human
+  assertion per module), never a denylist.
+- **Shim coverage would be partial, and the gap silent.** Shell builtins —
+  `cd`, `echo`, `test`, and in most shells `kill` — are resolved without
+  consulting `PATH`, so no shim can sit in front of them and nothing at the
+  point of use distinguishes a governed command from an ungoverned one.
+- **A shim would be bypassable by absolute path.** `/bin/ls` is not a `PATH`
+  lookup. This is §5.1 applied locally: against a human the shim is an audit
+  trail, not enforcement; it is a real boundary only where `PATH` and the
+  filesystem are controlled externally (a container, a CI runner image).
+- **`--as` asserts a principal, it does not authenticate one.** F8 constrains it
+  to `--dry-run` for that reason, and audit records from a preflight mark the
+  principal as asserted.
 
 ---
 

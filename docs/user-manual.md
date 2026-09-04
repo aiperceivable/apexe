@@ -2,8 +2,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 0.6.0 |
-| **Date** | 2026-07-28 |
+| **Version** | 0.7.0 |
+| **Date** | 2026-09-02 |
 | **Platform** | macOS / Linux |
 
 ---
@@ -22,9 +22,9 @@
 10. [MCP Server](#10-mcp-server)
 11. [A2A Server](#11-a2a-server)
 12. [Integrating with AI Agents](#12-integrating-with-ai-agents)
-13. [Error Handling & AI Guidance](#13-error-handling--ai-guidance)
+13. [Error Handling and AI Guidance](#13-error-handling-and-ai-guidance)
 14. [File Locations](#14-file-locations)
-15. [Logging & Debugging](#15-logging--debugging)
+15. [Global Flags, Logging and Debugging](#15-global-flags-logging-and-debugging)
 16. [Troubleshooting](#16-troubleshooting)
 
 ---
@@ -37,7 +37,7 @@
 2. **Govern** — Classify commands as readonly/destructive, generate ACL rules, enable audit logging.
 3. **Serve** — Expose tools via MCP (stdio for Claude Desktop/Cursor, HTTP for remote agents).
 
-apexe is built on the [apcore](https://github.com/aiperceivable/apcore-rust) ecosystem: apcore (core types), apcore-toolkit (output), apcore-mcp (MCP server), apcore-a2a (A2A agent server), apcore-cli (audit logging).
+apexe is built on the [apcore](https://github.com/aiperceivable/apcore-rust) ecosystem: apcore (core types), apcore-toolkit (output), apcore-mcp (MCP server), apcore-a2a (A2A agent server), apcore-cli (`--man` page generation). The audit trail is apexe's own — see §9.2.
 
 ---
 
@@ -224,6 +224,53 @@ apexe config [OPTIONS]
 | `--show` | Print resolved configuration as YAML |
 | `--init` | Create default config at `~/.apexe/config.yaml` |
 
+### 4.6 `apexe policy`
+
+Prints the filesystem access boundary every wrapped tool is checked against, or
+checks one path against it. This is the only way to inspect the path guard
+(§9.7) without standing up a server and driving it with a client.
+
+```
+apexe policy [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--path <PATH>` | - | Check this one path instead of printing the whole policy. Resolved exactly as a wrapped tool's argument would be: joined to the working directory, symlinks followed, `..` folded afterwards |
+| `--mode <MODE>` | `write` | Access mode `--path` is checked under: `write` is what every unannotated module gets, `read` is the narrower boundary a `readonly` module is held to |
+| `--format <FMT>` | `table` | Output format: `table` or `json` |
+
+With no `--path`, the summary is read off the **installed** guard rather than
+re-derived from `config.yaml`, so it can never describe a policy other than the
+one in force. It lists the working directory relative paths resolve against,
+both compiled-in baselines, anything `additional_denied_paths` added, the
+`allowed_paths` carve-outs, and the derived temp-directory exemption.
+
+```bash
+apexe policy                                   # the whole boundary
+apexe policy --format json                     # same, machine-readable
+apexe policy --path /etc/passwd                # would a writer be refused?
+apexe policy --path /etc/passwd --mode read    # would a readonly module?
+apexe policy --path ~/.ssh/id_rsa --mode read  # credentials bind readers too
+```
+
+`--path` calls the guard's own `check`, the same call a real argument goes
+through, so its verdict cannot drift from what an invocation would get. The two
+modes disagree exactly where §9.7 says they should — a system path is legible to
+a reader and refused to a writer:
+
+```
+$ apexe policy --path /etc/passwd
+DENY   /etc/passwd  (mode: write)
+  the given --path resolves to '/private/etc/passwd', which is protected by '/private/etc'
+  hint: '/etc/passwd' resolves to '/private/etc/passwd', inside or above the protected
+        location '/private/etc'. This is a compiled-in boundary that no configuration
+        removes. Choose a path outside the protected system and credential directories.
+
+$ apexe policy --path /etc/passwd --mode read
+ALLOW  /etc/passwd  (mode: read)
+```
+
 ---
 
 ## 5. Configuration
@@ -301,6 +348,11 @@ the remaining keys still apply.
 ## 6. Scanning Engine
 
 apexe uses a three-tier deterministic scanning engine. No LLM is involved.
+
+A scan that matches a curated overlay reports **tier 4** (§6.5). The three tiers
+below are the ones that read the binary; tier 4 is a human-reviewed description
+applied on top of what they found, so a tool with no matching overlay tops out
+at tier 3.
 
 ### Tier 1: `--help` Parsing
 
@@ -415,11 +467,52 @@ Tools with detected JSON output flags get an enhanced output schema:
 }
 ```
 
+### 7.1 Contract Keywords
+
+A generated schema is valid JSON Schema, plus a set of `x-` extension keywords
+that carry what a JSON Schema cannot say about a command line: which literal to
+render, where in argv it goes, and what the executor must refuse. They are
+extension keywords rather than constraints on purpose — `follow: true` is a
+perfectly valid *value*, and what these tell an executor is how to render it or
+whether to refuse, not that the input is malformed.
+
+Read this table if you are writing an MCP client against apexe, consuming
+`apexe scan --format json`, or authoring an overlay.
+
+| Keyword | Where | Value | Meaning |
+|---------|-------|-------|---------|
+| `x-apexe-flag` | property | string | The literal spelling the executor renders for this property (`--message`, `-maxdepth`). The long form when a flag has both |
+| `x-apexe-positional` | property | integer | This property is a positional operand, not a flag. The integer is its order among operands |
+| `x-apexe-flag-position` | property | `"before-operands"` \| `"before-subcommand"` | Where this flag goes. `before-subcommand` is derived for a subcommand's inherited global flags; `before-operands` is a curated assertion and is never overwritten by the derived rule |
+| `x-apexe-operand-position` | property | `"before-flags"` | This operand precedes every flag. Set for `find`'s paths, whose grammar is `find path … [expression]` — both variants reject the other order outright |
+| `x-apexe-path` | property | `true` | The value is a filesystem path, so the path guard (§9.7) resolves and checks it. Emitted for `ValueType::Path`; a value the scan did not type as a path is not checked |
+| `x-apexe-value-optional` | property | `true` | The flag's value is optional (`--color[=WHEN]`), so the executor must render `--flag=value` rather than two argv entries. Paired with a union type so both spellings are expressible |
+| `x-apexe-conflicts-with` | property | array of property names | Flags that must not be sent together — whether the binary diagnoses the pair or silently resolves it last-one-wins. A JSON object has no key order, so for a last-wins pair *which* flag wins would otherwise be unpredictable |
+| `x-apexe-long-running` | property | `true` | This flag may not terminate on its own (`tail -f`). Bound the timeout or refuse; it is not a reason to reject the input |
+| `x-apexe-escalates` | property | `true` \| `false` | Three-state with absence. `true` sends the call to the approval gate when the flag is present; `false` is a human overruling the name list for this flag; absent defers to the name list (§8) |
+| `x-apexe-exec` | property | `true` | The value **is** a command the wrapped tool will run. The executor refuses any call that fills it (§8) |
+| `x-apexe-end-of-options` | **schema root** | `true` | The tool honours the `--` separator. Root-level because `--` describes the whole invocation, not one property. Permits a `-`-leading value and tells the executor where to emit the separator |
+| `x-sensitive` | property | `true` | The value is credential-bearing, so the logging middleware redacts it (§10). Note the different prefix — this one is apcore's, not apexe's |
+
+Two more live on the module's **annotations**, not the schema, and are written
+together by the converter:
+
+| Key | Value | Meaning |
+|-----|-------|---------|
+| `x-apexe-approval-basis` | `"flags"` | `requires_approval` was set because the command *accepts* an escalating flag, not because it is destructive by name — so the gate may stand down (§8) |
+| `x-apexe-escalating-params` | array of property names | Which properties those are. A `"flags"` basis without this list is a corrupted annotation, and the gate prompts rather than standing down |
+
+A binding written by an older apexe carries only the keywords that existed then.
+Re-scan with `--no-cache` to pick up new ones — upgrading apexe does not rewrite
+bindings already on disk.
+
 ---
 
 ## 8. Behavioral Annotations
 
-apexe automatically infers behavioral annotations from command names and flags.
+apexe infers behavioral annotations from the command's name, from the tool it
+belongs to, and — for approval only — from the arguments an individual call
+actually sends.
 
 ### Command Name Patterns
 
@@ -430,16 +523,77 @@ apexe automatically infers behavioral annotations from command names and flags.
 | **idempotent** | get, list, show, status, info, describe, version, help, check |
 | **cacheable** | (readonly AND idempotent) |
 
-### Flag Boosting
+### Command Executors Outrank the Name Lists
 
-Certain flags escalate the annotation regardless of command name:
+An executable whose arguments *are* another command to run is classified
+**destructive** whatever its name says: `env`, `xargs`, `nice`, `ionice`,
+`nohup`, `timeout`, `chroot`, `setsid`, `stdbuf`, `script`, `watch`, `time`,
+`sudo`, `doas`, `su`.
 
-| Flags | Effect |
-|-------|--------|
-| `--force`, `-f`, `--hard`, `--recursive`, `-r`, `--all`, `--prune`, `--no-preserve-root`, `--cascade`, `--purge`, `--yes`, `-y` | `requires_approval = true` |
-| `--dry-run`, `--check`, `--diff`, `--noop`, `--simulate`, `--whatif`, `--plan` | `idempotent = true` |
+This is not a refinement. `env` is in the readonly list above, and BSD `env`
+takes `-S "rm -rf /etc"` — a string it splits into argv and executes. Marking
+these `destructive` flips the generated ACL from allow to deny and makes the
+path guard judge their arguments as a writer's. It does not make them safe:
+nothing can statically decide what argv a caller-supplied string becomes. See
+[threat model §5.9](threat-model.md), which recommends keeping them out of the
+registry entirely.
 
-**Example**: `git push` has flag `--force`, so it gets `requires_approval = true` even though "push" is not in the destructive list.
+### Approval Escalation Is Per Call, Not Per Command
+
+A scan sees the flags a command *accepts*; a call carries the flags a caller
+*sent*. Only the second is a reason to interrupt a human, so the two are kept
+apart:
+
+| Stage | What it does |
+|-------|-------------|
+| **Scan** | A command that accepts any of `--force`, `-f`, `--hard`, `--recursive`, `-r`, `--all`, `--prune`, `--no-preserve-root`, `--cascade`, `--purge`, `--yes`, `-y` is marked `requires_approval` as a **ceiling**, and the schema properties carrying them are recorded in `x-apexe-escalating-params`, with `x-apexe-approval-basis: "flags"` saying the mark came from accepted flags alone |
+| **Call** | With `--enable-approval`, the gate (§9.6) reads that list against the arguments actually sent and prompts only if one of them carries an effective value. Otherwise it stands down, recording `approved_by: "apexe-approval-gate"` so an audit reader can tell it from a human's yes |
+
+**Example**: `git log` accepts `--all`, so the binding is marked
+`requires_approval`. A plain `git log` sends no escalating argument and runs
+without a prompt; `git log --all` prompts. `git push --force` prompts;
+`git push` alone does not. A command marked `destructive` by name has no such
+basis recorded and always prompts — no absent flag makes `rm` safe.
+
+> **There is no `--dry-run` → `idempotent` boost.** It existed and was removed:
+> a command that *accepts* `--dry-run` does not run dry, so the boost made
+> `cacheable` true for a mutating command whenever the caller left the flag off,
+> and the next reader was served a cached result for a call that changed
+> something. Nothing consults `idempotent` at invocation time, so there was no
+> per-call hook to move it to. Use an overlay's `annotation_overrides` to assert
+> it for a specific command.
+
+### Flag Risk
+
+Three assertions an overlay can make about one flag, which no `--help` format
+expresses and no scan can infer. Help text does not distinguish
+`--exec-path=<path>`, which sets a search path, from `--upload-pack=<cmd>`,
+which runs one — both read as "takes a value" to every parser.
+
+| `risk` | Meaning | Effect | Contract keyword |
+|--------|---------|--------|------------------|
+| absent / `none` | Nobody has said | The name list above decides | — |
+| `benign` | A human checked; the name list is wrong here | Escalation suppressed for this flag only | `x-apexe-escalates: false` |
+| `escalates` | Sending it changes the operation's blast radius | Goes to the approval gate, but only when actually sent | `x-apexe-escalates: true` |
+| `executes` | The value **is** a command the tool will run | **The call is refused**, not gated | `x-apexe-exec: true` |
+
+`escalates` reaches the flags no name list generalizes — nothing about the
+string `--privileged` suggests danger. `benign` goes the other way, because the
+name list matches on spelling and spelling is sometimes a coincidence:
+`bsdtar -y` is bzip2, `sort -f` folds case, `cut -f` selects fields, and none of
+them mean "force".
+
+`executes` is a different claim rather than a louder one. apexe's central
+guarantee is that argv reaches `execve` with no shell on the path; a flag whose
+value becomes a command hands that guarantee back, and no JSON Schema constrains
+what the string becomes. So such a parameter is **refused with `ACL_DENIED`**
+before anything spawns — there is nothing for a human to approve, because
+approving would mean predicting what an arbitrary string will do. Known members
+include `git --upload-pack` / `--receive-pack`, `tar --use-compress-program`,
+`rsync -e` / `--rsync-path`, and `find -exec` / `-ok`.
+
+See [`docs/overlays.md`](overlays.md) for how to verify a `risk` claim before
+asserting it.
 
 ### Risk / `open_world`
 
@@ -685,11 +839,22 @@ For approval flows where the approver isn't in the session (e.g. a Slack bot),
 immediately, and a separate mechanism you build resolves the decision later via
 `ApprovalStore::resolve`.
 
-> **Known limitation.** `requires_approval` is derived from whether a tool's
-> *help text* mentions a flag in `APPROVAL_FLAGS`, not from the arguments a
-> caller actually sent. So `cli.git.log` is gated (because `git log` accepts
-> `--all`) while `cli.ssh` and `cli.curl` are not. Evaluating the gate against
-> the rendered argv is tracked separately.
+> **The gate weighs the arguments a call actually sent.** A module marked
+> `requires_approval` only because it *accepts* an escalating flag (§8) records
+> which schema properties those are, and the gate stands down for a call that
+> carries none of them — `git log` runs unprompted, `git log --all` prompts.
+> This is the one decision apcore cannot make: neither `ApprovalHandler` nor its
+> `ExecutionPolicy` hook is handed a call's arguments, and `ApprovalRequest`
+> is the first place they are visible. A stand-down is recorded with
+> `approved_by: "apexe-approval-gate"`, so an audit reader can tell it from a
+> human's yes. A module marked `destructive` **by name** carries no such basis
+> and always prompts.
+>
+> **Known limitation.** The escalating-flag list is still name-based, so a
+> dangerous flag under an unremarkable name is not on it — that is what an
+> overlay's `risk: escalates` is for (§8). And `cli.ssh` and `cli.curl` are
+> gated by nothing here: they are `open-world`, not `destructive`, and accept no
+> flag on the list.
 
 There is no CLI flag for this — `apcore-mcp`'s `InMemoryApprovalStore` is documented as unsuitable for production (state isn't shared across process invocations, so a hypothetical `apexe approval resolve` command couldn't reach a running server's store anyway). Embed apexe as a library and supply your own persistent store (Redis, a database, etc.) to use this for real.
 
@@ -1268,7 +1433,7 @@ Aliases are auto-sanitized for MCP compatibility (dots replaced with underscores
 
 ---
 
-## 13. Error Handling & AI Guidance
+## 13. Error Handling and AI Guidance
 
 Every error includes `ai_guidance` to help AI agents self-correct:
 
@@ -1276,9 +1441,22 @@ Every error includes `ai_guidance` to help AI agents self-correct:
 |-------|-------------|
 | Tool not found | "The tool 'xyz' is not installed. Install it and try again." |
 | Command timeout | "The command took too long. Try with simpler arguments or increase timeout." |
-| Shell injection detected | "Remove shell metacharacters (;, \|) from parameter 'file'." |
+| Option injection (value starts with `-`) | The value would be read as an option the caller was never granted. Send it without the leading dash, or use a tool whose overlay declares `--` support (`x-apexe-end-of-options`) |
+| Path refused by the guard | "'/etc/passwd' resolves to '/private/etc/passwd', inside or above the protected location '/private/etc'. … Choose a path outside the protected system and credential directories." |
+| Parameter refused as a command executor | "Parameter 'upload_pack' is refused: its value is a command the wrapped tool would run … send the call without it, or run the tool outside apexe." |
 | Permission denied | "Permission denied. Check file permissions or run with appropriate privileges." |
 | Non-zero exit code | "Command 'git push' exited with code 1. stderr: (first 200 chars)" |
+
+> **There is no "shell injection" error on the execution path.** Earlier versions
+> listed one. No shell is spawned anywhere (§9.3), so `;`, `|`, `&`, `$` and
+> quotes are inert bytes in an argument and pass through unchanged — `curl
+> --data '{"a":1}'` and every `jq` filter depend on it. The guards that do fire
+> are the three rows above plus NUL and the five line terminators, which are
+> rejected because they would corrupt the audit trail's framing. An agent that
+> escapes metacharacters in response to a refusal is solving the wrong problem.
+> `ApexeError::CommandInjection` still exists, but it is a tamper signal for a
+> hand-edited `.binding.yaml` (`BINDING_INJECTION_CHARS`), never a response to
+> caller input.
 
 Additionally, each execution response includes:
 - `trace_id` for end-to-end correlation
@@ -1371,7 +1549,7 @@ All directories are created automatically on first use.
 
 ---
 
-## 15. Global Flags, Logging & Debugging
+## 15. Global Flags, Logging and Debugging
 
 Two flags are global — they parse before or after the subcommand, whichever is
 more natural to type:

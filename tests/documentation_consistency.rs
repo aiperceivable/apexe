@@ -548,3 +548,396 @@ fn test_user_manual_matches_the_a2a_denial_a_caller_actually_receives() {
         "docs/user-manual.md must quote the reason an A2A caller now receives"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Drift guards
+//
+// The tests above each pin one sentence that was found wrong. The ones below
+// pin whole *surfaces* — every subcommand, every visible flag, every contract
+// keyword — because the recurring failure is not a wrong sentence but a missing
+// one: a feature lands, the code is reviewed, and the document that was
+// supposed to describe it is simply never opened. `apexe policy` shipped and
+// went undocumented in four files at once, and CI was green throughout.
+// ---------------------------------------------------------------------------
+
+/// The version is stated in three documents and generated from none of them.
+///
+/// It had drifted to three different answers at once: `Cargo.toml` said 0.7.0
+/// and carried a matching git tag, both long-form documents said 0.6.0, and
+/// `examples/README.md` still showed the 0.1.0 it was written against.
+#[test]
+fn test_every_document_states_the_crate_version() {
+    let version = env!("CARGO_PKG_VERSION");
+
+    let cases = [
+        (
+            "docs/user-manual.md",
+            include_str!("../docs/user-manual.md"),
+            format!("| **Version** | {version} |"),
+        ),
+        (
+            "docs/FEATURE_MANIFEST.md",
+            include_str!("../docs/FEATURE_MANIFEST.md"),
+            format!("**Version:** {version}"),
+        ),
+        (
+            "examples/README.md",
+            include_str!("../examples/README.md"),
+            format!("# apexe {version}"),
+        ),
+    ];
+
+    for (path, contents, expected) in cases {
+        assert!(
+            contents.contains(&expected),
+            "{path} must state the crate version -- expected to find `{expected}`"
+        );
+    }
+}
+
+/// A release tag without a changelog section leaves its users nothing to read.
+///
+/// `rust/v0.7.0` was tagged while every one of its entries still sat under
+/// `## [Unreleased]`. Running before the tag is the point: `cargo test` is a
+/// release prerequisite, so this fails while the omission is still cheap.
+#[test]
+fn test_changelog_has_a_section_for_the_current_version() {
+    let version = env!("CARGO_PKG_VERSION");
+    let changelog = include_str!("../CHANGELOG.md");
+    let heading = format!("## [{version}]");
+
+    assert!(
+        changelog.contains(&heading),
+        "CHANGELOG.md has no `{heading}` section. Promote `## [Unreleased]` \
+         before tagging -- a tagged release with no entries tells its users nothing."
+    );
+}
+
+/// Every subcommand clap accepts must have a section in the manual.
+///
+/// Read off `Cli::command()` rather than a hand-kept list, so a new subcommand
+/// fails here the moment it parses. `apexe policy` shipped with no mention in
+/// the manual, the README, the threat model or the changelog -- `--help` was
+/// its only documentation.
+#[test]
+fn test_user_manual_documents_every_subcommand() {
+    use clap::CommandFactory;
+
+    let manual = include_str!("../docs/user-manual.md");
+    let command = apexe::cli::Cli::command();
+
+    for subcommand in command.get_subcommands() {
+        let name = subcommand.get_name();
+        // The manual's §4 headings read: ### 4.6 `apexe policy`
+        let heading = format!("`apexe {name}`");
+        assert!(
+            manual
+                .lines()
+                .any(|line| { line.starts_with("### 4.") && line.contains(&heading) }),
+            "docs/user-manual.md §4 has no `### 4.N {heading}` heading. \
+             Every subcommand clap accepts needs a section in the commands reference."
+        );
+    }
+}
+
+/// Every flag a user can see must appear in the manual.
+///
+/// Hidden flags are exempt by definition -- `--allow-deprecated-sse` is
+/// accepted only so existing invocations keep parsing, and is deliberately
+/// absent from `--help`. Auto-generated `help`/`version` are exempt too.
+///
+/// The check is that the flag is mentioned *somewhere* in the manual rather
+/// than in a particular table: a flag documented in the wrong section is a
+/// reviewer's problem, while one documented nowhere is this test's.
+#[test]
+fn test_user_manual_documents_every_visible_flag() {
+    use clap::CommandFactory;
+
+    let manual = include_str!("../docs/user-manual.md");
+    let command = apexe::cli::Cli::command();
+
+    let mut undocumented: Vec<String> = Vec::new();
+    let mut check = |owner: &str, arg: &clap::Arg| {
+        if arg.is_hide_set() {
+            return;
+        }
+        let Some(long) = arg.get_long() else {
+            return;
+        };
+        if matches!(long, "help" | "version") {
+            return;
+        }
+        // Options render as `--transport <TYPE>` and flags as `--explorer`, so
+        // anchor on the opening backtick plus the literal and let either form
+        // match.
+        if !manual.contains(&format!("`--{long}")) {
+            undocumented.push(format!("{owner} --{long}"));
+        }
+    };
+
+    for arg in command.get_arguments() {
+        check("apexe", arg);
+    }
+    for subcommand in command.get_subcommands() {
+        for arg in subcommand.get_arguments() {
+            check(subcommand.get_name(), arg);
+        }
+    }
+
+    assert!(
+        undocumented.is_empty(),
+        "docs/user-manual.md documents no such flag: {undocumented:?}. \
+         A flag a user can see in `--help` and cannot find in the manual is \
+         a flag they will not use."
+    );
+}
+
+/// Every `x-apexe-*` keyword the schema builder emits must be documented.
+///
+/// The set is read out of `src/` rather than kept in a list here, so it cannot
+/// fall behind the code. These keywords are the contract an MCP client or an
+/// overlay author binds against; three of them (`x-apexe-conflicts-with`,
+/// `x-apexe-flag-position`, `x-apexe-positional`) were emitted into every
+/// binding file on disk and described in no document at all.
+#[test]
+fn test_every_emitted_contract_keyword_is_documented() {
+    let docs = [
+        include_str!("../docs/user-manual.md"),
+        include_str!("../docs/overlays.md"),
+        include_str!("../docs/threat-model.md"),
+    ];
+
+    let mut keywords: Vec<String> = collect_contract_keywords("src".as_ref());
+    keywords.sort();
+    keywords.dedup();
+
+    assert!(
+        keywords.len() >= 10,
+        "expected to find the contract keywords in src/, found {keywords:?} -- \
+         the source walk is broken, not the documentation"
+    );
+
+    let undocumented: Vec<&String> = keywords
+        .iter()
+        .filter(|keyword| !docs.iter().any(|doc| doc.contains(keyword.as_str())))
+        .collect();
+
+    assert!(
+        undocumented.is_empty(),
+        "these contract keywords are emitted but documented nowhere: {undocumented:?}. \
+         Add them to docs/user-manual.md §7.1."
+    );
+}
+
+/// Collect every `x-apexe-*` literal appearing under `dir`, recursively.
+fn collect_contract_keywords(dir: &std::path::Path) -> Vec<String> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(collect_contract_keywords(&path));
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            let Ok(contents) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            found.extend(extract_contract_keywords(&contents));
+        }
+    }
+    found
+}
+
+/// Pull `x-apexe-<name>` literals out of one file's text.
+///
+/// Hand-rolled rather than a regex so the test carries no extra dependency.
+/// A keyword ends at the first character that is not lowercase, a digit or a
+/// hyphen, and a trailing hyphen is trimmed so a prose mention like
+/// `x-apexe-flag-` does not become its own keyword.
+fn extract_contract_keywords(contents: &str) -> Vec<String> {
+    const PREFIX: &str = "x-apexe-";
+    let mut found = Vec::new();
+    let bytes = contents.as_bytes();
+    let mut search_from = 0;
+
+    while let Some(offset) = contents[search_from..].find(PREFIX) {
+        let start = search_from + offset;
+        let mut end = start + PREFIX.len();
+        while end < bytes.len()
+            && (bytes[end].is_ascii_lowercase()
+                || bytes[end].is_ascii_digit()
+                || bytes[end] == b'-')
+        {
+            end += 1;
+        }
+        let keyword = contents[start..end].trim_end_matches('-');
+        if keyword.len() > PREFIX.len() {
+            found.push(keyword.to_string());
+        }
+        search_from = end.max(start + 1);
+    }
+    found
+}
+
+/// Every table-of-contents link in the manual must reach a real heading.
+///
+/// The §15 link broke when the heading gained the words "Global Flags" and the
+/// anchor was left behind -- silently, because a dead in-page anchor scrolls
+/// nowhere rather than erroring. The manual is 1,500 lines and its TOC is how
+/// it is navigated.
+#[test]
+fn test_user_manual_toc_anchors_resolve() {
+    let manual = include_str!("../docs/user-manual.md");
+
+    let anchors: Vec<String> = manual
+        .lines()
+        .filter(|line| line.starts_with("## "))
+        .map(|line| github_slug(line.trim_start_matches("## ")))
+        .collect();
+
+    let mut broken: Vec<(&str, String)> = Vec::new();
+    for line in manual.lines() {
+        // TOC entries read: `4. [Commands Reference](#4-commands-reference)`
+        let Some(open) = line.find("](#") else {
+            continue;
+        };
+        if !line.trim_start().starts_with(|c: char| c.is_ascii_digit()) {
+            continue;
+        }
+        let rest = &line[open + 3..];
+        let Some(close) = rest.find(')') else {
+            continue;
+        };
+        let anchor = &rest[..close];
+        if !anchors.iter().any(|heading| heading == anchor) {
+            broken.push((line.trim(), anchor.to_string()));
+        }
+    }
+
+    assert!(
+        broken.is_empty(),
+        "docs/user-manual.md table of contents links to anchors no heading \
+         produces: {broken:?}. Known headings: {anchors:?}"
+    );
+
+    // The manual is published twice -- on GitHub and through MkDocs -- and the
+    // two slug rules agree only while a heading contains nothing that gets
+    // dropped from between two spaces. GitHub keeps the space each dropped
+    // character sat next to and turns both into hyphens; MkDocs collapses the
+    // run. So "Error Handling & AI Guidance" anchored as
+    // `...handling--ai...` on one and `...handling-ai...` on the other, and
+    // the TOC link worked in exactly one of the two places. Both headings that
+    // hit this now spell the word "and"; this keeps it that way, because the
+    // failure is invisible from whichever renderer you happen to be reading.
+    let ambiguous: Vec<&str> = manual
+        .lines()
+        .filter(|line| line.starts_with("## ") && line.contains(" & "))
+        .collect();
+    assert!(
+        ambiguous.is_empty(),
+        "these headings slug differently on GitHub and MkDocs, so any link to \
+         them is broken on one of the two: {ambiguous:?}. Write `and` instead of `&`."
+    );
+}
+
+/// Reproduce GitHub's heading-to-anchor rule.
+///
+/// Lowercase, drop everything that is not alphanumeric, a space or a hyphen,
+/// then turn spaces into hyphens. Note that a dropped character leaves its
+/// neighbouring spaces behind, so `A & B` would anchor as `a--b` with two
+/// hyphens -- MkDocs collapses that to one, which is why the caller also
+/// refuses such headings outright.
+fn github_slug(heading: &str) -> String {
+    heading
+        .trim()
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
+        .map(|c| if c == ' ' { '-' } else { c })
+        .collect()
+}
+
+/// Every file the MkDocs navigation points at must exist.
+///
+/// A nav entry naming a missing file is only a warning at build time, so the
+/// site publishes with a dead menu item. `mkdocs build --strict` would catch
+/// it, but cannot be enabled yet: the docs carry 16 pre-existing warnings for
+/// links that are correct on GitHub and unresolvable inside the site (`../../
+/// src/...`, `SECURITY.md`, `CHANGELOG.md`). This covers the part of `--strict`
+/// that matters most, without waiting on that cleanup.
+#[test]
+fn test_every_mkdocs_nav_entry_resolves() {
+    let config = include_str!("../mkdocs.yml");
+
+    // Copied into docs/ by .github/workflows/deploy-docs.yml at build time, so
+    // they are absent from a checkout by design.
+    const GENERATED_AT_DEPLOY: &[&str] = &["index.md", "changelog.md", "examples.md"];
+
+    let mut missing: Vec<&str> = Vec::new();
+    let mut checked = 0usize;
+
+    for line in config.lines() {
+        // nav entries read: `      - User Manual: user-manual.md`
+        let Some((_, target)) = line.rsplit_once(": ") else {
+            continue;
+        };
+        let target = target.trim();
+        if !target.ends_with(".md") {
+            continue;
+        }
+        checked += 1;
+        if GENERATED_AT_DEPLOY.contains(&target) {
+            continue;
+        }
+        if !std::path::Path::new("docs").join(target).exists() {
+            missing.push(target);
+        }
+    }
+
+    assert!(
+        checked >= 10,
+        "parsed only {checked} nav entries from mkdocs.yml -- the parser is \
+         broken, not the navigation"
+    );
+    assert!(
+        missing.is_empty(),
+        "mkdocs.yml navigates to files that do not exist under docs/: {missing:?}"
+    );
+}
+
+/// Every document describing the scan pipeline must account for all its tiers.
+///
+/// A document listing only the three tiers that read the binary reads as a
+/// complete account while omitting the one a human wrote by hand -- and tier 4
+/// is the one that can *replace* the other three outright under
+/// `mode: authoritative`. The count comes from the same constant the
+/// orchestrator raises `scan_tier` to, so the documents cannot drift from the
+/// code the way the parser count once did.
+#[test]
+fn test_every_document_accounts_for_the_top_scan_tier() {
+    let top = apexe::scanner::MAX_SCAN_TIER;
+    assert_eq!(top, 4, "add the word form for tier {top} to this test");
+
+    let cases = [
+        (
+            "docs/user-manual.md",
+            include_str!("../docs/user-manual.md"),
+        ),
+        ("README.md", include_str!("../README.md")),
+        (
+            "docs/FEATURE_MANIFEST.md",
+            include_str!("../docs/FEATURE_MANIFEST.md"),
+        ),
+        ("docs/overlays.md", include_str!("../docs/overlays.md")),
+    ];
+
+    for (path, contents) in cases {
+        let lowered = contents.to_lowercase();
+        assert!(
+            lowered.contains(&format!("tier {top}")) || lowered.contains("fourth tier"),
+            "{path} describes the scan pipeline without accounting for tier {top} \
+             (the curated overlay). Say `tier {top}` or `fourth tier`."
+        );
+    }
+}

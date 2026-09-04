@@ -34,6 +34,21 @@ pub const OPTION_REJECTION_MARKERS: &[&str] = &[
     "unknown option",
 ];
 
+/// The highest tier a scan can report in [`ScannedCLITool::scan_tier`].
+///
+/// Tiers 1-3 read the binary — `--help`, the man page, the shell completion
+/// script. Tier 4 is a curated overlay applied on top of what they found, so a
+/// tool with no matching overlay tops out at 3.
+///
+/// Exported because the number is stated in four documents, and a doc that
+/// describes only the tiers that read the binary reads as a complete account of
+/// the pipeline while omitting the one tier a human wrote by hand.
+/// `tests/documentation_consistency.rs` holds them to this constant, the way
+/// [`ParserPipeline::parser_count`] already holds them to the parser inventory.
+///
+/// [`ScannedCLITool::scan_tier`]: crate::models::ScannedCLITool::scan_tier
+pub const MAX_SCAN_TIER: u32 = 4;
+
 pub mod cache;
 pub mod completion;
 pub mod discovery;

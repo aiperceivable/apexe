@@ -17,7 +17,7 @@
 # From the repo root
 cargo install --path .
 apexe --version
-# apexe 0.1.0
+# apexe 0.7.0
 ```
 
 ---

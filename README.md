@@ -53,10 +53,11 @@ generated for you — reviewing and enabling it is yours.**
 
 ### Key capabilities
 
-- **Scan** — Three-tier deterministic engine (--help → man pages → shell completions) with 6 built-in parsers (Man, BSD Usage, GNU, Click, Cobra, Clap)
+- **Scan** — Three-tier deterministic engine (--help → man pages → shell completions) with 6 built-in parsers (Man, BSD Usage, GNU, Click, Cobra, Clap), plus a fourth tier that applies a curated, human-verified overlay when one matches the detected tool variant
 - **Schema** — Generates JSON Schema with type mapping, format hints (`path`, `uri`), defaults, enums, and required fields
 - **Serve** — MCP server via [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) (stdio / streamable-http / SSE) with an Explorer UI, plus an A2A agent server via [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust). Transport authentication is a first-class CLI surface (`--auth token|jwt|none`) required by default on the HTTP-family transports; a non-loopback bind with no credential refuses to start unless explicitly acknowledged
-- **Govern** — Behavioral annotations (readonly/destructive/idempotent), flag boosting (`--force` → requires_approval), a generated **fail-closed** default-deny ACL (enforced when passed via `--acl`; see the [threat model](docs/threat-model.md)), a JSONL audit trail of executions, refusals **and** ACL allow/deny decisions (no input values, hashed or otherwise; log `0600`), `Module::preview()` dry-run for destructive commands
+- **Govern** — Behavioral annotations (readonly/destructive/idempotent/open-world), a generated **fail-closed** default-deny ACL (enforced when passed via `--acl`; see the [threat model](docs/threat-model.md)), an approval gate that weighs the arguments a call actually sent rather than the flags a command merely accepts, a JSONL audit trail of executions, refusals **and** ACL allow/deny decisions (no input values, hashed or otherwise; log `0600`), `Module::preview()` dry-run for destructive commands
+- **Bound** — an always-on path guard resolves every argument the schema types as a filesystem path — symlinks followed, `..` folded, compared against what the kernel would act on — and refuses a writer pointed at a system directory or anyone pointed at a credential store. No flag, no off switch; `apexe policy` prints the boundary and checks a path against it
 - **Isolate** — every wrapped subprocess runs with the environment **scrubbed** to a base allowlist (secrets don't leak to tools), no shell (argv goes straight to `execve`, so shell metacharacters are inert data — the actual guard rejects a value that would be parsed as an option), output capped at 64 MiB, and a hard timeout that actually kills the process (`kill_on_drop`); circuit breaker + retry middleware on by default, optional `/metrics` + `/usage`
 - **AI Guidance** — Every error includes `ai_guidance` to help agents self-correct; non-zero exit codes return stderr context
 
@@ -324,6 +325,24 @@ apexe config --show     # Print resolved config (YAML)
 apexe config --init     # Create ~/.apexe/config.yaml
 ```
 
+### `apexe policy`
+
+Show the filesystem boundary every wrapped tool is checked against, or check one
+path against it. The summary is read off the **installed** guard rather than
+re-derived from config, so it always describes the policy actually in force.
+
+```bash
+apexe policy                                   # The whole boundary
+apexe policy --format json                     # Machine-readable
+apexe policy --path /etc/passwd                # Refused to a writer
+apexe policy --path /etc/passwd --mode read    # Allowed to a readonly module
+apexe policy --path ~/.ssh/id_rsa --mode read  # Refused: credentials bind readers
+```
+
+`--path` calls the guard's own check — the same call a wrapped tool's argument
+goes through — so its verdict cannot drift from a real invocation's. See
+[user manual §4.6](docs/user-manual.md) and §9.7.
+
 ---
 
 ## How It Works
@@ -360,9 +379,15 @@ CLI Tool Binary
 | Signal | Inference |
 |--------|-----------|
 | Command `list`, `show`, `status`, `get` | `readonly: true`, `cacheable: true` |
-| Command `delete`, `rm`, `kill`, `destroy` | `destructive: true`, `requires_approval: true` |
-| Flag `--force`, `-f`, `--hard` | Escalates to `requires_approval: true` |
-| Flag `--dry-run`, `--check`, `--simulate` | `idempotent: true` |
+| Command `delete`, `rm`, `kill`, `destroy` | `destructive: true`, `requires_approval: true` — always prompts |
+| Tool `env`, `xargs`, `sudo`, `timeout`, `nice` | `destructive: true`, whatever the name suggests: their arguments *are* another command |
+| Tool `curl`, `wget`, `ssh`, or subcommand `push`, `clone`, `login` | `open_world: true` |
+| Command *accepts* `--force`, `-f`, `--hard`, … | Marked `requires_approval` as a ceiling, with the escalating properties recorded — the gate then prompts only for a call that actually **sends** one |
+| Overlay `risk: escalates` / `executes` / `benign` | Human assertion about one flag: goes to the gate when sent / refused outright / exempted from the name list |
+
+A scan sees the flags a command accepts; a call carries the flags a caller sent.
+Only the second is a reason to interrupt a human, so `git log` runs unprompted
+while `git log --all` prompts. See [user manual §8](docs/user-manual.md).
 
 ### Schema generation
 

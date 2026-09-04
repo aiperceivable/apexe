@@ -113,6 +113,45 @@ make check   # Run all gates (do this before git commit)
 
 ---
 
+## Documentation Is Part of the Change
+
+A user-visible change is not finished when the code is. The recurring failure
+here is not a wrong sentence but a missing one: a feature lands, the code is
+reviewed, and the document that was supposed to describe it is never opened.
+`apexe policy` shipped in one commit that touched four source files and zero
+documents, and CI was green throughout.
+
+**In the same commit as the code:**
+
+| If you change | Update |
+|---|---|
+| A `Commands` variant in `src/cli/mod.rs` | `docs/user-manual.md` §4 (a `### 4.N` section), `README.md` Commands, `CHANGELOG.md` |
+| Any non-hidden `#[arg]` on an `*Args` struct | The option table for that subcommand in `docs/user-manual.md` §4 |
+| An `x-apexe-*` keyword the schema emits | `docs/user-manual.md` §7.1 contract-keyword table |
+| A control that decides whether a call runs | `docs/threat-model.md` §4 if it enforces something, §5 if it does not |
+| A name-pattern list in `src/adapter/annotations.rs` | `docs/user-manual.md` §8 |
+| Anything a user would notice | `CHANGELOG.md`, under `## [Unreleased]` |
+
+`tests/documentation_consistency.rs` enforces the mechanical half of this — the
+subcommand set, the visible flag set, the contract-keyword set, the version
+strings, the changelog section, the MkDocs nav and the manual's own TOC anchors
+are all read off the code or the config rather than a hand-kept list, so they
+cannot quietly fall behind. It cannot check whether a sentence is *true*. That
+part is the reviewer's, and it is the part that has gone wrong most often.
+
+**Two rules for the documents themselves:**
+
+- **Never leave a correction as a note on top of a wrong statement.** A doc that
+  needs an as-built note to be read correctly will eventually need a second note
+  correcting the first — which is exactly what happened to
+  `docs/apcore-integration/tech-design.md`. Fix the statement, or mark the whole
+  document historical and point at what replaced it.
+- **Write `and`, not `&`, in a Markdown heading.** GitHub and MkDocs slug them
+  differently, so any link to such a heading is broken in one of the two places.
+  The TOC test refuses new ones.
+
+---
+
 ## Tool Overlays
 
 Overlays in `overlays/` are curated human assertions that can replace the scan

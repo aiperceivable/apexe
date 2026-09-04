@@ -1,4 +1,4 @@
-# F5: Governance -- apcore ACL + apcore-cli Audit + always-on subprocess isolation
+# F5: Governance -- apcore ACL + apexe's own audit trail + always-on subprocess isolation
 
 | Field | Value |
 |---|---|
@@ -16,7 +16,7 @@
 
 ## 1. Purpose
 
-Replace apexe's custom governance layer (ACL generator, annotation logic, audit logger) with wrappers around apcore ecosystem primitives: `apcore::ACL` for access control and `apcore_cli::AuditLogger` for audit logging. This gains rule conditions and a structured JSONL audit format. Subprocess isolation (timeout, output cap, no-shell argv, environment scrubbing) is applied unconditionally in the executor — see §5 — rather than via a toggleable sandbox module.
+Replace apexe's custom governance layer (ACL generator, annotation logic, audit logger) with `apcore::ACL` for access control plus a purpose-built append-only JSONL audit trail. **The audit half of this was planned as a wrapper around `apcore_cli::AuditLogger` and was not built that way** — see §4 for what shipped and why. Subprocess isolation (timeout, output cap, no-shell argv, environment scrubbing) is applied unconditionally in the executor — see §5 — rather than via a toggleable sandbox module.
 
 ---
 
@@ -280,9 +280,13 @@ Every subprocess execution applies:
   killed (`kill_on_drop`) if it elapses, so a hung tool cannot stall a request.
 - **Output cap** — stdout/stderr are each bounded (`max_output_bytes`) to guard
   against OOM from runaway output.
-- **No shell** — arguments are passed as direct argv (no shell interpolation);
-  client-supplied values are additionally rejected if they contain shell
-  metacharacters (see F2 injection guard).
+- **No shell** — argv is passed straight to `execve`, with no shell anywhere on
+  the path. Client-supplied values are **not** rejected for shell
+  metacharacters: an earlier draft of this line said they were, but with no
+  shell to interpret them they are inert bytes, and rejecting them broke real
+  values (`curl --data`, every `jq` filter). The guards that do apply are a
+  leading `-`, NUL and five line terminators, and any parameter marked
+  `x-apexe-exec` — see F2 §3.1.
 - **Environment scrubbing** — the child inherits only a base allowlist
   (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TZ`,
   `TMPDIR`), never apexe's full environment, so secrets in apexe's env (API
@@ -321,7 +325,7 @@ approval + preview/dry-run) plus the process hygiene above.
 | `test_audit_log_creates_file` | Log one execution | File exists |
 | `test_audit_log_appends_jsonl` | Log two executions | File has 2 lines |
 | `test_audit_log_entry_format` | Log and parse | Valid JSON with timestamp, module_id, duration_ms |
-| `test_audit_log_large_output_truncated` | Output > 10KB | Truncated in log entry |
+| ~~`test_audit_log_large_output_truncated`~~ | ~~Output > 10KB~~ | **Withdrawn.** The trail records no output at all (§4), so there is nothing to truncate and no such test exists |
 | `test_audit_log_path_returns_path` | Create manager | Returns configured path |
 
 ### 6.3 Subprocess Isolation Tests (always-on)
@@ -349,7 +353,7 @@ Isolation is verified where it lives — in the executor
 | `serde_json::Map` ACL format | `apcore::ACL` type | Type change |
 | Custom `write_acl()` | `AclManager::write_config()` | Simplified |
 | `annotate_bindings()` | Moved to F1 `adapter::annotations::infer()` | Relocated |
-| Custom audit JSONL writer | `apcore_cli::AuditLogger` | Replaced |
+| Custom audit JSONL writer | apexe's own `AuditManager` (§4) | Rewritten — the planned `apcore_cli::AuditLogger` wrapper was not built |
 | Ad-hoc subprocess spawn | Always-on isolation in `executor.rs` (timeout, output cap, no-shell, env scrubbing) | Hardened — see §5 |
 
 ### ACL YAML Format Change

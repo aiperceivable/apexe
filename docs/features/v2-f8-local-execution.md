@@ -4,7 +4,7 @@
 |---|---|
 | **Feature ID** | F8 |
 | **Priority** | P1 (Surface) |
-| **Status** | Design. Stage 1 ready for implementation; Stage 2 blocked on §4.3 and §5.4. |
+| **Status** | Design. Stage 1 ready for implementation; Stage 2 scoped to the §5.1 overlay set and blocked on §5.4, §7 and §8.1, plus the binding-staleness prerequisite in §10. |
 | **Dependencies** | F2 (Module Executor), F5 (Governance) |
 | **Depended On By** | None yet |
 | **New Files** | `src/cli/run.rs`, `src/cli/preflight.rs`, `src/cli/shim.rs`, `src/adapter/argv.rs` |
@@ -33,8 +33,10 @@ Two surfaces, in order:
 
 Stage 1 reuses the executor as it stands. **Stage 2 does not** -- it requires a
 new I/O mode that reaches into `CliModule::execute` and `execute_subprocess`
-(§7), a new PATH isolation contract (§5.4), and a new per-module stdin
-capability (§8.1). Those are design work, not wiring.
+(§7), a new PATH isolation contract (§5.4), a per-module stdin capability
+(§8.1), and a declared bundling grammar (§4.4, §5.1). Those are design work, not
+wiring. Stage 2 is also **scoped**: it applies to the modules eligible under
+§5.1, not to everything a scan produced.
 
 ---
 
@@ -240,7 +242,7 @@ Validating this is what Stage 2's initial scope is for (§10).
 
 | Hazard | Note |
 |---|---|
-| Short-flag bundling (`-la`) | The scan does not record whether a tool supports it. Ambiguity is an unresolved token, i.e. a refusal. |
+| Short-flag bundling (`-la`) | The scan cannot infer it, so an overlay declares it (`short_flag_bundling`; §5.1). Absent that declaration it stays an unresolved token, i.e. a refusal -- which is most of why eligibility is scoped to overlay-covered commands, since `ls -la` and `rm -rf` are not edge cases to measure but the first thing anyone types. |
 | `--opt=value` vs `--opt value` | Both map to the same property. |
 | `--` end-of-options | Everything after it is positional, including `-`-leading values. |
 | `-`-leading values | `validate_argument_value` rejects these unless the schema declares `--` support. `grep -- -foo` must survive by setting the marker, not by working around the check. |
@@ -264,6 +266,62 @@ through to the real binary -- silent fall-through would make the boundary depend
 on the freshness of a directory nobody inspects. Name collisions between two
 scanned tools, and overwrite policy on re-install, must be decided explicitly
 rather than by last-writer-wins.
+
+#### Eligibility is overlay coverage, not an annotation
+
+The exclusions above say what cannot be shimmed. The positive rule is the more
+consequential half, and the obvious candidate for it is wrong.
+
+That candidate is "shim the commands that can hurt you" -- the modules annotated
+`destructive` or `open_world`, leaving readers to run natively at full speed. It
+fails in three separate ways:
+
+- **It under-covers.** The path guard refuses a credential path to a `readonly`
+  module too: `cat ~/.ssh/id_rsa`, `grep -r key ~/.aws`, `ls ~/.gnupg`. The
+  threat model ranks that leak *above* deletion (`docs/threat-model.md` §4.8: a
+  deleted key announces itself, a copied one does not), so selecting by
+  annotation drops the entire exfiltration class -- the half of the guard that
+  exists for the risk harder to notice.
+- **It buys nothing.** The expensive parts of Stage 2 do not disappear along
+  with the readers. `curl` and `wget` exist to stream; `git push` and `git clone`
+  report progress on stderr; `ssh` needs a TTY. All three are `open_world`, and
+  all three require §7's passthrough. `xargs` is `destructive` *and* a stdin
+  tool, so §8.1 is required as well. Nothing is saved.
+- **It selects for the wrong property.** `git` has no overlay: its ~142 modules
+  are derived from man pages, which makes it the tool where §4.3's strict
+  refusal is *most* likely to fire. An annotation-based rule puts it in the
+  first shim set; `rm` and `chmod`, whose option sets are curated and closed,
+  offer far less to learn from.
+
+The rule that actually follows from §4.3 is **feasibility**, and it is already
+recorded in the repository:
+
+> A module is eligible when its command has a `mode: authoritative` overlay
+> matching the detected variant.
+
+`authoritative` means a human has asserted the option set is complete -- that is
+the mode's entire definition, and the reason it is allowed to discard the scan
+result. So a §4.3 refusal *inside this set* is not an unbounded risk; it is
+evidence the overlay is wrong, which is a defect with an existing correction
+procedure (`docs/overlays.md`) rather than a reason for a user to remove the
+shim directory from `PATH`.
+
+Two properties follow that the annotation rule cannot provide:
+
+- **`short_flag_bundling` has somewhere to live.** §4.4 currently treats `-la`
+  as an unresolved token because nothing records whether a tool accepts
+  bundling. Under this rule the fact is declared in the overlay, next to
+  `end_of_options` and `before_flags` -- where every other non-inferable grammar
+  fact already sits. Outside the overlay set the refusal stands, which is
+  correct: nobody has checked.
+- **The set spans both risk classes.** The 21 shipped POSIX commands cover the
+  destructive operations (`rm`, `mv`, `cp`, `chmod`, `xargs`) and the credential
+  readers (`cat`, `grep`, `find`, `ls`, `head`, `tail`) at once.
+
+`git`, `curl`, `wget`, `ssh` and every other scan-only tool are ineligible until
+someone writes an overlay for them. That is the conservative direction, and the
+one §4.3 already argues for on its own terms: the mitigation is coverage, not a
+bypass.
 
 ### 5.2 Subcommand routing uses `command_path`, not the module id
 
@@ -412,7 +470,7 @@ Four additions required in `docs/threat-model.md` before Stage 2 ships.
 Every control in §4 acts on argv. An inherited stdin is not schema validated,
 not path checked and not recorded. For `cat` that is inconsequential; for any
 tool that reads a program from stdin it is a complete bypass of argv-level
-governance -- the same class as §5.9 ("A tool that runs other tools defeats
+governance -- the same class as `docs/threat-model.md` §5.9 ("A tool that runs other tools defeats
 every name-based control") by a different route.
 
 A denylist cannot work. `EXEC_WRAPPER_TOOLS`
@@ -470,6 +528,23 @@ than only enforced.
 - `test_resolve_argv_refuses_undeclared_flag_with_actionable_message`
 - `test_resolve_argv_rebuilt_argv_matches_validated_input`
 - `test_shim_routes_subcommand_via_command_path_metadata`
+- `test_resolve_argv_expands_a_bundled_short_group_when_the_overlay_declares_it`
+- `test_resolve_argv_reads_the_remainder_as_a_value_for_a_valued_short_flag`
+- `test_resolve_argv_refuses_a_bundled_group_when_bundling_is_undeclared`
+
+### 9.2.1 Shim eligibility (Stage 2, §5.1)
+
+The criterion is what keeps §4.3's refusal rate at zero inside the pilot, so it
+needs to fail loudly rather than degrade.
+
+- `test_shim_generation_admits_a_command_with_an_authoritative_overlay`
+- `test_shim_generation_excludes_a_scan_only_command` -- `git` today
+- `test_shim_generation_excludes_a_command_whose_overlay_matches_another_variant`
+- `test_every_shipped_overlay_declares_short_flag_bundling` -- a data guard on
+  `overlays/`, in the style of the existing overlay guards in
+  `tests/scanner_integration.rs`: an eligible command with no declared bundling
+  grammar would refuse `-la` at runtime, which is the failure the criterion
+  exists to prevent
 
 ### 9.3 PATH isolation (Stage 2, §5.4)
 
@@ -493,16 +568,45 @@ than only enforced.
 
 ## 10. Delivery plan
 
+**Prerequisite -- binding staleness detection.** Not part of F8, and blocking
+for everything F8 proposes to measure. A binding carries no scan-format version
+that apexe reads: `spec_version: 1.0` is apcore-toolkit's *file structure*
+version and is identical on a binding written today and one written before the
+path guard existed. So an installation scanned before 0.7.0 serves modules with
+no `x-apexe-path`, no `x-apexe-escalates` and no `x-sensitive`, and the path
+guard, the approval gate and log redaction all evaluate against nothing --
+silently, with the only available diagnosis being the manual's suggestion to
+`grep -L x-sensitive` the modules directory by hand. A Stage 2 pilot on such an
+installation measures 0.5.0's behaviour and reports it as 0.7.0's. `YamlOutput`
+must record the scan-format version and `build_executor` must warn per stale
+module before any number below is worth reading.
+
 **Stage 1 -- ship independently.** `--input`, JSON output, the §3.1 preflight
 path, the §3.2 ACL default semantics, `--as` constrained to `--dry-run`. No raw
 I/O, no stdin, no `--param`. Nothing here touches the executor's I/O model.
 
-**Stage 2 -- design first, then build.** `ExecutionIo` (§7) and
-`streaming_stdin_safe` (§8.1) are contracts to settle before code. Then argv
-resolution and shims, with an initial scope of a handful of explicitly marked
-streaming-safe modules (`cat`, `grep`, `head`) -- enough to measure two things
-that decide whether Stage 2 is viable at all: how often §4.3's strict refusal
-fires in real use, and what per-invocation latency a shim adds interactively.
+**Stage 2 -- a bounded pilot over the overlay set.** Three contracts settle
+before code: `ExecutionIo` (§7), `streaming_stdin_safe` (§8.1), and
+`short_flag_bundling` (§4.4, §5.1). Then argv resolution and shims, scoped to
+the modules eligible under §5.1 -- the commands carrying a shipped
+`authoritative` overlay, 21 of them today.
+
+An earlier revision of this plan scoped the pilot to three hand-picked modules
+(`cat`, `grep`, `head`). Widening it to the whole overlay set costs nothing in
+refusal risk, because §5.1's rule admits a module precisely when its option
+coverage has been asserted complete -- and it buys two measurements the narrow
+scope cannot produce:
+
+| Measurement | Why three readers are not enough |
+|---|---|
+| Per-invocation latency | `cat`, `grep` and `head` exercise one argv shape. `rm`, `cp` and `chmod` render path operands, where the guard canonicalizes and resolves symlinks per argument -- the case whose cost actually varies |
+| The §7 I/O contract | All three are mid-pipeline readers. `rm` produces no output at all, `xargs` consumes stdin, `find` streams for minutes: three passthrough shapes the original scope never reaches |
+
+What this pilot **cannot** answer is §4.3's refusal rate in general, since inside
+the eligible set that rate is zero by construction. That question belongs to the
+first scan-only tool anyone wants to shim, and it should be asked deliberately
+against the worst case (`git`, ~142 modules derived from man pages) rather than
+discovered by a user whose daily command stopped working.
 
 **Stage 3 -- deferred.** A session daemon (`apexe shell`) removes per-call
 startup cost and gives audit records a session-scoped trace id, which is also
@@ -526,12 +630,20 @@ against a latency number nobody has measured.
 
 ## 12. Open questions
 
-1. **§4.3 strict refusal viability.** Blocking for Stage 2. Measured, not
+1. **§4.3 strict refusal viability.** No longer blocking for Stage 2, which
+   §5.1 scopes to a set where the rate is zero by construction. It becomes the
+   entry condition for the *first scan-only tool*: run a deliberate trial
+   against `git` before making any overlay-less tool eligible. Measured, not
    argued -- see §10.
-2. **Shim latency.** Blocking for Stage 2, same measurement.
+2. **Shim latency.** Blocking for Stage 2, measured over the §5.1 set rather
+   than over three readers.
 3. **Name collisions and overwrite policy** when two scanned tools claim one
    command name (§5.1).
 4. **Per-subcommand ACL granularity** -- is `cli.git.*` sufficient for the
    deployments this targets, or do shims need finer rules?
-5. **Where `streaming_stdin_safe` lives** -- schema annotation, overlay field,
-   or both, and what `apexe scan` may infer (probably nothing).
+5. **Where `streaming_stdin_safe` lives** -- settled by §5.1: the overlay,
+   alongside `short_flag_bundling` and every other non-inferable grammar fact.
+   `apexe scan` infers neither. What remains open is whether the schema should
+   *refuse* a `streaming_stdin_safe` overlay that leaves an interpreter flag
+   (`-f`, `-e`, `-x`) unmarked, so the coupling in §8.1 is checked at authoring
+   time rather than trusted.
