@@ -327,6 +327,22 @@ pub struct OverlayProvenance {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolOverlay {
+    /// Pointer to the JSON Schema this file claims to follow.
+    ///
+    /// Carried so an author can write the `$schema` line every editor uses for
+    /// completion and inline validation. `deny_unknown_fields` is on, so before
+    /// this field existed that line made the whole overlay fail to load with
+    /// `unknown field \`$schema\`` — the format could not point at its own
+    /// definition, which is a hard thing to explain to anyone told the schema
+    /// is the contract.
+    ///
+    /// Read by tooling, never by apexe: the loader neither fetches it nor
+    /// validates against it (`validate_overlay` is hand-written Rust, not a
+    /// JSON Schema check), and a file naming some other schema is still loaded
+    /// as an overlay. It round-trips so a rewritten file keeps the line.
+    #[serde(rename = "$schema", default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+
     /// Format version; only [`OVERLAY_SCHEMA_VERSION`] is accepted.
     pub schema_version: String,
     /// Command name this overlay describes (`ls`, not `/bin/ls`).
@@ -365,6 +381,7 @@ pub struct ToolOverlay {
 impl Default for ToolOverlay {
     fn default() -> Self {
         Self {
+            schema: None,
             schema_version: OVERLAY_SCHEMA_VERSION.to_string(),
             command: String::new(),
             variant: ToolVariant::default(),
@@ -913,6 +930,7 @@ mod tests {
 
     fn overlay(mode: OverlayMode) -> ToolOverlay {
         ToolOverlay {
+            schema: None,
             schema_version: OVERLAY_SCHEMA_VERSION.to_string(),
             command: "ls".to_string(),
             variant: ToolVariant::Bsd,
@@ -1547,6 +1565,55 @@ mod tests {
             .iter()
             .map(|value| value.as_str().unwrap().to_string())
             .collect()
+    }
+
+    /// `deny_unknown_fields` is on, so the one line every editor looks for was
+    /// a hard load failure until `$schema` existed as a field. Both halves are
+    /// asserted: the Rust type accepts it, and the standalone schema declares
+    /// it — the schema is `additionalProperties: false`, so a consumer
+    /// validating against the file would otherwise reject what the loader
+    /// accepts.
+    #[test]
+    fn test_overlay_accepts_and_round_trips_a_schema_pointer() {
+        let document = r#"{
+          "$schema": "https://aiperceivable.github.io/apexe/schemas/tool-overlay.schema.json",
+          "schema_version": "1.0",
+          "command": "tee",
+          "variant": "bsd"
+        }"#;
+        let overlay: ToolOverlay =
+            serde_json::from_str(document).expect("a $schema line must not break loading");
+        assert_eq!(
+            overlay.schema.as_deref(),
+            Some("https://aiperceivable.github.io/apexe/schemas/tool-overlay.schema.json")
+        );
+
+        let encoded = serde_json::to_string(&overlay).unwrap();
+        assert!(
+            encoded.contains("\"$schema\""),
+            "a rewritten overlay must keep the author's $schema line"
+        );
+
+        let without = r#"{"schema_version":"1.0","command":"tee","variant":"bsd"}"#;
+        let bare: ToolOverlay = serde_json::from_str(without).unwrap();
+        assert!(bare.schema.is_none());
+        assert!(
+            !serde_json::to_string(&bare).unwrap().contains("$schema"),
+            "and an overlay without one must not grow an empty key"
+        );
+    }
+
+    #[test]
+    fn test_schema_file_declares_the_schema_pointer_property() {
+        let schema: serde_json::Value = serde_json::from_str(SCHEMA).unwrap();
+        assert_eq!(
+            schema["additionalProperties"],
+            serde_json::Value::Bool(false)
+        );
+        assert!(
+            schema["properties"]["$schema"].is_object(),
+            "the top level refuses unknown properties, so $schema has to be declared"
+        );
     }
 
     #[test]

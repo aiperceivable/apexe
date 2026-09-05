@@ -921,7 +921,12 @@ mod tests {
     fn test_acl_destructive_open_world_is_listed_in_one_rule_only() {
         // Both rules deny, so a double listing changes no decision -- it just
         // makes an operator read the same id twice and wonder which applies.
-        let modules = vec![make_module_with_open_world("cli.git.push", false, true, true)];
+        let modules = vec![make_module_with_open_world(
+            "cli.git.push",
+            false,
+            true,
+            true,
+        )];
         let mgr = AclManager::generate_default(&modules);
         let listings: Vec<_> = mgr
             .acl

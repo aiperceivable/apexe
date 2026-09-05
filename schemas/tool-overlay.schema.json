@@ -32,6 +32,10 @@
     }
   ],
   "properties": {
+    "$schema": {
+      "description": "Pointer to this schema, so an editor can offer completion and inline validation. Optional, read by tooling and by nothing else: a consumer neither fetches it nor is required to validate against it, and a file naming a different schema is still a well-formed overlay. It is declared here because the top level is `additionalProperties: false` -- without an entry, the one line every editor looks for would make the file invalid, and a format that cannot point at its own definition is a hard thing to hand to an outside implementer.",
+      "type": "string"
+    },
     "schema_version": {
       "description": "Overlay format version. Only \"1.0\" is currently accepted.",
       "type": "string",
@@ -51,12 +55,12 @@
       "$ref": "#/$defs/match"
     },
     "mode": {
-      "description": "authoritative replaces the scan result's flags, positional args and subcommands entirely (for system built-ins whose surface the overlay fully enumerates). merge keeps the scan as the base, overriding matching flags and adding missing ones.",
+      "description": "Whether this overlay is a complete enumeration of the command's surface or a partial patch over it. `authoritative` asserts that the flags, positional args and subcommands listed here are the whole set, so a consumer holding its own weaker description of the command -- a scan, a completion spec, an older overlay -- should discard that and use this instead. `merge` asserts only the entries it lists, leaving everything else to whatever the consumer already had, so a gap degrades to the weaker source rather than erasing a real flag. Choose `authoritative` only when the option set was closed against the running tool (a getopt string, an enumerated long-option table), never when a document was merely transcribed. apexe, as one consumer, applies this against its heuristic scan result.",
       "enum": ["authoritative", "merge"],
       "default": "merge"
     },
     "confidence": {
-      "description": "Trust level stamped onto every flag this overlay contributes. \"verified\" additionally requires a provenance block.",
+      "description": "How strongly the contents are evidenced, stamped onto every flag this overlay contributes. `verified` -- read off the running tool itself and recorded in `provenance`, which the schema then requires; this is the only level that carries a re-runnable check. `high` -- taken from a machine-readable description shipped by the tool or its packagers, such as a completion spec. `medium` -- two independent sources agree. `low` -- a single unconfirmed source. The levels describe the evidence, not the author's certainty: writing an overlay from knowledge of a tool is `low` however sure the author is, because nothing about it can be re-checked.",
       "enum": ["low", "medium", "high", "verified"],
       "default": "low"
     },

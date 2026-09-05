@@ -97,6 +97,23 @@ impl ScanOrchestrator {
     fn build(config: ApexeConfig, pipeline: ParserPipeline) -> Self {
         let cache = ScanCache::new(config.cache_dir.clone());
         let mut overlays = OverlayStore::with_builtins();
+        // Configured corpora first, the operator's own directory last: on a tie
+        // `OverlayStore::select` keeps the last equally-ranked entry, so load
+        // order is what makes a hand-written local file shadow a distributed
+        // one. See `ApexeConfig::overlay_dirs`.
+        for dir in &config.overlay_dirs {
+            if !dir.is_dir() {
+                // Distinguished from the personal directory below, whose
+                // absence is the normal case: a path an operator typed and
+                // that is not there is more likely a typo than an intent.
+                warn!(dir = %dir.display(), "Configured overlay directory does not exist");
+                continue;
+            }
+            match overlays.load_dir(dir) {
+                Ok(n) => info!(dir = %dir.display(), count = n, "Loaded overlay directory"),
+                Err(e) => warn!(dir = %dir.display(), "Ignoring invalid overlay: {e}"),
+            }
+        }
         let user_dir = super::overlay_store::user_overlay_dir(&config.config_dir);
         if let Err(e) = overlays.load_dir(&user_dir) {
             // A broken hand-written overlay must be visible, but it must not
@@ -919,6 +936,93 @@ mod tests {
             json_output_preference: true,
             ..ApexeConfig::default()
         }
+    }
+
+    /// Fixture for the overlay-directory tests: a `merge` overlay for `widget`
+    /// whose description says which directory it came from.
+    fn widget_overlay(from: &str) -> String {
+        format!(
+            r#"{{
+              "schema_version": "1.0",
+              "command": "widget",
+              "variant": "bsd",
+              "match": {{ "platform": ["macos"] }},
+              "mode": "merge",
+              "confidence": "verified",
+              "description": "{from}",
+              "provenance": {{
+                "platform": "macos",
+                "tool_version": "test",
+                "source": "man-page",
+                "checked_on": "2026-09-05"
+              }},
+              "flags": []
+            }}"#
+        )
+    }
+
+    fn widget_context() -> crate::adapter::overlay::MatchContext {
+        crate::adapter::overlay::MatchContext {
+            command: "widget".to_string(),
+            variant: crate::models::ToolVariant::Bsd,
+            platform: Some(crate::adapter::overlay::Platform::new("macos")),
+            binary_path: "/bin/widget".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_configured_overlay_dirs_are_loaded() {
+        let tmp = TempDir::new().unwrap();
+        let corpus = TempDir::new().unwrap();
+        std::fs::write(corpus.path().join("widget.json"), widget_overlay("corpus")).unwrap();
+
+        let mut config = test_config(&tmp);
+        config.overlay_dirs = vec![corpus.path().to_path_buf()];
+        let orchestrator = ScanOrchestrator::new(config);
+
+        let selected = orchestrator
+            .overlays
+            .select(&widget_context())
+            .expect("an overlay from a configured directory must be reachable");
+        assert_eq!(selected.overlay.description, "corpus");
+    }
+
+    /// The whole point of the load order in `build`: a corpus someone else
+    /// maintains must not silently outrank the operator's own file.
+    #[test]
+    fn test_personal_overlay_dir_shadows_a_configured_one() {
+        let tmp = TempDir::new().unwrap();
+        let corpus = TempDir::new().unwrap();
+        std::fs::write(corpus.path().join("widget.json"), widget_overlay("corpus")).unwrap();
+        let personal = tmp.path().join("overlays");
+        std::fs::create_dir_all(&personal).unwrap();
+        std::fs::write(personal.join("widget.json"), widget_overlay("personal")).unwrap();
+
+        let mut config = test_config(&tmp);
+        config.overlay_dirs = vec![corpus.path().to_path_buf()];
+        let orchestrator = ScanOrchestrator::new(config);
+
+        let selected = orchestrator.overlays.select(&widget_context()).unwrap();
+        assert_eq!(
+            selected.overlay.description, "personal",
+            "<config_dir>/overlays is read last precisely so it wins this tie"
+        );
+    }
+
+    /// A path that is not there is a warning, not a failure: a corpus may
+    /// legitimately not be installed yet, and a scan the built-ins can serve
+    /// must still run.
+    #[test]
+    fn test_missing_configured_overlay_dir_does_not_break_construction() {
+        let tmp = TempDir::new().unwrap();
+        let mut config = test_config(&tmp);
+        config.overlay_dirs = vec![tmp.path().join("nope"), tmp.path().join("also-nope")];
+        let orchestrator = ScanOrchestrator::new(config);
+        assert!(
+            !orchestrator.overlays.is_empty(),
+            "the built-in overlays must survive a bad overlay_dirs entry"
+        );
     }
 
     // T37: ScanOrchestrator construction

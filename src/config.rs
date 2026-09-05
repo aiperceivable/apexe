@@ -58,6 +58,28 @@ pub struct ApexeConfig {
     /// `~/.config` needs no entry here; it is not guarded in the first place.
     pub allowed_paths: Vec<PathBuf>,
 
+    /// Overlay directories to read *in addition to* `<config_dir>/overlays`.
+    ///
+    /// Additive by construction, like [`Self::additional_denied_paths`]: the
+    /// personal directory is always read and there is no setting that removes
+    /// it. This exists so a corpus someone else maintains — a team policy
+    /// repository, a plugin that ships overlays, a checked-out data set — can
+    /// be consumed without copying files into a directory apexe also treats as
+    /// the operator's own scratch space.
+    ///
+    /// **Order is load order, and later wins.** Entries are read in the order
+    /// listed, then `<config_dir>/overlays` is read last, so a hand-written
+    /// local file shadows a distributed corpus that describes the same
+    /// (command, variant). The rule follows the one already governing
+    /// built-in vs user overlays: the source closer to the operator ranks
+    /// higher. It does not override `--overlay`, which still wins outright.
+    ///
+    /// A listed directory that does not exist is a warning rather than an
+    /// error — a corpus may legitimately not be installed yet — but it is not
+    /// silent, because a typo here is otherwise indistinguishable from an
+    /// empty directory.
+    pub overlay_dirs: Vec<PathBuf>,
+
     /// apcore core configuration for ecosystem integration.
     #[serde(skip)]
     pub core_config: Option<CoreConfig>,
@@ -78,6 +100,7 @@ impl Default for ApexeConfig {
             json_output_preference: true,
             additional_denied_paths: Vec::new(),
             allowed_paths: Vec::new(),
+            overlay_dirs: Vec::new(),
             core_config: None,
         }
     }
@@ -296,6 +319,18 @@ fn apply_env_overrides(config: &mut ApexeConfig) {
             Err(_) => warn!("Invalid APEXE_TIMEOUT value: {val}, using default"),
         }
     }
+    if let Ok(val) = std::env::var("APEXE_OVERLAY_DIRS") {
+        // `:`-separated like PATH. apexe does not support Windows (see the
+        // platform table in README.md), so there is no `;` variant to handle.
+        // Empty segments are dropped rather than resolving to the working
+        // directory, which is what a stray leading or trailing `:` would
+        // otherwise mean.
+        config.overlay_dirs = val
+            .split(':')
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from)
+            .collect();
+    }
     if let Ok(val) = std::env::var("APEXE_SCAN_DEPTH") {
         match val.parse::<u32>() {
             Ok(d) if (1..=5).contains(&d) => config.scan_depth = d,
@@ -431,6 +466,46 @@ mod tests {
     /// `allowed_paths` in particular is the one setting that widens what the
     /// process will permit, so a silent deserialization failure there would
     /// look exactly like a carve-out that does nothing.
+    /// `overlay_dirs` decides which corpora a scan can see at all, so a silent
+    /// deserialization failure here looks exactly like a corpus that is
+    /// installed but ignored.
+    #[test]
+    fn test_overlay_dirs_round_trip_through_config_yaml() {
+        let configured: ApexeConfig = serde_yaml::from_str(
+            "log_level: info\n\
+             overlay_dirs:\n\
+             \x20 - /opt/cli-facts/overlays\n\
+             \x20 - ~/team-policy/overlays\n",
+        )
+        .expect("config with overlay_dirs must parse");
+
+        assert_eq!(
+            configured.overlay_dirs,
+            vec![
+                PathBuf::from("/opt/cli-facts/overlays"),
+                PathBuf::from("~/team-policy/overlays"),
+            ],
+            "order is load order and later wins, so it must survive the round trip"
+        );
+    }
+
+    /// The field is additive, and a config file that omits it must not turn
+    /// into "no overlay directories at all".
+    #[test]
+    fn test_overlay_dirs_defaults_to_empty_when_absent() {
+        let configured: ApexeConfig =
+            serde_yaml::from_str("log_level: info\n").expect("must parse");
+        assert!(configured.overlay_dirs.is_empty());
+    }
+
+    #[test]
+    fn test_overlay_dirs_is_a_recognised_config_key() {
+        assert!(
+            known_config_keys().iter().any(|k| k == "overlay_dirs"),
+            "an unrecognised key is warned about as a typo, which would be wrong here"
+        );
+    }
+
     #[test]
     fn test_path_guard_lists_round_trip_through_config_yaml() {
         let configured: ApexeConfig = serde_yaml::from_str(

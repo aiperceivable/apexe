@@ -218,6 +218,39 @@ GNU's `-h` also affects `-s`; BSD's does not. Never copy a description across va
 
 ---
 
+> Writing one is this document. **Reading** one — selecting which overlay
+> applies, what `mode` and `confidence` oblige you to, and the four placement
+> fields that decide an `argv` — is
+> [Reading Overlays Without apexe](overlay-consumers.md).
+
+## Where the file goes
+
+An overlay has three possible destinations, and they cost different amounts.
+
+**`~/.apexe/overlays/*.{json,yaml}` — no code change, no rebuild.** The directory
+is read at scan time, so dropping a file there is enough: the next
+`apexe scan <tool>` picks it up. It also *outranks* the built-ins at equal match
+strength, so this is where a local correction or a distributed corpus belongs.
+`--overlay <PATH>` is the same thing for one invocation, and outranks both.
+
+**A directory listed in `overlay_dirs` — no code change, and not yours to
+maintain.** Config (`overlay_dirs:` in `config.yaml`, or `APEXE_OVERLAY_DIRS`)
+names extra directories read *before* `~/.apexe/overlays/`. This is where a
+corpus someone else publishes belongs — a team policy repository, a checked-out
+data set, a plugin that ships overlays — so that consuming it does not mean
+copying files into a directory apexe also treats as your own scratch space. A
+listed directory that does not exist is warned about, not ignored silently.
+
+**`overlays/` in this repository — compiled in, and it needs one more edit.**
+The built-in set is a hand-written list of `include_str!` entries in
+`src/scanner/overlay_store.rs`. Dropping a file into `overlays/` and stopping
+there produces a file that is **not** built in: it sits in the repo, passes
+review, reads as shipped, is covered by no test, and reaches no user. The list
+is deliberately hand-written — see the comment on `BUILTIN_OVERLAYS`, which
+keeps the built-in set short on purpose — so the registration is a decision you
+make, not boilerplate to be generated. `test_every_overlay_file_is_registered_as_a_builtin`
+fails and names your file if you forget.
+
 ## Checklist
 
 1. Confirm heuristic scanning genuinely cannot do the job.
@@ -228,7 +261,8 @@ GNU's `-h` also affects `-s`; BSD's does not. Never copy a description across va
 6. Record `provenance` with a re-runnable `command` and a digest-pinned `environment`.
 7. Choose `authoritative` only if the overlay enumerates the option set completely; otherwise `merge`.
 8. Test it with `apexe scan <tool> --overlay <file> --no-cache`. **`--no-cache` is not optional here** — see below.
-9. Run `cargo test` — the built-in overlays are parsed and validated by the suite.
+9. To ship it as a built-in, add it to `BUILTIN_OVERLAYS` in `src/scanner/overlay_store.rs`. Skip this and the file is inert — see [Where the file goes](#where-the-file-goes). Nothing is needed for `~/.apexe/overlays/`.
+10. Run `cargo test` — the built-in overlays are parsed and validated by the suite, and a file in `overlays/` that no entry names is a failure.
 
 ### `--no-cache` when testing an overlay
 

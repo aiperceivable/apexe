@@ -781,6 +781,39 @@ mod tests {
         assert_eq!(selected.strength, MatchStrength::Platform);
     }
 
+    /// Two directories can describe the same (command, variant), and which one
+    /// wins is decided by load order alone -- `select` keeps the last entry
+    /// among equally-ranked ones. That is an implicit property of `max_by_key`
+    /// rather than something the code says out loud, so it is pinned here:
+    /// `ScanOrchestrator` relies on it to make the operator's own
+    /// `<config_dir>/overlays` shadow a corpus listed in `overlay_dirs`, and a
+    /// refactor to `min_by_key`, a sort, or a `HashMap` would silently invert
+    /// that without failing anything else.
+    #[test]
+    fn test_last_loaded_dir_wins_among_equally_ranked_overlays() {
+        let first = TempDir::new().unwrap();
+        let second = TempDir::new().unwrap();
+        let doc = |desc: &str| {
+            MINIMAL.replace(
+                "\"flags\": []",
+                &format!("\"description\": \"{desc}\", \"flags\": []"),
+            )
+        };
+        std::fs::write(first.path().join("widget.json"), doc("from-first")).unwrap();
+        std::fs::write(second.path().join("widget.json"), doc("from-second")).unwrap();
+
+        let mut store = OverlayStore::empty();
+        store.load_dir(first.path()).unwrap();
+        store.load_dir(second.path()).unwrap();
+
+        let ctx = context("widget", ToolVariant::Bsd, Platform::new("macos"));
+        let selected = store.select(&ctx).expect("one of the two must match");
+        assert_eq!(
+            selected.overlay.description, "from-second",
+            "the directory loaded last must win, or overlay_dirs precedence is inverted"
+        );
+    }
+
     #[test]
     fn test_user_overlay_dir_is_under_config_dir() {
         let dir = user_overlay_dir(Path::new("/home/me/.apexe"));
@@ -813,12 +846,13 @@ mod tests {
             .collect();
         on_disk.sort();
 
-        let mut registered: Vec<String> =
-            BUILTIN_OVERLAYS.iter().map(|(id, _)| id.to_string()).collect();
+        let mut registered: Vec<String> = BUILTIN_OVERLAYS
+            .iter()
+            .map(|(id, _)| id.to_string())
+            .collect();
         registered.sort();
 
-        let unregistered: Vec<_> =
-            on_disk.iter().filter(|f| !registered.contains(f)).collect();
+        let unregistered: Vec<_> = on_disk.iter().filter(|f| !registered.contains(f)).collect();
         assert!(
             unregistered.is_empty(),
             "overlays/ holds files that BUILTIN_OVERLAYS does not list, so they ship \

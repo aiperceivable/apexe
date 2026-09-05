@@ -223,8 +223,14 @@ missing ones. Overlays are the only source that can state `conflicts_with`,
 because no help or man page format expresses mutual exclusion machine-readably.
 
 Overlays are loaded from, in increasing precedence: the built-ins compiled into
-apexe (`overlays/`), `~/.apexe/overlays/*.{json,yaml}`, and `--overlay <PATH>`.
+apexe (`overlays/`), each directory listed in `overlay_dirs` in the order given,
+`~/.apexe/overlays/*.{json,yaml}`, and `--overlay <PATH>`. `overlay_dirs` is how
+a corpus someone else maintains — a team policy repository, a plugin that ships
+overlays — is consumed without copying files into the operator's own directory;
+that directory is still read last, so a hand-written local file wins the tie.
 The format is defined by [`schemas/tool-overlay.schema.json`](schemas/tool-overlay.schema.json).
+It describes the command rather than apexe, so a second implementation can read
+the same files — see [Reading Overlays Without apexe](docs/overlay-consumers.md).
 
 Every emitted flag carries `sources` and a derived `confidence`:
 `verified` (overlay) > `high` (completion spec) > `medium` (two independent
