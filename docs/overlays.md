@@ -1,10 +1,9 @@
 # Authoring Tool Overlays
 
-> **Where a new entry goes.** The corpus is maintained in
-> [cli-permissions](https://github.com/aiperceivable/cli-permissions), which is
-> upstream; `overlays/` in this repository is a vendored snapshot of the set
-> apexe ships built in. Write and verify an entry there. This document is the
-> procedure for doing so, and it applies wherever the file ends up — including
+> **Where a new entry goes.** apexe ships no overlays; the corpus is the
+> [cli-permissions](https://github.com/aiperceivable/cli-permissions)
+> repository. Write and verify an entry there. This document is the procedure
+> for doing so, and it applies wherever the file ends up — including
 > `~/.apexe/overlays/`, which needs no repository at all.
 
 An overlay is a hand-written, reviewed description of **one variant of one command** — BSD `ls` as shipped by macOS, GNU coreutils `ls`, BusyBox `ls`. When one matches, it can replace the scanner's heuristic output entirely.
