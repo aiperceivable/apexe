@@ -248,15 +248,15 @@ data set, a plugin that ships overlays — so that consuming it does not mean
 copying files into a directory apexe also treats as your own scratch space. A
 listed directory that does not exist is warned about, not ignored silently.
 
-**`overlays/` in this repository — compiled in, and it needs one more edit.**
-The built-in set is a hand-written list of `include_str!` entries in
-`src/scanner/overlay_store.rs`. Dropping a file into `overlays/` and stopping
-there produces a file that is **not** built in: it sits in the repo, passes
-review, reads as shipped, is covered by no test, and reaches no user. The list
-is deliberately hand-written — see the comment on `BUILTIN_OVERLAYS`, which
-keeps the built-in set short on purpose — so the registration is a decision you
-make, not boilerplate to be generated. `test_every_overlay_file_is_registered_as_a_builtin`
-fails and names your file if you forget.
+**A packaged corpus in a well-known location — nothing to configure.** apexe
+also reads `$XDG_DATA_HOME/cli-permissions/overlays`,
+`/usr/local/share/cli-permissions/overlays`, `/usr/share/…`, and Homebrew's
+prefix on macOS. That is where a package manager should install the corpus, so
+that installing it is enough. It ranks below both directories above, so a local
+correction always wins.
+
+**apexe itself carries none.** There is no built-in set to add to: the corpus is
+the `cli-permissions` repository, and apexe reads it like any other consumer.
 
 ## Checklist
 
@@ -268,8 +268,8 @@ fails and names your file if you forget.
 6. Record `provenance` with a re-runnable `command` and a digest-pinned `environment`.
 7. Choose `authoritative` only if the overlay enumerates the option set completely; otherwise `merge`.
 8. Test it with `apexe scan <tool> --overlay <file> --no-cache`. **`--no-cache` is not optional here** — see below.
-9. To ship it as a built-in, add it to `BUILTIN_OVERLAYS` in `src/scanner/overlay_store.rs`. Skip this and the file is inert — see [Where the file goes](#where-the-file-goes). Nothing is needed for `~/.apexe/overlays/`.
-10. Run `cargo test` — the built-in overlays are parsed and validated by the suite, and a file in `overlays/` that no entry names is a failure.
+9. Open a pull request against [cli-permissions](https://github.com/aiperceivable/cli-permissions). Nothing is needed to use it locally — `~/.apexe/overlays/` picks it up as soon as it is on disk.
+10. Run `cargo test` in apexe with `APEXE_TEST_CORPUS` pointing at your corpus, so the tests that assert against real entries actually run.
 
 ### `--no-cache` when testing an overlay
 

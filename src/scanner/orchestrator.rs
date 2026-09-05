@@ -96,11 +96,22 @@ impl ScanOrchestrator {
 
     fn build(config: ApexeConfig, pipeline: ParserPipeline) -> Self {
         let cache = ScanCache::new(config.cache_dir.clone());
-        let mut overlays = OverlayStore::with_builtins();
-        // Configured corpora first, the operator's own directory last: on a tie
+        let mut overlays = OverlayStore::empty();
+        // A packaged corpus first, then configured ones, then the operator's own
+        // directory: on a tie
         // `OverlayStore::select` keeps the last equally-ranked entry, so load
         // order is what makes a hand-written local file shadow a distributed
         // one. See `ApexeConfig::overlay_dirs`.
+        for dir in super::overlay_store::packaged_overlay_dirs() {
+            // Absence is the normal case for a packaged path nobody installed,
+            // unlike a path an operator typed, so this one is silent.
+            if dir.is_dir() {
+                match overlays.load_dir(&dir) {
+                    Ok(n) => info!(dir = %dir.display(), count = n, "Loaded packaged overlays"),
+                    Err(e) => warn!(dir = %dir.display(), "Ignoring invalid overlay: {e}"),
+                }
+            }
+        }
         for dir in &config.overlay_dirs {
             if !dir.is_dir() {
                 // Distinguished from the personal directory below, whose
@@ -583,6 +594,7 @@ fn corroborate_sources(target: &mut [ScannedFlag], source: &[ScannedFlag]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     /// The subcommand-padding rule carries this file's longest rationale and
     /// had no test: its only guard wrapped its assertion in
@@ -713,7 +725,13 @@ mod tests {
         // the platform, because that is the whole point: a Homebrew GNU `ls` on
         // macOS must get the GNU overlay, not the BSD one.
         let tmp = TempDir::new().unwrap();
-        let orchestrator = ScanOrchestrator::new(test_config(&tmp));
+        // apexe ships no overlays, so the corpus has to be pointed at. This is
+        // also what a user does: install cli-permissions, then name it in
+        // `overlay_dirs` or drop it where `packaged_overlay_dirs` looks.
+        let Some(corpus) = corpus_dir() else { return };
+        let mut config = test_config(&tmp);
+        config.overlay_dirs = vec![corpus];
+        let orchestrator = ScanOrchestrator::new(config);
 
         let tools = orchestrator.scan(&["ls".into()], true, 1).tools;
         let tool = &tools[0];
@@ -940,6 +958,25 @@ mod tests {
 
     /// Fixture for the overlay-directory tests: a `merge` overlay for `widget`
     /// whose description says which directory it came from.
+    /// Same contract as `overlay_store::tests::corpus_dir`: `APEXE_TEST_CORPUS`
+    /// wins and panics when it points nowhere, a sibling checkout is the local
+    /// default, and absent-and-unset is a plain skip.
+    fn corpus_dir() -> Option<PathBuf> {
+        if let Some(configured) = std::env::var_os("APEXE_TEST_CORPUS") {
+            let path = PathBuf::from(configured);
+            assert!(
+                path.is_dir(),
+                "APEXE_TEST_CORPUS points at {}, which is not a directory",
+                path.display()
+            );
+            return Some(path);
+        }
+        let sibling = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()?
+            .join("cli-permissions/overlays");
+        sibling.is_dir().then_some(sibling)
+    }
+
     fn widget_overlay(from: &str) -> String {
         format!(
             r#"{{
@@ -1018,11 +1055,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut config = test_config(&tmp);
         config.overlay_dirs = vec![tmp.path().join("nope"), tmp.path().join("also-nope")];
+        // Construction must succeed. An empty store is the correct outcome:
+        // apexe carries no overlays of its own and both directories are missing.
         let orchestrator = ScanOrchestrator::new(config);
-        assert!(
-            !orchestrator.overlays.is_empty(),
-            "the built-in overlays must survive a bad overlay_dirs entry"
-        );
+        assert!(orchestrator.overlays.is_empty());
     }
 
     // T37: ScanOrchestrator construction

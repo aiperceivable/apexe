@@ -23,6 +23,31 @@ fn test_config() -> (TempDir, ApexeConfig) {
 }
 
 // T44: Scan git integration test
+/// The corpus these tests read, or `None` when this checkout has none.
+///
+/// apexe ships no overlays — the corpus lives in the `cli-permissions`
+/// repository — so a test asserting something about a real entry needs it on
+/// disk. `APEXE_TEST_CORPUS` names it (CI sets that); otherwise a sibling
+/// checkout is used, which is the ordinary local layout.
+///
+/// **Set but missing panics**, because a test that silently skips forever
+/// reports green while covering nothing.
+fn corpus_dir() -> Option<std::path::PathBuf> {
+    if let Some(configured) = std::env::var_os("APEXE_TEST_CORPUS") {
+        let path = std::path::PathBuf::from(configured);
+        assert!(
+            path.is_dir(),
+            "APEXE_TEST_CORPUS points at {}, which is not a directory",
+            path.display()
+        );
+        return Some(path);
+    }
+    let sibling = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()?
+        .join("cli-permissions/overlays");
+    sibling.is_dir().then_some(sibling)
+}
+
 #[test]
 #[ignore]
 fn test_scan_git() {
@@ -224,7 +249,8 @@ async fn test_find_renders_options_before_the_path_and_predicates_after() {
 #[test]
 fn test_shipped_find_overlays_declare_operand_and_flag_placement() {
     for variant in ["bsd", "gnu"] {
-        let path = format!("overlays/find@{variant}.json");
+        let Some(dir) = corpus_dir() else { return };
+        let path = dir.join(format!("find@{variant}.json"));
         let raw = std::fs::read_to_string(&path).expect("overlay should be readable");
         let doc: serde_json::Value = serde_json::from_str(&raw).expect("overlay should parse");
 
@@ -233,10 +259,12 @@ fn test_shipped_find_overlays_declare_operand_and_flag_placement() {
             .expect("positional_args")
             .iter()
             .find(|arg| arg["name"] == "path")
-            .unwrap_or_else(|| panic!("{path}: no `path` operand"));
+            .unwrap_or_else(|| panic!("{}: no `path` operand", path.display()));
         assert_eq!(
-            path_operand["before_flags"], true,
-            "{path}: `path` must render before the predicates"
+            path_operand["before_flags"],
+            true,
+            "{}: `path` must render before the predicates",
+            path.display()
         );
 
         let pre_operand: Vec<&str> = doc["flags"]
@@ -249,7 +277,8 @@ fn test_shipped_find_overlays_declare_operand_and_flag_placement() {
         // `-L` is the shared case; both variants reject it after the path.
         assert!(
             pre_operand.contains(&"-L"),
-            "{path}: find's true options must render before the path, got {pre_operand:?}"
+            "{}: find's true options must render before the path, got {pre_operand:?}",
+            path.display()
         );
     }
 }
@@ -366,7 +395,7 @@ fn test_shipped_overlays_leave_required_value_flags_unmarked() {
 /// Read one flag out of a shipped overlay, by its long name.
 /// An overlay's `annotations` block, or `None` when it declares none.
 fn overlay_annotations(overlay: &str) -> Option<serde_json::Value> {
-    let path = format!("overlays/{overlay}.json");
+    let path = corpus_dir()?.join(format!("{overlay}.json"));
     let raw = std::fs::read_to_string(&path).expect("overlay should be readable");
     let doc: serde_json::Value = serde_json::from_str(&raw).expect("overlay should parse");
     doc.get("annotations").cloned()
@@ -404,7 +433,9 @@ fn test_shipped_overlays_mark_command_executors_destructive() {
 }
 
 fn overlay_flag(overlay: &str, long: &str) -> serde_json::Value {
-    let path = format!("overlays/{overlay}.json");
+    let path = corpus_dir()
+        .expect("caller must check corpus_dir() first")
+        .join(format!("{overlay}.json"));
     let raw = std::fs::read_to_string(&path).expect("overlay should be readable");
     let doc: serde_json::Value = serde_json::from_str(&raw).expect("overlay should parse");
     doc["flags"]
@@ -412,7 +443,7 @@ fn overlay_flag(overlay: &str, long: &str) -> serde_json::Value {
         .expect("flags")
         .iter()
         .find(|flag| flag["long"] == long)
-        .unwrap_or_else(|| panic!("{path}: no flag named {long}"))
+        .unwrap_or_else(|| panic!("{}: no flag named {long}", path.display()))
         .clone()
 }
 

@@ -222,8 +222,16 @@ subcommands entirely; in `merge` mode it overrides matching flags and adds
 missing ones. Overlays are the only source that can state `conflicts_with`,
 because no help or man page format expresses mutual exclusion machine-readably.
 
-Overlays are loaded from, in increasing precedence: the built-ins compiled into
-apexe (`overlays/`), each directory listed in `overlay_dirs` in the order given,
+**apexe ships no overlays.** The corpus lives in
+[cli-permissions](https://github.com/aiperceivable/cli-permissions) and is
+installed separately; without it a scan falls back to heuristics, which recover
+the flag names and not much else — `conflicts_with` and `long_running` have no
+other source.
+
+Overlays are loaded from, in increasing precedence: a packaged corpus in a
+well-known location (`$XDG_DATA_HOME/cli-permissions/overlays`,
+`/usr/local/share/…`, `/usr/share/…`, and Homebrew's prefix on macOS), each
+directory listed in `overlay_dirs` in the order given,
 `~/.apexe/overlays/*.{json,yaml}`, and `--overlay <PATH>`. `overlay_dirs` is how
 a corpus someone else maintains — a team policy repository, a plugin that ships
 overlays — is consumed without copying files into the operator's own directory;

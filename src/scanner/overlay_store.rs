@@ -15,63 +15,12 @@
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::adapter::overlay::{
     validate_overlay, MatchContext, MatchStrength, OverlayDefect, ToolOverlay,
     OVERLAY_SCHEMA_VERSION,
 };
-
-/// Curated overlays compiled into the binary.
-///
-/// Deliberately a short list: it exists to prove the mechanism end to end, not
-/// to be a library of every CLI in existence.
-const BUILTIN_OVERLAYS: &[(&str, &str)] = &[
-    ("cat@bsd", include_str!("../../overlays/cat@bsd.json")),
-    ("cat@gnu", include_str!("../../overlays/cat@gnu.json")),
-    ("chmod@bsd", include_str!("../../overlays/chmod@bsd.json")),
-    ("chmod@gnu", include_str!("../../overlays/chmod@gnu.json")),
-    ("cp@bsd", include_str!("../../overlays/cp@bsd.json")),
-    ("cp@gnu", include_str!("../../overlays/cp@gnu.json")),
-    ("cut@bsd", include_str!("../../overlays/cut@bsd.json")),
-    ("cut@gnu", include_str!("../../overlays/cut@gnu.json")),
-    ("df@bsd", include_str!("../../overlays/df@bsd.json")),
-    ("df@gnu", include_str!("../../overlays/df@gnu.json")),
-    ("diff@bsd", include_str!("../../overlays/diff@bsd.json")),
-    ("diff@gnu", include_str!("../../overlays/diff@gnu.json")),
-    ("du@bsd", include_str!("../../overlays/du@bsd.json")),
-    ("du@gnu", include_str!("../../overlays/du@gnu.json")),
-    ("find@bsd", include_str!("../../overlays/find@bsd.json")),
-    ("find@gnu", include_str!("../../overlays/find@gnu.json")),
-    ("grep@bsd", include_str!("../../overlays/grep@bsd.json")),
-    ("grep@gnu", include_str!("../../overlays/grep@gnu.json")),
-    ("head@bsd", include_str!("../../overlays/head@bsd.json")),
-    ("head@gnu", include_str!("../../overlays/head@gnu.json")),
-    ("ln@bsd", include_str!("../../overlays/ln@bsd.json")),
-    ("ln@gnu", include_str!("../../overlays/ln@gnu.json")),
-    ("ls@bsd", include_str!("../../overlays/ls@bsd.json")),
-    ("ls@gnu", include_str!("../../overlays/ls@gnu.json")),
-    ("mkdir@bsd", include_str!("../../overlays/mkdir@bsd.json")),
-    ("mkdir@gnu", include_str!("../../overlays/mkdir@gnu.json")),
-    ("mv@bsd", include_str!("../../overlays/mv@bsd.json")),
-    ("mv@gnu", include_str!("../../overlays/mv@gnu.json")),
-    ("rm@bsd", include_str!("../../overlays/rm@bsd.json")),
-    ("rm@gnu", include_str!("../../overlays/rm@gnu.json")),
-    ("sed@bsd", include_str!("../../overlays/sed@bsd.json")),
-    ("sed@gnu", include_str!("../../overlays/sed@gnu.json")),
-    ("sort@apple", include_str!("../../overlays/sort@apple.json")),
-    ("sort@gnu", include_str!("../../overlays/sort@gnu.json")),
-    ("tail@bsd", include_str!("../../overlays/tail@bsd.json")),
-    ("tail@gnu", include_str!("../../overlays/tail@gnu.json")),
-    ("touch@bsd", include_str!("../../overlays/touch@bsd.json")),
-    ("touch@gnu", include_str!("../../overlays/touch@gnu.json")),
-    ("uniq@bsd", include_str!("../../overlays/uniq@bsd.json")),
-    ("uniq@gnu", include_str!("../../overlays/uniq@gnu.json")),
-    ("wc@bsd", include_str!("../../overlays/wc@bsd.json")),
-    ("wc@gnu", include_str!("../../overlays/wc@gnu.json")),
-    ("xargs@bsd", include_str!("../../overlays/xargs@bsd.json")),
-    ("xargs@gnu", include_str!("../../overlays/xargs@gnu.json")),
-];
 
 /// Failures while loading overlay documents.
 #[derive(Debug, Error)]
@@ -148,24 +97,6 @@ impl OverlayStore {
     /// An empty store, for tests and for callers that opt out of overlays.
     pub fn empty() -> Self {
         Self::default()
-    }
-
-    /// Load the curated built-in overlays.
-    ///
-    /// A malformed built-in is a build defect, not a user problem, so it is
-    /// logged and skipped rather than failing every scan.
-    pub fn with_builtins() -> Self {
-        let mut store = Self::default();
-        for (id, document) in BUILTIN_OVERLAYS {
-            match parse_overlay(id, document) {
-                Ok(overlay) => store.entries.push(StoredOverlay {
-                    overlay,
-                    origin: OverlayOrigin::Builtin,
-                }),
-                Err(e) => warn!(overlay = id, "Built-in overlay is invalid, skipping: {e}"),
-            }
-        }
-        store
     }
 
     /// Add every `*.json` / `*.yaml` overlay found directly under `dir`.
@@ -326,6 +257,37 @@ pub fn user_overlay_dir(config_dir: &Path) -> PathBuf {
     config_dir.join("overlays")
 }
 
+/// Well-known locations a packaged corpus may be installed to.
+///
+/// apexe ships no overlays of its own: the corpus lives in
+/// [cli-permissions](https://github.com/aiperceivable/cli-permissions) and is
+/// installed separately. These paths exist so that installing it through a
+/// package manager is enough — without them every user would have to discover
+/// `overlay_dirs` and write a config file before a package they already
+/// installed did anything.
+///
+/// Searched in order and all of them read, before `<config_dir>/overlays` and
+/// before anything in `overlay_dirs`, so a locally-installed or
+/// operator-configured corpus outranks a system one. A directory that is not
+/// there is silently skipped: absence is the normal case, unlike a path an
+/// operator typed.
+pub fn packaged_overlay_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(data) = std::env::var_os("XDG_DATA_HOME") {
+        dirs.push(PathBuf::from(data).join("cli-permissions/overlays"));
+    } else if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".local/share/cli-permissions/overlays"));
+    }
+    dirs.push(PathBuf::from("/usr/local/share/cli-permissions/overlays"));
+    dirs.push(PathBuf::from("/usr/share/cli-permissions/overlays"));
+    if cfg!(target_os = "macos") {
+        dirs.push(PathBuf::from(
+            "/opt/homebrew/share/cli-permissions/overlays",
+        ));
+    }
+    dirs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,6 +310,43 @@ mod tests {
       },
       "flags": []
     }"#;
+
+    /// The corpus these tests read, or `None` when this checkout has none.
+    ///
+    /// apexe ships no overlays: the corpus is a separate repository, so a test
+    /// that needs real entries needs it on disk. `APEXE_TEST_CORPUS` names it —
+    /// CI sets that — and otherwise a sibling `cli-permissions` checkout is
+    /// found, which is the ordinary local layout.
+    ///
+    /// **Set but missing panics.** A test that silently skips forever is worse
+    /// than one that fails: it reports green while covering nothing, and these
+    /// tests exist because overlays carry facts no scan can recover. Unset and
+    /// absent is a plain skip — a developer without the corpus, not a broken
+    /// pipeline.
+    fn corpus_dir() -> Option<PathBuf> {
+        if let Some(configured) = std::env::var_os("APEXE_TEST_CORPUS") {
+            let path = PathBuf::from(configured);
+            assert!(
+                path.is_dir(),
+                "APEXE_TEST_CORPUS points at {}, which is not a directory",
+                path.display()
+            );
+            return Some(path);
+        }
+        let sibling = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()?
+            .join("cli-permissions/overlays");
+        sibling.is_dir().then_some(sibling)
+    }
+
+    fn corpus_store() -> Option<OverlayStore> {
+        let dir = corpus_dir()?;
+        let mut store = OverlayStore::empty();
+        store
+            .load_dir(&dir)
+            .unwrap_or_else(|e| panic!("corpus at {} is unreadable: {e}", dir.display()));
+        Some(store)
+    }
 
     fn context(command: &str, variant: ToolVariant, platform: Platform) -> MatchContext {
         MatchContext {
@@ -379,18 +378,32 @@ mod tests {
         assert_eq!(selected.overlay.id(), "sort@apple");
     }
 
+    /// Every entry in the corpus parses.
+    ///
+    /// `load_dir` reports a malformed file rather than skipping it, so this
+    /// fails loudly if one is broken. There is no shipped count to compare
+    /// against any more — apexe carries no overlays of its own — so the
+    /// assertion is that the corpus is non-empty and every file in it loaded.
     #[test]
-    fn test_builtin_overlays_all_parse() {
-        // A malformed built-in would be silently skipped at runtime, so assert
-        // the shipped count here instead.
-        let store = OverlayStore::with_builtins();
-        assert_eq!(store.len(), BUILTIN_OVERLAYS.len());
-        assert!(!store.is_empty());
+    fn test_corpus_overlays_all_parse() {
+        let Some(dir) = corpus_dir() else { return };
+        let files = std::fs::read_dir(&dir)
+            .expect("corpus directory must be readable")
+            .filter_map(Result::ok)
+            .filter(|e| has_overlay_extension(&e.path()))
+            .count();
+        let store = corpus_store().expect("corpus_dir returned Some");
+        assert!(
+            !store.is_empty(),
+            "the corpus at {} is empty",
+            dir.display()
+        );
+        assert_eq!(store.len(), files, "every overlay file must have loaded");
     }
 
     #[test]
     fn test_builtin_ls_bsd_selected_for_bsd_probe() {
-        let store = OverlayStore::with_builtins();
+        let Some(store) = corpus_store() else { return };
         let mut ctx = context("ls", ToolVariant::Bsd, Platform::new("macos"));
         ctx.probes = vec![ProbeOutcome {
             args: super::super::variant::version_probe_args(),
@@ -406,7 +419,7 @@ mod tests {
     fn test_builtin_ls_gnu_selected_on_macos_when_probe_says_gnu() {
         // Homebrew coreutils on macOS: path heuristics would say BSD; the probe
         // is the only thing that gets this right.
-        let store = OverlayStore::with_builtins();
+        let Some(store) = corpus_store() else { return };
         let mut ctx = context("ls", ToolVariant::Gnu, Platform::new("macos"));
         ctx.binary_path = "/opt/homebrew/opt/coreutils/libexec/gnubin/ls".to_string();
         ctx.version = Some("9.4".to_string());
@@ -421,7 +434,7 @@ mod tests {
 
     #[test]
     fn test_builtin_rm_bsd_selected_for_bsd_probe() {
-        let store = OverlayStore::with_builtins();
+        let Some(store) = corpus_store() else { return };
         let mut ctx = context("rm", ToolVariant::Bsd, Platform::new("macos"));
         ctx.probes = vec![ProbeOutcome {
             args: super::super::variant::version_probe_args(),
@@ -435,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_builtin_rm_gnu_selected_when_probe_says_gnu() {
-        let store = OverlayStore::with_builtins();
+        let Some(store) = corpus_store() else { return };
         let mut ctx = context("rm", ToolVariant::Gnu, Platform::new("linux"));
         ctx.binary_path = "/usr/bin/rm".to_string();
         ctx.version = Some("9.7".to_string());
@@ -452,7 +465,7 @@ mod tests {
     /// reaching the approval gate, so both variants are pinned here.
     #[test]
     fn test_builtin_rm_overlays_assert_destructive_and_require_approval() {
-        let store = OverlayStore::with_builtins();
+        let Some(store) = corpus_store() else { return };
         let rm_overlays: Vec<_> = store
             .entries
             .iter()
@@ -472,7 +485,7 @@ mod tests {
     /// on a silent skip if someone strips a provenance block.
     #[test]
     fn test_builtin_overlays_are_verified_with_provenance() {
-        let store = OverlayStore::with_builtins();
+        let Some(store) = corpus_store() else { return };
         for entry in &store.entries {
             assert_eq!(
                 entry.overlay.confidence,
@@ -500,7 +513,7 @@ mod tests {
     /// diffutils, grep and findutils are all `gnu` and all curated here.
     #[test]
     fn test_builtin_gnu_overlays_pin_their_own_package() {
-        let store = OverlayStore::with_builtins();
+        let Some(store) = corpus_store() else { return };
         let gnu: Vec<_> = store
             .entries
             .iter()
@@ -542,7 +555,7 @@ mod tests {
     /// `probe.output_contains`.
     #[test]
     fn test_builtin_non_coreutils_gnu_overlays_are_selected_by_their_banner() {
-        let store = OverlayStore::with_builtins();
+        let Some(store) = corpus_store() else { return };
         for (command, banner, expected) in [
             ("grep", "grep (GNU grep) 3.11", "grep@gnu"),
             ("find", "find (GNU findutils) 4.10.0", "find@gnu"),
@@ -582,7 +595,7 @@ mod tests {
     /// says macOS.
     #[test]
     fn test_builtin_sort_apple_selected_only_on_the_apple_banner() {
-        let store = OverlayStore::with_builtins();
+        let Some(store) = corpus_store() else { return };
         let mut ctx = context("sort", ToolVariant::Apple, Platform::new("macos"));
         ctx.binary_path = "/usr/bin/sort".to_string();
         ctx.probes = vec![ProbeOutcome {
@@ -607,7 +620,7 @@ mod tests {
     /// the trip from the shipped overlay into the scanned flag.
     #[test]
     fn test_builtin_tail_overlays_mark_follow_long_running() {
-        let store = OverlayStore::with_builtins();
+        let Some(store) = corpus_store() else { return };
         let tails: Vec<_> = store
             .entries
             .iter()
@@ -633,7 +646,7 @@ mod tests {
 
     #[test]
     fn test_select_returns_none_for_unknown_command() {
-        let store = OverlayStore::with_builtins();
+        let Some(store) = corpus_store() else { return };
         let ctx = context(
             "definitely-not-a-real-tool",
             ToolVariant::Bsd,
@@ -644,7 +657,7 @@ mod tests {
 
     #[test]
     fn test_probe_arg_sets_always_includes_version() {
-        let store = OverlayStore::with_builtins();
+        let Some(store) = corpus_store() else { return };
         let sets = store.probe_arg_sets("ls");
         assert!(sets.contains(&vec!["--version".to_string()]));
     }
@@ -652,7 +665,7 @@ mod tests {
     #[test]
     fn test_probe_arg_sets_deduplicates() {
         // Both built-in ls overlays probe `--version`; it must appear once.
-        let store = OverlayStore::with_builtins();
+        let Some(store) = corpus_store() else { return };
         let sets = store.probe_arg_sets("ls");
         let version_count = sets
             .iter()
@@ -741,7 +754,9 @@ mod tests {
         let path = tmp.path().join("mine.json");
         std::fs::write(&path, document).unwrap();
 
-        let mut store = OverlayStore::with_builtins();
+        let Some(mut store) = corpus_store() else {
+            return;
+        };
         store.load_explicit(&path).unwrap();
 
         let ctx = context("ls", ToolVariant::Unknown, Platform::new("linux"));
@@ -771,7 +786,9 @@ mod tests {
             .replace("{ \"platform\": [\"macos\"] }", "{}");
         std::fs::write(tmp.path().join("ls.json"), document).unwrap();
 
-        let mut store = OverlayStore::with_builtins();
+        let Some(mut store) = corpus_store() else {
+            return;
+        };
         store.load_dir(tmp.path()).unwrap();
 
         // No probe outcomes recorded, so the built-in (probe-gated) overlays do
@@ -818,51 +835,5 @@ mod tests {
     fn test_user_overlay_dir_is_under_config_dir() {
         let dir = user_overlay_dir(Path::new("/home/me/.apexe"));
         assert_eq!(dir, PathBuf::from("/home/me/.apexe/overlays"));
-    }
-
-    /// `BUILTIN_OVERLAYS` restates something the `overlays/` directory already
-    /// knows, and only one direction of that duplication is guarded by the
-    /// compiler: a registered id with no file is a hard `include_str!` error,
-    /// while a file nobody registered is silently dead. It sits in the repo,
-    /// reads as shipped, is covered by no test, and never reaches a user. This
-    /// closes the unguarded direction.
-    ///
-    /// The list stays hand-written on purpose -- see the comment on
-    /// `BUILTIN_OVERLAYS`. The intent is that adding to it is a decision, not
-    /// that forgetting it is undetectable.
-    #[test]
-    fn test_every_overlay_file_is_registered_as_a_builtin() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("overlays");
-        let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
-            .expect("overlays/ directory must exist")
-            .filter_map(|e| e.ok())
-            .filter_map(|e| {
-                let path = e.path();
-                if path.extension()?.to_str()? != "json" {
-                    return None;
-                }
-                Some(path.file_stem()?.to_str()?.to_string())
-            })
-            .collect();
-        on_disk.sort();
-
-        let mut registered: Vec<String> = BUILTIN_OVERLAYS
-            .iter()
-            .map(|(id, _)| id.to_string())
-            .collect();
-        registered.sort();
-
-        let unregistered: Vec<_> = on_disk.iter().filter(|f| !registered.contains(f)).collect();
-        assert!(
-            unregistered.is_empty(),
-            "overlays/ holds files that BUILTIN_OVERLAYS does not list, so they ship \
-             to nobody and no test covers them: {unregistered:?}. Add them to \
-             BUILTIN_OVERLAYS in this file, or delete them."
-        );
-
-        assert_eq!(
-            registered, on_disk,
-            "BUILTIN_OVERLAYS and overlays/ disagree"
-        );
     }
 }
