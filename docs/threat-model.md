@@ -260,6 +260,18 @@ and skipping any one makes the guard decorative:
    preserves `..` because POSIX requires it, and collapsing it lexically first
    is wrong: `/tmp/link/..` is the parent of link's target, not `/tmp`.
 
+**A guarded location that is itself a symlink is held in both spellings.** The
+resolution above is deliberately partial — only the part of a path that exists
+gets canonicalized — so the same location can reach the comparison spelled two
+ways. On macOS `/etc` and `/var` are links into `/private`, and a baseline
+canonicalized once would contain only `/private/etc`; a `..` climb through a
+directory that does not exist folds lexically and arrives as the literal
+`/etc/passwd`, which matches neither. Every denied entry — the compiled-in
+baselines and `additional_denied_paths` alike — therefore stores its literal and
+its canonical form. Carve-outs (`allowed_paths`) deliberately do not: a second
+spelling can only match more paths, which is the right direction for a refusal
+and the wrong one for an exemption.
+
 **The check runs in both directions, and only one of them binds a reader.**
 *Containment* — the path sits inside a protected location, `/etc/passwd` under
 `/etc` — applies to both modes, and is what refuses `cat ~/.ssh/id_rsa`.

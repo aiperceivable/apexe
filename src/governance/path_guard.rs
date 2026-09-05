@@ -350,13 +350,13 @@ impl PathGuard {
     pub fn new(root: PathBuf, config: GuardConfig<'_>) -> Self {
         let system: Vec<PathBuf> = BASELINE_SYSTEM_PATHS
             .iter()
-            .map(|entry| resolve(Path::new(entry), &root))
+            .flat_map(|entry| baseline_spellings(Path::new(entry), &root))
             .collect();
 
         let mut credential: Vec<PathBuf> = Vec::new();
         if let Some(home) = dirs::home_dir() {
             for entry in BASELINE_CREDENTIAL_HOME_SUBPATHS {
-                credential.push(resolve(&home.join(entry), &root));
+                credential.extend(baseline_spellings(&home.join(entry), &root));
             }
         } else {
             tracing::warn!(
@@ -385,12 +385,18 @@ impl PathGuard {
         let credential_configured: Vec<PathBuf> = config
             .denied
             .iter()
-            .map(|entry| resolve(entry, &root))
+            .flat_map(|entry| baseline_spellings(entry, &root))
             .collect();
         credential.extend(credential_configured.iter().cloned());
         credential.sort();
         credential.dedup();
 
+        // Carve-outs deliberately do NOT get the two-spelling treatment the
+        // denied lists get. A second spelling can only ever match more paths,
+        // which is the right direction for a refusal and the wrong one for an
+        // exemption: a carve-out that fails to apply costs a refused call an
+        // operator can widen, while one that applies too broadly opens a
+        // location nobody named.
         let configured: Vec<PathBuf> = config
             .allowed
             .iter()
@@ -621,6 +627,43 @@ fn warn_about_risky_carve_outs(configured: &[PathBuf], system: &[PathBuf], crede
                 "Path guard carve-out configured"
             );
         }
+    }
+}
+
+/// Both spellings of a baseline entry: the literal path and where it
+/// canonicalizes to.
+///
+/// Passing the baseline through [`resolve`] alone was a hole on any platform
+/// where a guarded location is a symlink, and macOS is one: `/etc` and `/var`
+/// are links into `/private`, so every baseline entry canonicalized to
+/// `/private/…` and *nothing in the list was spelled `/etc` any more*. The
+/// comparison is then asymmetric, because a target does not always get
+/// canonicalized the same way — [`resolve_existing_prefix`] only canonicalizes
+/// the part of a path that exists and folds the rest lexically, so a `/etc`
+/// component reached across a non-existent tail survives uncanonicalized.
+///
+/// `/usr/local/share/../../../etc/passwd` on a host without `/usr/local/share`
+/// is exactly that shape: it resolves to the literal `/etc/passwd`, which
+/// `starts_with("/private/etc")` does not match, and a writer aimed at
+/// `/etc/passwd` was allowed through. The direct spelling was caught, because
+/// that path exists and canonicalizes — which is what made the gap easy to
+/// miss.
+///
+/// Keeping both spellings closes it in the only direction that matters. On a
+/// platform where the entry is not a symlink the two are equal and dedupe to
+/// one, so this costs nothing there; where they differ, the extra entry can
+/// only ever refuse more.
+fn baseline_spellings(entry: &Path, root: &Path) -> Vec<PathBuf> {
+    let literal = if entry.is_absolute() {
+        entry.to_path_buf()
+    } else {
+        root.join(entry)
+    };
+    let canonical = resolve(entry, root);
+    if canonical == literal {
+        vec![literal]
+    } else {
+        vec![literal, canonical]
     }
 }
 
@@ -1475,9 +1518,47 @@ mod tests {
         );
     }
 
+    /// Every compiled-in entry must reach the guard. The count is no longer
+    /// 1:1: an entry that is a symlink contributes both spellings, which is
+    /// what stops a lexically-folded `/etc/passwd` from slipping past a
+    /// baseline canonicalized to `/private/etc`.
     #[test]
-    fn test_system_baseline_matches_the_compiled_in_list() {
+    fn test_every_compiled_in_system_path_reaches_the_guard() {
         let guard = guard_at(Path::new("/"));
-        assert_eq!(guard.system_baseline().len(), BASELINE_SYSTEM_PATHS.len());
+        let baseline = guard.system_baseline();
+        for entry in BASELINE_SYSTEM_PATHS {
+            let literal = PathBuf::from(entry);
+            assert!(
+                baseline.contains(&literal)
+                    || baseline.contains(&resolve(&literal, Path::new("/"))),
+                "{entry} is compiled in but reached no spelling in the guard"
+            );
+        }
+        assert!(baseline.len() >= BASELINE_SYSTEM_PATHS.len());
+    }
+
+    /// The bug this pair exists for: on macOS `/etc` is a symlink into
+    /// `/private`, so the baseline canonicalized to `/private/etc` and nothing
+    /// in it was spelled `/etc`. A target only gets canonicalized where it
+    /// exists — `resolve_existing_prefix` folds the rest lexically — so a `..`
+    /// climb through a directory that is not there produced the literal
+    /// `/etc/passwd`, which matched no entry and was allowed to a writer. The
+    /// direct spelling was refused the whole time, which is what hid it.
+    #[test]
+    fn test_a_lexically_folded_system_path_is_refused_in_both_spellings() {
+        let guard = guard_at(Path::new("/"));
+        for target in ["/etc/passwd", "/var/db/x"] {
+            let folded = PathBuf::from(target);
+            assert!(
+                guard.denial_reason(&folded, Write).is_some(),
+                "{target} must be refused as written, not only once canonicalized"
+            );
+            let canonical = resolve(&folded, Path::new("/"));
+            assert!(
+                guard.denial_reason(&canonical, Write).is_some(),
+                "{} must be refused too",
+                canonical.display()
+            );
+        }
     }
 }

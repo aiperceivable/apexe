@@ -2404,8 +2404,22 @@ mod tests {
         // that is what the printed JSON is built from. The stored entry is
         // resolved (symlinks followed, e.g. macOS's `/tmp` -> `/private/tmp`),
         // so compare by suffix rather than exact equality with `extra`.
+        //
+        // One configured path can store *two* entries, not one: a denied path
+        // under a symlinked directory is kept in both spellings, because a
+        // target reached across a non-existent tail is folded lexically and
+        // never acquires the canonical one. macOS puts `TempDir` under
+        // `/var/folders/…` -> `/private/var/folders/…`, so this test sees both
+        // there and a single entry on a host where the two coincide.
         args.print_summary(&guard).unwrap();
-        assert_eq!(guard.credential_configured().len(), 1);
-        assert!(guard.credential_configured()[0].ends_with("secret-data"));
+        let configured = guard.credential_configured();
+        assert!(
+            !configured.is_empty(),
+            "the configured denial must reach the guard"
+        );
+        assert!(
+            configured.iter().all(|p| p.ends_with("secret-data")),
+            "every stored spelling must name the configured path: {configured:?}"
+        );
     }
 }
