@@ -3,9 +3,20 @@
   "command": "ls",
   "variant": "bsd",
   "match": {
-    "platform": ["macos", "freebsd"],
-    "probe": { "args": ["--version"], "expect": "failure" },
-    "binary_globs": ["/bin/ls", "/usr/bin/ls"]
+    "platform": [
+      "macos",
+      "freebsd"
+    ],
+    "probe": {
+      "args": [
+        "--version"
+      ],
+      "expect": "failure"
+    },
+    "binary_globs": [
+      "/bin/ls",
+      "/usr/bin/ls"
+    ]
   },
   "mode": "authoritative",
   "confidence": "verified",
@@ -16,64 +27,359 @@
     "checked_on": "2026-07-27",
     "command": "man -P cat ls | col -b",
     "environment": "macOS 26.3 (Darwin arm64), system /bin/ls",
-    "notes": "BSD ls is not versioned independently of the OS, so the host release identifies the build. It also rejects --version, which is why the bsd probe matches on failure rather than on a banner. conflicts_with was extended in a later pass, after the field's definition widened to cover override groups as well as diagnosed errors: apexe's input is a JSON object, which carries no ordering, so for a last-one-wins group which flag actually wins is decided by the order the caller happened to write the keys in. Every pair added then was run in BOTH orders against the reference build recorded above, and only pairs whose outcome depends on that order, or where one side is silently discarded, were added. value_optional was added on 2026-08-24 and established behaviourally on the build recorded above, since a BSD man page has no notation for an optional option argument: each candidate was run in BOTH spellings and marked only when the separated form demonstrably lost the value. `ls --color never .` is \"ls: never: No such file or directory\" (exit 1) AND still emits colour escapes, so the caller's request is inverted rather than merely dropped, while `ls --color=never .` exits 0 with colour off. It is the only long option on this build that takes a value."
+    "notes": "BSD ls is not versioned independently of the OS, so the host release identifies the build. It also rejects --version, which is why the bsd probe matches on failure rather than on a banner. conflicts_with was extended in a later pass, after the field's definition widened to cover override groups as well as diagnosed errors: apexe's input is a JSON object, which carries no ordering, so for a last-one-wins group which flag actually wins is decided by the order the caller happened to write the keys in. Every pair added then was run in BOTH orders against the reference build recorded above, and only pairs whose outcome depends on that order, or where one side is silently discarded, were added. value_optional was added on 2026-08-24 and established behaviourally on the build recorded above, since a BSD man page has no notation for an optional option argument: each candidate was run in BOTH spellings and marked only when the separated form demonstrably lost the value. `ls --color never .` is \"ls: never: No such file or directory\" (exit 1) AND still emits colour escapes, so the caller's request is inverted rather than merely dropped, while `ls --color=never .` exits 0 with colour off. It is the only long option on this build that takes a value.\n\nopen_world IS SET FALSE BY ENUMERATION, not by assumption. This overlay is `mode: authoritative`, which asserts its flag list is the complete option set for this variant, so the question \"can any invocation of this command reach off the machine or run another program?\" is answerable from the overlay itself. Every flag and operand was reviewed for a value that names a program to execute or a host to reach; none does. The command has no such capability of its own either -- it opens no sockets and spawns no children.\n\nThe check is only as good as the `authoritative` claim above it: a flag missing from this file is a capability missing from this conclusion. It was worth making anyway, because leaving the field unstated is not neutral -- a consumer reading the corpus alone must treat an absent annotation as unknown, and an unknown open_world costs the command any blanket allow. `sort` is the counter-example that made this a check rather than a formality: it reads as a pure text utility and `--compress-program=PROG` runs PROG, so it is annotated true."
   },
   "description": "List directory contents. For each operand naming a file other than a directory, ls displays its name plus any requested associated information; for each operand naming a directory, it displays the names of the files contained within.",
   "flags": [
-    { "short": "-@", "type": "boolean", "description": "Display extended attribute keys and sizes in long (-l) output." },
-    { "short": "-A", "type": "boolean", "description": "Include directory entries whose names begin with a dot, except . and .." },
-    { "short": "-B", "type": "boolean", "conflicts_with": ["-q"], "description": "Force printing of non-printable characters in file names as \\xxx octal escapes." },
-    { "short": "-C", "type": "boolean", "conflicts_with": ["-l", "-m", "-x", "-1"], "description": "Force multi-column output; the default when output is to a terminal." },
-    { "short": "-D", "type": "string", "value_name": "format", "conflicts_with": ["-T"], "description": "In long (-l) output, format the date and time with this strftime(3) string." },
-    { "short": "-F", "type": "boolean", "description": "Append a type indicator to each pathname (/ directory, * executable, @ symlink, = socket, % whiteout, | FIFO)." },
-    { "short": "-G", "type": "boolean", "description": "Enable colorized output, equivalent to --color=auto." },
-    { "short": "-H", "type": "boolean", "conflicts_with": ["-P"], "description": "Follow symbolic links given on the command line." },
-    { "short": "-I", "type": "boolean", "description": "Prevent -A from being set automatically for the super-user." },
-    { "short": "-L", "type": "boolean", "conflicts_with": ["-P"], "description": "Follow all symbolic links to their final target and list that instead of the link." },
-    { "short": "-O", "type": "boolean", "description": "Include file flags in long (-l) output." },
-    { "short": "-P", "type": "boolean", "conflicts_with": ["-H", "-L"], "description": "List the symbolic link itself rather than the object it references." },
-    { "short": "-R", "type": "boolean", "description": "Recursively list subdirectories encountered." },
-    { "short": "-S", "type": "boolean", "conflicts_with": ["-t", "-f"], "description": "Sort by size, largest file first." },
-    { "short": "-T", "type": "boolean", "conflicts_with": ["-D"], "description": "In long (-l) output, display complete time information including second and year." },
-    { "short": "-U", "type": "boolean", "conflicts_with": ["-c"], "description": "Use the file creation time for sorting or printing." },
-    { "short": "-W", "type": "boolean", "description": "Display whiteouts when scanning directories." },
-    { "short": "-X", "type": "boolean", "description": "When listing recursively, do not descend across file system boundaries." },
-    { "short": "-a", "type": "boolean", "description": "Include directory entries whose names begin with a dot." },
-    { "short": "-b", "type": "boolean", "conflicts_with": ["-q"], "description": "As -B, but use C escape codes whenever possible." },
-    { "short": "-c", "type": "boolean", "conflicts_with": ["-u", "-U"], "description": "Use the time of last file status change for sorting or printing." },
-    { "long": "--color", "type": "enum", "value_name": "when", "value_optional": true, "enum_values": ["always", "auto", "never"], "description": "Output colored escape sequences based on when." },
-    { "short": "-d", "type": "boolean", "description": "List directories as plain files rather than searching them recursively." },
-    { "short": "-e", "type": "boolean", "description": "Print the Access Control List associated with the file in long (-l) output." },
-    { "short": "-f", "type": "boolean", "conflicts_with": ["-t", "-S", "-r"], "description": "Do not sort output. Turns on -a and negates -r, -S and -t." },
-    { "short": "-g", "type": "boolean", "description": "No effect; accepted only for 4.3BSD compatibility." },
-    { "short": "-h", "type": "boolean", "conflicts_with": ["-k"], "description": "With -l, use unit suffixes (Byte, Kilobyte, ... Petabyte) to shorten sizes." },
-    { "short": "-i", "type": "boolean", "description": "Print each file's file serial number (inode number)." },
-    { "short": "-k", "type": "boolean", "conflicts_with": ["-h"], "description": "Use a block size of 1024 bytes, nullifying any -h option to its left." },
-    { "short": "-l", "type": "boolean", "conflicts_with": ["-C", "-m", "-x", "-1"], "description": "List files in the long format." },
-    { "short": "-m", "type": "boolean", "conflicts_with": ["-C", "-l", "-x", "-1"], "description": "Stream output format: list files across the page, separated by commas." },
-    { "short": "-n", "type": "boolean", "description": "Display user and group IDs numerically in long output. Turns on -l." },
-    { "short": "-o", "type": "boolean", "description": "List in long format but omit the group id." },
-    { "short": "-p", "type": "boolean", "description": "Write a slash after each filename that is a directory." },
-    { "short": "-q", "type": "boolean", "conflicts_with": ["-v", "-w", "-B", "-b"], "description": "Print non-graphic characters in file names as '?'; the default on a terminal." },
-    { "short": "-r", "type": "boolean", "conflicts_with": ["-f"], "description": "Reverse the order of the sort." },
-    { "short": "-s", "type": "boolean", "description": "Display the number of file system blocks used by each file." },
-    { "short": "-t", "type": "boolean", "conflicts_with": ["-S", "-f"], "description": "Sort by descending modification time, most recently modified first." },
-    { "short": "-u", "type": "boolean", "conflicts_with": ["-c"], "description": "Use the time of last access instead of last modification for sorting or printing." },
-    { "short": "-v", "type": "boolean", "conflicts_with": ["-q"], "description": "Force unedited printing of non-graphic characters." },
-    { "short": "-w", "type": "boolean", "conflicts_with": ["-q"], "description": "Force raw printing of non-printable characters." },
-    { "short": "-x", "type": "boolean", "conflicts_with": ["-C", "-l", "-m", "-1"], "description": "Like -C, but sort multi-column entries across rather than down." },
-    { "short": "-y", "type": "boolean", "description": "With -t, sort the alphabetical output in the same order as the time output." },
-    { "short": "-%", "type": "boolean", "description": "Mark dataless files and directories with '%' in long (-l) output." },
-    { "short": "-1", "type": "boolean", "conflicts_with": ["-C", "-l", "-m", "-x"], "description": "Force output to be one entry per line." },
-    { "short": "-,", "type": "boolean", "description": "With -l, print file sizes grouped with the locale's thousands separator." }
+    {
+      "short": "-@",
+      "type": "boolean",
+      "description": "Display extended attribute keys and sizes in long (-l) output."
+    },
+    {
+      "short": "-A",
+      "type": "boolean",
+      "description": "Include directory entries whose names begin with a dot, except . and .."
+    },
+    {
+      "short": "-B",
+      "type": "boolean",
+      "conflicts_with": [
+        "-q"
+      ],
+      "description": "Force printing of non-printable characters in file names as \\xxx octal escapes."
+    },
+    {
+      "short": "-C",
+      "type": "boolean",
+      "conflicts_with": [
+        "-l",
+        "-m",
+        "-x",
+        "-1"
+      ],
+      "description": "Force multi-column output; the default when output is to a terminal."
+    },
+    {
+      "short": "-D",
+      "type": "string",
+      "value_name": "format",
+      "conflicts_with": [
+        "-T"
+      ],
+      "description": "In long (-l) output, format the date and time with this strftime(3) string."
+    },
+    {
+      "short": "-F",
+      "type": "boolean",
+      "description": "Append a type indicator to each pathname (/ directory, * executable, @ symlink, = socket, % whiteout, | FIFO)."
+    },
+    {
+      "short": "-G",
+      "type": "boolean",
+      "description": "Enable colorized output, equivalent to --color=auto."
+    },
+    {
+      "short": "-H",
+      "type": "boolean",
+      "conflicts_with": [
+        "-P"
+      ],
+      "description": "Follow symbolic links given on the command line."
+    },
+    {
+      "short": "-I",
+      "type": "boolean",
+      "description": "Prevent -A from being set automatically for the super-user."
+    },
+    {
+      "short": "-L",
+      "type": "boolean",
+      "conflicts_with": [
+        "-P"
+      ],
+      "description": "Follow all symbolic links to their final target and list that instead of the link."
+    },
+    {
+      "short": "-O",
+      "type": "boolean",
+      "description": "Include file flags in long (-l) output."
+    },
+    {
+      "short": "-P",
+      "type": "boolean",
+      "conflicts_with": [
+        "-H",
+        "-L"
+      ],
+      "description": "List the symbolic link itself rather than the object it references."
+    },
+    {
+      "short": "-R",
+      "type": "boolean",
+      "description": "Recursively list subdirectories encountered."
+    },
+    {
+      "short": "-S",
+      "type": "boolean",
+      "conflicts_with": [
+        "-t",
+        "-f"
+      ],
+      "description": "Sort by size, largest file first."
+    },
+    {
+      "short": "-T",
+      "type": "boolean",
+      "conflicts_with": [
+        "-D"
+      ],
+      "description": "In long (-l) output, display complete time information including second and year."
+    },
+    {
+      "short": "-U",
+      "type": "boolean",
+      "conflicts_with": [
+        "-c"
+      ],
+      "description": "Use the file creation time for sorting or printing."
+    },
+    {
+      "short": "-W",
+      "type": "boolean",
+      "description": "Display whiteouts when scanning directories."
+    },
+    {
+      "short": "-X",
+      "type": "boolean",
+      "description": "When listing recursively, do not descend across file system boundaries."
+    },
+    {
+      "short": "-a",
+      "type": "boolean",
+      "description": "Include directory entries whose names begin with a dot."
+    },
+    {
+      "short": "-b",
+      "type": "boolean",
+      "conflicts_with": [
+        "-q"
+      ],
+      "description": "As -B, but use C escape codes whenever possible."
+    },
+    {
+      "short": "-c",
+      "type": "boolean",
+      "conflicts_with": [
+        "-u",
+        "-U"
+      ],
+      "description": "Use the time of last file status change for sorting or printing."
+    },
+    {
+      "long": "--color",
+      "type": "enum",
+      "value_name": "when",
+      "value_optional": true,
+      "enum_values": [
+        "always",
+        "auto",
+        "never"
+      ],
+      "description": "Output colored escape sequences based on when."
+    },
+    {
+      "short": "-d",
+      "type": "boolean",
+      "description": "List directories as plain files rather than searching them recursively."
+    },
+    {
+      "short": "-e",
+      "type": "boolean",
+      "description": "Print the Access Control List associated with the file in long (-l) output."
+    },
+    {
+      "short": "-f",
+      "type": "boolean",
+      "conflicts_with": [
+        "-t",
+        "-S",
+        "-r"
+      ],
+      "description": "Do not sort output. Turns on -a and negates -r, -S and -t."
+    },
+    {
+      "short": "-g",
+      "type": "boolean",
+      "description": "No effect; accepted only for 4.3BSD compatibility."
+    },
+    {
+      "short": "-h",
+      "type": "boolean",
+      "conflicts_with": [
+        "-k"
+      ],
+      "description": "With -l, use unit suffixes (Byte, Kilobyte, ... Petabyte) to shorten sizes."
+    },
+    {
+      "short": "-i",
+      "type": "boolean",
+      "description": "Print each file's file serial number (inode number)."
+    },
+    {
+      "short": "-k",
+      "type": "boolean",
+      "conflicts_with": [
+        "-h"
+      ],
+      "description": "Use a block size of 1024 bytes, nullifying any -h option to its left."
+    },
+    {
+      "short": "-l",
+      "type": "boolean",
+      "conflicts_with": [
+        "-C",
+        "-m",
+        "-x",
+        "-1"
+      ],
+      "description": "List files in the long format."
+    },
+    {
+      "short": "-m",
+      "type": "boolean",
+      "conflicts_with": [
+        "-C",
+        "-l",
+        "-x",
+        "-1"
+      ],
+      "description": "Stream output format: list files across the page, separated by commas."
+    },
+    {
+      "short": "-n",
+      "type": "boolean",
+      "description": "Display user and group IDs numerically in long output. Turns on -l."
+    },
+    {
+      "short": "-o",
+      "type": "boolean",
+      "description": "List in long format but omit the group id."
+    },
+    {
+      "short": "-p",
+      "type": "boolean",
+      "description": "Write a slash after each filename that is a directory."
+    },
+    {
+      "short": "-q",
+      "type": "boolean",
+      "conflicts_with": [
+        "-v",
+        "-w",
+        "-B",
+        "-b"
+      ],
+      "description": "Print non-graphic characters in file names as '?'; the default on a terminal."
+    },
+    {
+      "short": "-r",
+      "type": "boolean",
+      "conflicts_with": [
+        "-f"
+      ],
+      "description": "Reverse the order of the sort."
+    },
+    {
+      "short": "-s",
+      "type": "boolean",
+      "description": "Display the number of file system blocks used by each file."
+    },
+    {
+      "short": "-t",
+      "type": "boolean",
+      "conflicts_with": [
+        "-S",
+        "-f"
+      ],
+      "description": "Sort by descending modification time, most recently modified first."
+    },
+    {
+      "short": "-u",
+      "type": "boolean",
+      "conflicts_with": [
+        "-c"
+      ],
+      "description": "Use the time of last access instead of last modification for sorting or printing."
+    },
+    {
+      "short": "-v",
+      "type": "boolean",
+      "conflicts_with": [
+        "-q"
+      ],
+      "description": "Force unedited printing of non-graphic characters."
+    },
+    {
+      "short": "-w",
+      "type": "boolean",
+      "conflicts_with": [
+        "-q"
+      ],
+      "description": "Force raw printing of non-printable characters."
+    },
+    {
+      "short": "-x",
+      "type": "boolean",
+      "conflicts_with": [
+        "-C",
+        "-l",
+        "-m",
+        "-1"
+      ],
+      "description": "Like -C, but sort multi-column entries across rather than down."
+    },
+    {
+      "short": "-y",
+      "type": "boolean",
+      "description": "With -t, sort the alphabetical output in the same order as the time output."
+    },
+    {
+      "short": "-%",
+      "type": "boolean",
+      "description": "Mark dataless files and directories with '%' in long (-l) output."
+    },
+    {
+      "short": "-1",
+      "type": "boolean",
+      "conflicts_with": [
+        "-C",
+        "-l",
+        "-m",
+        "-x"
+      ],
+      "description": "Force output to be one entry per line."
+    },
+    {
+      "short": "-,",
+      "type": "boolean",
+      "description": "With -l, print file sizes grouped with the locale's thousands separator."
+    }
   ],
   "positional_args": [
-    { "name": "file", "type": "path", "variadic": true, "required": false, "description": "Files or directories to list. Defaults to the current directory." }
+    {
+      "name": "file",
+      "type": "path",
+      "variadic": true,
+      "required": false,
+      "description": "Files or directories to list. Defaults to the current directory."
+    }
   ],
   "annotations": {
     "readonly": true,
     "destructive": false,
     "idempotent": true,
-    "requires_approval": false
+    "requires_approval": false,
+    "open_world": false
   }
 }

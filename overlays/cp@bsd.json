@@ -3,9 +3,20 @@
   "command": "cp",
   "variant": "bsd",
   "match": {
-    "platform": ["macos", "freebsd"],
-    "probe": { "args": ["--version"], "expect": "failure" },
-    "binary_globs": ["/bin/cp", "/usr/bin/cp"]
+    "platform": [
+      "macos",
+      "freebsd"
+    ],
+    "probe": {
+      "args": [
+        "--version"
+      ],
+      "expect": "failure"
+    },
+    "binary_globs": [
+      "/bin/cp",
+      "/usr/bin/cp"
+    ]
   },
   "mode": "authoritative",
   "confidence": "verified",
@@ -16,37 +27,145 @@
     "checked_on": "2026-07-27",
     "command": "man -P cat cp | col -b",
     "environment": "macOS 26.3 (Darwin arm64), system /bin/cp",
-    "notes": "Flags transcribed from the block after 'The following options are available:'. -r appears neither in that block nor in the SYNOPSIS, but the COMPATIBILITY section states this implementation supports it; it is included because an authoritative overlay that omitted it would erase a flag the tool accepts. Exclusions come from the SYNOPSIS bracket groups '[-R [-H | -L | -P]] [-f | -i | -n]' and from the parenthesised override sentences under -f, -i and -n. BSD cp rejects --version (exit 64, 'illegal option -- -'), which is why the probe matches on failure."
+    "notes": "Flags transcribed from the block after 'The following options are available:'. -r appears neither in that block nor in the SYNOPSIS, but the COMPATIBILITY section states this implementation supports it; it is included because an authoritative overlay that omitted it would erase a flag the tool accepts. Exclusions come from the SYNOPSIS bracket groups '[-R [-H | -L | -P]] [-f | -i | -n]' and from the parenthesised override sentences under -f, -i and -n. BSD cp rejects --version (exit 64, 'illegal option -- -'), which is why the probe matches on failure.\n\nopen_world IS SET FALSE BY ENUMERATION, not by assumption. This overlay is `mode: authoritative`, which asserts its flag list is the complete option set for this variant, so the question \"can any invocation of this command reach off the machine or run another program?\" is answerable from the overlay itself. Every flag and operand was reviewed for a value that names a program to execute or a host to reach; none does. The command has no such capability of its own either -- it opens no sockets and spawns no children.\n\nThe check is only as good as the `authoritative` claim above it: a flag missing from this file is a capability missing from this conclusion. It was worth making anyway, because leaving the field unstated is not neutral -- a consumer reading the corpus alone must treat an absent annotation as unknown, and an unknown open_world costs the command any blanket allow. `sort` is the counter-example that made this a check rather than a formality: it reads as a pure text utility and `--compress-program=PROG` runs PROG, so it is annotated true."
   },
   "description": "In the first synopsis form, the cp utility copies the contents of the source_file to the target_file. In the second synopsis form, the contents of each named source_file is copied to the destination target_directory. The names of the files themselves are not changed. If cp detects an attempt to copy a file to itself, the copy will fail.",
   "flags": [
-    { "short": "-H", "type": "boolean", "conflicts_with": ["-L", "-P"], "description": "If the -R option is specified, symbolic links on the command line are followed. (Symbolic links encountered in the tree traversal are not followed.)" },
-    { "short": "-L", "type": "boolean", "conflicts_with": ["-H", "-P"], "description": "If the -R option is specified, all symbolic links are followed." },
-    { "short": "-P", "type": "boolean", "conflicts_with": ["-H", "-L"], "description": "No symbolic links are followed. This is the default if the -R option is specified." },
-    { "short": "-R", "type": "boolean", "description": "If source_file designates a directory, cp copies the directory and the entire subtree connected at that point. This option also causes symbolic links to be copied rather than indirected through, and for cp to create special files rather than copying them as normal files. In -R mode, cp will continue copying even if errors are detected." },
-    { "short": "-r", "type": "boolean", "description": "Historic synonym for -RL, supported but strongly discouraged because its behavior is implementation-dependent. Documented only under COMPATIBILITY, not in the option list." },
-    { "short": "-a", "type": "boolean", "description": "Archive mode. Same as -RpP. Preserves structure and attributes of files but not directory structure." },
-    { "short": "-c", "type": "boolean", "description": "Copy files using clonefile(2). If clonefile(2) is not supported for the target filesystem, cp falls back to copyfile(2) so the copy still succeeds." },
-    { "short": "-f", "type": "boolean", "conflicts_with": ["-i", "-n"], "description": "For each existing destination pathname, remove it and create a new file, without prompting for confirmation regardless of its permissions. (The -f option overrides any previous -i or -n options.) The target file is not unlinked before the copy, so any existing access rights will be retained." },
-    { "short": "-i", "type": "boolean", "conflicts_with": ["-f", "-n"], "description": "Cause cp to write a prompt to the standard error output before copying a file that would overwrite an existing file. If the response begins with `y' or `Y', the file copy is attempted. (The -i option overrides any previous -f or -n options.)" },
-    { "short": "-l", "type": "boolean", "description": "Create hard links to regular files in a hierarchy instead of copying." },
-    { "short": "-N", "type": "boolean", "description": "When used with -p, suppress copying file flags." },
-    { "short": "-n", "type": "boolean", "conflicts_with": ["-f", "-i"], "description": "Do not overwrite an existing file. (The -n option overrides any previous -f or -i options.)" },
-    { "short": "-p", "type": "boolean", "description": "Preserve the following attributes of each source file in the copy: modification time, access time, file flags, file mode, user ID, and group ID, as allowed by permissions. Access Control Lists and Extended Attributes, including resource forks, are also preserved." },
-    { "short": "-S", "type": "boolean", "description": "Do not attempt to preserve holes in sparse files." },
-    { "short": "-s", "type": "boolean", "description": "Create symbolic links to regular files in a hierarchy instead of copying." },
-    { "short": "-v", "type": "boolean", "description": "Cause cp to be verbose, showing files as they are copied." },
-    { "short": "-X", "type": "boolean", "description": "Do not copy Extended Attributes (EAs) or resource forks." },
-    { "short": "-x", "type": "boolean", "description": "File system mount points are not traversed." }
+    {
+      "short": "-H",
+      "type": "boolean",
+      "conflicts_with": [
+        "-L",
+        "-P"
+      ],
+      "description": "If the -R option is specified, symbolic links on the command line are followed. (Symbolic links encountered in the tree traversal are not followed.)"
+    },
+    {
+      "short": "-L",
+      "type": "boolean",
+      "conflicts_with": [
+        "-H",
+        "-P"
+      ],
+      "description": "If the -R option is specified, all symbolic links are followed."
+    },
+    {
+      "short": "-P",
+      "type": "boolean",
+      "conflicts_with": [
+        "-H",
+        "-L"
+      ],
+      "description": "No symbolic links are followed. This is the default if the -R option is specified."
+    },
+    {
+      "short": "-R",
+      "type": "boolean",
+      "description": "If source_file designates a directory, cp copies the directory and the entire subtree connected at that point. This option also causes symbolic links to be copied rather than indirected through, and for cp to create special files rather than copying them as normal files. In -R mode, cp will continue copying even if errors are detected."
+    },
+    {
+      "short": "-r",
+      "type": "boolean",
+      "description": "Historic synonym for -RL, supported but strongly discouraged because its behavior is implementation-dependent. Documented only under COMPATIBILITY, not in the option list."
+    },
+    {
+      "short": "-a",
+      "type": "boolean",
+      "description": "Archive mode. Same as -RpP. Preserves structure and attributes of files but not directory structure."
+    },
+    {
+      "short": "-c",
+      "type": "boolean",
+      "description": "Copy files using clonefile(2). If clonefile(2) is not supported for the target filesystem, cp falls back to copyfile(2) so the copy still succeeds."
+    },
+    {
+      "short": "-f",
+      "type": "boolean",
+      "conflicts_with": [
+        "-i",
+        "-n"
+      ],
+      "description": "For each existing destination pathname, remove it and create a new file, without prompting for confirmation regardless of its permissions. (The -f option overrides any previous -i or -n options.) The target file is not unlinked before the copy, so any existing access rights will be retained."
+    },
+    {
+      "short": "-i",
+      "type": "boolean",
+      "conflicts_with": [
+        "-f",
+        "-n"
+      ],
+      "description": "Cause cp to write a prompt to the standard error output before copying a file that would overwrite an existing file. If the response begins with `y' or `Y', the file copy is attempted. (The -i option overrides any previous -f or -n options.)"
+    },
+    {
+      "short": "-l",
+      "type": "boolean",
+      "description": "Create hard links to regular files in a hierarchy instead of copying."
+    },
+    {
+      "short": "-N",
+      "type": "boolean",
+      "description": "When used with -p, suppress copying file flags."
+    },
+    {
+      "short": "-n",
+      "type": "boolean",
+      "conflicts_with": [
+        "-f",
+        "-i"
+      ],
+      "description": "Do not overwrite an existing file. (The -n option overrides any previous -f or -i options.)"
+    },
+    {
+      "short": "-p",
+      "type": "boolean",
+      "description": "Preserve the following attributes of each source file in the copy: modification time, access time, file flags, file mode, user ID, and group ID, as allowed by permissions. Access Control Lists and Extended Attributes, including resource forks, are also preserved."
+    },
+    {
+      "short": "-S",
+      "type": "boolean",
+      "description": "Do not attempt to preserve holes in sparse files."
+    },
+    {
+      "short": "-s",
+      "type": "boolean",
+      "description": "Create symbolic links to regular files in a hierarchy instead of copying."
+    },
+    {
+      "short": "-v",
+      "type": "boolean",
+      "description": "Cause cp to be verbose, showing files as they are copied."
+    },
+    {
+      "short": "-X",
+      "type": "boolean",
+      "description": "Do not copy Extended Attributes (EAs) or resource forks."
+    },
+    {
+      "short": "-x",
+      "type": "boolean",
+      "description": "File system mount points are not traversed."
+    }
   ],
   "positional_args": [
-    { "name": "source_file", "type": "path", "variadic": true, "required": true, "description": "File or directory to copy from. More than one source requires the last operand to be an existing target_directory." },
-    { "name": "target", "type": "path", "required": true, "description": "Destination path: target_file in the first synopsis form, or an existing target_directory in the second." }
+    {
+      "name": "source_file",
+      "type": "path",
+      "variadic": true,
+      "required": true,
+      "description": "File or directory to copy from. More than one source requires the last operand to be an existing target_directory."
+    },
+    {
+      "name": "target",
+      "type": "path",
+      "required": true,
+      "description": "Destination path: target_file in the first synopsis form, or an existing target_directory in the second."
+    }
   ],
   "annotations": {
     "readonly": false,
     "destructive": true,
     "idempotent": true,
-    "requires_approval": true
+    "requires_approval": true,
+    "open_world": false
   }
 }

@@ -3,9 +3,20 @@
   "command": "chmod",
   "variant": "bsd",
   "match": {
-    "platform": ["macos", "freebsd"],
-    "probe": { "args": ["--version"], "expect": "failure" },
-    "binary_globs": ["/bin/chmod", "/usr/bin/chmod"]
+    "platform": [
+      "macos",
+      "freebsd"
+    ],
+    "probe": {
+      "args": [
+        "--version"
+      ],
+      "expect": "failure"
+    },
+    "binary_globs": [
+      "/bin/chmod",
+      "/usr/bin/chmod"
+    ]
   },
   "mode": "authoritative",
   "confidence": "verified",
@@ -16,31 +27,104 @@
     "checked_on": "2026-07-27",
     "command": "man -P cat chmod | col -b",
     "environment": "macOS 26.3 (Darwin arm64), system /bin/chmod",
-    "notes": "Two option blocks were transcribed: the seven generic options after 'The generic options are as follows:', and the five ACL options documented separately further down the page. Acceptance by the binary is NOT usable as evidence here, and this is the one command in the set where that is true: chmod's symbolic mode grammar occupies the same '-x' shape as its options, so 'chmod -w file' succeeds and makes the file read-only while '-w' is a MODE operand, not a flag. Excluded on that basis: -r, -w, -x, -s, -t and every other permission character, plus -a/+a/=a, which the page states outright are 'extensions to the symbolic mode grammar' and take an ACE operand. Also note -C returns non-zero when a file's ACL is in non-canonical order; that is its documented result, not a rejection, so exit status cannot be used to test these either."
+    "notes": "Two option blocks were transcribed: the seven generic options after 'The generic options are as follows:', and the five ACL options documented separately further down the page. Acceptance by the binary is NOT usable as evidence here, and this is the one command in the set where that is true: chmod's symbolic mode grammar occupies the same '-x' shape as its options, so 'chmod -w file' succeeds and makes the file read-only while '-w' is a MODE operand, not a flag. Excluded on that basis: -r, -w, -x, -s, -t and every other permission character, plus -a/+a/=a, which the page states outright are 'extensions to the symbolic mode grammar' and take an ACE operand. Also note -C returns non-zero when a file's ACL is in non-canonical order; that is its documented result, not a rejection, so exit status cannot be used to test these either.\n\nopen_world IS SET FALSE BY ENUMERATION, not by assumption. This overlay is `mode: authoritative`, which asserts its flag list is the complete option set for this variant, so the question \"can any invocation of this command reach off the machine or run another program?\" is answerable from the overlay itself. Every flag and operand was reviewed for a value that names a program to execute or a host to reach; none does. The command has no such capability of its own either -- it opens no sockets and spawns no children.\n\nThe check is only as good as the `authoritative` claim above it: a flag missing from this file is a capability missing from this conclusion. It was worth making anyway, because leaving the field unstated is not neutral -- a consumer reading the corpus alone must treat an absent annotation as unknown, and an unknown open_world costs the command any blanket allow. `sort` is the counter-example that made this a check rather than a formality: it reads as a pure text utility and `--compress-program=PROG` runs PROG, so it is annotated true."
   },
   "description": "Change file modes or Access Control Lists. The mode may be given as an octal number or as a symbolic mode string; ACLs are manipulated through extensions to that same symbolic grammar.",
   "flags": [
-    { "short": "-f", "type": "boolean", "description": "Do not display a diagnostic message if chmod could not modify the mode for a file, and do not affect the exit status." },
-    { "short": "-H", "type": "boolean", "conflicts_with": ["-L", "-P"], "description": "If -R is specified, symbolic links on the command line are followed and hence unaffected by the command. Symbolic links encountered during traversal are not followed." },
-    { "short": "-h", "type": "boolean", "description": "If the file is a symbolic link, change the mode of the link itself rather than the file that the link points to." },
-    { "short": "-L", "type": "boolean", "conflicts_with": ["-H", "-P"], "description": "If -R is specified, all symbolic links are followed." },
-    { "short": "-P", "type": "boolean", "conflicts_with": ["-H", "-L"], "description": "If -R is specified, no symbolic links are followed. This is the default." },
-    { "short": "-R", "type": "boolean", "description": "Change the modes of the file hierarchies rooted in the files, instead of just the files themselves." },
-    { "short": "-v", "type": "boolean", "repeatable": true, "description": "Cause chmod to be verbose, showing filenames as the mode is modified. Specified twice, the old and new modes of the file are also printed, in both octal and symbolic notation." },
-    { "short": "-C", "type": "boolean", "description": "Return false if any of the named files have ACLs in non-canonical order. This is a query: a non-zero exit status is its result, not an error." },
-    { "short": "-E", "type": "boolean", "description": "Read the ACL information from stdin, as a sequential list of ACEs separated by newlines. If the information parses correctly, the existing information is replaced." },
-    { "short": "-i", "type": "boolean", "description": "Remove the 'inherited' bit from all entries in the named files' ACLs." },
-    { "short": "-I", "type": "boolean", "description": "Remove all inherited entries from the named files' ACLs." },
-    { "short": "-N", "type": "boolean", "description": "Remove the ACL from the named files." }
+    {
+      "short": "-f",
+      "type": "boolean",
+      "description": "Do not display a diagnostic message if chmod could not modify the mode for a file, and do not affect the exit status."
+    },
+    {
+      "short": "-H",
+      "type": "boolean",
+      "conflicts_with": [
+        "-L",
+        "-P"
+      ],
+      "description": "If -R is specified, symbolic links on the command line are followed and hence unaffected by the command. Symbolic links encountered during traversal are not followed."
+    },
+    {
+      "short": "-h",
+      "type": "boolean",
+      "description": "If the file is a symbolic link, change the mode of the link itself rather than the file that the link points to."
+    },
+    {
+      "short": "-L",
+      "type": "boolean",
+      "conflicts_with": [
+        "-H",
+        "-P"
+      ],
+      "description": "If -R is specified, all symbolic links are followed."
+    },
+    {
+      "short": "-P",
+      "type": "boolean",
+      "conflicts_with": [
+        "-H",
+        "-L"
+      ],
+      "description": "If -R is specified, no symbolic links are followed. This is the default."
+    },
+    {
+      "short": "-R",
+      "type": "boolean",
+      "description": "Change the modes of the file hierarchies rooted in the files, instead of just the files themselves."
+    },
+    {
+      "short": "-v",
+      "type": "boolean",
+      "repeatable": true,
+      "description": "Cause chmod to be verbose, showing filenames as the mode is modified. Specified twice, the old and new modes of the file are also printed, in both octal and symbolic notation."
+    },
+    {
+      "short": "-C",
+      "type": "boolean",
+      "description": "Return false if any of the named files have ACLs in non-canonical order. This is a query: a non-zero exit status is its result, not an error."
+    },
+    {
+      "short": "-E",
+      "type": "boolean",
+      "description": "Read the ACL information from stdin, as a sequential list of ACEs separated by newlines. If the information parses correctly, the existing information is replaced."
+    },
+    {
+      "short": "-i",
+      "type": "boolean",
+      "description": "Remove the 'inherited' bit from all entries in the named files' ACLs."
+    },
+    {
+      "short": "-I",
+      "type": "boolean",
+      "description": "Remove all inherited entries from the named files' ACLs."
+    },
+    {
+      "short": "-N",
+      "type": "boolean",
+      "description": "Remove the ACL from the named files."
+    }
   ],
   "positional_args": [
-    { "name": "mode", "type": "string", "required": false, "description": "The new mode, as an octal number or a symbolic mode string. ACL forms take an ACE here instead. Required except in the second usage form, where an ACL option (-E, -C, -N, -i, -I) replaces it." },
-    { "name": "file", "type": "path", "required": true, "variadic": true, "description": "Files whose mode or ACL is to be changed." }
+    {
+      "name": "mode",
+      "type": "string",
+      "required": false,
+      "description": "The new mode, as an octal number or a symbolic mode string. ACL forms take an ACE here instead. Required except in the second usage form, where an ACL option (-E, -C, -N, -i, -I) replaces it."
+    },
+    {
+      "name": "file",
+      "type": "path",
+      "required": true,
+      "variadic": true,
+      "description": "Files whose mode or ACL is to be changed."
+    }
   ],
   "annotations": {
     "readonly": false,
     "destructive": true,
     "idempotent": true,
-    "requires_approval": true
+    "requires_approval": true,
+    "open_world": false
   }
 }

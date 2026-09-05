@@ -3,9 +3,20 @@
   "command": "cut",
   "variant": "bsd",
   "match": {
-    "platform": ["macos", "freebsd"],
-    "probe": { "args": ["--version"], "expect": "failure" },
-    "binary_globs": ["/usr/bin/cut", "/bin/cut"]
+    "platform": [
+      "macos",
+      "freebsd"
+    ],
+    "probe": {
+      "args": [
+        "--version"
+      ],
+      "expect": "failure"
+    },
+    "binary_globs": [
+      "/usr/bin/cut",
+      "/bin/cut"
+    ]
   },
   "mode": "authoritative",
   "confidence": "verified",
@@ -16,25 +27,102 @@
     "checked_on": "2026-07-27",
     "command": "man -P cat cut | col -b",
     "environment": "macOS 26.3 (Darwin arm64), system /usr/bin/cut",
-    "notes": "Flags transcribed from the block after 'The options are as follows:'. This page has no COMPATIBILITY or LEGACY DESCRIPTION section; STANDARDS was read for flags documented outside the option block and only records that -w is an extension to POSIX.2. The option set is closed: the binary's getopt(3) option string is 'b:c:d:f:snw', so mode is authoritative. BSD cut has no long options at all -- --bytes=, --characters= and --fields= are each rejected with 'illegal option -- -'. conflicts_with was derived from the three SYNOPSIS forms and then tested pairing by pairing against the binary. Diagnosed with the usage line, and therefore declared: -b with -f, -c with -f, -n with -c, -n with -f, -s with -b, -s with -c, -d with -b, -d with -c, -w with -b, -w with -c, and -w with -d (the SYNOPSIS alternation '[-w | -d delim]'). One candidate implied by the SYNOPSIS was tested and rejected: -b and -c are shown in separate SYNOPSIS forms, but the binary accepts them together and unions their lists -- 'cut -b 1 -c 2' emits both selected positions, and the pairing is not last-one-wins. No conflict is declared between them, even though GNU cut diagnoses the same pairing with 'only one list may be specified'. BSD cut rejects --version (exit 1, 'illegal option -- -'), which is why the probe matches on failure. annotations: cut opens every operand read-only and has no option that names an output file, so readonly is true. conflicts_with was extended in a later pass, after the field's definition widened to cover override groups as well as diagnosed errors: apexe's input is a JSON object, which carries no ordering, so for a last-one-wins group which flag actually wins is decided by the order the caller happened to write the keys in. Every pair added then was run in BOTH orders against the reference build recorded above, and only pairs whose outcome depends on that order, or where one side is silently discarded, were added."
+    "notes": "Flags transcribed from the block after 'The options are as follows:'. This page has no COMPATIBILITY or LEGACY DESCRIPTION section; STANDARDS was read for flags documented outside the option block and only records that -w is an extension to POSIX.2. The option set is closed: the binary's getopt(3) option string is 'b:c:d:f:snw', so mode is authoritative. BSD cut has no long options at all -- --bytes=, --characters= and --fields= are each rejected with 'illegal option -- -'. conflicts_with was derived from the three SYNOPSIS forms and then tested pairing by pairing against the binary. Diagnosed with the usage line, and therefore declared: -b with -f, -c with -f, -n with -c, -n with -f, -s with -b, -s with -c, -d with -b, -d with -c, -w with -b, -w with -c, and -w with -d (the SYNOPSIS alternation '[-w | -d delim]'). One candidate implied by the SYNOPSIS was tested and rejected: -b and -c are shown in separate SYNOPSIS forms, but the binary accepts them together and unions their lists -- 'cut -b 1 -c 2' emits both selected positions, and the pairing is not last-one-wins. No conflict is declared between them, even though GNU cut diagnoses the same pairing with 'only one list may be specified'. BSD cut rejects --version (exit 1, 'illegal option -- -'), which is why the probe matches on failure. annotations: cut opens every operand read-only and has no option that names an output file, so readonly is true. conflicts_with was extended in a later pass, after the field's definition widened to cover override groups as well as diagnosed errors: apexe's input is a JSON object, which carries no ordering, so for a last-one-wins group which flag actually wins is decided by the order the caller happened to write the keys in. Every pair added then was run in BOTH orders against the reference build recorded above, and only pairs whose outcome depends on that order, or where one side is silently discarded, were added.\n\nopen_world IS SET FALSE BY ENUMERATION, not by assumption. This overlay is `mode: authoritative`, which asserts its flag list is the complete option set for this variant, so the question \"can any invocation of this command reach off the machine or run another program?\" is answerable from the overlay itself. Every flag and operand was reviewed for a value that names a program to execute or a host to reach; none does. The command has no such capability of its own either -- it opens no sockets and spawns no children.\n\nThe check is only as good as the `authoritative` claim above it: a flag missing from this file is a capability missing from this conclusion. It was worth making anyway, because leaving the field unstated is not neutral -- a consumer reading the corpus alone must treat an absent annotation as unknown, and an unknown open_world costs the command any blanket allow. `sort` is the counter-example that made this a check rather than a formality: it reads as a pure text utility and `--compress-program=PROG` runs PROG, so it is annotated true."
   },
   "description": "The cut utility cuts out selected portions of each line (as specified by list) from each file and writes them to the standard output. If no file arguments are specified, or a file argument is a single dash (-), cut reads from the standard input. The items specified by list can be in terms of column position or in terms of fields delimited by a special character. Column and field numbering start from 1. The list option argument is a comma or whitespace separated set of numbers and/or number ranges. Number ranges consist of a number, a dash (-), and a second number and select the columns or fields from the first number to the second, inclusive. Numbers or number ranges may be preceded by a dash, which selects all columns or fields from 1 to the last number. Numbers or number ranges may be followed by a dash, which selects all columns or fields from the last number to the end of the line.",
   "flags": [
-    { "short": "-b", "type": "string", "value_name": "list", "conflicts_with": ["-f", "-d", "-s", "-w", "-c"], "description": "The list specifies byte positions." },
-    { "short": "-c", "type": "string", "value_name": "list", "conflicts_with": ["-f", "-n", "-d", "-s", "-w", "-b"], "description": "The list specifies character positions." },
-    { "short": "-d", "type": "string", "value_name": "delim", "conflicts_with": ["-b", "-c", "-w"], "description": "Use delim as the field delimiter character instead of the tab character." },
-    { "short": "-f", "type": "string", "value_name": "list", "conflicts_with": ["-b", "-c", "-n"], "description": "The list specifies fields, separated in the input by the field delimiter character (see the -d option). Output fields are separated by a single occurrence of the field delimiter character." },
-    { "short": "-n", "type": "boolean", "conflicts_with": ["-c", "-f"], "description": "Do not split multi-byte characters. Characters will only be output if at least one byte is selected, and, after a prefix of zero or more unselected bytes, the rest of the bytes that form the character are selected." },
-    { "short": "-s", "type": "boolean", "conflicts_with": ["-b", "-c"], "description": "Suppress lines with no field delimiter characters. Unless specified, lines with no delimiters are passed through unmodified." },
-    { "short": "-w", "type": "boolean", "conflicts_with": ["-b", "-c", "-d"], "description": "Use whitespace (spaces and tabs) as the delimiter. Consecutive spaces and tabs count as one single field separator." }
+    {
+      "short": "-b",
+      "type": "string",
+      "value_name": "list",
+      "conflicts_with": [
+        "-f",
+        "-d",
+        "-s",
+        "-w",
+        "-c"
+      ],
+      "description": "The list specifies byte positions."
+    },
+    {
+      "short": "-c",
+      "type": "string",
+      "value_name": "list",
+      "conflicts_with": [
+        "-f",
+        "-n",
+        "-d",
+        "-s",
+        "-w",
+        "-b"
+      ],
+      "description": "The list specifies character positions."
+    },
+    {
+      "short": "-d",
+      "type": "string",
+      "value_name": "delim",
+      "conflicts_with": [
+        "-b",
+        "-c",
+        "-w"
+      ],
+      "description": "Use delim as the field delimiter character instead of the tab character."
+    },
+    {
+      "short": "-f",
+      "type": "string",
+      "value_name": "list",
+      "conflicts_with": [
+        "-b",
+        "-c",
+        "-n"
+      ],
+      "description": "The list specifies fields, separated in the input by the field delimiter character (see the -d option). Output fields are separated by a single occurrence of the field delimiter character."
+    },
+    {
+      "short": "-n",
+      "type": "boolean",
+      "conflicts_with": [
+        "-c",
+        "-f"
+      ],
+      "description": "Do not split multi-byte characters. Characters will only be output if at least one byte is selected, and, after a prefix of zero or more unselected bytes, the rest of the bytes that form the character are selected."
+    },
+    {
+      "short": "-s",
+      "type": "boolean",
+      "conflicts_with": [
+        "-b",
+        "-c"
+      ],
+      "description": "Suppress lines with no field delimiter characters. Unless specified, lines with no delimiters are passed through unmodified."
+    },
+    {
+      "short": "-w",
+      "type": "boolean",
+      "conflicts_with": [
+        "-b",
+        "-c",
+        "-d"
+      ],
+      "description": "Use whitespace (spaces and tabs) as the delimiter. Consecutive spaces and tabs count as one single field separator."
+    }
   ],
   "positional_args": [
-    { "name": "file", "type": "path", "variadic": true, "required": false, "description": "Files to cut. If no file arguments are specified, or a file argument is a single dash (-), the standard input is read." }
+    {
+      "name": "file",
+      "type": "path",
+      "variadic": true,
+      "required": false,
+      "description": "Files to cut. If no file arguments are specified, or a file argument is a single dash (-), the standard input is read."
+    }
   ],
   "annotations": {
     "readonly": true,
     "destructive": false,
     "idempotent": true,
-    "requires_approval": false
+    "requires_approval": false,
+    "open_world": false
   }
 }

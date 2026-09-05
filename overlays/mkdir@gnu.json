@@ -4,7 +4,9 @@
   "variant": "gnu",
   "match": {
     "probe": {
-      "args": ["--version"],
+      "args": [
+        "--version"
+      ],
       "expect": "success",
       "output_contains": "GNU coreutils"
     }
@@ -19,25 +21,66 @@
     "checked_on": "2026-07-27",
     "command": "docker run --rm debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd mkdir --help",
     "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
-    "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention. No conflicts_with: --help states no mutual exclusion, and 'mkdir -Z --context=x DIR' was run against the reference build and exited 0 (with a warning that --context needs an SELinux/SMACK-enabled kernel), so -Z and --context are not exclusive. value_optional was added on 2026-08-24, read off the reference build recorded above. GNU --help spells an optional option argument as `--opt[=VAL]` and a required one as `--opt=VAL`; every flag marked here shows the bracketed form and was then run in BOTH spellings, because the notation alone is not evidence. --context is the worst-behaved of the set because it fails silently and writes to the filesystem: `mkdir --context ctx dd1` exits 0 having created TWO directories, `ctx` and `dd1`, while `mkdir --context=ctx dd2` creates one and warns that the context is ignored without an SELinux/SMACK-enabled kernel."
+    "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention. No conflicts_with: --help states no mutual exclusion, and 'mkdir -Z --context=x DIR' was run against the reference build and exited 0 (with a warning that --context needs an SELinux/SMACK-enabled kernel), so -Z and --context are not exclusive. value_optional was added on 2026-08-24, read off the reference build recorded above. GNU --help spells an optional option argument as `--opt[=VAL]` and a required one as `--opt=VAL`; every flag marked here shows the bracketed form and was then run in BOTH spellings, because the notation alone is not evidence. --context is the worst-behaved of the set because it fails silently and writes to the filesystem: `mkdir --context ctx dd1` exits 0 having created TWO directories, `ctx` and `dd1`, while `mkdir --context=ctx dd2` creates one and warns that the context is ignored without an SELinux/SMACK-enabled kernel.\n\nopen_world IS SET FALSE BY ENUMERATION, not by assumption. This overlay is `mode: authoritative`, which asserts its flag list is the complete option set for this variant, so the question \"can any invocation of this command reach off the machine or run another program?\" is answerable from the overlay itself. Every flag and operand was reviewed for a value that names a program to execute or a host to reach; none does. The command has no such capability of its own either -- it opens no sockets and spawns no children.\n\nThe check is only as good as the `authoritative` claim above it: a flag missing from this file is a capability missing from this conclusion. It was worth making anyway, because leaving the field unstated is not neutral -- a consumer reading the corpus alone must treat an absent annotation as unknown, and an unknown open_world costs the command any blanket allow. `sort` is the counter-example that made this a check rather than a formality: it reads as a pure text utility and `--compress-program=PROG` runs PROG, so it is annotated true."
   },
   "description": "Create the DIRECTORY(ies), if they do not already exist. Mandatory arguments to long options are mandatory for short options too.",
   "flags": [
-    { "short": "-m", "long": "--mode", "type": "string", "value_name": "MODE", "description": "Set file mode (as in chmod), not a=rwx - umask." },
-    { "short": "-p", "long": "--parents", "type": "boolean", "description": "No error if existing, make parent directories as needed, with their file modes unaffected by any -m option." },
-    { "short": "-v", "long": "--verbose", "type": "boolean", "description": "Print a message for each created directory." },
-    { "short": "-Z", "type": "boolean", "description": "Set SELinux security context of each created directory to the default type." },
-    { "long": "--context", "type": "string", "value_name": "CTX", "value_optional": true, "description": "Like -Z, or if CTX is specified then set the SELinux or SMACK security context to CTX. The value is optional." },
-    { "long": "--help", "type": "boolean", "description": "Display this help and exit." },
-    { "long": "--version", "type": "boolean", "description": "Output version information and exit." }
+    {
+      "short": "-m",
+      "long": "--mode",
+      "type": "string",
+      "value_name": "MODE",
+      "description": "Set file mode (as in chmod), not a=rwx - umask."
+    },
+    {
+      "short": "-p",
+      "long": "--parents",
+      "type": "boolean",
+      "description": "No error if existing, make parent directories as needed, with their file modes unaffected by any -m option."
+    },
+    {
+      "short": "-v",
+      "long": "--verbose",
+      "type": "boolean",
+      "description": "Print a message for each created directory."
+    },
+    {
+      "short": "-Z",
+      "type": "boolean",
+      "description": "Set SELinux security context of each created directory to the default type."
+    },
+    {
+      "long": "--context",
+      "type": "string",
+      "value_name": "CTX",
+      "value_optional": true,
+      "description": "Like -Z, or if CTX is specified then set the SELinux or SMACK security context to CTX. The value is optional."
+    },
+    {
+      "long": "--help",
+      "type": "boolean",
+      "description": "Display this help and exit."
+    },
+    {
+      "long": "--version",
+      "type": "boolean",
+      "description": "Output version information and exit."
+    }
   ],
   "positional_args": [
-    { "name": "directory", "type": "path", "variadic": true, "required": true, "description": "Directories to create. At least one is required." }
+    {
+      "name": "directory",
+      "type": "path",
+      "variadic": true,
+      "required": true,
+      "description": "Directories to create. At least one is required."
+    }
   ],
   "annotations": {
     "readonly": false,
     "destructive": false,
     "idempotent": false,
-    "requires_approval": false
+    "requires_approval": false,
+    "open_world": false
   }
 }

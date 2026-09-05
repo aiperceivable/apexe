@@ -3,9 +3,20 @@
   "command": "head",
   "variant": "bsd",
   "match": {
-    "platform": ["macos", "freebsd"],
-    "probe": { "args": ["--version"], "expect": "failure" },
-    "binary_globs": ["/bin/head", "/usr/bin/head"]
+    "platform": [
+      "macos",
+      "freebsd"
+    ],
+    "probe": {
+      "args": [
+        "--version"
+      ],
+      "expect": "failure"
+    },
+    "binary_globs": [
+      "/bin/head",
+      "/usr/bin/head"
+    ]
   },
   "mode": "authoritative",
   "confidence": "verified",
@@ -16,20 +27,45 @@
     "checked_on": "2026-07-27",
     "command": "man -P cat head | col -b",
     "environment": "macOS 26.3 (Darwin arm64), system /usr/bin/head",
-    "notes": "Flags transcribed from the block after 'The following options are available:'. This page has no COMPATIBILITY, LEGACY DESCRIPTION or STANDARDS section, so there is nowhere else a flag could be documented. The option set is closed: the binary's getopt(3) option string is '+n:c:', and -q, -v and -r are all rejected with 'invalid option', so mode is authoritative. Unlike BSD touch and BSD ln, BSD head does accept the long forms --bytes= and --lines=; both were run against the binary and exited 0. conflicts_with for -c and -n comes from the SYNOPSIS alternation 'head [-n count | -c bytes]' and is diagnosed by the binary: 'head -n 2 -c 3 FILE' fails with 'head: can't combine line and byte counts'. BSD head rejects --version (exit 1, 'unrecognized option `--version''), which is why the probe matches on failure."
+    "notes": "Flags transcribed from the block after 'The following options are available:'. This page has no COMPATIBILITY, LEGACY DESCRIPTION or STANDARDS section, so there is nowhere else a flag could be documented. The option set is closed: the binary's getopt(3) option string is '+n:c:', and -q, -v and -r are all rejected with 'invalid option', so mode is authoritative. Unlike BSD touch and BSD ln, BSD head does accept the long forms --bytes= and --lines=; both were run against the binary and exited 0. conflicts_with for -c and -n comes from the SYNOPSIS alternation 'head [-n count | -c bytes]' and is diagnosed by the binary: 'head -n 2 -c 3 FILE' fails with 'head: can't combine line and byte counts'. BSD head rejects --version (exit 1, 'unrecognized option `--version''), which is why the probe matches on failure.\n\nopen_world IS SET FALSE BY ENUMERATION, not by assumption. This overlay is `mode: authoritative`, which asserts its flag list is the complete option set for this variant, so the question \"can any invocation of this command reach off the machine or run another program?\" is answerable from the overlay itself. Every flag and operand was reviewed for a value that names a program to execute or a host to reach; none does. The command has no such capability of its own either -- it opens no sockets and spawns no children.\n\nThe check is only as good as the `authoritative` claim above it: a flag missing from this file is a capability missing from this conclusion. It was worth making anyway, because leaving the field unstated is not neutral -- a consumer reading the corpus alone must treat an absent annotation as unknown, and an unknown open_world costs the command any blanket allow. `sort` is the counter-example that made this a check rather than a formality: it reads as a pure text utility and `--compress-program=PROG` runs PROG, so it is annotated true."
   },
   "description": "This filter displays the first count lines or bytes of each of the specified files, or of the standard input if no files are specified. If count is omitted it defaults to 10. If more than a single file is specified, each file is preceded by a header consisting of the string \"==> XXX <==\" where \"XXX\" is the name of the file.",
   "flags": [
-    { "short": "-c", "long": "--bytes", "type": "integer", "value_name": "bytes", "conflicts_with": ["-n"], "description": "Print bytes of each of the specified files." },
-    { "short": "-n", "long": "--lines", "type": "integer", "value_name": "count", "conflicts_with": ["-c"], "description": "Print count lines of each of the specified files." }
+    {
+      "short": "-c",
+      "long": "--bytes",
+      "type": "integer",
+      "value_name": "bytes",
+      "conflicts_with": [
+        "-n"
+      ],
+      "description": "Print bytes of each of the specified files."
+    },
+    {
+      "short": "-n",
+      "long": "--lines",
+      "type": "integer",
+      "value_name": "count",
+      "conflicts_with": [
+        "-c"
+      ],
+      "description": "Print count lines of each of the specified files."
+    }
   ],
   "positional_args": [
-    { "name": "file", "type": "path", "variadic": true, "required": false, "description": "Files to display the first part of. With no operand the standard input is read." }
+    {
+      "name": "file",
+      "type": "path",
+      "variadic": true,
+      "required": false,
+      "description": "Files to display the first part of. With no operand the standard input is read."
+    }
   ],
   "annotations": {
     "readonly": true,
     "destructive": false,
     "idempotent": true,
-    "requires_approval": false
+    "requires_approval": false,
+    "open_world": false
   }
 }

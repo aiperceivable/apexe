@@ -4,7 +4,9 @@
   "variant": "gnu",
   "match": {
     "probe": {
-      "args": ["--version"],
+      "args": [
+        "--version"
+      ],
       "expect": "success",
       "output_contains": "GNU coreutils"
     }
@@ -19,30 +21,98 @@
     "checked_on": "2026-07-27",
     "command": "docker run --rm debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd cat --help",
     "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
-    "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention. Every flag below is transcribed from that output; no flag was added from knowledge of the tool."
+    "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention. Every flag below is transcribed from that output; no flag was added from knowledge of the tool.\n\nopen_world IS SET FALSE BY ENUMERATION, not by assumption. This overlay is `mode: authoritative`, which asserts its flag list is the complete option set for this variant, so the question \"can any invocation of this command reach off the machine or run another program?\" is answerable from the overlay itself. Every flag and operand was reviewed for a value that names a program to execute or a host to reach; none does. The command has no such capability of its own either -- it opens no sockets and spawns no children.\n\nThe check is only as good as the `authoritative` claim above it: a flag missing from this file is a capability missing from this conclusion. It was worth making anyway, because leaving the field unstated is not neutral -- a consumer reading the corpus alone must treat an absent annotation as unknown, and an unknown open_world costs the command any blanket allow. `sort` is the counter-example that made this a check rather than a formality: it reads as a pure text utility and `--compress-program=PROG` runs PROG, so it is annotated true."
   },
   "description": "Concatenate FILE(s) to standard output. With no FILE, or when FILE is -, read standard input.",
   "flags": [
-    { "short": "-A", "long": "--show-all", "type": "boolean", "description": "Equivalent to -vET." },
-    { "short": "-b", "long": "--number-nonblank", "type": "boolean", "conflicts_with": ["-n"], "description": "Number nonempty output lines, overrides -n." },
-    { "short": "-e", "type": "boolean", "description": "Equivalent to -vE." },
-    { "short": "-E", "long": "--show-ends", "type": "boolean", "description": "Display $ at end of each line." },
-    { "short": "-n", "long": "--number", "type": "boolean", "conflicts_with": ["-b"], "description": "Number all output lines." },
-    { "short": "-s", "long": "--squeeze-blank", "type": "boolean", "description": "Suppress repeated empty output lines." },
-    { "short": "-t", "type": "boolean", "description": "Equivalent to -vT." },
-    { "short": "-T", "long": "--show-tabs", "type": "boolean", "description": "Display TAB characters as ^I." },
-    { "short": "-u", "type": "boolean", "description": "Ignored." },
-    { "short": "-v", "long": "--show-nonprinting", "type": "boolean", "description": "Use ^ and M- notation, except for LFD and TAB." },
-    { "long": "--help", "type": "boolean", "description": "Display this help and exit." },
-    { "long": "--version", "type": "boolean", "description": "Output version information and exit." }
+    {
+      "short": "-A",
+      "long": "--show-all",
+      "type": "boolean",
+      "description": "Equivalent to -vET."
+    },
+    {
+      "short": "-b",
+      "long": "--number-nonblank",
+      "type": "boolean",
+      "conflicts_with": [
+        "-n"
+      ],
+      "description": "Number nonempty output lines, overrides -n."
+    },
+    {
+      "short": "-e",
+      "type": "boolean",
+      "description": "Equivalent to -vE."
+    },
+    {
+      "short": "-E",
+      "long": "--show-ends",
+      "type": "boolean",
+      "description": "Display $ at end of each line."
+    },
+    {
+      "short": "-n",
+      "long": "--number",
+      "type": "boolean",
+      "conflicts_with": [
+        "-b"
+      ],
+      "description": "Number all output lines."
+    },
+    {
+      "short": "-s",
+      "long": "--squeeze-blank",
+      "type": "boolean",
+      "description": "Suppress repeated empty output lines."
+    },
+    {
+      "short": "-t",
+      "type": "boolean",
+      "description": "Equivalent to -vT."
+    },
+    {
+      "short": "-T",
+      "long": "--show-tabs",
+      "type": "boolean",
+      "description": "Display TAB characters as ^I."
+    },
+    {
+      "short": "-u",
+      "type": "boolean",
+      "description": "Ignored."
+    },
+    {
+      "short": "-v",
+      "long": "--show-nonprinting",
+      "type": "boolean",
+      "description": "Use ^ and M- notation, except for LFD and TAB."
+    },
+    {
+      "long": "--help",
+      "type": "boolean",
+      "description": "Display this help and exit."
+    },
+    {
+      "long": "--version",
+      "type": "boolean",
+      "description": "Output version information and exit."
+    }
   ],
   "positional_args": [
-    { "name": "file", "type": "path", "variadic": true, "required": false, "description": "Files to concatenate. With no FILE, or when FILE is -, read standard input." }
+    {
+      "name": "file",
+      "type": "path",
+      "variadic": true,
+      "required": false,
+      "description": "Files to concatenate. With no FILE, or when FILE is -, read standard input."
+    }
   ],
   "annotations": {
     "readonly": true,
     "destructive": false,
     "idempotent": true,
-    "requires_approval": false
+    "requires_approval": false,
+    "open_world": false
   }
 }

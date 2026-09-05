@@ -3,13 +3,21 @@
   "command": "diff",
   "variant": "bsd",
   "match": {
-    "platform": ["macos", "freebsd"],
+    "platform": [
+      "macos",
+      "freebsd"
+    ],
     "probe": {
-      "args": ["--version"],
+      "args": [
+        "--version"
+      ],
       "expect": "success",
       "output_contains": "FreeBSD"
     },
-    "binary_globs": ["/usr/bin/diff", "/bin/diff"]
+    "binary_globs": [
+      "/usr/bin/diff",
+      "/bin/diff"
+    ]
   },
   "mode": "authoritative",
   "confidence": "verified",
@@ -20,66 +28,455 @@
     "checked_on": "2026-07-27",
     "command": "man -P cat diff | col -b",
     "environment": "macOS 26.3 (Darwin arm64), system /usr/bin/diff, banner 'Apple diff (based on FreeBSD diff)'",
-    "notes": "This page has no standard option intro line: neither 'The options are as follows:' nor 'The following options are available:' appears. Its options are instead documented in three labelled sub-blocks inside DESCRIPTION -- 'Output options (mutually exclusive):', 'Comparison options:' and 'Directory comparison options:' -- and the flags below were transcribed from all three. LEGACY DESCRIPTION and STANDARDS were read for flags documented outside those blocks; LEGACY DESCRIPTION only describes a timestamp format change and STANDARDS only records which flags are POSIX extensions. Neither adds an option. The option set is closed by the binary: the getopt(3) option string is '0123456789A:aBbC:cdD:efF:HhI:iL:lnNPpqrS:sTtU:uwW:X:x:y' and the long option table in the binary carries 43 names, all of which were run and accepted. mode is therefore authoritative. The leading digits are not standalone flags -- 'diff -3' is rejected with the usage line; they exist only so the historic attached forms 'diff -c3' and 'diff -u1' parse. Four options are accepted by the binary but appear NOWHERE in the man page, which is the same failure mode as BSD 'touch -f': -H, -h, --horizon-lines and --no-dereference. They are listed with the acceptance evidence rather than an invented meaning, because under authoritative a doc-only check would have erased them. Two man page claims were contradicted by the binary and the binary was followed: the option block documents '-w --ignore-all-blanks', but --ignore-all-blanks is rejected and --ignore-all-space (which the SYNOPSIS also names) is what -w's long form actually is; and '-C number --context number' implies a space-separated value, but --context and --unified take an OPTIONAL argument, so only '--context=2' passes a number while '--context 2' reads 2 as a third operand. The binary's own usage line adds a third contradiction, printing '[--no-ignore-case]' for an option it rejects. --changed-group-format's man page entry is garbled -- it breaks off at 'Format input groups in the provided' and then gives the keyword '%<' twice, once for FILE1 and once for FILE2 -- so the description below reports that rather than guessing the second keyword. conflicts_with comes from the 'Output options (mutually exclusive):' heading and was then tested pair by pair against the binary: all 45 pairings among -c, -C, -u, -U, -e, -f, -n, -q, -y, -D and --normal are diagnosed with the usage line EXCEPT two, so -c/-C and -u/-U coexist and are the only members of the group not declared to conflict. Candidates implied by the six SYNOPSIS forms were tested and rejected in bulk: -l, -p, -N, -P, -r, -s, -W, -x, -X, -S, -F, -L and --suppress-common-lines are each shown in only some forms, but the binary accepts every one of them outside its form, so none of them carries a conflict. --help and --version sit inside the mutually exclusive block but print and exit 0, so they carry none either. Unlike other BSD tools this one ANSWERS --version, with 'Apple diff (based on FreeBSD diff)'; the probe therefore expects success plus that banner, and the same banner is what makes the scanner classify it bsd, since 'FreeBSD' is a BSD banner token. annotations: diff opens every operand read-only and has no option that names an output file, so readonly is true. value_optional was added on 2026-08-24 and established behaviourally on the build recorded above, since a BSD man page has no notation for an optional option argument: each candidate was run in BOTH spellings and marked only when the separated form demonstrably lost the value. `diff --context 1 a b` prints the usage and exits 2 while `diff --context=1 a b` succeeds; --unified and --color behave the same. The short forms are the contrast and are NOT optional: `diff -C 1 a b` and `diff -U 1 a b` both parse and exit 1 (differences found). apexe emits the long literal for these entries, which is what the attached form requires. Every other value-taking long option on this build -- --ifdef, --algorithm, --show-function-line, --ignore-matching-lines, --label, --width, --changed-group-format, --tabsize, --starting-file, --exclude-from, --exclude and --horizon-lines -- was run the same way and accepts the separated form, so none is marked."
+    "notes": "This page has no standard option intro line: neither 'The options are as follows:' nor 'The following options are available:' appears. Its options are instead documented in three labelled sub-blocks inside DESCRIPTION -- 'Output options (mutually exclusive):', 'Comparison options:' and 'Directory comparison options:' -- and the flags below were transcribed from all three. LEGACY DESCRIPTION and STANDARDS were read for flags documented outside those blocks; LEGACY DESCRIPTION only describes a timestamp format change and STANDARDS only records which flags are POSIX extensions. Neither adds an option. The option set is closed by the binary: the getopt(3) option string is '0123456789A:aBbC:cdD:efF:HhI:iL:lnNPpqrS:sTtU:uwW:X:x:y' and the long option table in the binary carries 43 names, all of which were run and accepted. mode is therefore authoritative. The leading digits are not standalone flags -- 'diff -3' is rejected with the usage line; they exist only so the historic attached forms 'diff -c3' and 'diff -u1' parse. Four options are accepted by the binary but appear NOWHERE in the man page, which is the same failure mode as BSD 'touch -f': -H, -h, --horizon-lines and --no-dereference. They are listed with the acceptance evidence rather than an invented meaning, because under authoritative a doc-only check would have erased them. Two man page claims were contradicted by the binary and the binary was followed: the option block documents '-w --ignore-all-blanks', but --ignore-all-blanks is rejected and --ignore-all-space (which the SYNOPSIS also names) is what -w's long form actually is; and '-C number --context number' implies a space-separated value, but --context and --unified take an OPTIONAL argument, so only '--context=2' passes a number while '--context 2' reads 2 as a third operand. The binary's own usage line adds a third contradiction, printing '[--no-ignore-case]' for an option it rejects. --changed-group-format's man page entry is garbled -- it breaks off at 'Format input groups in the provided' and then gives the keyword '%<' twice, once for FILE1 and once for FILE2 -- so the description below reports that rather than guessing the second keyword. conflicts_with comes from the 'Output options (mutually exclusive):' heading and was then tested pair by pair against the binary: all 45 pairings among -c, -C, -u, -U, -e, -f, -n, -q, -y, -D and --normal are diagnosed with the usage line EXCEPT two, so -c/-C and -u/-U coexist and are the only members of the group not declared to conflict. Candidates implied by the six SYNOPSIS forms were tested and rejected in bulk: -l, -p, -N, -P, -r, -s, -W, -x, -X, -S, -F, -L and --suppress-common-lines are each shown in only some forms, but the binary accepts every one of them outside its form, so none of them carries a conflict. --help and --version sit inside the mutually exclusive block but print and exit 0, so they carry none either. Unlike other BSD tools this one ANSWERS --version, with 'Apple diff (based on FreeBSD diff)'; the probe therefore expects success plus that banner, and the same banner is what makes the scanner classify it bsd, since 'FreeBSD' is a BSD banner token. annotations: diff opens every operand read-only and has no option that names an output file, so readonly is true. value_optional was added on 2026-08-24 and established behaviourally on the build recorded above, since a BSD man page has no notation for an optional option argument: each candidate was run in BOTH spellings and marked only when the separated form demonstrably lost the value. `diff --context 1 a b` prints the usage and exits 2 while `diff --context=1 a b` succeeds; --unified and --color behave the same. The short forms are the contrast and are NOT optional: `diff -C 1 a b` and `diff -U 1 a b` both parse and exit 1 (differences found). apexe emits the long literal for these entries, which is what the attached form requires. Every other value-taking long option on this build -- --ifdef, --algorithm, --show-function-line, --ignore-matching-lines, --label, --width, --changed-group-format, --tabsize, --starting-file, --exclude-from, --exclude and --horizon-lines -- was run the same way and accepts the separated form, so none is marked.\n\nopen_world IS SET FALSE BY ENUMERATION, not by assumption. This overlay is `mode: authoritative`, which asserts its flag list is the complete option set for this variant, so the question \"can any invocation of this command reach off the machine or run another program?\" is answerable from the overlay itself. Every flag and operand was reviewed for a value that names a program to execute or a host to reach; none does. The command has no such capability of its own either -- it opens no sockets and spawns no children.\n\nThe check is only as good as the `authoritative` claim above it: a flag missing from this file is a capability missing from this conclusion. It was worth making anyway, because leaving the field unstated is not neutral -- a consumer reading the corpus alone must treat an absent annotation as unknown, and an unknown open_world costs the command any blanket allow. `sort` is the counter-example that made this a check rather than a formality: it reads as a pure text utility and `--compress-program=PROG` runs PROG, so it is annotated true."
   },
   "description": "The diff utility compares the contents of file1 and file2 and writes to the standard output the list of changes necessary to convert one file into the other. No output is produced if the files are identical. If both arguments are directories, diff sorts the contents of the directories by name, and then runs the regular file diff algorithm on text files which are different. If only one of file1 and file2 is a directory, diff is applied to the non-directory file and the file contained in the directory file with a filename that is the same as the last component of the non-directory file. If either file1 or file2 is -, the standard input is used in its place. diff exits 0 when no differences were found, 1 when differences were found and greater than 1 when an error occurred.",
   "flags": [
-    { "short": "-C", "long": "--context", "type": "integer", "value_name": "number", "value_optional": true, "conflicts_with": ["-D", "-e", "-f", "-n", "-q", "-u", "-U", "-y", "--normal"], "description": "Like -c but produces a diff with number lines of context. The number is optional and must be attached, as in --context=2; a space-separated value is read as an operand instead." },
-    { "short": "-c", "type": "boolean", "conflicts_with": ["-D", "-e", "-f", "-n", "-q", "-u", "-U", "-y", "--normal"], "description": "Produces a diff with 3 lines of context. With -c the output format is modified slightly: the output begins with identification of the files involved and their creation dates and then each change is separated by a line with fifteen *'s. The lines removed from file1 are marked with '- '; those added to file2 are marked '+ '. Lines which are changed from one file to the other are marked in both files with '! '. Changes which lie within 3 lines of each other are grouped together on output." },
-    { "short": "-D", "long": "--ifdef", "type": "string", "value_name": "string", "conflicts_with": ["-c", "-C", "-e", "-f", "-n", "-q", "-u", "-U", "-y", "--normal"], "description": "Creates a merged version of file1 and file2 on the standard output, with C preprocessor controls included so that a compilation of the result without defining string is equivalent to compiling file1, while defining string will yield file2." },
-    { "short": "-e", "long": "--ed", "type": "boolean", "conflicts_with": ["-c", "-C", "-D", "-f", "-n", "-q", "-u", "-U", "-y", "--normal"], "description": "Produces output in a form suitable as input for the editor utility, ed(1), which can then be used to convert file1 into file2. Note that when comparing directories with -e, the resulting file may no longer be interpreted as an ed(1) script: output is added to indicate which file each set of ed(1) commands applies to." },
-    { "short": "-f", "long": "--forward-ed", "type": "boolean", "conflicts_with": ["-c", "-C", "-D", "-e", "-n", "-q", "-u", "-U", "-y", "--normal"], "description": "Identical output to that of the -e flag, but in reverse order. It cannot be digested by ed(1)." },
-    { "long": "--help", "type": "boolean", "description": "This option prints a summary to stdout and exits with status 0." },
-    { "short": "-n", "long": "--rcs", "type": "boolean", "conflicts_with": ["-c", "-C", "-D", "-e", "-f", "-q", "-u", "-U", "-y", "--normal"], "description": "Produces a script similar to that of -e, but in the opposite order and with a count of changed lines on each insert or delete command. This is the form used by rcsdiff." },
-    { "short": "-q", "long": "--brief", "type": "boolean", "conflicts_with": ["-c", "-C", "-D", "-e", "-f", "-n", "-u", "-U", "-y", "--normal"], "description": "Just print a line when the files differ. Does not output a list of changes." },
-    { "short": "-U", "long": "--unified", "type": "integer", "value_name": "number", "value_optional": true, "conflicts_with": ["-c", "-C", "-D", "-e", "-f", "-n", "-q", "-y", "--normal"], "description": "Like -u but produces a diff with number lines of context. The number is optional and must be attached, as in --unified=2; a space-separated value is read as an operand instead." },
-    { "short": "-u", "type": "boolean", "conflicts_with": ["-c", "-C", "-D", "-e", "-f", "-n", "-q", "-y", "--normal"], "description": "Produces a unified diff with 3 lines of context. A unified diff is similar to the context diff produced by the -c option. However, unlike with -c, all lines to be changed (added and/or removed) are present in a single section." },
-    { "long": "--version", "type": "boolean", "description": "This option prints a version string to stdout and exits with status 0." },
-    { "short": "-y", "long": "--side-by-side", "type": "boolean", "conflicts_with": ["-c", "-C", "-D", "-e", "-f", "-n", "-q", "-u", "-U", "--normal"], "description": "Output in two columns with a marker between them. A space means corresponding lines are identical, '|' that they are different, '<' that files differ and only the first file contains the line, and '>' that files differ and only the second file contains the line." },
-    { "long": "--normal", "type": "boolean", "conflicts_with": ["-c", "-C", "-D", "-e", "-f", "-n", "-q", "-u", "-U", "-y"], "description": "Default diff output." },
-    { "short": "-A", "long": "--algorithm", "type": "enum", "value_name": "algo", "enum_values": ["myers", "patience", "stone"], "description": "Configure the algorithm used when comparing files. myers finds the shortest edit which transforms one input into the other, generally in O(N+D^2) time and O(N) space, falling back to a less optimal but faster algorithm on worst-case input. patience is a variant of myers that attempts to create more aesthetically pleasing output by logically grouping lines. stone (commonly known as Hunt-McIlroy or Hunt-Szymanski) looks for the longest common subsequence and encounters worst case performance when there are long common subsequences. The default is myers, but becomes stone when POSIXLY_CORRECT or POSIX_PEDANTIC is set, or when the input or output options are not supported by the myers implementation." },
-    { "short": "-a", "long": "--text", "type": "boolean", "description": "Treat all files as ASCII text. Normally diff will simply print \"Binary files ... differ\" if files contain binary characters. Use of this option forces diff to produce a diff." },
-    { "short": "-B", "long": "--ignore-blank-lines", "type": "boolean", "description": "Causes chunks that include only blank lines to be ignored." },
-    { "short": "-b", "long": "--ignore-space-change", "type": "boolean", "description": "Causes trailing blanks (spaces and tabs) to be ignored, and other strings of blanks to compare equal." },
-    { "long": "--color", "type": "enum", "value_name": "when", "value_optional": true, "enum_values": ["never", "always", "auto"], "description": "Color the additions green, and removals red, or the value in the DIFFCOLORS environment variable. auto will use color if the output is a tty and the COLORTERM environment variable is set to a non-empty string. The value is optional and must be attached, as in --color=always." },
-    { "short": "-d", "long": "--minimal", "type": "boolean", "description": "Try very hard to produce a diff as small as possible. This may consume a lot of processing power and memory when processing large files with many changes." },
-    { "short": "-F", "long": "--show-function-line", "type": "string", "value_name": "pattern", "description": "Like -p, but display the last line that matches provided pattern." },
-    { "short": "-I", "long": "--ignore-matching-lines", "type": "string", "value_name": "pattern", "repeatable": true, "description": "Ignores changes, insertions, and deletions whose lines match the extended regular expression pattern. Multiple -I patterns may be specified. All lines in the change must match some pattern for the change to be ignored. See re_format(7) for more information on regular expression patterns." },
-    { "short": "-i", "long": "--ignore-case", "type": "boolean", "description": "Ignores the case of letters. E.g., \"A\" will compare equal to \"a\"." },
-    { "short": "-l", "long": "--paginate", "type": "boolean", "description": "Pass the output through pr(1) to paginate it." },
-    { "short": "-L", "long": "--label", "type": "string", "value_name": "label", "repeatable": true, "description": "Print label instead of the first (and second, if this option is specified twice) file name and time in the context or unified diff header." },
-    { "short": "-p", "long": "--show-c-function", "type": "boolean", "description": "With unified and context diffs, show with each change the first 40 characters of the last line before the context beginning with a letter, an underscore or a dollar sign. For C and Objective-C source code following standard layout conventions, this will show the prototype of the function the change applies to." },
-    { "short": "-T", "long": "--initial-tab", "type": "boolean", "description": "Print a tab rather than a space before the rest of the line for the normal, context or unified output formats. This makes the alignment of tabs in the line consistent." },
-    { "short": "-t", "long": "--expand-tabs", "type": "boolean", "description": "Will expand tabs in output lines. Normal or -c output adds character(s) to the front of each line which may screw up the indentation of the original source lines and make the output listing difficult to interpret. This option will preserve the original source's indentation." },
-    { "short": "-w", "long": "--ignore-all-space", "type": "boolean", "description": "Is similar to -b --ignore-space-change but causes whitespace (blanks and tabs) to be totally ignored. E.g., \"if ( a == b )\" will compare equal to \"if(a==b)\". The man page names this long form --ignore-all-blanks, which the binary rejects; --ignore-all-space is what it accepts." },
-    { "short": "-W", "long": "--width", "type": "integer", "value_name": "number", "description": "Output at most number columns when using side by side format. The default value is 130. Note that unless -t was specified, diff will always align the second column to a tab stop, so values of --width smaller than approximately five times the value of --tabsize may yield surprising results." },
-    { "long": "--changed-group-format", "type": "string", "value_name": "GFMT", "description": "Format input groups in the provided format, which is a string with special keywords. The man page entry is truncated and lists the keyword '%<' twice, once as lines from FILE1 and once as lines from FILE2, so only the FILE1 meaning is documented reliably." },
-    { "long": "--ignore-file-name-case", "type": "boolean", "description": "Ignore case when comparing file names." },
-    { "long": "--no-ignore-file-name-case", "type": "boolean", "description": "Do not ignore case when comparing file names (default)." },
-    { "long": "--speed-large-files", "type": "boolean", "description": "Stub option for compatibility with GNU diff." },
-    { "long": "--strip-trailing-cr", "type": "boolean", "description": "Strip carriage return on input files." },
-    { "long": "--suppress-common-lines", "type": "boolean", "description": "Do not output common lines when using the side by side format." },
-    { "long": "--tabsize", "type": "integer", "value_name": "number", "description": "Number of spaces representing a tab (default 8)." },
-    { "short": "-N", "long": "--new-file", "type": "boolean", "description": "If a file is found in only one directory, act as if it was found in the other directory too but was of zero size." },
-    { "short": "-P", "long": "--unidirectional-new-file", "type": "boolean", "description": "If a file is found only in dir2, act as if it was found in dir1 too but was of zero size." },
-    { "short": "-r", "long": "--recursive", "type": "boolean", "description": "Causes application of diff recursively to common subdirectories encountered." },
-    { "short": "-S", "long": "--starting-file", "type": "path", "value_name": "name", "description": "Re-starts a directory diff in the middle, beginning with file name." },
-    { "short": "-s", "long": "--report-identical-files", "type": "boolean", "description": "Causes diff to report files which are the same, which are otherwise not mentioned." },
-    { "short": "-X", "long": "--exclude-from", "type": "path", "value_name": "file", "repeatable": true, "description": "Exclude files and subdirectories from comparison whose basenames match lines in file. Multiple -X options may be specified." },
-    { "short": "-x", "long": "--exclude", "type": "string", "value_name": "pattern", "repeatable": true, "description": "Exclude files and subdirectories from comparison whose basenames match pattern. Patterns are matched using shell-style globbing via fnmatch(3). Multiple -x options may be specified." },
-    { "short": "-H", "type": "boolean", "description": "Present in the binary's getopt(3) option string and accepted at exit 0/1, but documented nowhere in the macOS 26.3 man page, so no meaning is asserted here." },
-    { "short": "-h", "type": "boolean", "description": "Present in the binary's getopt(3) option string and accepted at exit 0/1, but documented nowhere in the macOS 26.3 man page, so no meaning is asserted here." },
-    { "long": "--horizon-lines", "type": "integer", "value_name": "number", "description": "Present in the binary's long option table and accepted with a space-separated number, but documented nowhere in the macOS 26.3 man page, so no meaning is asserted here." },
-    { "long": "--no-dereference", "type": "boolean", "description": "Present in the binary's long option table and accepted at exit 0/1, but documented nowhere in the macOS 26.3 man page, so no meaning is asserted here." }
+    {
+      "short": "-C",
+      "long": "--context",
+      "type": "integer",
+      "value_name": "number",
+      "value_optional": true,
+      "conflicts_with": [
+        "-D",
+        "-e",
+        "-f",
+        "-n",
+        "-q",
+        "-u",
+        "-U",
+        "-y",
+        "--normal"
+      ],
+      "description": "Like -c but produces a diff with number lines of context. The number is optional and must be attached, as in --context=2; a space-separated value is read as an operand instead."
+    },
+    {
+      "short": "-c",
+      "type": "boolean",
+      "conflicts_with": [
+        "-D",
+        "-e",
+        "-f",
+        "-n",
+        "-q",
+        "-u",
+        "-U",
+        "-y",
+        "--normal"
+      ],
+      "description": "Produces a diff with 3 lines of context. With -c the output format is modified slightly: the output begins with identification of the files involved and their creation dates and then each change is separated by a line with fifteen *'s. The lines removed from file1 are marked with '- '; those added to file2 are marked '+ '. Lines which are changed from one file to the other are marked in both files with '! '. Changes which lie within 3 lines of each other are grouped together on output."
+    },
+    {
+      "short": "-D",
+      "long": "--ifdef",
+      "type": "string",
+      "value_name": "string",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-e",
+        "-f",
+        "-n",
+        "-q",
+        "-u",
+        "-U",
+        "-y",
+        "--normal"
+      ],
+      "description": "Creates a merged version of file1 and file2 on the standard output, with C preprocessor controls included so that a compilation of the result without defining string is equivalent to compiling file1, while defining string will yield file2."
+    },
+    {
+      "short": "-e",
+      "long": "--ed",
+      "type": "boolean",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-D",
+        "-f",
+        "-n",
+        "-q",
+        "-u",
+        "-U",
+        "-y",
+        "--normal"
+      ],
+      "description": "Produces output in a form suitable as input for the editor utility, ed(1), which can then be used to convert file1 into file2. Note that when comparing directories with -e, the resulting file may no longer be interpreted as an ed(1) script: output is added to indicate which file each set of ed(1) commands applies to."
+    },
+    {
+      "short": "-f",
+      "long": "--forward-ed",
+      "type": "boolean",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-D",
+        "-e",
+        "-n",
+        "-q",
+        "-u",
+        "-U",
+        "-y",
+        "--normal"
+      ],
+      "description": "Identical output to that of the -e flag, but in reverse order. It cannot be digested by ed(1)."
+    },
+    {
+      "long": "--help",
+      "type": "boolean",
+      "description": "This option prints a summary to stdout and exits with status 0."
+    },
+    {
+      "short": "-n",
+      "long": "--rcs",
+      "type": "boolean",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-D",
+        "-e",
+        "-f",
+        "-q",
+        "-u",
+        "-U",
+        "-y",
+        "--normal"
+      ],
+      "description": "Produces a script similar to that of -e, but in the opposite order and with a count of changed lines on each insert or delete command. This is the form used by rcsdiff."
+    },
+    {
+      "short": "-q",
+      "long": "--brief",
+      "type": "boolean",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-D",
+        "-e",
+        "-f",
+        "-n",
+        "-u",
+        "-U",
+        "-y",
+        "--normal"
+      ],
+      "description": "Just print a line when the files differ. Does not output a list of changes."
+    },
+    {
+      "short": "-U",
+      "long": "--unified",
+      "type": "integer",
+      "value_name": "number",
+      "value_optional": true,
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-D",
+        "-e",
+        "-f",
+        "-n",
+        "-q",
+        "-y",
+        "--normal"
+      ],
+      "description": "Like -u but produces a diff with number lines of context. The number is optional and must be attached, as in --unified=2; a space-separated value is read as an operand instead."
+    },
+    {
+      "short": "-u",
+      "type": "boolean",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-D",
+        "-e",
+        "-f",
+        "-n",
+        "-q",
+        "-y",
+        "--normal"
+      ],
+      "description": "Produces a unified diff with 3 lines of context. A unified diff is similar to the context diff produced by the -c option. However, unlike with -c, all lines to be changed (added and/or removed) are present in a single section."
+    },
+    {
+      "long": "--version",
+      "type": "boolean",
+      "description": "This option prints a version string to stdout and exits with status 0."
+    },
+    {
+      "short": "-y",
+      "long": "--side-by-side",
+      "type": "boolean",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-D",
+        "-e",
+        "-f",
+        "-n",
+        "-q",
+        "-u",
+        "-U",
+        "--normal"
+      ],
+      "description": "Output in two columns with a marker between them. A space means corresponding lines are identical, '|' that they are different, '<' that files differ and only the first file contains the line, and '>' that files differ and only the second file contains the line."
+    },
+    {
+      "long": "--normal",
+      "type": "boolean",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-D",
+        "-e",
+        "-f",
+        "-n",
+        "-q",
+        "-u",
+        "-U",
+        "-y"
+      ],
+      "description": "Default diff output."
+    },
+    {
+      "short": "-A",
+      "long": "--algorithm",
+      "type": "enum",
+      "value_name": "algo",
+      "enum_values": [
+        "myers",
+        "patience",
+        "stone"
+      ],
+      "description": "Configure the algorithm used when comparing files. myers finds the shortest edit which transforms one input into the other, generally in O(N+D^2) time and O(N) space, falling back to a less optimal but faster algorithm on worst-case input. patience is a variant of myers that attempts to create more aesthetically pleasing output by logically grouping lines. stone (commonly known as Hunt-McIlroy or Hunt-Szymanski) looks for the longest common subsequence and encounters worst case performance when there are long common subsequences. The default is myers, but becomes stone when POSIXLY_CORRECT or POSIX_PEDANTIC is set, or when the input or output options are not supported by the myers implementation."
+    },
+    {
+      "short": "-a",
+      "long": "--text",
+      "type": "boolean",
+      "description": "Treat all files as ASCII text. Normally diff will simply print \"Binary files ... differ\" if files contain binary characters. Use of this option forces diff to produce a diff."
+    },
+    {
+      "short": "-B",
+      "long": "--ignore-blank-lines",
+      "type": "boolean",
+      "description": "Causes chunks that include only blank lines to be ignored."
+    },
+    {
+      "short": "-b",
+      "long": "--ignore-space-change",
+      "type": "boolean",
+      "description": "Causes trailing blanks (spaces and tabs) to be ignored, and other strings of blanks to compare equal."
+    },
+    {
+      "long": "--color",
+      "type": "enum",
+      "value_name": "when",
+      "value_optional": true,
+      "enum_values": [
+        "never",
+        "always",
+        "auto"
+      ],
+      "description": "Color the additions green, and removals red, or the value in the DIFFCOLORS environment variable. auto will use color if the output is a tty and the COLORTERM environment variable is set to a non-empty string. The value is optional and must be attached, as in --color=always."
+    },
+    {
+      "short": "-d",
+      "long": "--minimal",
+      "type": "boolean",
+      "description": "Try very hard to produce a diff as small as possible. This may consume a lot of processing power and memory when processing large files with many changes."
+    },
+    {
+      "short": "-F",
+      "long": "--show-function-line",
+      "type": "string",
+      "value_name": "pattern",
+      "description": "Like -p, but display the last line that matches provided pattern."
+    },
+    {
+      "short": "-I",
+      "long": "--ignore-matching-lines",
+      "type": "string",
+      "value_name": "pattern",
+      "repeatable": true,
+      "description": "Ignores changes, insertions, and deletions whose lines match the extended regular expression pattern. Multiple -I patterns may be specified. All lines in the change must match some pattern for the change to be ignored. See re_format(7) for more information on regular expression patterns."
+    },
+    {
+      "short": "-i",
+      "long": "--ignore-case",
+      "type": "boolean",
+      "description": "Ignores the case of letters. E.g., \"A\" will compare equal to \"a\"."
+    },
+    {
+      "short": "-l",
+      "long": "--paginate",
+      "type": "boolean",
+      "description": "Pass the output through pr(1) to paginate it."
+    },
+    {
+      "short": "-L",
+      "long": "--label",
+      "type": "string",
+      "value_name": "label",
+      "repeatable": true,
+      "description": "Print label instead of the first (and second, if this option is specified twice) file name and time in the context or unified diff header."
+    },
+    {
+      "short": "-p",
+      "long": "--show-c-function",
+      "type": "boolean",
+      "description": "With unified and context diffs, show with each change the first 40 characters of the last line before the context beginning with a letter, an underscore or a dollar sign. For C and Objective-C source code following standard layout conventions, this will show the prototype of the function the change applies to."
+    },
+    {
+      "short": "-T",
+      "long": "--initial-tab",
+      "type": "boolean",
+      "description": "Print a tab rather than a space before the rest of the line for the normal, context or unified output formats. This makes the alignment of tabs in the line consistent."
+    },
+    {
+      "short": "-t",
+      "long": "--expand-tabs",
+      "type": "boolean",
+      "description": "Will expand tabs in output lines. Normal or -c output adds character(s) to the front of each line which may screw up the indentation of the original source lines and make the output listing difficult to interpret. This option will preserve the original source's indentation."
+    },
+    {
+      "short": "-w",
+      "long": "--ignore-all-space",
+      "type": "boolean",
+      "description": "Is similar to -b --ignore-space-change but causes whitespace (blanks and tabs) to be totally ignored. E.g., \"if ( a == b )\" will compare equal to \"if(a==b)\". The man page names this long form --ignore-all-blanks, which the binary rejects; --ignore-all-space is what it accepts."
+    },
+    {
+      "short": "-W",
+      "long": "--width",
+      "type": "integer",
+      "value_name": "number",
+      "description": "Output at most number columns when using side by side format. The default value is 130. Note that unless -t was specified, diff will always align the second column to a tab stop, so values of --width smaller than approximately five times the value of --tabsize may yield surprising results."
+    },
+    {
+      "long": "--changed-group-format",
+      "type": "string",
+      "value_name": "GFMT",
+      "description": "Format input groups in the provided format, which is a string with special keywords. The man page entry is truncated and lists the keyword '%<' twice, once as lines from FILE1 and once as lines from FILE2, so only the FILE1 meaning is documented reliably."
+    },
+    {
+      "long": "--ignore-file-name-case",
+      "type": "boolean",
+      "description": "Ignore case when comparing file names."
+    },
+    {
+      "long": "--no-ignore-file-name-case",
+      "type": "boolean",
+      "description": "Do not ignore case when comparing file names (default)."
+    },
+    {
+      "long": "--speed-large-files",
+      "type": "boolean",
+      "description": "Stub option for compatibility with GNU diff."
+    },
+    {
+      "long": "--strip-trailing-cr",
+      "type": "boolean",
+      "description": "Strip carriage return on input files."
+    },
+    {
+      "long": "--suppress-common-lines",
+      "type": "boolean",
+      "description": "Do not output common lines when using the side by side format."
+    },
+    {
+      "long": "--tabsize",
+      "type": "integer",
+      "value_name": "number",
+      "description": "Number of spaces representing a tab (default 8)."
+    },
+    {
+      "short": "-N",
+      "long": "--new-file",
+      "type": "boolean",
+      "description": "If a file is found in only one directory, act as if it was found in the other directory too but was of zero size."
+    },
+    {
+      "short": "-P",
+      "long": "--unidirectional-new-file",
+      "type": "boolean",
+      "description": "If a file is found only in dir2, act as if it was found in dir1 too but was of zero size."
+    },
+    {
+      "short": "-r",
+      "long": "--recursive",
+      "type": "boolean",
+      "description": "Causes application of diff recursively to common subdirectories encountered."
+    },
+    {
+      "short": "-S",
+      "long": "--starting-file",
+      "type": "path",
+      "value_name": "name",
+      "description": "Re-starts a directory diff in the middle, beginning with file name."
+    },
+    {
+      "short": "-s",
+      "long": "--report-identical-files",
+      "type": "boolean",
+      "description": "Causes diff to report files which are the same, which are otherwise not mentioned."
+    },
+    {
+      "short": "-X",
+      "long": "--exclude-from",
+      "type": "path",
+      "value_name": "file",
+      "repeatable": true,
+      "description": "Exclude files and subdirectories from comparison whose basenames match lines in file. Multiple -X options may be specified."
+    },
+    {
+      "short": "-x",
+      "long": "--exclude",
+      "type": "string",
+      "value_name": "pattern",
+      "repeatable": true,
+      "description": "Exclude files and subdirectories from comparison whose basenames match pattern. Patterns are matched using shell-style globbing via fnmatch(3). Multiple -x options may be specified."
+    },
+    {
+      "short": "-H",
+      "type": "boolean",
+      "description": "Present in the binary's getopt(3) option string and accepted at exit 0/1, but documented nowhere in the macOS 26.3 man page, so no meaning is asserted here."
+    },
+    {
+      "short": "-h",
+      "type": "boolean",
+      "description": "Present in the binary's getopt(3) option string and accepted at exit 0/1, but documented nowhere in the macOS 26.3 man page, so no meaning is asserted here."
+    },
+    {
+      "long": "--horizon-lines",
+      "type": "integer",
+      "value_name": "number",
+      "description": "Present in the binary's long option table and accepted with a space-separated number, but documented nowhere in the macOS 26.3 man page, so no meaning is asserted here."
+    },
+    {
+      "long": "--no-dereference",
+      "type": "boolean",
+      "description": "Present in the binary's long option table and accepted at exit 0/1, but documented nowhere in the macOS 26.3 man page, so no meaning is asserted here."
+    }
   ],
   "positional_args": [
-    { "name": "file1", "type": "path", "required": true, "description": "First file or directory to compare. A single dash (-) reads the standard input." },
-    { "name": "file2", "type": "path", "required": true, "description": "Second file or directory to compare. A single dash (-) reads the standard input." }
+    {
+      "name": "file1",
+      "type": "path",
+      "required": true,
+      "description": "First file or directory to compare. A single dash (-) reads the standard input."
+    },
+    {
+      "name": "file2",
+      "type": "path",
+      "required": true,
+      "description": "Second file or directory to compare. A single dash (-) reads the standard input."
+    }
   ],
   "annotations": {
     "readonly": true,
     "destructive": false,
     "idempotent": true,
-    "requires_approval": false
+    "requires_approval": false,
+    "open_world": false
   }
 }

@@ -3,9 +3,20 @@
   "command": "rm",
   "variant": "bsd",
   "match": {
-    "platform": ["macos", "freebsd"],
-    "probe": { "args": ["--version"], "expect": "failure" },
-    "binary_globs": ["/bin/rm", "/usr/bin/rm"]
+    "platform": [
+      "macos",
+      "freebsd"
+    ],
+    "probe": {
+      "args": [
+        "--version"
+      ],
+      "expect": "failure"
+    },
+    "binary_globs": [
+      "/bin/rm",
+      "/usr/bin/rm"
+    ]
   },
   "mode": "authoritative",
   "confidence": "verified",
@@ -16,28 +27,81 @@
     "checked_on": "2026-07-27",
     "command": "man -P cat rm | col -b",
     "environment": "macOS 26.3 (Darwin arm64), system /bin/rm",
-    "notes": "Flags transcribed from the block after 'The options are as follows:'. That block documents -P, which the SYNOPSIS line 'rm [-f | -i] [-dIRrvWx] file ...' omits; the option block is treated as the flag list, so -P is included. The SYNOPSIS is the source of the -f/-i exclusion. BSD rm rejects --version (exit 64, 'illegal option -- -'), which is why the probe matches on failure."
+    "notes": "Flags transcribed from the block after 'The options are as follows:'. That block documents -P, which the SYNOPSIS line 'rm [-f | -i] [-dIRrvWx] file ...' omits; the option block is treated as the flag list, so -P is included. The SYNOPSIS is the source of the -f/-i exclusion. BSD rm rejects --version (exit 64, 'illegal option -- -'), which is why the probe matches on failure.\n\nopen_world IS SET FALSE BY ENUMERATION, not by assumption. This overlay is `mode: authoritative`, which asserts its flag list is the complete option set for this variant, so the question \"can any invocation of this command reach off the machine or run another program?\" is answerable from the overlay itself. Every flag and operand was reviewed for a value that names a program to execute or a host to reach; none does. The command has no such capability of its own either -- it opens no sockets and spawns no children.\n\nThe check is only as good as the `authoritative` claim above it: a flag missing from this file is a capability missing from this conclusion. It was worth making anyway, because leaving the field unstated is not neutral -- a consumer reading the corpus alone must treat an absent annotation as unknown, and an unknown open_world costs the command any blanket allow. `sort` is the counter-example that made this a check rather than a formality: it reads as a pure text utility and `--compress-program=PROG` runs PROG, so it is annotated true."
   },
   "description": "The rm utility attempts to remove the non-directory type files specified on the command line. If the permissions of the file do not permit writing, and the standard input device is a terminal, the user is prompted (on the standard error output) for confirmation. It is an error to attempt to remove the files /, . or ..",
   "flags": [
-    { "short": "-d", "type": "boolean", "description": "Attempt to remove directories as well as other types of files." },
-    { "short": "-f", "type": "boolean", "conflicts_with": ["-i"], "description": "Attempt to remove the files without prompting for confirmation, regardless of the file's permissions. If the file does not exist, do not display a diagnostic message or modify the exit status to reflect an error. The -f option overrides any previous -i options." },
-    { "short": "-i", "type": "boolean", "conflicts_with": ["-f"], "description": "Request confirmation before attempting to remove each file, regardless of the file's permissions, or whether or not the standard input device is a terminal. The -i option overrides any previous -f options." },
-    { "short": "-I", "type": "boolean", "description": "Request confirmation once if more than three files are being removed or if a directory is being recursively removed. This is a far less intrusive option than -i yet provides almost the same level of protection against mistakes." },
-    { "short": "-P", "type": "boolean", "description": "This flag has no effect. It is kept only for backwards compatibility with 4.4BSD-Lite2." },
-    { "short": "-R", "type": "boolean", "description": "Attempt to remove the file hierarchy rooted in each file argument. The -R option implies the -d option. If the -i option is specified, the user is prompted for confirmation before each directory's contents are processed." },
-    { "short": "-r", "type": "boolean", "description": "Equivalent to -R." },
-    { "short": "-v", "type": "boolean", "description": "Be verbose when deleting files, showing them as they are removed." },
-    { "short": "-W", "type": "boolean", "description": "Attempt to undelete the named files. Currently, this option can only be used to recover files covered by whiteouts in a union file system." },
-    { "short": "-x", "type": "boolean", "description": "When removing a hierarchy, do not cross mount points." }
+    {
+      "short": "-d",
+      "type": "boolean",
+      "description": "Attempt to remove directories as well as other types of files."
+    },
+    {
+      "short": "-f",
+      "type": "boolean",
+      "conflicts_with": [
+        "-i"
+      ],
+      "description": "Attempt to remove the files without prompting for confirmation, regardless of the file's permissions. If the file does not exist, do not display a diagnostic message or modify the exit status to reflect an error. The -f option overrides any previous -i options."
+    },
+    {
+      "short": "-i",
+      "type": "boolean",
+      "conflicts_with": [
+        "-f"
+      ],
+      "description": "Request confirmation before attempting to remove each file, regardless of the file's permissions, or whether or not the standard input device is a terminal. The -i option overrides any previous -f options."
+    },
+    {
+      "short": "-I",
+      "type": "boolean",
+      "description": "Request confirmation once if more than three files are being removed or if a directory is being recursively removed. This is a far less intrusive option than -i yet provides almost the same level of protection against mistakes."
+    },
+    {
+      "short": "-P",
+      "type": "boolean",
+      "description": "This flag has no effect. It is kept only for backwards compatibility with 4.4BSD-Lite2."
+    },
+    {
+      "short": "-R",
+      "type": "boolean",
+      "description": "Attempt to remove the file hierarchy rooted in each file argument. The -R option implies the -d option. If the -i option is specified, the user is prompted for confirmation before each directory's contents are processed."
+    },
+    {
+      "short": "-r",
+      "type": "boolean",
+      "description": "Equivalent to -R."
+    },
+    {
+      "short": "-v",
+      "type": "boolean",
+      "description": "Be verbose when deleting files, showing them as they are removed."
+    },
+    {
+      "short": "-W",
+      "type": "boolean",
+      "description": "Attempt to undelete the named files. Currently, this option can only be used to recover files covered by whiteouts in a union file system."
+    },
+    {
+      "short": "-x",
+      "type": "boolean",
+      "description": "When removing a hierarchy, do not cross mount points."
+    }
   ],
   "positional_args": [
-    { "name": "file", "type": "path", "variadic": true, "required": true, "description": "Directory entries to remove. At least one is required." }
+    {
+      "name": "file",
+      "type": "path",
+      "variadic": true,
+      "required": true,
+      "description": "Directory entries to remove. At least one is required."
+    }
   ],
   "annotations": {
     "readonly": false,
     "destructive": true,
     "idempotent": false,
-    "requires_approval": true
+    "requires_approval": true,
+    "open_world": false
   }
 }

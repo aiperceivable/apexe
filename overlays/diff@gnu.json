@@ -4,7 +4,9 @@
   "variant": "gnu",
   "match": {
     "probe": {
-      "args": ["--version"],
+      "args": [
+        "--version"
+      ],
       "expect": "success",
       "output_contains": "GNU diffutils"
     }
@@ -19,81 +21,711 @@
     "checked_on": "2026-07-27",
     "command": "docker run --rm debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd diff --help",
     "environment": "debian@sha256:328d16499860ae6cb9b345e2e4cebca08c2a36e4f7278482c7bd1f39d71e5bfd",
-    "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention -- except that this one is not, and the gaps were closed against the binary. The --help output uses two TEMPLATE lines, '--GTYPE-group-format=GFMT' and '--LTYPE-line-format=LFMT', which are not options: '--GTYPE-group-format=x' and '--LTYPE-line-format=x' are both rejected with \"unrecognized option\". They stand for the eight real options listed below, which were each run and accepted, GTYPE being old, new, changed or unchanged and LTYPE being old, new or unchanged. Sweeping every ASCII letter and digit against the binary closes the short set at 'abcdefhilnpqrstuvwxyBCDEFHILNPSTUWXZ0-9'. Four of those are accepted but appear NOWHERE in --help, which is the same failure mode as BSD 'touch -f': -f (the long form --forward-ed is also accepted), -H, -P and -h. -f, -H and -P have documented long forms here (--forward-ed, --speed-large-files, --unidirectional-new-file) so their meaning is not guessed; -h has none and is listed with the acceptance evidence only. Three long options are likewise accepted and absent from --help: --binary, --sdiff-merge-assist and --inhibit-hunk-merge. The leading digits are listed nowhere either; 'diff -3' and 'diff -5 -c' are both accepted, so unlike BSD diff -- where 'diff -3' is rejected outright -- they are standalone options here. They are a family of numeric context sizes rather than named options, so the overlay format cannot carry them. Long option ABBREVIATION is enabled (getopt_long): 'diff --minim', '--sdiff' and '--binar' are all accepted as unique prefixes. Every 'accepted' result above was therefore rechecked with the full name, and prefixes are NOT listed as options. Two candidates were rejected on that basis: --file-label and --entire-new-file, aliases that exist in older diffutils, are rejected by 3.10. --colour is rejected too, which is a real difference from BSD diff, where it is an accepted alias for --color. --context, --unified and --color take an OPTIONAL argument, so 'diff --context=1' passes a number while 'diff --context 1' reads 1 as an extra operand and fails -- the same trap diff@bsd records. conflicts_with was read off the running binary, which diagnoses every clash as 'conflicting output style options', and the whole 18-member output-style group was tested pair by pair. Declared: -c, -C, -u, -U, -e, -f, -n, -y, -D, --normal and the eight format options are mutually exclusive, with three measured exceptions -- -c coexists with -C, -u coexists with -U, and -D coexists with the four LTYPE-line-format options (but NOT with the four GTYPE-group-format ones, which do clash with it). The eight format options all coexist with each other. --from-file and --to-file clash separately, diagnosed as '--from-file and --to-file both specified'. Candidates tested and rejected: -q and -s sit next to the output styles in --help but coexist with every one of them and with each other; --left-column, --suppress-common-lines and -l likewise clash with nothing. annotations: diff opens every operand read-only and has no option that names an output file, so readonly is true; requires_approval is stated false to override the scanner's flag heuristic, which would otherwise escalate on -r/--recursive even though recursion here only widens what is read. conflicts_with was extended in a later pass, after the field's definition widened to cover override groups as well as diagnosed errors: apexe's input is a JSON object, which carries no ordering, so for a last-one-wins group which flag actually wins is decided by the order the caller happened to write the keys in. Every pair added then was run in BOTH orders against the reference build recorded above, and only pairs whose outcome depends on that order, or where one side is silently discarded, were added. value_optional was added on 2026-08-24, read off the reference build recorded above. GNU --help spells an optional option argument as `--opt[=VAL]` and a required one as `--opt=VAL`; every flag marked here shows the bracketed form and was then run in BOTH spellings, because the notation alone is not evidence. `diff --context 1 a b` is \"diff: extra operand 'b'\" (exit 2) -- the value displaced an operand -- while `diff --context=1 a b` succeeds; --unified and --color behave the same. The short forms are a deliberate contrast and are NOT optional: the help line reads '-c, -C NUM, --context[=NUM]', and `diff -C 1 a b` and `diff -U 1 a b` both parse and exit 1 (differences found). apexe emits the long literal for these entries, which is what the attached form requires; re-keying either to its short form would silently break it."
+    "notes": "Debian slim images ship no man pages, so the flag list was read from GNU --help, which is complete by GNU convention -- except that this one is not, and the gaps were closed against the binary. The --help output uses two TEMPLATE lines, '--GTYPE-group-format=GFMT' and '--LTYPE-line-format=LFMT', which are not options: '--GTYPE-group-format=x' and '--LTYPE-line-format=x' are both rejected with \"unrecognized option\". They stand for the eight real options listed below, which were each run and accepted, GTYPE being old, new, changed or unchanged and LTYPE being old, new or unchanged. Sweeping every ASCII letter and digit against the binary closes the short set at 'abcdefhilnpqrstuvwxyBCDEFHILNPSTUWXZ0-9'. Four of those are accepted but appear NOWHERE in --help, which is the same failure mode as BSD 'touch -f': -f (the long form --forward-ed is also accepted), -H, -P and -h. -f, -H and -P have documented long forms here (--forward-ed, --speed-large-files, --unidirectional-new-file) so their meaning is not guessed; -h has none and is listed with the acceptance evidence only. Three long options are likewise accepted and absent from --help: --binary, --sdiff-merge-assist and --inhibit-hunk-merge. The leading digits are listed nowhere either; 'diff -3' and 'diff -5 -c' are both accepted, so unlike BSD diff -- where 'diff -3' is rejected outright -- they are standalone options here. They are a family of numeric context sizes rather than named options, so the overlay format cannot carry them. Long option ABBREVIATION is enabled (getopt_long): 'diff --minim', '--sdiff' and '--binar' are all accepted as unique prefixes. Every 'accepted' result above was therefore rechecked with the full name, and prefixes are NOT listed as options. Two candidates were rejected on that basis: --file-label and --entire-new-file, aliases that exist in older diffutils, are rejected by 3.10. --colour is rejected too, which is a real difference from BSD diff, where it is an accepted alias for --color. --context, --unified and --color take an OPTIONAL argument, so 'diff --context=1' passes a number while 'diff --context 1' reads 1 as an extra operand and fails -- the same trap diff@bsd records. conflicts_with was read off the running binary, which diagnoses every clash as 'conflicting output style options', and the whole 18-member output-style group was tested pair by pair. Declared: -c, -C, -u, -U, -e, -f, -n, -y, -D, --normal and the eight format options are mutually exclusive, with three measured exceptions -- -c coexists with -C, -u coexists with -U, and -D coexists with the four LTYPE-line-format options (but NOT with the four GTYPE-group-format ones, which do clash with it). The eight format options all coexist with each other. --from-file and --to-file clash separately, diagnosed as '--from-file and --to-file both specified'. Candidates tested and rejected: -q and -s sit next to the output styles in --help but coexist with every one of them and with each other; --left-column, --suppress-common-lines and -l likewise clash with nothing. annotations: diff opens every operand read-only and has no option that names an output file, so readonly is true; requires_approval is stated false to override the scanner's flag heuristic, which would otherwise escalate on -r/--recursive even though recursion here only widens what is read. conflicts_with was extended in a later pass, after the field's definition widened to cover override groups as well as diagnosed errors: apexe's input is a JSON object, which carries no ordering, so for a last-one-wins group which flag actually wins is decided by the order the caller happened to write the keys in. Every pair added then was run in BOTH orders against the reference build recorded above, and only pairs whose outcome depends on that order, or where one side is silently discarded, were added. value_optional was added on 2026-08-24, read off the reference build recorded above. GNU --help spells an optional option argument as `--opt[=VAL]` and a required one as `--opt=VAL`; every flag marked here shows the bracketed form and was then run in BOTH spellings, because the notation alone is not evidence. `diff --context 1 a b` is \"diff: extra operand 'b'\" (exit 2) -- the value displaced an operand -- while `diff --context=1 a b` succeeds; --unified and --color behave the same. The short forms are a deliberate contrast and are NOT optional: the help line reads '-c, -C NUM, --context[=NUM]', and `diff -C 1 a b` and `diff -U 1 a b` both parse and exit 1 (differences found). apexe emits the long literal for these entries, which is what the attached form requires; re-keying either to its short form would silently break it.\n\nopen_world IS SET FALSE BY ENUMERATION, not by assumption. This overlay is `mode: authoritative`, which asserts its flag list is the complete option set for this variant, so the question \"can any invocation of this command reach off the machine or run another program?\" is answerable from the overlay itself. Every flag and operand was reviewed for a value that names a program to execute or a host to reach; none does. The command has no such capability of its own either -- it opens no sockets and spawns no children.\n\nThe check is only as good as the `authoritative` claim above it: a flag missing from this file is a capability missing from this conclusion. It was worth making anyway, because leaving the field unstated is not neutral -- a consumer reading the corpus alone must treat an absent annotation as unknown, and an unknown open_world costs the command any blanket allow. `sort` is the counter-example that made this a check rather than a formality: it reads as a pure text utility and `--compress-program=PROG` runs PROG, so it is annotated true."
   },
   "description": "Compare FILES line by line. FILES are 'FILE1 FILE2' or 'DIR1 DIR2' or 'DIR FILE' or 'FILE DIR'. If --from-file or --to-file is given, there are no restrictions on FILE(s). If a FILE is '-', read standard input. Exit status is 0 if inputs are the same, 1 if different, 2 if trouble. The format options --GTYPE-group-format and --LTYPE-line-format provide fine-grained control over the output, generalizing -D/--ifdef; LTYPE is 'old', 'new' or 'unchanged' and GTYPE is LTYPE or 'changed'.",
   "flags": [
-    { "long": "--normal", "type": "boolean", "conflicts_with": ["-c", "-C", "-u", "-U", "-e", "-f", "-n", "-y", "-D", "--old-group-format", "--new-group-format", "--changed-group-format", "--unchanged-group-format", "--line-format", "--old-line-format", "--new-line-format", "--unchanged-line-format", "-q"], "description": "Output a normal diff (the default)." },
-    { "short": "-q", "long": "--brief", "type": "boolean", "conflicts_with": ["--normal", "-c", "-C", "-u", "-U", "-e", "-f", "-n", "-y", "-D"], "description": "Report only when files differ." },
-    { "short": "-s", "long": "--report-identical-files", "type": "boolean", "description": "Report when two files are the same." },
-    { "short": "-c", "type": "boolean", "conflicts_with": ["-u", "-U", "-e", "-f", "-n", "-y", "-D", "--normal", "--old-group-format", "--new-group-format", "--changed-group-format", "--unchanged-group-format", "--line-format", "--old-line-format", "--new-line-format", "--unchanged-line-format", "-q"], "description": "Output 3 lines of copied context." },
-    { "short": "-C", "long": "--context", "type": "integer", "value_name": "NUM", "value_optional": true, "conflicts_with": ["-u", "-U", "-e", "-f", "-n", "-y", "-D", "--normal", "--old-group-format", "--new-group-format", "--changed-group-format", "--unchanged-group-format", "--line-format", "--old-line-format", "--new-line-format", "--unchanged-line-format", "-q"], "description": "Output NUM (default 3) lines of copied context. The value is optional and must be attached, as in --context=2; a space-separated value is read as an extra operand and rejected." },
-    { "short": "-u", "type": "boolean", "conflicts_with": ["-c", "-C", "-e", "-f", "-n", "-y", "-D", "--normal", "--old-group-format", "--new-group-format", "--changed-group-format", "--unchanged-group-format", "--line-format", "--old-line-format", "--new-line-format", "--unchanged-line-format", "-q"], "description": "Output 3 lines of unified context." },
-    { "short": "-U", "long": "--unified", "type": "integer", "value_name": "NUM", "value_optional": true, "conflicts_with": ["-c", "-C", "-e", "-f", "-n", "-y", "-D", "--normal", "--old-group-format", "--new-group-format", "--changed-group-format", "--unchanged-group-format", "--line-format", "--old-line-format", "--new-line-format", "--unchanged-line-format", "-q"], "description": "Output NUM (default 3) lines of unified context. The value is optional and must be attached, as in --unified=2; a space-separated value is read as an extra operand and rejected." },
-    { "short": "-e", "long": "--ed", "type": "boolean", "conflicts_with": ["-c", "-C", "-u", "-U", "-f", "-n", "-y", "-D", "--normal", "--old-group-format", "--new-group-format", "--changed-group-format", "--unchanged-group-format", "--line-format", "--old-line-format", "--new-line-format", "--unchanged-line-format", "-q"], "description": "Output an ed script." },
-    { "short": "-f", "long": "--forward-ed", "type": "boolean", "conflicts_with": ["-c", "-C", "-u", "-U", "-e", "-n", "-y", "-D", "--normal", "--old-group-format", "--new-group-format", "--changed-group-format", "--unchanged-group-format", "--line-format", "--old-line-format", "--new-line-format", "--unchanged-line-format", "-q"], "description": "Make output that looks vaguely like an ed script, but with the changes in the order they appear in the file. Neither ed nor patch can apply a diff in this format. Accepted by the binary in both forms but shown nowhere in --help." },
-    { "short": "-n", "long": "--rcs", "type": "boolean", "conflicts_with": ["-c", "-C", "-u", "-U", "-e", "-f", "-y", "-D", "--normal", "--old-group-format", "--new-group-format", "--changed-group-format", "--unchanged-group-format", "--line-format", "--old-line-format", "--new-line-format", "--unchanged-line-format", "-q"], "description": "Output an RCS format diff." },
-    { "short": "-y", "long": "--side-by-side", "type": "boolean", "conflicts_with": ["-c", "-C", "-u", "-U", "-e", "-f", "-n", "-D", "--normal", "--old-group-format", "--new-group-format", "--changed-group-format", "--unchanged-group-format", "--line-format", "--old-line-format", "--new-line-format", "--unchanged-line-format", "-q"], "description": "Output in two columns." },
-    { "short": "-W", "long": "--width", "type": "integer", "value_name": "NUM", "description": "Output at most NUM (default 130) print columns." },
-    { "long": "--left-column", "type": "boolean", "description": "Output only the left column of common lines." },
-    { "long": "--suppress-common-lines", "type": "boolean", "description": "Do not output common lines." },
-    { "short": "-p", "long": "--show-c-function", "type": "boolean", "description": "Show which C function each change is in." },
-    { "short": "-F", "long": "--show-function-line", "type": "string", "value_name": "RE", "description": "Show the most recent line matching RE." },
-    { "short": "-L", "long": "--label", "type": "string", "value_name": "LABEL", "repeatable": true, "description": "Use LABEL instead of file name and timestamp. Can be repeated, the first giving the label for FILE1 and the second for FILE2." },
-    { "short": "-t", "long": "--expand-tabs", "type": "boolean", "description": "Expand tabs to spaces in output." },
-    { "short": "-T", "long": "--initial-tab", "type": "boolean", "description": "Make tabs line up by prepending a tab." },
-    { "long": "--tabsize", "type": "integer", "value_name": "NUM", "description": "Tab stops every NUM (default 8) print columns." },
-    { "long": "--suppress-blank-empty", "type": "boolean", "description": "Suppress space or tab before empty output lines." },
-    { "short": "-l", "long": "--paginate", "type": "boolean", "description": "Pass output through 'pr' to paginate it." },
-    { "short": "-r", "long": "--recursive", "type": "boolean", "description": "Recursively compare any subdirectories found." },
-    { "long": "--no-dereference", "type": "boolean", "description": "Do not follow symbolic links." },
-    { "short": "-N", "long": "--new-file", "type": "boolean", "description": "Treat absent files as empty." },
-    { "short": "-P", "long": "--unidirectional-new-file", "type": "boolean", "description": "Treat absent first files as empty. The short form is accepted by the binary but shown nowhere in --help." },
-    { "long": "--ignore-file-name-case", "type": "boolean", "description": "Ignore case when comparing file names." },
-    { "long": "--no-ignore-file-name-case", "type": "boolean", "description": "Consider case when comparing file names." },
-    { "short": "-x", "long": "--exclude", "type": "string", "value_name": "PAT", "repeatable": true, "description": "Exclude files that match PAT." },
-    { "short": "-X", "long": "--exclude-from", "type": "path", "value_name": "FILE", "repeatable": true, "description": "Exclude files that match any pattern in FILE." },
-    { "short": "-S", "long": "--starting-file", "type": "path", "value_name": "FILE", "description": "Start with FILE when comparing directories." },
-    { "long": "--from-file", "type": "path", "value_name": "FILE1", "conflicts_with": ["--to-file"], "description": "Compare FILE1 to all operands; FILE1 can be a directory. Giving --to-file as well is diagnosed with '--from-file and --to-file both specified'." },
-    { "long": "--to-file", "type": "path", "value_name": "FILE2", "conflicts_with": ["--from-file"], "description": "Compare all operands to FILE2; FILE2 can be a directory. Giving --from-file as well is diagnosed with '--from-file and --to-file both specified'." },
-    { "short": "-i", "long": "--ignore-case", "type": "boolean", "description": "Ignore case differences in file contents." },
-    { "short": "-E", "long": "--ignore-tab-expansion", "type": "boolean", "description": "Ignore changes due to tab expansion." },
-    { "short": "-Z", "long": "--ignore-trailing-space", "type": "boolean", "description": "Ignore white space at line end." },
-    { "short": "-b", "long": "--ignore-space-change", "type": "boolean", "description": "Ignore changes in the amount of white space." },
-    { "short": "-w", "long": "--ignore-all-space", "type": "boolean", "description": "Ignore all white space." },
-    { "short": "-B", "long": "--ignore-blank-lines", "type": "boolean", "description": "Ignore changes where lines are all blank." },
-    { "short": "-I", "long": "--ignore-matching-lines", "type": "string", "value_name": "RE", "repeatable": true, "description": "Ignore changes where all lines match RE." },
-    { "short": "-a", "long": "--text", "type": "boolean", "description": "Treat all files as text." },
-    { "long": "--binary", "type": "boolean", "description": "Read and write data in binary mode. Accepted by the binary but shown nowhere in --help; on POSIX hosts it has no effect." },
-    { "long": "--strip-trailing-cr", "type": "boolean", "description": "Strip trailing carriage return on input." },
-    { "short": "-D", "long": "--ifdef", "type": "string", "value_name": "NAME", "conflicts_with": ["-c", "-C", "-u", "-U", "-e", "-f", "-n", "-y", "--normal", "--old-group-format", "--new-group-format", "--changed-group-format", "--unchanged-group-format", "-q"], "description": "Output merged file with '#ifdef NAME' diffs. It clashes with every other output style and with the four GTYPE-group-format options, but coexists with the four LTYPE-line-format options, which is how it is implemented." },
-    { "long": "--old-group-format", "type": "string", "value_name": "GFMT", "conflicts_with": ["-c", "-C", "-u", "-U", "-e", "-f", "-n", "-y", "-D", "--normal"], "description": "Format input groups of lines taken from FILE1 only, using GFMT. GFMT may contain %< for lines from FILE1, %> for lines from FILE2, %= for lines common to both, a printf-style %[-][WIDTH][.[PREC]]{doxX}LETTER spec where LETTER is F (first line number), L (last line number), N (number of lines), E (F-1) or M (L+1), upper case for the new group and lower case for the old, and %(A=B?T:E) for a conditional." },
-    { "long": "--new-group-format", "type": "string", "value_name": "GFMT", "conflicts_with": ["-c", "-C", "-u", "-U", "-e", "-f", "-n", "-y", "-D", "--normal"], "description": "Format input groups of lines taken from FILE2 only, using GFMT. The GFMT syntax is the same as for --old-group-format." },
-    { "long": "--changed-group-format", "type": "string", "value_name": "GFMT", "conflicts_with": ["-c", "-C", "-u", "-U", "-e", "-f", "-n", "-y", "-D", "--normal"], "description": "Format input groups of lines that differ between FILE1 and FILE2, using GFMT. The GFMT syntax is the same as for --old-group-format." },
-    { "long": "--unchanged-group-format", "type": "string", "value_name": "GFMT", "conflicts_with": ["-c", "-C", "-u", "-U", "-e", "-f", "-n", "-y", "-D", "--normal"], "description": "Format input groups of lines common to FILE1 and FILE2, using GFMT. The GFMT syntax is the same as for --old-group-format." },
-    { "long": "--line-format", "type": "string", "value_name": "LFMT", "conflicts_with": ["-c", "-C", "-u", "-U", "-e", "-f", "-n", "-y", "--normal"], "description": "Format all input lines with LFMT. LFMT may contain %L for the contents of the line, %l for the contents excluding any trailing newline, and a printf-style %[-][WIDTH][.[PREC]]{doxX}n spec for the input line number." },
-    { "long": "--old-line-format", "type": "string", "value_name": "LFMT", "conflicts_with": ["-c", "-C", "-u", "-U", "-e", "-f", "-n", "-y", "--normal"], "description": "Format input lines taken from FILE1 only, with LFMT. The LFMT syntax is the same as for --line-format." },
-    { "long": "--new-line-format", "type": "string", "value_name": "LFMT", "conflicts_with": ["-c", "-C", "-u", "-U", "-e", "-f", "-n", "-y", "--normal"], "description": "Format input lines taken from FILE2 only, with LFMT. The LFMT syntax is the same as for --line-format." },
-    { "long": "--unchanged-line-format", "type": "string", "value_name": "LFMT", "conflicts_with": ["-c", "-C", "-u", "-U", "-e", "-f", "-n", "-y", "--normal"], "description": "Format input lines common to FILE1 and FILE2, with LFMT. The LFMT syntax is the same as for --line-format." },
-    { "short": "-d", "long": "--minimal", "type": "boolean", "description": "Try hard to find a smaller set of changes." },
-    { "long": "--horizon-lines", "type": "integer", "value_name": "NUM", "description": "Keep NUM lines of the common prefix and suffix." },
-    { "short": "-H", "long": "--speed-large-files", "type": "boolean", "description": "Assume large files and many scattered small changes. The short form is accepted by the binary but shown nowhere in --help." },
-    { "long": "--sdiff-merge-assist", "type": "boolean", "description": "Emit the extra annotations sdiff needs when it drives diff for an interactive merge. Accepted by the binary but shown nowhere in --help; it is an internal interface rather than a user-facing option." },
-    { "long": "--inhibit-hunk-merge", "type": "boolean", "description": "Accepted by the binary but shown nowhere in --help. It is an obsolete no-op retained for compatibility, so no behaviour is asserted here beyond acceptance at exit 0/1." },
-    { "short": "-h", "type": "boolean", "description": "Accepted by the binary at exit 0/1 but documented nowhere in the GNU diffutils 3.10 --help output, and it has no long form, so no meaning is asserted here." },
-    { "long": "--color", "type": "enum", "value_name": "WHEN", "value_optional": true, "enum_values": ["never", "always", "auto"], "description": "Color output; plain --color means --color=auto. The value is optional and must be attached, as in --color=always; a space-separated value is read as an extra operand and rejected. Unlike BSD diff there is no --colour alias, which this build rejects." },
-    { "long": "--palette", "type": "string", "value_name": "PALETTE", "description": "The colors to use when --color is active; PALETTE is a colon-separated list of terminfo capabilities." },
-    { "long": "--help", "type": "boolean", "description": "Display this help and exit." },
-    { "short": "-v", "long": "--version", "type": "boolean", "description": "Output version information and exit." }
+    {
+      "long": "--normal",
+      "type": "boolean",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-u",
+        "-U",
+        "-e",
+        "-f",
+        "-n",
+        "-y",
+        "-D",
+        "--old-group-format",
+        "--new-group-format",
+        "--changed-group-format",
+        "--unchanged-group-format",
+        "--line-format",
+        "--old-line-format",
+        "--new-line-format",
+        "--unchanged-line-format",
+        "-q"
+      ],
+      "description": "Output a normal diff (the default)."
+    },
+    {
+      "short": "-q",
+      "long": "--brief",
+      "type": "boolean",
+      "conflicts_with": [
+        "--normal",
+        "-c",
+        "-C",
+        "-u",
+        "-U",
+        "-e",
+        "-f",
+        "-n",
+        "-y",
+        "-D"
+      ],
+      "description": "Report only when files differ."
+    },
+    {
+      "short": "-s",
+      "long": "--report-identical-files",
+      "type": "boolean",
+      "description": "Report when two files are the same."
+    },
+    {
+      "short": "-c",
+      "type": "boolean",
+      "conflicts_with": [
+        "-u",
+        "-U",
+        "-e",
+        "-f",
+        "-n",
+        "-y",
+        "-D",
+        "--normal",
+        "--old-group-format",
+        "--new-group-format",
+        "--changed-group-format",
+        "--unchanged-group-format",
+        "--line-format",
+        "--old-line-format",
+        "--new-line-format",
+        "--unchanged-line-format",
+        "-q"
+      ],
+      "description": "Output 3 lines of copied context."
+    },
+    {
+      "short": "-C",
+      "long": "--context",
+      "type": "integer",
+      "value_name": "NUM",
+      "value_optional": true,
+      "conflicts_with": [
+        "-u",
+        "-U",
+        "-e",
+        "-f",
+        "-n",
+        "-y",
+        "-D",
+        "--normal",
+        "--old-group-format",
+        "--new-group-format",
+        "--changed-group-format",
+        "--unchanged-group-format",
+        "--line-format",
+        "--old-line-format",
+        "--new-line-format",
+        "--unchanged-line-format",
+        "-q"
+      ],
+      "description": "Output NUM (default 3) lines of copied context. The value is optional and must be attached, as in --context=2; a space-separated value is read as an extra operand and rejected."
+    },
+    {
+      "short": "-u",
+      "type": "boolean",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-e",
+        "-f",
+        "-n",
+        "-y",
+        "-D",
+        "--normal",
+        "--old-group-format",
+        "--new-group-format",
+        "--changed-group-format",
+        "--unchanged-group-format",
+        "--line-format",
+        "--old-line-format",
+        "--new-line-format",
+        "--unchanged-line-format",
+        "-q"
+      ],
+      "description": "Output 3 lines of unified context."
+    },
+    {
+      "short": "-U",
+      "long": "--unified",
+      "type": "integer",
+      "value_name": "NUM",
+      "value_optional": true,
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-e",
+        "-f",
+        "-n",
+        "-y",
+        "-D",
+        "--normal",
+        "--old-group-format",
+        "--new-group-format",
+        "--changed-group-format",
+        "--unchanged-group-format",
+        "--line-format",
+        "--old-line-format",
+        "--new-line-format",
+        "--unchanged-line-format",
+        "-q"
+      ],
+      "description": "Output NUM (default 3) lines of unified context. The value is optional and must be attached, as in --unified=2; a space-separated value is read as an extra operand and rejected."
+    },
+    {
+      "short": "-e",
+      "long": "--ed",
+      "type": "boolean",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-u",
+        "-U",
+        "-f",
+        "-n",
+        "-y",
+        "-D",
+        "--normal",
+        "--old-group-format",
+        "--new-group-format",
+        "--changed-group-format",
+        "--unchanged-group-format",
+        "--line-format",
+        "--old-line-format",
+        "--new-line-format",
+        "--unchanged-line-format",
+        "-q"
+      ],
+      "description": "Output an ed script."
+    },
+    {
+      "short": "-f",
+      "long": "--forward-ed",
+      "type": "boolean",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-u",
+        "-U",
+        "-e",
+        "-n",
+        "-y",
+        "-D",
+        "--normal",
+        "--old-group-format",
+        "--new-group-format",
+        "--changed-group-format",
+        "--unchanged-group-format",
+        "--line-format",
+        "--old-line-format",
+        "--new-line-format",
+        "--unchanged-line-format",
+        "-q"
+      ],
+      "description": "Make output that looks vaguely like an ed script, but with the changes in the order they appear in the file. Neither ed nor patch can apply a diff in this format. Accepted by the binary in both forms but shown nowhere in --help."
+    },
+    {
+      "short": "-n",
+      "long": "--rcs",
+      "type": "boolean",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-u",
+        "-U",
+        "-e",
+        "-f",
+        "-y",
+        "-D",
+        "--normal",
+        "--old-group-format",
+        "--new-group-format",
+        "--changed-group-format",
+        "--unchanged-group-format",
+        "--line-format",
+        "--old-line-format",
+        "--new-line-format",
+        "--unchanged-line-format",
+        "-q"
+      ],
+      "description": "Output an RCS format diff."
+    },
+    {
+      "short": "-y",
+      "long": "--side-by-side",
+      "type": "boolean",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-u",
+        "-U",
+        "-e",
+        "-f",
+        "-n",
+        "-D",
+        "--normal",
+        "--old-group-format",
+        "--new-group-format",
+        "--changed-group-format",
+        "--unchanged-group-format",
+        "--line-format",
+        "--old-line-format",
+        "--new-line-format",
+        "--unchanged-line-format",
+        "-q"
+      ],
+      "description": "Output in two columns."
+    },
+    {
+      "short": "-W",
+      "long": "--width",
+      "type": "integer",
+      "value_name": "NUM",
+      "description": "Output at most NUM (default 130) print columns."
+    },
+    {
+      "long": "--left-column",
+      "type": "boolean",
+      "description": "Output only the left column of common lines."
+    },
+    {
+      "long": "--suppress-common-lines",
+      "type": "boolean",
+      "description": "Do not output common lines."
+    },
+    {
+      "short": "-p",
+      "long": "--show-c-function",
+      "type": "boolean",
+      "description": "Show which C function each change is in."
+    },
+    {
+      "short": "-F",
+      "long": "--show-function-line",
+      "type": "string",
+      "value_name": "RE",
+      "description": "Show the most recent line matching RE."
+    },
+    {
+      "short": "-L",
+      "long": "--label",
+      "type": "string",
+      "value_name": "LABEL",
+      "repeatable": true,
+      "description": "Use LABEL instead of file name and timestamp. Can be repeated, the first giving the label for FILE1 and the second for FILE2."
+    },
+    {
+      "short": "-t",
+      "long": "--expand-tabs",
+      "type": "boolean",
+      "description": "Expand tabs to spaces in output."
+    },
+    {
+      "short": "-T",
+      "long": "--initial-tab",
+      "type": "boolean",
+      "description": "Make tabs line up by prepending a tab."
+    },
+    {
+      "long": "--tabsize",
+      "type": "integer",
+      "value_name": "NUM",
+      "description": "Tab stops every NUM (default 8) print columns."
+    },
+    {
+      "long": "--suppress-blank-empty",
+      "type": "boolean",
+      "description": "Suppress space or tab before empty output lines."
+    },
+    {
+      "short": "-l",
+      "long": "--paginate",
+      "type": "boolean",
+      "description": "Pass output through 'pr' to paginate it."
+    },
+    {
+      "short": "-r",
+      "long": "--recursive",
+      "type": "boolean",
+      "description": "Recursively compare any subdirectories found."
+    },
+    {
+      "long": "--no-dereference",
+      "type": "boolean",
+      "description": "Do not follow symbolic links."
+    },
+    {
+      "short": "-N",
+      "long": "--new-file",
+      "type": "boolean",
+      "description": "Treat absent files as empty."
+    },
+    {
+      "short": "-P",
+      "long": "--unidirectional-new-file",
+      "type": "boolean",
+      "description": "Treat absent first files as empty. The short form is accepted by the binary but shown nowhere in --help."
+    },
+    {
+      "long": "--ignore-file-name-case",
+      "type": "boolean",
+      "description": "Ignore case when comparing file names."
+    },
+    {
+      "long": "--no-ignore-file-name-case",
+      "type": "boolean",
+      "description": "Consider case when comparing file names."
+    },
+    {
+      "short": "-x",
+      "long": "--exclude",
+      "type": "string",
+      "value_name": "PAT",
+      "repeatable": true,
+      "description": "Exclude files that match PAT."
+    },
+    {
+      "short": "-X",
+      "long": "--exclude-from",
+      "type": "path",
+      "value_name": "FILE",
+      "repeatable": true,
+      "description": "Exclude files that match any pattern in FILE."
+    },
+    {
+      "short": "-S",
+      "long": "--starting-file",
+      "type": "path",
+      "value_name": "FILE",
+      "description": "Start with FILE when comparing directories."
+    },
+    {
+      "long": "--from-file",
+      "type": "path",
+      "value_name": "FILE1",
+      "conflicts_with": [
+        "--to-file"
+      ],
+      "description": "Compare FILE1 to all operands; FILE1 can be a directory. Giving --to-file as well is diagnosed with '--from-file and --to-file both specified'."
+    },
+    {
+      "long": "--to-file",
+      "type": "path",
+      "value_name": "FILE2",
+      "conflicts_with": [
+        "--from-file"
+      ],
+      "description": "Compare all operands to FILE2; FILE2 can be a directory. Giving --from-file as well is diagnosed with '--from-file and --to-file both specified'."
+    },
+    {
+      "short": "-i",
+      "long": "--ignore-case",
+      "type": "boolean",
+      "description": "Ignore case differences in file contents."
+    },
+    {
+      "short": "-E",
+      "long": "--ignore-tab-expansion",
+      "type": "boolean",
+      "description": "Ignore changes due to tab expansion."
+    },
+    {
+      "short": "-Z",
+      "long": "--ignore-trailing-space",
+      "type": "boolean",
+      "description": "Ignore white space at line end."
+    },
+    {
+      "short": "-b",
+      "long": "--ignore-space-change",
+      "type": "boolean",
+      "description": "Ignore changes in the amount of white space."
+    },
+    {
+      "short": "-w",
+      "long": "--ignore-all-space",
+      "type": "boolean",
+      "description": "Ignore all white space."
+    },
+    {
+      "short": "-B",
+      "long": "--ignore-blank-lines",
+      "type": "boolean",
+      "description": "Ignore changes where lines are all blank."
+    },
+    {
+      "short": "-I",
+      "long": "--ignore-matching-lines",
+      "type": "string",
+      "value_name": "RE",
+      "repeatable": true,
+      "description": "Ignore changes where all lines match RE."
+    },
+    {
+      "short": "-a",
+      "long": "--text",
+      "type": "boolean",
+      "description": "Treat all files as text."
+    },
+    {
+      "long": "--binary",
+      "type": "boolean",
+      "description": "Read and write data in binary mode. Accepted by the binary but shown nowhere in --help; on POSIX hosts it has no effect."
+    },
+    {
+      "long": "--strip-trailing-cr",
+      "type": "boolean",
+      "description": "Strip trailing carriage return on input."
+    },
+    {
+      "short": "-D",
+      "long": "--ifdef",
+      "type": "string",
+      "value_name": "NAME",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-u",
+        "-U",
+        "-e",
+        "-f",
+        "-n",
+        "-y",
+        "--normal",
+        "--old-group-format",
+        "--new-group-format",
+        "--changed-group-format",
+        "--unchanged-group-format",
+        "-q"
+      ],
+      "description": "Output merged file with '#ifdef NAME' diffs. It clashes with every other output style and with the four GTYPE-group-format options, but coexists with the four LTYPE-line-format options, which is how it is implemented."
+    },
+    {
+      "long": "--old-group-format",
+      "type": "string",
+      "value_name": "GFMT",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-u",
+        "-U",
+        "-e",
+        "-f",
+        "-n",
+        "-y",
+        "-D",
+        "--normal"
+      ],
+      "description": "Format input groups of lines taken from FILE1 only, using GFMT. GFMT may contain %< for lines from FILE1, %> for lines from FILE2, %= for lines common to both, a printf-style %[-][WIDTH][.[PREC]]{doxX}LETTER spec where LETTER is F (first line number), L (last line number), N (number of lines), E (F-1) or M (L+1), upper case for the new group and lower case for the old, and %(A=B?T:E) for a conditional."
+    },
+    {
+      "long": "--new-group-format",
+      "type": "string",
+      "value_name": "GFMT",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-u",
+        "-U",
+        "-e",
+        "-f",
+        "-n",
+        "-y",
+        "-D",
+        "--normal"
+      ],
+      "description": "Format input groups of lines taken from FILE2 only, using GFMT. The GFMT syntax is the same as for --old-group-format."
+    },
+    {
+      "long": "--changed-group-format",
+      "type": "string",
+      "value_name": "GFMT",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-u",
+        "-U",
+        "-e",
+        "-f",
+        "-n",
+        "-y",
+        "-D",
+        "--normal"
+      ],
+      "description": "Format input groups of lines that differ between FILE1 and FILE2, using GFMT. The GFMT syntax is the same as for --old-group-format."
+    },
+    {
+      "long": "--unchanged-group-format",
+      "type": "string",
+      "value_name": "GFMT",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-u",
+        "-U",
+        "-e",
+        "-f",
+        "-n",
+        "-y",
+        "-D",
+        "--normal"
+      ],
+      "description": "Format input groups of lines common to FILE1 and FILE2, using GFMT. The GFMT syntax is the same as for --old-group-format."
+    },
+    {
+      "long": "--line-format",
+      "type": "string",
+      "value_name": "LFMT",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-u",
+        "-U",
+        "-e",
+        "-f",
+        "-n",
+        "-y",
+        "--normal"
+      ],
+      "description": "Format all input lines with LFMT. LFMT may contain %L for the contents of the line, %l for the contents excluding any trailing newline, and a printf-style %[-][WIDTH][.[PREC]]{doxX}n spec for the input line number."
+    },
+    {
+      "long": "--old-line-format",
+      "type": "string",
+      "value_name": "LFMT",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-u",
+        "-U",
+        "-e",
+        "-f",
+        "-n",
+        "-y",
+        "--normal"
+      ],
+      "description": "Format input lines taken from FILE1 only, with LFMT. The LFMT syntax is the same as for --line-format."
+    },
+    {
+      "long": "--new-line-format",
+      "type": "string",
+      "value_name": "LFMT",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-u",
+        "-U",
+        "-e",
+        "-f",
+        "-n",
+        "-y",
+        "--normal"
+      ],
+      "description": "Format input lines taken from FILE2 only, with LFMT. The LFMT syntax is the same as for --line-format."
+    },
+    {
+      "long": "--unchanged-line-format",
+      "type": "string",
+      "value_name": "LFMT",
+      "conflicts_with": [
+        "-c",
+        "-C",
+        "-u",
+        "-U",
+        "-e",
+        "-f",
+        "-n",
+        "-y",
+        "--normal"
+      ],
+      "description": "Format input lines common to FILE1 and FILE2, with LFMT. The LFMT syntax is the same as for --line-format."
+    },
+    {
+      "short": "-d",
+      "long": "--minimal",
+      "type": "boolean",
+      "description": "Try hard to find a smaller set of changes."
+    },
+    {
+      "long": "--horizon-lines",
+      "type": "integer",
+      "value_name": "NUM",
+      "description": "Keep NUM lines of the common prefix and suffix."
+    },
+    {
+      "short": "-H",
+      "long": "--speed-large-files",
+      "type": "boolean",
+      "description": "Assume large files and many scattered small changes. The short form is accepted by the binary but shown nowhere in --help."
+    },
+    {
+      "long": "--sdiff-merge-assist",
+      "type": "boolean",
+      "description": "Emit the extra annotations sdiff needs when it drives diff for an interactive merge. Accepted by the binary but shown nowhere in --help; it is an internal interface rather than a user-facing option."
+    },
+    {
+      "long": "--inhibit-hunk-merge",
+      "type": "boolean",
+      "description": "Accepted by the binary but shown nowhere in --help. It is an obsolete no-op retained for compatibility, so no behaviour is asserted here beyond acceptance at exit 0/1."
+    },
+    {
+      "short": "-h",
+      "type": "boolean",
+      "description": "Accepted by the binary at exit 0/1 but documented nowhere in the GNU diffutils 3.10 --help output, and it has no long form, so no meaning is asserted here."
+    },
+    {
+      "long": "--color",
+      "type": "enum",
+      "value_name": "WHEN",
+      "value_optional": true,
+      "enum_values": [
+        "never",
+        "always",
+        "auto"
+      ],
+      "description": "Color output; plain --color means --color=auto. The value is optional and must be attached, as in --color=always; a space-separated value is read as an extra operand and rejected. Unlike BSD diff there is no --colour alias, which this build rejects."
+    },
+    {
+      "long": "--palette",
+      "type": "string",
+      "value_name": "PALETTE",
+      "description": "The colors to use when --color is active; PALETTE is a colon-separated list of terminfo capabilities."
+    },
+    {
+      "long": "--help",
+      "type": "boolean",
+      "description": "Display this help and exit."
+    },
+    {
+      "short": "-v",
+      "long": "--version",
+      "type": "boolean",
+      "description": "Output version information and exit."
+    }
   ],
   "positional_args": [
-    { "name": "file1", "type": "path", "required": true, "description": "First file or directory to compare. A single dash (-) reads the standard input. Not required when --from-file or --to-file is given, which lift the two-operand restriction." },
-    { "name": "file2", "type": "path", "required": true, "description": "Second file or directory to compare. A single dash (-) reads the standard input. Not required when --from-file or --to-file is given, which lift the two-operand restriction." }
+    {
+      "name": "file1",
+      "type": "path",
+      "required": true,
+      "description": "First file or directory to compare. A single dash (-) reads the standard input. Not required when --from-file or --to-file is given, which lift the two-operand restriction."
+    },
+    {
+      "name": "file2",
+      "type": "path",
+      "required": true,
+      "description": "Second file or directory to compare. A single dash (-) reads the standard input. Not required when --from-file or --to-file is given, which lift the two-operand restriction."
+    }
   ],
   "annotations": {
     "readonly": true,
     "destructive": false,
     "idempotent": true,
-    "requires_approval": false
+    "requires_approval": false,
+    "open_world": false
   }
 }

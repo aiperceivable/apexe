@@ -143,8 +143,23 @@ shape is a list.
 
 ## 6. Annotations
 
-Five behavioural assertions, each optional. An absent field means the overlay
-declines to say, and leaves you with whatever you inferred.
+Five behavioural assertions, each optional.
+
+**An absent field means "unknown", and a consumer must not read it as `false`.**
+The schema requires none of them, so `"annotations": {"readonly": true}` says
+nothing whatever about `open_world` — and in most languages the natural
+expression of that (`if annotations.get("open_world")`) silently reads the
+absence as a denial. That is the unsafe direction, and it is not hypothetical:
+the reference consumer shipped with exactly that bug, and `sort` is the command
+that shows why it matters. `sort` reads as a pure text utility, and
+`--compress-program=PROG` runs PROG. Until it was checked, the corpus left
+`open_world` unstated on `sort`, so a consumer that equated absent with false
+would have told a model that `sort`'s domain of interaction is closed.
+
+Where a consumer has its own inference, absent means "keep what you inferred".
+Where it has none — a consumer reading only the corpus — absent means it does
+not know, and the safe reading of a consequential property it does not know is
+the conservative one.
 
 | Field | Means |
 |---|---|
@@ -184,12 +199,23 @@ selection, but these had to be decided by the consumer rather than read off the
 data. They are listed so the next implementer does not think they missed
 something.
 
-**There is no derivation rule from annotations to a permission tier.** §6 says
-what each annotation means and stops there, deliberately: what to allow depends
-on the environment. The cost is that two consumers reading the same corpus can
-reach different policies, so a rule is only as portable as the mapping behind
-it. A mapping that ignores §5 will also be wrong in a way the annotations do not
-show — `tail` is `readonly` and `idempotent` and still hangs an agent forever.
+**There is no derivation rule from annotations to a permission tier**, and
+there deliberately will not be: what to allow depends on the environment, and a
+corpus that shipped a policy would be asserting something it cannot check. The
+cost is real, though — two consumers reading the same corpus can reach different
+policies, so a rule is only as portable as the mapping behind it.
+
+What a mapping must not do is lose the facts that are *not* in the five
+annotations. Two are load-bearing and easy to skip:
+
+- a flag marked `long_running` (§5) hangs an agent forever on a command whose
+  annotations say `readonly` and `idempotent` — `tail` is exactly that shape;
+- an operand or FILE-valued flag that truncates (§6) destroys without any
+  destructive-looking flag on the command line.
+
+A consumer is free to decide that a destructive command is allowed in its
+environment. It is not free to conclude a command is harmless without having
+looked at those two.
 
 **There is no annotation for "creates".** `mkdir` and `touch` are neither
 `readonly` nor `destructive`: they make something that was not there and destroy
