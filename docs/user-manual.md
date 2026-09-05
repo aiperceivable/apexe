@@ -429,7 +429,8 @@ An overlay is a curated, human-reviewed description of one tool variant, keyed b
 - Overlays are the only source that can express `conflicts_with` (mutually exclusive flags) and `long_running` (a flag that may block indefinitely, e.g. `tail -f`) — no `--help`/man format expresses either machine-readably.
 - Overlays can also override behavioral annotations (`readonly`/`destructive`/`idempotent`/`requires_approval`/`open_world`) for a specific command. `open_world` is the one inference reads off a *name list* rather than the command's own surface, so it is the one an overlay most often has to correct: GNU sed runs `s///e` as a shell command while BSD sed rejects the flag, and the name `sed` cannot tell them apart.
 
-Load one explicit overlay with `apexe scan <tool> --overlay <PATH>` (JSON or YAML), or install multiple overlays by dropping files under `~/.apexe/overlays/`. The format is defined by `schemas/tool-overlay.schema.json`. See [`docs/overlay-consumers.md`](overlay-consumers.md) for reading overlays from
+Load one explicit overlay with `apexe scan <tool> --overlay <PATH>` (JSON or YAML), or install multiple overlays by dropping files under `~/.apexe/overlays/`. The format is defined by [`tool-overlay.schema.json`](https://github.com/aiperceivable/cli-permissions/blob/main/schemas/tool-overlay.schema.json), which ships with
+the corpus rather than with apexe. See [`docs/overlay-consumers.md`](overlay-consumers.md) for reading overlays from
 outside apexe, and [`docs/overlays.md`](overlays.md) for the full authoring and verification procedure — writing a `verified` overlay from memory instead of a real installation is exactly what it warns against.
 
 ---

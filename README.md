@@ -236,7 +236,8 @@ directory listed in `overlay_dirs` in the order given,
 a corpus someone else maintains — a team policy repository, a plugin that ships
 overlays — is consumed without copying files into the operator's own directory;
 that directory is still read last, so a hand-written local file wins the tie.
-The format is defined by [`schemas/tool-overlay.schema.json`](schemas/tool-overlay.schema.json).
+The format is defined by [`tool-overlay.schema.json`](https://github.com/aiperceivable/cli-permissions/blob/main/schemas/tool-overlay.schema.json), which lives with
+the corpus rather than here — apexe is one consumer of it, not its owner.
 It describes the command rather than apexe, so a second implementation can read
 the same files — see [Reading Overlays Without apexe](docs/overlay-consumers.md).
 

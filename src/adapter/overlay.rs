@@ -1553,18 +1553,51 @@ mod tests {
 
     /// The standalone JSON Schema, which is the contract for overlay authors
     /// who never see the Rust types.
-    const SCHEMA: &str = include_str!("../../schemas/tool-overlay.schema.json");
+    ///
+    /// It lives in the `cli-permissions` repository alongside the corpus it
+    /// defines, so these tests resolve it the same way the corpus tests do:
+    /// `APEXE_TEST_CORPUS` names the overlays directory and the schema sits
+    /// beside it, or a sibling checkout is used. Compiling it in with
+    /// `include_str!` is what this move was undoing — a file outside the repo
+    /// must not be able to fail the build.
+    fn schema_text() -> Option<String> {
+        let repo = if let Some(configured) = std::env::var_os("APEXE_TEST_CORPUS") {
+            std::path::PathBuf::from(configured).parent()?.to_path_buf()
+        } else {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()?
+                .join("cli-permissions")
+        };
+        let path = repo.join("schemas/tool-overlay.schema.json");
+        path.is_file().then(|| {
+            std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("schema at {} is unreadable: {e}", path.display()))
+        })
+    }
 
-    fn schema_enum(pointer: &str) -> Vec<String> {
-        let schema: serde_json::Value = serde_json::from_str(SCHEMA).unwrap();
-        schema
-            .pointer(pointer)
-            .unwrap_or_else(|| panic!("missing {pointer}"))
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|value| value.as_str().unwrap().to_string())
-            .collect()
+    fn schema_json() -> Option<serde_json::Value> {
+        Some(serde_json::from_str(&schema_text()?).expect("schema must be valid JSON"))
+    }
+
+    /// The enum at `pointer`, or `None` when this checkout has no schema.
+    ///
+    /// `Option` rather than an empty `Vec`: an empty list compares unequal to
+    /// the Rust variants, so returning one would fail these tests on a checkout
+    /// that simply has no corpus beside it — a developer without it, not a
+    /// drifted schema. Skipping is the honest answer there, and matches how the
+    /// corpus tests behave.
+    fn schema_enum(pointer: &str) -> Option<Vec<String>> {
+        let schema = schema_json()?;
+        Some(
+            schema
+                .pointer(pointer)
+                .unwrap_or_else(|| panic!("missing {pointer}"))
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_str().unwrap().to_string())
+                .collect(),
+        )
     }
 
     /// `deny_unknown_fields` is on, so the one line every editor looks for was
@@ -1576,7 +1609,7 @@ mod tests {
     #[test]
     fn test_overlay_accepts_and_round_trips_a_schema_pointer() {
         let document = r#"{
-          "$schema": "https://aiperceivable.github.io/apexe/schemas/tool-overlay.schema.json",
+          "$schema": "https://aiperceivable.github.io/cli-permissions/schemas/tool-overlay.schema.json",
           "schema_version": "1.0",
           "command": "tee",
           "variant": "bsd"
@@ -1585,7 +1618,9 @@ mod tests {
             serde_json::from_str(document).expect("a $schema line must not break loading");
         assert_eq!(
             overlay.schema.as_deref(),
-            Some("https://aiperceivable.github.io/apexe/schemas/tool-overlay.schema.json")
+            Some(
+                "https://aiperceivable.github.io/cli-permissions/schemas/tool-overlay.schema.json"
+            )
         );
 
         let encoded = serde_json::to_string(&overlay).unwrap();
@@ -1605,7 +1640,7 @@ mod tests {
 
     #[test]
     fn test_schema_file_declares_the_schema_pointer_property() {
-        let schema: serde_json::Value = serde_json::from_str(SCHEMA).unwrap();
+        let Some(schema) = schema_json() else { return };
         assert_eq!(
             schema["additionalProperties"],
             serde_json::Value::Bool(false)
@@ -1618,7 +1653,7 @@ mod tests {
 
     #[test]
     fn test_schema_file_is_valid_json_and_pins_the_supported_version() {
-        let schema: serde_json::Value = serde_json::from_str(SCHEMA).unwrap();
+        let Some(schema) = schema_json() else { return };
         assert_eq!(
             schema["properties"]["schema_version"]["const"],
             OVERLAY_SCHEMA_VERSION
@@ -1629,7 +1664,9 @@ mod tests {
     fn test_schema_variant_enum_matches_rust_variants() {
         // Guards against the standalone schema silently drifting from the
         // types it documents.
-        let mut declared = schema_enum("/$defs/variant/enum");
+        let Some(mut declared) = schema_enum("/$defs/variant/enum") else {
+            return;
+        };
         declared.sort();
         let mut actual: Vec<String> = [
             ToolVariant::Bsd,
@@ -1649,14 +1686,16 @@ mod tests {
     fn test_schema_platform_is_an_open_string_with_examples() {
         // The point of the change: `enum` here would reimpose the closed set
         // the schema was freed from, so its absence is the assertion.
-        let schema: serde_json::Value = serde_json::from_str(SCHEMA).unwrap();
+        let Some(schema) = schema_json() else { return };
         let platform = schema.pointer("/$defs/platform").expect("missing platform");
         assert_eq!(platform["type"], "string");
         assert!(
             platform.get("enum").is_none(),
             "platform must stay an open string; `enum` closes it again"
         );
-        let examples = schema_enum("/$defs/platform/examples");
+        let Some(examples) = schema_enum("/$defs/platform/examples") else {
+            return;
+        };
         for expected in ["macos", "linux", "freebsd", "openbsd", "netbsd"] {
             assert!(
                 examples.iter().any(|value| value == expected),
@@ -1669,14 +1708,19 @@ mod tests {
     fn test_schema_platform_examples_are_all_normalized() {
         // A mis-cased example would document a value the loader silently
         // rewrites, which is exactly the confusion normalisation removes.
-        for example in schema_enum("/$defs/platform/examples") {
+        let Some(examples) = schema_enum("/$defs/platform/examples") else {
+            return;
+        };
+        for example in examples {
             assert_eq!(Platform::new(&example).as_str(), example);
         }
     }
 
     #[test]
     fn test_schema_value_type_enum_matches_rust_value_types() {
-        let mut declared = schema_enum("/$defs/valueType/enum");
+        let Some(mut declared) = schema_enum("/$defs/valueType/enum") else {
+            return;
+        };
         declared.sort();
         let mut actual: Vec<String> = [
             ValueType::String,
@@ -1703,7 +1747,9 @@ mod tests {
 
     #[test]
     fn test_schema_confidence_enum_matches_rust_confidence() {
-        let mut declared = schema_enum("/properties/confidence/enum");
+        let Some(mut declared) = schema_enum("/properties/confidence/enum") else {
+            return;
+        };
         declared.sort();
         let mut actual: Vec<String> = [
             Confidence::Low,
@@ -1727,7 +1773,7 @@ mod tests {
     #[test]
     fn test_deserializing_an_overlay_rejects_an_unknown_top_level_key() {
         // Regression: a typo'd key (`flagz` for `flags`) must be a load
-        // error, not silently dropped. schemas/tool-overlay.schema.json
+        // error, not silently dropped. tool-overlay.schema.json
         // already declares `additionalProperties: false`; nothing at
         // runtime enforced it before this fix, so an authoritative overlay
         // with this typo produced zero flags with no diagnostic.

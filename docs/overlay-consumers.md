@@ -2,7 +2,7 @@
 
 An overlay is a reviewed description of **one variant of one command** — BSD `ls`
 as macOS ships it, GNU coreutils `ls`, BusyBox `ls`. The format is defined by
-[`schemas/tool-overlay.schema.json`](../schemas/tool-overlay.schema.json) and
+[`tool-overlay.schema.json`](https://github.com/aiperceivable/cli-permissions/blob/main/schemas/tool-overlay.schema.json) and
 describes the command, not apexe: nothing in a `.json` file names a Rust type, a
 scan tier, or an apexe concept. This document is what a second implementation
 needs, because until now that knowledge lived only in apexe's source.
