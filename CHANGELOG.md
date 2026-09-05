@@ -22,6 +22,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 - **An overlay can carry a `$schema` line, and the format now documents itself for consumers other than apexe.** `ToolOverlay` sets `deny_unknown_fields` and the standalone schema sets `additionalProperties: false`, so the one line every editor looks for — `"$schema": "…"` — made a file fail to load outright with `unknown field \`$schema\``. A format that cannot point at its own definition is a hard thing to hand to an outside implementer, which is what this release starts doing. The field is read by tooling and by nothing else: the loader neither fetches nor validates against it (`validate_overlay` is hand-written Rust, not a JSON Schema check), a file naming some other schema still loads, and the line round-trips so a rewritten overlay keeps it. Both halves are tested, because the schema refusing what the loader accepts is the same defect in the other direction.
 
+  **A second consumer now exists, and it found gaps.** A Python script in the
+  `cli-permissions` corpus repository derives agent permission rules from an
+  overlay directory, written against the schema and the consumer guide alone —
+  different language, no shared code, no dependencies. It works: 22 commands
+  derived, including probe-based variant selection on a macOS host where every
+  path and platform signal says BSD and only running the binary distinguishes
+  GNU sed, whose `open_world` the BSD variant does not share. What it could not
+  read off the data is now `docs/overlay-consumers.md` §8 — chiefly that no
+  derivation rule exists from annotations to a permission tier, so two consumers
+  can reach different policies from the same corpus, and that the format has no
+  annotation for "creates", leaving `mkdir` and `touch` indistinguishable from
+  "nobody said".
+
   **`mode` and `confidence` are described in terms of the data rather than apexe's scanner.** `mode` said "replaces the *scan result*" — true of apexe and meaningless to anyone else; the underlying assertion is *complete enumeration* versus *partial patch*, which any consumer holding a weaker description of the same command can act on. `confidence` named a trust level without saying what earns it; the four levels are now defined by the evidence behind them (`verified` = read off the running tool with a re-runnable check recorded, down to `low` = one unconfirmed source), with the note that they describe evidence rather than the author's certainty — writing from knowledge of a tool is `low` however sure the author is. No field changed shape and all 44 shipped overlays still validate.
 
   **New: [`docs/overlay-consumers.md`](docs/overlay-consumers.md).** The reading half of `docs/overlays.md`, and the knowledge that until now existed only in apexe's source: how `match` is evaluated and why a declared-but-failing `probe` rejects an overlay outright rather than degrading to a path match, what `authoritative` obliges a consumer to discard, and the four fields that decide an `argv` — `value_optional` (attached spelling only), `conflicts_with` (unordered input has no last-one-wins), `before_operands`/`before_flags` (find puts two classes of dash-token on opposite sides of one operand), and `end_of_options`. It also states the two traps the corpus itself produced: `readonly` is not "safe" once `open_world` is set, and a command can destroy without any destructive-looking flag.

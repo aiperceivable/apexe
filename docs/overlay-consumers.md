@@ -176,7 +176,46 @@ Two traps worth stating, both drawn from the shipped corpus:
   command's own surface. A tool with subcommands needs one overlay per
   invocable command.
 
-## 8. Minimum viable consumer
+## 8. What the format does not settle
+
+Found by writing a second consumer against this document alone — a Python script
+that shares no code with apexe. It worked, including probe-based variant
+selection, but these had to be decided by the consumer rather than read off the
+data. They are listed so the next implementer does not think they missed
+something.
+
+**There is no derivation rule from annotations to a permission tier.** §6 says
+what each annotation means and stops there, deliberately: what to allow depends
+on the environment. The cost is that two consumers reading the same corpus can
+reach different policies, so a rule is only as portable as the mapping behind
+it. A mapping that ignores §5 will also be wrong in a way the annotations do not
+show — `tail` is `readonly` and `idempotent` and still hangs an agent forever.
+
+**There is no annotation for "creates".** `mkdir` and `touch` are neither
+`readonly` nor `destructive`: they make something that was not there and destroy
+nothing. Both fields are simply `false`, which reads identically to "nobody
+said". A consumer has to invent a third meaning for the pair.
+
+**The tie-break assumes a layered consumer.** §2 says the more local source
+wins, which presumes sources to rank. A consumer reading one directory has no
+such signal and must fall back to something arbitrary.
+
+**`version_range` has a syntax but no acquisition rule.** The schema defines the
+constraint; nothing says how a consumer learns the version to test it against,
+or what to do when it cannot — treat the condition as satisfied, or as failed.
+Those are opposite answers in the dangerous direction.
+
+**`probe` has no timeout and no side-effect contract.** Running it means
+executing an arbitrary binary with arbitrary arguments, which is a real action
+taken during what a consumer may think of as reading a file. The guide's
+`--version` examples are harmless; nothing in the format says they have to be.
+
+**`mode` is not needed to derive a permission rule.** The reference consumer
+never reads it. It matters when you hold your own description of a command and
+must decide whether to discard it; a consumer starting from the corpus alone
+does not.
+
+## 9. Minimum viable consumer
 
 Read the directory, keep the files whose `command` matches, drop the ones whose
 `match` conditions fail, take the strongest remaining, and read `annotations`.
