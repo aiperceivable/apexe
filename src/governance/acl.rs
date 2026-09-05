@@ -18,6 +18,9 @@ const READONLY_RULE_DESCRIPTION: &str = "Auto-allow readonly CLI commands";
 /// Marks the rule built from destructive annotations; see
 /// [`READONLY_RULE_DESCRIPTION`].
 const DESTRUCTIVE_RULE_DESCRIPTION: &str = "Block destructive CLI commands by default";
+/// Marks the rule built from `open_world` annotations; see
+/// [`READONLY_RULE_DESCRIPTION`].
+const OPEN_WORLD_RULE_DESCRIPTION: &str = "Block open-world CLI commands by default";
 
 /// Manages access control for CLI modules using apcore's ACL system.
 ///
@@ -67,6 +70,7 @@ impl AclManager {
     pub fn generate_default(modules: &[ScannedModule]) -> Self {
         let readonly_ids = Self::readonly_ids(modules);
         let destructive_ids = Self::destructive_ids(modules);
+        let open_world_ids = Self::open_world_ids(modules);
 
         let mut rules = Vec::new();
         if !readonly_ids.is_empty() {
@@ -74,6 +78,9 @@ impl AclManager {
         }
         if !destructive_ids.is_empty() {
             rules.push(Self::destructive_rule(destructive_ids));
+        }
+        if !open_world_ids.is_empty() {
+            rules.push(Self::open_world_rule(open_world_ids));
         }
 
         let acl = ACL::new(rules, "deny", None);
@@ -111,6 +118,7 @@ impl AclManager {
             modules.iter().map(|m| m.module_id.as_str()).collect();
         let mut fresh_readonly = Self::readonly_ids(modules);
         let mut fresh_destructive = Self::destructive_ids(modules);
+        let mut fresh_open_world = Self::open_world_ids(modules);
 
         let mut rules = Vec::new();
         for mut rule in existing.acl.rules().to_vec() {
@@ -129,6 +137,13 @@ impl AclManager {
                         continue;
                     }
                 }
+                Some(OPEN_WORLD_RULE_DESCRIPTION) => {
+                    rule.targets.retain(|id| !batch_ids.contains(id.as_str()));
+                    rule.targets.append(&mut fresh_open_world);
+                    if rule.targets.is_empty() {
+                        continue;
+                    }
+                }
                 _ => {}
             }
             rules.push(rule);
@@ -142,6 +157,9 @@ impl AclManager {
         if !fresh_destructive.is_empty() {
             rules.push(Self::destructive_rule(fresh_destructive));
         }
+        if !fresh_open_world.is_empty() {
+            rules.push(Self::open_world_rule(fresh_open_world));
+        }
 
         let default_effect = existing.default_effect.clone();
         let acl = ACL::new(rules, &default_effect, None);
@@ -151,12 +169,84 @@ impl AclManager {
         })
     }
 
+    /// Modules the generated policy auto-allows.
+    ///
+    /// **`open_world` disqualifies a module here even when it is `readonly`.**
+    /// `readonly` is a claim about local state — that the command does not
+    /// modify the machine it runs on — and it says nothing about what the
+    /// command *sends*. A read that reaches the network is the exfiltration
+    /// shape, not the safe shape, so auto-allowing it on the strength of
+    /// `readonly` alone would hand out the one permission that cannot be taken
+    /// back once used.
+    ///
+    /// Excluding rather than reordering is deliberate. Rule evaluation is
+    /// first-match-wins (see the type docs) and the readonly `allow` is written
+    /// before the open-world `deny`, so a module in both lists would be allowed
+    /// by whichever came first — a correctness question settled by list order,
+    /// which is exactly the kind of thing that breaks silently when a rule
+    /// moves. Keeping the three lists disjoint means no ordering makes this
+    /// policy wrong, including in a file whose rules an operator has since
+    /// rearranged.
+    ///
+    /// No module produced by inference alone is currently both: the name lists
+    /// behind `readonly` and `open_world` do not intersect. An overlay can
+    /// assert both, and that became reachable when `open_world` was added to
+    /// the overlay schema, so this is a latent case closed on purpose rather
+    /// than a live one being fixed.
     fn readonly_ids(modules: &[ScannedModule]) -> Vec<String> {
         modules
             .iter()
-            .filter(|m| m.annotations.as_ref().is_some_and(|a| a.readonly))
+            .filter(|m| {
+                m.annotations
+                    .as_ref()
+                    .is_some_and(|a| a.readonly && !a.open_world)
+            })
             .map(|m| m.module_id.clone())
             .collect()
+    }
+
+    /// Modules denied for reaching outside the machine.
+    ///
+    /// `destructive` is excluded because it already has its own `deny` rule and
+    /// an id in two rules is noise in a file an operator has to read: the
+    /// second listing changes no outcome and invites the reader to wonder which
+    /// one applies.
+    ///
+    /// The effect is `deny`, which is what these modules already got from
+    /// `default_effect: deny` by falling through every rule. Stating it changes
+    /// no decision today and buys two things. It survives an operator setting
+    /// `default_effect: allow`, where silence would otherwise turn into blanket
+    /// network access. And it gives network reach one place to be granted: an
+    /// operator who wants `git fetch` back edits this rule — or moves those ids
+    /// out of it — instead of discovering by trial which of a hundred module
+    /// ids were denied by nothing more than the absence of a rule.
+    fn open_world_ids(modules: &[ScannedModule]) -> Vec<String> {
+        modules
+            .iter()
+            .filter(|m| {
+                m.annotations
+                    .as_ref()
+                    .is_some_and(|a| a.open_world && !a.destructive)
+            })
+            .map(|m| m.module_id.clone())
+            .collect()
+    }
+
+    fn open_world_rule(targets: Vec<String>) -> ACLRule {
+        ACLRule {
+            callers: vec!["*".to_string()],
+            targets,
+            effect: "deny".to_string(),
+            description: Some(OPEN_WORLD_RULE_DESCRIPTION.to_string()),
+            conditions: None,
+            // Deliberately not `allow` + `approval: required`, which is the
+            // other defensible reading of "the network needs a human". That
+            // would *loosen* the shipped default from deny to
+            // allow-with-a-prompt, and choosing to be reachable is an
+            // operator's decision to make explicitly, not one to inherit from a
+            // generated file.
+            approval: None,
+        }
     }
 
     fn readonly_rule(targets: Vec<String>) -> ACLRule {
@@ -699,6 +789,14 @@ mod tests {
             readonly,
             destructive,
             requires_approval: destructive,
+            // Set explicitly, never defaulted: apcore's default is `true`
+            // (MCP's conservative `openWorldHint`), which would make every
+            // fixture here an open-world command and quietly empty the
+            // auto-allow rule these cases are about. `annotations::infer`
+            // always sets the field, so an explicit value is also the
+            // realistic one -- see the same trap and the same fix in
+            // `adapter::contract`'s test helper.
+            open_world: false,
             ..Default::default()
         });
         module
@@ -758,6 +856,108 @@ mod tests {
             "destructive command must be denied by its own ACL rule, not merely \
              by a coincidental default_effect"
         );
+    }
+
+    fn make_module_with_open_world(
+        id: &str,
+        readonly: bool,
+        destructive: bool,
+        open_world: bool,
+    ) -> ScannedModule {
+        let mut module = make_module_with_annotations(id, readonly, destructive);
+        if let Some(a) = module.annotations.as_mut() {
+            a.open_world = open_world;
+        }
+        module
+    }
+
+    #[test]
+    fn test_acl_generate_default_open_world_rule_denies_on_its_own() {
+        // Same shape as the destructive regression above, and for the same
+        // reason: these modules were already denied by `default_effect: deny`
+        // while matching no rule at all, so the only way to show the new rule
+        // is load-bearing is to flip the default to `allow` and confirm the
+        // deny still wins. That flip is not hypothetical — it is precisely the
+        // configuration in which silence would have become blanket network
+        // access.
+        let modules = vec![make_module_with_open_world("cli.curl", false, false, true)];
+        let mgr = AclManager::generate_default(&modules);
+        let acl = ACL::new(mgr.acl.rules().to_vec(), "allow", None);
+        assert!(
+            !acl.check(None, "cli.curl", None),
+            "an open-world command must be denied by its own rule, not merely by \
+             a coincidental default_effect"
+        );
+    }
+
+    #[test]
+    fn test_acl_open_world_is_not_auto_allowed_even_when_readonly() {
+        // `readonly` means the command does not modify local state. It says
+        // nothing about what the command sends, and a read that reaches the
+        // network is the exfiltration shape. Inference alone never produces
+        // this combination -- the two name lists do not intersect -- but an
+        // overlay can assert both, which became reachable when `open_world`
+        // joined the overlay schema.
+        let modules = vec![make_module_with_open_world("cli.curl", true, false, true)];
+        let mgr = AclManager::generate_default(&modules);
+
+        let allow_rule = mgr
+            .acl
+            .rules()
+            .iter()
+            .find(|r| r.description.as_deref() == Some(READONLY_RULE_DESCRIPTION));
+        assert!(
+            allow_rule.is_none(),
+            "a readonly command that reaches the network must not land in the \
+             auto-allow rule"
+        );
+        assert!(
+            !mgr.acl.check(None, "cli.curl", None),
+            "and it must actually be denied"
+        );
+    }
+
+    #[test]
+    fn test_acl_destructive_open_world_is_listed_in_one_rule_only() {
+        // Both rules deny, so a double listing changes no decision -- it just
+        // makes an operator read the same id twice and wonder which applies.
+        let modules = vec![make_module_with_open_world("cli.git.push", false, true, true)];
+        let mgr = AclManager::generate_default(&modules);
+        let listings: Vec<_> = mgr
+            .acl
+            .rules()
+            .iter()
+            .filter(|r| r.targets.iter().any(|t| t == "cli.git.push"))
+            .map(|r| r.description.clone().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            listings,
+            vec![DESTRUCTIVE_RULE_DESCRIPTION.to_string()],
+            "destructive already denies it; the open-world rule must not repeat it"
+        );
+    }
+
+    #[test]
+    fn test_acl_merge_default_updates_the_open_world_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("acl.yaml");
+
+        let first = vec![make_module_with_open_world("cli.curl", false, false, true)];
+        AclManager::generate_default(&first)
+            .write_config(&path)
+            .unwrap();
+
+        // A second scan of a different tool must extend the rule, not replace it.
+        let second = vec![make_module_with_open_world("cli.wget", false, false, true)];
+        let merged = AclManager::merge_default(&path, &second).unwrap();
+        let rule = merged
+            .acl
+            .rules()
+            .iter()
+            .find(|r| r.description.as_deref() == Some(OPEN_WORLD_RULE_DESCRIPTION))
+            .expect("the open-world rule must survive a merge");
+        assert!(rule.targets.contains(&"cli.curl".to_string()));
+        assert!(rule.targets.contains(&"cli.wget".to_string()));
     }
 
     #[test]

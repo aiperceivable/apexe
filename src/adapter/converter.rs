@@ -367,6 +367,9 @@ fn apply_annotation_overrides(
         annotations.extra.remove(annotations::APPROVAL_BASIS_KEY);
         annotations.extra.remove(annotations::ESCALATING_PARAMS_KEY);
     }
+    if let Some(open_world) = overrides.open_world {
+        annotations.open_world = open_world;
+    }
     annotations.cacheable = annotations.readonly && annotations.idempotent;
     annotations
 }
@@ -734,6 +737,7 @@ mod tests {
             destructive: Some(false),
             idempotent: Some(true),
             requires_approval: Some(false),
+            open_world: None,
         };
         let modules = CliToolConverter::new().convert(&tool);
         let annotations = modules[0].annotations.as_ref().unwrap();
@@ -746,6 +750,56 @@ mod tests {
             annotations.cacheable,
             "cacheable is derived, so it must be recomputed after an override"
         );
+    }
+
+    #[test]
+    fn test_overlay_can_state_open_world_where_the_name_cannot() {
+        // `sed` is on no name list, so inference calls it closed-world. That is
+        // right for BSD sed and wrong for GNU sed, whose `s///e` runs its
+        // replacement as a shell command -- verified as
+        // `sed 's/x/echo PWNED/e'` printing PWNED, and refused by --sandbox
+        // with "e/r/w commands disabled in sandbox mode". One name, two
+        // answers: the variant is knowable only to an overlay.
+        let mut tool = make_tool("sed", vec![]);
+        assert!(
+            !CliToolConverter::new().convert(&tool)[0]
+                .annotations
+                .as_ref()
+                .unwrap()
+                .open_world,
+            "inference must call sed closed-world, or this test proves nothing"
+        );
+
+        tool.annotation_overrides = crate::models::AnnotationOverrides {
+            open_world: Some(true),
+            ..Default::default()
+        };
+        let modules = CliToolConverter::new().convert(&tool);
+        let annotations = modules[0].annotations.as_ref().unwrap();
+        assert!(annotations.open_world);
+    }
+
+    #[test]
+    fn test_overlay_can_clear_an_inferred_open_world() {
+        // The override has to work downward too. `curl` is on the name list, so
+        // a build of it that genuinely cannot reach the network has no way to
+        // say so except here.
+        let mut tool = make_tool("curl", vec![]);
+        assert!(
+            CliToolConverter::new().convert(&tool)[0]
+                .annotations
+                .as_ref()
+                .unwrap()
+                .open_world,
+            "curl must be inferred open-world, or this test proves nothing"
+        );
+
+        tool.annotation_overrides = crate::models::AnnotationOverrides {
+            open_world: Some(false),
+            ..Default::default()
+        };
+        let modules = CliToolConverter::new().convert(&tool);
+        assert!(!modules[0].annotations.as_ref().unwrap().open_world);
     }
 
     #[test]

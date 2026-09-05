@@ -456,6 +456,14 @@ pub struct AnnotationOverrides {
     pub idempotent: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requires_approval: Option<bool>,
+    /// Whether the command leaves the machine, or runs another program.
+    ///
+    /// The only one of these five that inference reads off a *name list* rather
+    /// than the command's own surface, which makes it the one an overlay most
+    /// often has to correct: a name is shared by variants that differ on it.
+    /// GNU sed executes `s///e` as a shell command; BSD sed rejects the flag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_world: Option<bool>,
 }
 
 impl AnnotationOverrides {

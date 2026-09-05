@@ -294,7 +294,11 @@
         "readonly": { "type": "boolean" },
         "destructive": { "type": "boolean" },
         "idempotent": { "type": "boolean" },
-        "requires_approval": { "type": "boolean" }
+        "requires_approval": { "type": "boolean" },
+        "open_world": {
+          "description": "Whether the command reaches beyond the machine it runs on, or hands its arguments to another program to run. Inference for this one is name-based -- an executable on a known list (curl, ssh, rsync, ...) or a networked subcommand (push, clone, login, ...) -- so it is a floor, and it cannot see a boundary a command's name does not advertise. The overlay is the only place the truth can be stated per variant, and the variant is often exactly where the difference lives: GNU sed runs its replacement as a shell command for `s///e`, while BSD sed rejects the `e` flag outright with \"bad flag in substitute command\". One name, two answers, which no name list can separate. Set it when the command opens a socket, spawns another program, or otherwise leaves the sandbox; leave it unset to keep whatever inference decided. Note that `destructive` outranks it wherever a consumer reduces these annotations to one risk level.",
+          "type": "boolean"
+        }
       }
     }
   }

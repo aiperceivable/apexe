@@ -34,7 +34,7 @@
 **apexe** turns any CLI tool on your system into a governed, schema-enforced service that AI agents can invoke safely via the MCP protocol. It works in three steps:
 
 1. **Scan** — Deterministically extract commands, flags, and arguments from CLI tools (no LLM required).
-2. **Govern** — Classify commands as readonly/destructive, generate ACL rules, enable audit logging.
+2. **Govern** — Classify commands as readonly/destructive/open-world, generate ACL rules, enable audit logging.
 3. **Serve** — Expose tools via MCP (stdio for Claude Desktop/Cursor, HTTP for remote agents).
 
 apexe is built on the [apcore](https://github.com/aiperceivable/apcore-rust) ecosystem: apcore (core types), apcore-toolkit (output), apcore-mcp (MCP server), apcore-a2a (A2A agent server), apcore-cli (`--man` page generation). The audit trail is apexe's own — see §9.2.
@@ -421,7 +421,7 @@ An overlay is a curated, human-reviewed description of one tool variant, keyed b
 - **`mode: merge`** keeps the scan as the base and only overrides the flags the overlay declares — a gap in the overlay degrades to the scanner's answer instead of erasing a real flag.
 - **`confidence: verified`** requires a `provenance` block (platform, version, source document, date) recording how the overlay was checked; the schema rejects a `verified` overlay without it.
 - Overlays are the only source that can express `conflicts_with` (mutually exclusive flags) and `long_running` (a flag that may block indefinitely, e.g. `tail -f`) — no `--help`/man format expresses either machine-readably.
-- Overlays can also override behavioral annotations (`readonly`/`destructive`/`idempotent`/`requires_approval`) for a specific command.
+- Overlays can also override behavioral annotations (`readonly`/`destructive`/`idempotent`/`requires_approval`/`open_world`) for a specific command. `open_world` is the one inference reads off a *name list* rather than the command's own surface, so it is the one an overlay most often has to correct: GNU sed runs `s///e` as a shell command while BSD sed rejects the flag, and the name `sed` cannot tell them apart.
 
 Load one explicit overlay with `apexe scan <tool> --overlay <PATH>` (JSON or YAML), or install multiple overlays by dropping files under `~/.apexe/overlays/`. The format is defined by `schemas/tool-overlay.schema.json`. See [`docs/overlays.md`](overlays.md) for the full authoring and verification procedure — writing a `verified` overlay from memory instead of a real installation is exactly what it warns against.
 
@@ -609,9 +609,27 @@ Risk is derived from annotations plus an `open_world` signal — the executable 
 
 | Module type | Default rule |
 |-------------|-------------|
-| Readonly modules | `effect: allow` |
+| Readonly modules **that stay local** | `effect: allow` |
 | Destructive modules | `effect: deny`, unconditional (no `conditions:` key) |
+| Open-world modules (`git push`, `git fetch`, `curl`, …) | `effect: deny`, unconditional |
 | All others | Default deny (no explicit rule) |
+
+The three lists are **disjoint**, so no rule ordering makes the policy wrong.
+`open_world` disqualifies a module from the auto-allow rule even when it is
+`readonly`: `readonly` says the command does not modify local state and says
+nothing about what it *sends*, and a read that reaches the network is the
+exfiltration shape rather than the safe one. A module that is both destructive
+and open-world is listed once, under destructive.
+
+The open-world rule denies what `default_effect: deny` already denied by
+silence, so it changes no decision on a stock policy. It earns its place twice
+over regardless: it still denies under `default_effect: allow`, where silence
+would have become blanket network access, and it gives network reach **one place
+to be granted** — an operator who wants `git fetch` back edits this rule instead
+of discovering by trial which module ids were denied by nothing but the absence
+of a rule. It is deliberately not `allow` + `approval: required`: that is the
+other defensible reading, but it loosens the shipped default, which is a choice
+to make explicitly rather than inherit from a generated file.
 
 ACL format (editable):
 
@@ -623,9 +641,13 @@ rules:
     effect: allow
     description: "Auto-allow readonly git commands"
   - callers: ["*"]
-    targets: ["cli.git.push"]
+    targets: ["cli.git.clean", "cli.git.reset"]
     effect: deny
     description: "Block destructive git commands"
+  - callers: ["*"]
+    targets: ["cli.git.push", "cli.git.fetch", "cli.curl"]
+    effect: deny
+    description: "Block open-world CLI commands by default"
 ```
 
 > **A deny rule must be unconditional to deny.** apcore registers exactly five

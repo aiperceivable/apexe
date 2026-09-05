@@ -57,6 +57,8 @@ const BUILTIN_OVERLAYS: &[(&str, &str)] = &[
     ("mv@gnu", include_str!("../../overlays/mv@gnu.json")),
     ("rm@bsd", include_str!("../../overlays/rm@bsd.json")),
     ("rm@gnu", include_str!("../../overlays/rm@gnu.json")),
+    ("sed@bsd", include_str!("../../overlays/sed@bsd.json")),
+    ("sed@gnu", include_str!("../../overlays/sed@gnu.json")),
     ("sort@apple", include_str!("../../overlays/sort@apple.json")),
     ("sort@gnu", include_str!("../../overlays/sort@gnu.json")),
     ("tail@bsd", include_str!("../../overlays/tail@bsd.json")),
@@ -783,5 +785,50 @@ mod tests {
     fn test_user_overlay_dir_is_under_config_dir() {
         let dir = user_overlay_dir(Path::new("/home/me/.apexe"));
         assert_eq!(dir, PathBuf::from("/home/me/.apexe/overlays"));
+    }
+
+    /// `BUILTIN_OVERLAYS` restates something the `overlays/` directory already
+    /// knows, and only one direction of that duplication is guarded by the
+    /// compiler: a registered id with no file is a hard `include_str!` error,
+    /// while a file nobody registered is silently dead. It sits in the repo,
+    /// reads as shipped, is covered by no test, and never reaches a user. This
+    /// closes the unguarded direction.
+    ///
+    /// The list stays hand-written on purpose -- see the comment on
+    /// `BUILTIN_OVERLAYS`. The intent is that adding to it is a decision, not
+    /// that forgetting it is undetectable.
+    #[test]
+    fn test_every_overlay_file_is_registered_as_a_builtin() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("overlays");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
+            .expect("overlays/ directory must exist")
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let path = e.path();
+                if path.extension()?.to_str()? != "json" {
+                    return None;
+                }
+                Some(path.file_stem()?.to_str()?.to_string())
+            })
+            .collect();
+        on_disk.sort();
+
+        let mut registered: Vec<String> =
+            BUILTIN_OVERLAYS.iter().map(|(id, _)| id.to_string()).collect();
+        registered.sort();
+
+        let unregistered: Vec<_> =
+            on_disk.iter().filter(|f| !registered.contains(f)).collect();
+        assert!(
+            unregistered.is_empty(),
+            "overlays/ holds files that BUILTIN_OVERLAYS does not list, so they ship \
+             to nobody and no test covers them: {unregistered:?}. Add them to \
+             BUILTIN_OVERLAYS in this file, or delete them."
+        );
+
+        assert_eq!(
+            registered, on_disk,
+            "BUILTIN_OVERLAYS and overlays/ disagree"
+        );
     }
 }

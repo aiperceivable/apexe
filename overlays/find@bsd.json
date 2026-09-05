@@ -3,9 +3,20 @@
   "command": "find",
   "variant": "bsd",
   "match": {
-    "platform": ["macos", "freebsd"],
-    "probe": { "args": ["--version"], "expect": "failure" },
-    "binary_globs": ["/usr/bin/find", "/bin/find"]
+    "platform": [
+      "macos",
+      "freebsd"
+    ],
+    "probe": {
+      "args": [
+        "--version"
+      ],
+      "expect": "failure"
+    },
+    "binary_globs": [
+      "/usr/bin/find",
+      "/bin/find"
+    ]
   },
   "mode": "authoritative",
   "confidence": "verified",
@@ -16,117 +27,631 @@
     "checked_on": "2026-07-27",
     "command": "man -P cat find | col -b",
     "environment": "macOS 26.3 (Darwin arm64), system /usr/bin/find",
-    "notes": "Options transcribed from the block after 'The options are as follows:'; primaries from the PRIMARIES section and operators from OPERATORS. COMPATIBILITY and STANDARDS were read for primaries documented outside those sections: COMPATIBILITY records that -follow is deprecated in favour of -L, and STANDARDS records that -or was implemented as -o and -and as -a, and that the -B* birthtime primaries are extensions. All four of those tokens are real and were run against the binary, so they are listed. The option set is closed by the binary in two halves. The getopt(3) option string is 'EHLPXdf:sx', which closes the nine true options; the primary table was read out of the binary and then every entry was run, with an unknown one rejected as 'unknown primary or operator'. mode is therefore authoritative. The -newerXY family is enumerated rather than abbreviated: the whole 5x5 grid was run, and X over a/B/c/m with Y over a/B/c/m/t is accepted (20 combinations) while every X=t form is rejected, so exactly those 20 are listed. GNU-only predicates were tested and rejected here, confirming the boundary: -writable, -readable, -executable, -printf, -fprint, -context, -used, -regextype, -daystart, -warn, -nowarn, -D and -O are all 'unknown primary or operator'. Three parts of the syntax the overlay format cannot carry: the grouping and negation operators '(', ')' and '!' are not dash-prefixed; -exec and -execdir have two forms distinguished by their terminator, ';' or '{} +', which is a property of the argument list rather than of the option; and '-depth' is both a no-argument traversal switch and a one-argument test, which is recorded in its description since a flag carries one type. conflicts_with comes from this page's own prose and was then tested against the binary. Declared: -delete with -L and with -follow, from '-delete ... Following symlinks is incompatible with this option', which the binary confirms outright -- 'find -L ft -name a.txt -delete' fails with '-delete: forbidden when symlinks are followed' and leaves the file in place; and -prune with -d and with -depth, from '-prune ... has no effect if the -d option was specified', confirmed behaviourally because with -d the pruned subtree is still listed. Candidates tested and REJECTED: -delete with -H, -L and -P, which are accepted; -delete with -H is accepted and deletes; -delete with -depth is accepted. The BUGS section's remark that '-delete does not interact well with other options that cause the file system tree traversal options to be changed' names no option pair and is not turned into a conflict. No flag here is marked long_running: find terminates on its own once the traversal finishes, and nothing in the option set is a follow-style switch like tail -f. -exec can of course invoke a program that never returns, but that is a property of the invoked utility, not of the flag. BSD find rejects --version (exit 1, 'illegal option -- -'), which is why the probe matches on failure. annotations: readonly is FALSE. The command reads as a search tool and the scanner's name heuristic classifies 'find' readonly, but -delete removes files and directories outright and -exec, -execdir, -ok and -okdir run an arbitrary utility, so the overlay states the answer instead. destructive is true because of -delete; idempotent is false because -exec runs a command whose repetition this overlay cannot reason about, even though -delete on its own would be idempotent; requires_approval is true for the same reason. The annotation describes the command's whole invocable surface, not its default action. conflicts_with was extended in a later pass, after the field's definition widened to cover override groups as well as diagnosed errors: apexe's input is a JSON object, which carries no ordering, so for a last-one-wins group which flag actually wins is decided by the order the caller happened to write the keys in. Every pair added then was run in BOTH orders against the reference build recorded above, and only pairs whose outcome depends on that order, or where one side is silently discarded, were added. before_flags on the path operand was added on 2026-07-29 and checked behaviourally on the build recorded above: 'find -name \"*.txt\" ftest' fails with 'illegal option -- n' and exit 1, while 'find ftest -name \"*.txt\"' lists the match and exits 0. The ordering is a property of the grammar, not of any one primary -- the leading dash of a primary is read as an option until a path operand has been seen -- so it is recorded once on the operand rather than on each of the 98 primaries. before_operands was added on 2026-07-29 after before_flags alone proved to be half the answer: moving the path ahead of the flags moved find's true OPTIONS there too, and this find rejects every one of them in that position. Each was run in both positions on the build recorded above: -E -H -L -P -X -s -x and -f are accepted before the path and rejected after it with 'unknown primary or operator' (exit 1), so all eight carry before_operands. -d was tested the same way and deliberately NOT marked: it is accepted in BOTH positions, which matches its dual role as a traversal switch and a primary, so leaving it in the trailing group is correct. The grammar therefore needs a marker on each side -- the operand says where the paths go, the flag says which dash-tokens precede them -- and a single boolean on the operand cannot express it. end_of_options was added on 2026-07-30 and checked on the build recorded above. This find parses its true options with getopt(3) over the string 'EHLPXdf:sx', which stops at '--': 'find -- . -name \"*.txt\"' lists the matches and exits 0, and so do 'find -s -- . -name \"*.txt\"' and 'find -L -f -weird-dir -- normal -name \"*.txt\"'. The separator works in that one position only -- after the leading options and ahead of the paths. 'find . -- -name \"*.txt\"' is 'find: --: unknown primary or operator' (exit 1), because getopt has already stopped at the path operand and '--' is then read as a primary. The marker is what makes -f usable together with an expression: 'find -f ./-weird-dir -name \"*.txt\"' is 'illegal option -- n' while 'find -f ./-weird-dir -- -name \"*.txt\"' lists the match at exit 0. What it does NOT do is rescue a path operand that begins with '-': 'find -- -weird-dir' prints the usage and exits 1, because the path/expression split is a second pass that reads any leading '-' as a primary regardless of getopt. That is why the path description points at -f rather than at the separator, and 'find -f -weird-dir' does list that directory at exit 0. required on the path operand was set to false in the same pass, for that last reason: the description has always said 'At least one is required unless -f supplies them', and the binary's own second usage form is 'find [-H | -L | -P] [-EXdsx] -f path [path ...] [expression]', so an unconditional requirement made the documented -f-only form unreachable. Nothing is lost by relaxing it -- this find still refuses an invocation with no starting point at all, printing the usage and exiting 1."
+    "notes": "Options transcribed from the block after 'The options are as follows:'; primaries from the PRIMARIES section and operators from OPERATORS. COMPATIBILITY and STANDARDS were read for primaries documented outside those sections: COMPATIBILITY records that -follow is deprecated in favour of -L, and STANDARDS records that -or was implemented as -o and -and as -a, and that the -B* birthtime primaries are extensions. All four of those tokens are real and were run against the binary, so they are listed. The option set is closed by the binary in two halves. The getopt(3) option string is 'EHLPXdf:sx', which closes the nine true options; the primary table was read out of the binary and then every entry was run, with an unknown one rejected as 'unknown primary or operator'. mode is therefore authoritative. The -newerXY family is enumerated rather than abbreviated: the whole 5x5 grid was run, and X over a/B/c/m with Y over a/B/c/m/t is accepted (20 combinations) while every X=t form is rejected, so exactly those 20 are listed. GNU-only predicates were tested and rejected here, confirming the boundary: -writable, -readable, -executable, -printf, -fprint, -context, -used, -regextype, -daystart, -warn, -nowarn, -D and -O are all 'unknown primary or operator'. Three parts of the syntax the overlay format cannot carry: the grouping and negation operators '(', ')' and '!' are not dash-prefixed; -exec and -execdir have two forms distinguished by their terminator, ';' or '{} +', which is a property of the argument list rather than of the option; and '-depth' is both a no-argument traversal switch and a one-argument test, which is recorded in its description since a flag carries one type. conflicts_with comes from this page's own prose and was then tested against the binary. Declared: -delete with -L and with -follow, from '-delete ... Following symlinks is incompatible with this option', which the binary confirms outright -- 'find -L ft -name a.txt -delete' fails with '-delete: forbidden when symlinks are followed' and leaves the file in place; and -prune with -d and with -depth, from '-prune ... has no effect if the -d option was specified', confirmed behaviourally because with -d the pruned subtree is still listed. Candidates tested and REJECTED: -delete with -H, -L and -P, which are accepted; -delete with -H is accepted and deletes; -delete with -depth is accepted. The BUGS section's remark that '-delete does not interact well with other options that cause the file system tree traversal options to be changed' names no option pair and is not turned into a conflict. No flag here is marked long_running: find terminates on its own once the traversal finishes, and nothing in the option set is a follow-style switch like tail -f. -exec can of course invoke a program that never returns, but that is a property of the invoked utility, not of the flag. BSD find rejects --version (exit 1, 'illegal option -- -'), which is why the probe matches on failure. annotations: readonly is FALSE. The command reads as a search tool and the scanner's name heuristic classifies 'find' readonly, but -delete removes files and directories outright and -exec, -execdir, -ok and -okdir run an arbitrary utility, so the overlay states the answer instead. destructive is true because of -delete; idempotent is false because -exec runs a command whose repetition this overlay cannot reason about, even though -delete on its own would be idempotent; requires_approval is true for the same reason. The annotation describes the command's whole invocable surface, not its default action. conflicts_with was extended in a later pass, after the field's definition widened to cover override groups as well as diagnosed errors: apexe's input is a JSON object, which carries no ordering, so for a last-one-wins group which flag actually wins is decided by the order the caller happened to write the keys in. Every pair added then was run in BOTH orders against the reference build recorded above, and only pairs whose outcome depends on that order, or where one side is silently discarded, were added. before_flags on the path operand was added on 2026-07-29 and checked behaviourally on the build recorded above: 'find -name \"*.txt\" ftest' fails with 'illegal option -- n' and exit 1, while 'find ftest -name \"*.txt\"' lists the match and exits 0. The ordering is a property of the grammar, not of any one primary -- the leading dash of a primary is read as an option until a path operand has been seen -- so it is recorded once on the operand rather than on each of the 98 primaries. before_operands was added on 2026-07-29 after before_flags alone proved to be half the answer: moving the path ahead of the flags moved find's true OPTIONS there too, and this find rejects every one of them in that position. Each was run in both positions on the build recorded above: -E -H -L -P -X -s -x and -f are accepted before the path and rejected after it with 'unknown primary or operator' (exit 1), so all eight carry before_operands. -d was tested the same way and deliberately NOT marked: it is accepted in BOTH positions, which matches its dual role as a traversal switch and a primary, so leaving it in the trailing group is correct. The grammar therefore needs a marker on each side -- the operand says where the paths go, the flag says which dash-tokens precede them -- and a single boolean on the operand cannot express it. end_of_options was added on 2026-07-30 and checked on the build recorded above. This find parses its true options with getopt(3) over the string 'EHLPXdf:sx', which stops at '--': 'find -- . -name \"*.txt\"' lists the matches and exits 0, and so do 'find -s -- . -name \"*.txt\"' and 'find -L -f -weird-dir -- normal -name \"*.txt\"'. The separator works in that one position only -- after the leading options and ahead of the paths. 'find . -- -name \"*.txt\"' is 'find: --: unknown primary or operator' (exit 1), because getopt has already stopped at the path operand and '--' is then read as a primary. The marker is what makes -f usable together with an expression: 'find -f ./-weird-dir -name \"*.txt\"' is 'illegal option -- n' while 'find -f ./-weird-dir -- -name \"*.txt\"' lists the match at exit 0. What it does NOT do is rescue a path operand that begins with '-': 'find -- -weird-dir' prints the usage and exits 1, because the path/expression split is a second pass that reads any leading '-' as a primary regardless of getopt. That is why the path description points at -f rather than at the separator, and 'find -f -weird-dir' does list that directory at exit 0. required on the path operand was set to false in the same pass, for that last reason: the description has always said 'At least one is required unless -f supplies them', and the binary's own second usage form is 'find [-H | -L | -P] [-EXdsx] -f path [path ...] [expression]', so an unconditional requirement made the documented -f-only form unreachable. Nothing is lost by relaxing it -- this find still refuses an invocation with no starting point at all, printing the usage and exiting 1.\n\nopen_world IS SET TRUE. The domain of interaction is whatever program the caller names, which is not a closed set, so `openWorldHint: false` -- what this module emitted to every MCP client before this was set -- was a false statement rather than a missing one. Probed on macOS 26.5.2: `find . -name t.txt -exec /bin/echo SPAWNED: {} \\;` prints `SPAWNED: ./t.txt`, and `find . -name t.txt -exec curl --version \\;` prints curl's banner -- the walk reached a network client. `-exec`, `-execdir`, `-ok` and `-okdir` all take a utility, and `-delete` removes what it finds.\n\nThis is asserted rather than inferred because apexe's `infer_open_world` reads two name lists that both mean *network*: OPEN_WORLD_TOOLS (curl, ssh, rsync, ...) and OPEN_WORLD_SUBCOMMANDS (push, clone, login, ...). Exec wrappers are deliberately routed through `destructive` instead -- see the comment on EXEC_WRAPPER_TOOLS, which explains that `destructive` is what fixes the two name-driven decisions (the generated ACL denies rather than allows, and the path guard judges the arguments as a writer's). That choice is left intact here: this overlay adds `open_world` on top of `destructive`, it does not move the command between them.\n\nWHAT THIS DOES AND DOES NOT CHANGE. It changes exactly one thing: `openWorldHint` in the MCP tool listing, false -> true. It changes no access decision at all. The module is already `destructive`, so it is already in the generated ACL's destructive deny rule, and `open_world_ids` excludes destructive modules by design so that an id is never listed in two deny rules. `risk_from_annotations` likewise ranks destructive above open-world, so the risk class is unchanged. Setting this is a claim about what the command can reach, made so that a model reading the hint is not told the domain is closed when it is not."
   },
   "description": "The find utility recursively descends the directory tree for each path listed, evaluating an expression (composed of the primaries and operands listed below) in terms of each file in the tree. All primaries which take a numeric argument allow the number to be preceded by a plus sign (\"+\") or a minus sign (\"-\"); a preceding plus sign means \"more than n\", a preceding minus sign means \"less than n\" and neither means \"exactly n\". The primaries may be combined with the operators '( expression )', '! expression' or -not, -and (implied by juxtaposition, also spelled -a) and -or (also spelled -o), in decreasing order of precedence. If none of -exec, -ls, -print, -print0 or -ok is specified, the given expression is effectively replaced by ( given expression ) -print. All operands and primaries must be separate arguments to find.",
   "end_of_options": true,
   "flags": [
-    { "short": "-E", "before_operands": true, "type": "boolean", "description": "Interpret regular expressions following the -regex and -iregex primaries as extended (modern) regular expressions rather than basic regular expressions (BRE's)." },
-    { "short": "-H", "before_operands": true, "type": "boolean", "conflicts_with": ["-L", "-P"], "description": "Cause the file information and file type returned for each symbolic link specified on the command line to be those of the file referenced by the link, not the link itself. If the referenced file does not exist, the file information and type will be for the link itself. File information of all symbolic links not on the command line is that of the link itself." },
-    { "short": "-L", "before_operands": true, "type": "boolean", "conflicts_with": ["-delete", "-H", "-P"], "description": "Cause the file information and file type returned for each symbolic link to be those of the file referenced by the link, not the link itself. If the referenced file does not exist, the file information and type will be for the link itself. This option is equivalent to the deprecated -follow primary." },
-    { "short": "-P", "before_operands": true, "type": "boolean", "conflicts_with": ["-H", "-L"], "description": "Cause the file information and file type returned for each symbolic link to be those of the link itself. This is the default." },
-    { "short": "-X", "before_operands": true, "type": "boolean", "description": "Permit find to be safely used in conjunction with xargs(1). If a file name contains any of the delimiting characters used by xargs(1), a diagnostic message is displayed on standard error, and the file is skipped. The delimiting characters include single and double quotes, backslash, space, tab and newline characters." },
-    { "short": "-d", "type": "boolean", "conflicts_with": ["-prune"], "description": "Cause find to perform a depth-first traversal. This option is a BSD-specific equivalent of the -depth primary specified by POSIX.1." },
-    { "short": "-f", "before_operands": true, "type": "path", "value_name": "path", "repeatable": true, "description": "Add path to the list of paths that will be recursed into. This is useful when path begins with a character that would otherwise be interpreted as an expression, namely \"!\", \"(\" and \"-\". Option parsing continues after the value, so an expression written directly after it is read as options: 'find -f dir -name x' fails with 'illegal option -- n', while 'find -f dir dir -name x' and 'find -f dir -- -name x' both work. It may be repeated." },
-    { "short": "-s", "before_operands": true, "type": "boolean", "description": "Cause find to traverse the file hierarchies in lexicographical order, i.e., alphabetical order within each directory. Note that 'find -s' and 'find | sort' may give different results." },
-    { "short": "-x", "before_operands": true, "type": "boolean", "description": "Prevent find from descending into directories that have a device number different than that of the file from which the descent began. This option is equivalent to the deprecated -xdev primary." },
-    { "short": "-Bmin", "type": "string", "value_name": "n", "description": "True if the difference between the time of a file's inode creation and the time find was started, rounded up to the next full minute, is n minutes." },
-    { "short": "-Bnewer", "type": "path", "value_name": "file", "description": "Same as -newerBm." },
-    { "short": "-Btime", "type": "string", "value_name": "n[smhdw]", "description": "If no units are specified, true if the difference between the time of a file's inode creation and the time find was started, rounded up to the next full 24-hour period, is n 24-hour periods. If units are specified, true if that difference is exactly n units; see -atime for the unit letters." },
-    { "short": "-acl", "type": "boolean", "description": "May be used in conjunction with other primaries to locate files with extended ACLs." },
-    { "short": "-amin", "type": "string", "value_name": "[-|+]n", "description": "True if the difference between the file last access time and the time find was started, rounded up to the next full minute, is more than n (+n), less than n (-n), or exactly n minutes ago." },
-    { "short": "-anewer", "type": "path", "value_name": "file", "description": "Same as -neweram." },
-    { "short": "-atime", "type": "string", "value_name": "n[smhdw]", "description": "If no units are specified, true if the difference between the file last access time and the time find was started, rounded up to the next full 24-hour period, is n 24-hour periods. If units are specified, true if that difference is exactly n units. The units are s (second), m (minute), h (hour), d (day) and w (week), and any number of them may be combined in one argument, for example \"-atime -1h30m\"." },
-    { "short": "-cmin", "type": "string", "value_name": "[-|+]n", "description": "True if the difference between the time of last change of file status information and the time find was started, rounded up to the next full minute, is more than n (+n), less than n (-n), or exactly n minutes ago." },
-    { "short": "-cnewer", "type": "path", "value_name": "file", "description": "Same as -newercm." },
-    { "short": "-ctime", "type": "string", "value_name": "n[smhdw]", "description": "If no units are specified, true if the difference between the time of last change of file status information and the time find was started, rounded up to the next full 24-hour period, is n 24-hour periods. If units are specified, true if that difference is exactly n units; see -atime for the unit letters." },
-    { "short": "-delete", "type": "boolean", "conflicts_with": ["-L", "-follow"], "description": "Delete found files and/or directories. Always returns true. This executes from the current working directory as find recurses down the tree. It will not attempt to delete a filename with a \"/\" character in its pathname relative to \".\" for security reasons. Depth-first traversal processing is implied. It will fail to delete a directory if it is not empty. WARNING: it immediately attempts to delete the current path when evaluated, so as a general rule it should almost always come last; if in doubt, run with -print in place of -delete first." },
-    { "short": "-depth", "type": "string", "value_name": "[n]", "conflicts_with": ["-prune"], "description": "With no argument this is always true and causes find to perform a depth-first traversal, i.e., directories are visited in post-order and all entries in a directory will be acted on before the directory itself; it is the same as the non-portable -d option. With an argument it is instead a test, true if the depth of the file relative to the starting point of the traversal is n. The overlay format carries one type per flag, so both forms are recorded here." },
-    { "short": "-empty", "type": "boolean", "description": "True if the current file or directory is empty." },
-    { "short": "-exec", "type": "string", "value_name": "utility [argument ...] ;", "description": "True if the program named utility returns a zero value as its exit status. Optional arguments may be passed to the utility. The expression must be terminated by a semicolon (\";\"), which usually has to be quoted from the shell. If the string \"{}\" appears anywhere in the utility name or the arguments it is replaced by the pathname of the current file. Utility will be executed from the directory from which find was executed. In the alternative form terminated by '{} +', \"{}\" is replaced with as many pathnames as possible for each invocation, the primary always returns true, and find returns a non-zero exit status if at least one invocation did." },
-    { "short": "-execdir", "type": "string", "value_name": "utility [argument ...] ;", "description": "Identical to -exec except that utility will be executed from the directory that holds the current file, and the filename substituted for \"{}\" is not qualified. The '{} +' form behaves as it does for -exec." },
-    { "short": "-false", "type": "boolean", "description": "Always false." },
-    { "short": "-flags", "type": "string", "value_name": "[-|+]flags,notflags", "description": "The flags are specified using symbolic names (see chflags(1)). Those with the \"no\" prefix (except \"nodump\") are said to be notflags. Flags in flags are checked to be set, and flags in notflags are checked to be not set. If preceded by a dash, true if at least all of the bits in flags and none of the bits in notflags are set; if preceded by a plus, true if any of the bits in flags is set or any of the bits in notflags is not set; otherwise true on an exact match." },
-    { "short": "-follow", "type": "boolean", "conflicts_with": ["-delete"], "description": "Deprecated equivalent of the -L option: follow symbolic links. COMPATIBILITY recommends -L instead." },
-    { "short": "-fstype", "type": "string", "value_name": "type", "description": "True if the file is contained in a file system of type type. In addition to the types lsvfs(1) reports, there are two pseudo-types: \"local\" matches any file system physically mounted on the system where find is being executed, and \"rdonly\" matches any file system which is mounted read-only." },
-    { "short": "-gid", "type": "string", "value_name": "gname", "description": "The same thing as -group gname, for compatibility with GNU find. GNU find imposes a restriction that gname is numeric, while this find does not." },
-    { "short": "-group", "type": "string", "value_name": "gname", "description": "True if the file belongs to the group gname. If gname is numeric and there is no such group name, then gname is treated as a group ID." },
-    { "short": "-ignore_readdir_race", "type": "boolean", "description": "Ignore errors because a file or a directory is deleted after reading the name from a directory. This does not affect errors occurring on starting points." },
-    { "short": "-ilname", "type": "string", "value_name": "pattern", "description": "Like -lname, but the match is case insensitive. This is a GNU find extension." },
-    { "short": "-iname", "type": "string", "value_name": "pattern", "description": "Like -name, but the match is case insensitive." },
-    { "short": "-inum", "type": "string", "value_name": "[-|+]n", "description": "True if the file has inode number n." },
-    { "short": "-ipath", "type": "string", "value_name": "pattern", "description": "Like -path, but the match is case insensitive." },
-    { "short": "-iregex", "type": "string", "value_name": "pattern", "description": "Like -regex, but the match is case insensitive." },
-    { "short": "-iwholename", "type": "string", "value_name": "pattern", "description": "The same thing as -ipath, for GNU find compatibility." },
-    { "short": "-links", "type": "string", "value_name": "[-|+]n", "description": "True if the file has n links." },
-    { "short": "-lname", "type": "string", "value_name": "pattern", "description": "Like -name, but the contents of the symbolic link are matched instead of the file name. Note that this only matches broken symbolic links if symbolic links are being followed. This is a GNU find extension." },
-    { "short": "-ls", "type": "boolean", "description": "Always true. Writes the inode number, size in 512-byte blocks, file permissions, number of hard links, owner, group, size in bytes, last modification time and pathname of the current file to standard output. For a block or character special file the device number is displayed instead of the size in bytes; for a symbolic link the pathname of the linked-to file is displayed preceded by \"->\". The format is identical to that produced by \"ls -dgils\"." },
-    { "short": "-maxdepth", "type": "integer", "value_name": "n", "description": "Always true; descend at most n directory levels below the command line arguments. If any -maxdepth primary is specified, it applies to the entire expression even if it would not normally be evaluated. \"-maxdepth 0\" limits the whole search to the command line arguments." },
-    { "short": "-mindepth", "type": "integer", "value_name": "n", "description": "Always true; do not apply any tests or actions at levels less than n. If any -mindepth primary is specified, it applies to the entire expression even if it would not normally be evaluated. \"-mindepth 1\" processes all but the command line arguments." },
-    { "short": "-mmin", "type": "string", "value_name": "[-|+]n", "description": "True if the difference between the file last modification time and the time find was started, rounded up to the next full minute, is more than n (+n), less than n (-n), or exactly n minutes ago." },
-    { "short": "-mnewer", "type": "path", "value_name": "file", "description": "Same as -newer." },
-    { "short": "-mount", "type": "boolean", "description": "The same thing as -xdev, for GNU find compatibility." },
-    { "short": "-mtime", "type": "string", "value_name": "n[smhdw]", "description": "If no units are specified, true if the difference between the file last modification time and the time find was started, rounded up to the next full 24-hour period, is n 24-hour periods. If units are specified, true if that difference is exactly n units; see -atime for the unit letters." },
-    { "short": "-name", "type": "string", "value_name": "pattern", "description": "True if the last component of the pathname being examined matches pattern. Special shell pattern matching characters (\"[\", \"]\", \"*\" and \"?\") may be used as part of pattern, and may be matched explicitly by escaping them with a backslash." },
-    { "short": "-newer", "type": "path", "value_name": "file", "description": "True if the current file has a more recent last modification time than file." },
-    { "short": "-neweraa", "type": "path", "value_name": "file", "description": "True if the current file has a more recent last access time than the last access time of file." },
-    { "short": "-neweraB", "type": "path", "value_name": "file", "description": "True if the current file has a more recent last access time than the inode creation (birth) time of file." },
-    { "short": "-newerac", "type": "path", "value_name": "file", "description": "True if the current file has a more recent last access time than the last file status change time of file." },
-    { "short": "-neweram", "type": "path", "value_name": "file", "description": "True if the current file has a more recent last access time than the last modification time of file." },
-    { "short": "-newerat", "type": "string", "value_name": "date", "description": "True if the current file has a more recent last access time than the date given directly as the argument, which is interpreted as a direct date specification." },
-    { "short": "-newerBa", "type": "path", "value_name": "file", "description": "True if the current file has a more recent inode creation (birth) time than the last access time of file." },
-    { "short": "-newerBB", "type": "path", "value_name": "file", "description": "True if the current file has a more recent inode creation (birth) time than the inode creation (birth) time of file." },
-    { "short": "-newerBc", "type": "path", "value_name": "file", "description": "True if the current file has a more recent inode creation (birth) time than the last file status change time of file." },
-    { "short": "-newerBm", "type": "path", "value_name": "file", "description": "True if the current file has a more recent inode creation (birth) time than the last modification time of file." },
-    { "short": "-newerBt", "type": "string", "value_name": "date", "description": "True if the current file has a more recent inode creation (birth) time than the date given directly as the argument, which is interpreted as a direct date specification." },
-    { "short": "-newerca", "type": "path", "value_name": "file", "description": "True if the current file has a more recent last file status change time than the last access time of file." },
-    { "short": "-newercB", "type": "path", "value_name": "file", "description": "True if the current file has a more recent last file status change time than the inode creation (birth) time of file." },
-    { "short": "-newercc", "type": "path", "value_name": "file", "description": "True if the current file has a more recent last file status change time than the last file status change time of file." },
-    { "short": "-newercm", "type": "path", "value_name": "file", "description": "True if the current file has a more recent last file status change time than the last modification time of file." },
-    { "short": "-newerct", "type": "string", "value_name": "date", "description": "True if the current file has a more recent last file status change time than the date given directly as the argument, which is interpreted as a direct date specification." },
-    { "short": "-newerma", "type": "path", "value_name": "file", "description": "True if the current file has a more recent last modification time than the last access time of file." },
-    { "short": "-newermB", "type": "path", "value_name": "file", "description": "True if the current file has a more recent last modification time than the inode creation (birth) time of file." },
-    { "short": "-newermc", "type": "path", "value_name": "file", "description": "True if the current file has a more recent last modification time than the last file status change time of file." },
-    { "short": "-newermm", "type": "path", "value_name": "file", "description": "True if the current file has a more recent last modification time than the last modification time of file. -newermm is equivalent to -newer." },
-    { "short": "-newermt", "type": "string", "value_name": "date", "description": "True if the current file has a more recent last modification time than the date given directly as the argument, which is interpreted as a direct date specification." },
-    { "short": "-nogroup", "type": "boolean", "description": "True if the file belongs to an unknown group." },
-    { "short": "-noignore_readdir_race", "type": "boolean", "description": "Turn off the effect of -ignore_readdir_race. This is default behaviour." },
-    { "short": "-noleaf", "type": "boolean", "description": "This option is for GNU find compatibility. In GNU find it disables an optimization not relevant to this find, so it is ignored." },
-    { "short": "-nouser", "type": "boolean", "description": "True if the file belongs to an unknown user." },
-    { "short": "-ok", "type": "string", "value_name": "utility [argument ...] ;", "description": "Identical to -exec except that find requests user affirmation for the execution of the utility by printing a message to the terminal and reading a response. If the response is not affirmative ('y' in the POSIX locale), the command is not executed and the value of the -ok expression is false." },
-    { "short": "-okdir", "type": "string", "value_name": "utility [argument ...] ;", "description": "Identical to -execdir with the same user-affirmation exception as -ok." },
-    { "short": "-path", "type": "string", "value_name": "pattern", "description": "True if the pathname being examined matches pattern. Special shell pattern matching characters (\"[\", \"]\", \"*\" and \"?\") may be used as part of pattern. Slashes (\"/\") are treated as normal characters and do not have to be matched explicitly." },
-    { "short": "-perm", "type": "string", "value_name": "[-|+]mode", "description": "The mode may be either symbolic (see chmod(1)) or an octal number. If symbolic, a starting value of zero is assumed and the mode sets or clears permissions without regard to the process' file mode creation mask. If octal, only bits 07777 of the file's mode bits participate in the comparison. If the mode is preceded by a dash, true if at least all of the bits in the mode are set; if preceded by a plus, true if any of the bits in the mode are set; otherwise true on an exact match. The first character of a symbolic mode may not be a dash." },
-    { "short": "-print", "type": "boolean", "description": "Always true. Prints the pathname of the current file to standard output." },
-    { "short": "-print0", "type": "boolean", "description": "Always true. Prints the pathname of the current file to standard output, followed by an ASCII NUL character (character code 0)." },
-    { "short": "-prune", "type": "boolean", "conflicts_with": ["-d", "-depth"], "description": "Always true. Causes find to not descend into the current file. It has no effect if the -d option or the -depth primary was specified, and the binary does not diagnose that combination -- the pruned subtree is simply still traversed." },
-    { "short": "-quit", "type": "boolean", "description": "Causes find to terminate immediately." },
-    { "short": "-regex", "type": "string", "value_name": "pattern", "description": "True if the whole path of the file matches pattern using a regular expression. To match a file named \"./foo/xyzzy\" you can use \".*/[xyz]*\" or \".*/foo/.*\", but not \"xyzzy\" or \"/foo/\". The -E option switches this primary to extended regular expressions." },
-    { "short": "-samefile", "type": "path", "value_name": "name", "description": "True if the file is a hard link to name. If the command option -L is specified, it is also true if the file is a symbolic link and points to name." },
-    { "short": "-size", "type": "string", "value_name": "n[ckMGTP]", "description": "True if the file's size, rounded up, in 512-byte blocks is n. If n is followed by a c the primary is true if the file's size is n bytes; the other scale indicators are k (kilobytes), M (megabytes), G (gigabytes), T (terabytes) and P (petabytes), each 1024 of the previous." },
-    { "short": "-sparse", "type": "boolean", "description": "True if the current file is sparse, i.e. has fewer blocks allocated than expected based on its size in bytes. This might also match files that have been compressed by the filesystem." },
-    { "short": "-true", "type": "boolean", "description": "Always true." },
-    { "short": "-type", "type": "enum", "value_name": "t", "enum_values": ["b", "c", "d", "f", "l", "p", "s"], "description": "True if the file is of the specified type: b block special, c character special, d directory, f regular file, l symbolic link, p FIFO, s socket." },
-    { "short": "-uid", "type": "string", "value_name": "uname", "description": "The same thing as -user uname, for compatibility with GNU find. GNU find imposes a restriction that uname is numeric, while this find does not." },
-    { "short": "-user", "type": "string", "value_name": "uname", "description": "True if the file belongs to the user uname. If uname is numeric and there is no such user name, then uname is treated as a user ID." },
-    { "short": "-wholename", "type": "string", "value_name": "pattern", "description": "The same thing as -path, for GNU find compatibility." },
-    { "short": "-xattr", "type": "boolean", "description": "True if the file has any extended attributes." },
-    { "short": "-xattrname", "type": "string", "value_name": "name", "description": "True if the file has an extended attribute with the specified name." },
-    { "short": "-xdev", "type": "boolean", "description": "Deprecated equivalent of the -x option: do not descend into directories on a different device." },
-    { "short": "-not", "type": "boolean", "description": "The unary NOT operator, also spelled '!'. It evaluates to true if the following expression is false, and fails with 'no following expression' if there is none." },
-    { "short": "-and", "type": "boolean", "description": "The logical AND operator, implied by the juxtaposition of two expressions. The expression evaluates to true if both expressions are true; the second is not evaluated if the first is false." },
-    { "short": "-a", "type": "boolean", "description": "The historic spelling of -and." },
-    { "short": "-or", "type": "boolean", "description": "The logical OR operator. The expression evaluates to true if either the first or the second expression is true; the second is not evaluated if the first is true." },
-    { "short": "-o", "type": "boolean", "description": "The historic spelling of -or." }
+    {
+      "short": "-E",
+      "before_operands": true,
+      "type": "boolean",
+      "description": "Interpret regular expressions following the -regex and -iregex primaries as extended (modern) regular expressions rather than basic regular expressions (BRE's)."
+    },
+    {
+      "short": "-H",
+      "before_operands": true,
+      "type": "boolean",
+      "conflicts_with": [
+        "-L",
+        "-P"
+      ],
+      "description": "Cause the file information and file type returned for each symbolic link specified on the command line to be those of the file referenced by the link, not the link itself. If the referenced file does not exist, the file information and type will be for the link itself. File information of all symbolic links not on the command line is that of the link itself."
+    },
+    {
+      "short": "-L",
+      "before_operands": true,
+      "type": "boolean",
+      "conflicts_with": [
+        "-delete",
+        "-H",
+        "-P"
+      ],
+      "description": "Cause the file information and file type returned for each symbolic link to be those of the file referenced by the link, not the link itself. If the referenced file does not exist, the file information and type will be for the link itself. This option is equivalent to the deprecated -follow primary."
+    },
+    {
+      "short": "-P",
+      "before_operands": true,
+      "type": "boolean",
+      "conflicts_with": [
+        "-H",
+        "-L"
+      ],
+      "description": "Cause the file information and file type returned for each symbolic link to be those of the link itself. This is the default."
+    },
+    {
+      "short": "-X",
+      "before_operands": true,
+      "type": "boolean",
+      "description": "Permit find to be safely used in conjunction with xargs(1). If a file name contains any of the delimiting characters used by xargs(1), a diagnostic message is displayed on standard error, and the file is skipped. The delimiting characters include single and double quotes, backslash, space, tab and newline characters."
+    },
+    {
+      "short": "-d",
+      "type": "boolean",
+      "conflicts_with": [
+        "-prune"
+      ],
+      "description": "Cause find to perform a depth-first traversal. This option is a BSD-specific equivalent of the -depth primary specified by POSIX.1."
+    },
+    {
+      "short": "-f",
+      "before_operands": true,
+      "type": "path",
+      "value_name": "path",
+      "repeatable": true,
+      "description": "Add path to the list of paths that will be recursed into. This is useful when path begins with a character that would otherwise be interpreted as an expression, namely \"!\", \"(\" and \"-\". Option parsing continues after the value, so an expression written directly after it is read as options: 'find -f dir -name x' fails with 'illegal option -- n', while 'find -f dir dir -name x' and 'find -f dir -- -name x' both work. It may be repeated."
+    },
+    {
+      "short": "-s",
+      "before_operands": true,
+      "type": "boolean",
+      "description": "Cause find to traverse the file hierarchies in lexicographical order, i.e., alphabetical order within each directory. Note that 'find -s' and 'find | sort' may give different results."
+    },
+    {
+      "short": "-x",
+      "before_operands": true,
+      "type": "boolean",
+      "description": "Prevent find from descending into directories that have a device number different than that of the file from which the descent began. This option is equivalent to the deprecated -xdev primary."
+    },
+    {
+      "short": "-Bmin",
+      "type": "string",
+      "value_name": "n",
+      "description": "True if the difference between the time of a file's inode creation and the time find was started, rounded up to the next full minute, is n minutes."
+    },
+    {
+      "short": "-Bnewer",
+      "type": "path",
+      "value_name": "file",
+      "description": "Same as -newerBm."
+    },
+    {
+      "short": "-Btime",
+      "type": "string",
+      "value_name": "n[smhdw]",
+      "description": "If no units are specified, true if the difference between the time of a file's inode creation and the time find was started, rounded up to the next full 24-hour period, is n 24-hour periods. If units are specified, true if that difference is exactly n units; see -atime for the unit letters."
+    },
+    {
+      "short": "-acl",
+      "type": "boolean",
+      "description": "May be used in conjunction with other primaries to locate files with extended ACLs."
+    },
+    {
+      "short": "-amin",
+      "type": "string",
+      "value_name": "[-|+]n",
+      "description": "True if the difference between the file last access time and the time find was started, rounded up to the next full minute, is more than n (+n), less than n (-n), or exactly n minutes ago."
+    },
+    {
+      "short": "-anewer",
+      "type": "path",
+      "value_name": "file",
+      "description": "Same as -neweram."
+    },
+    {
+      "short": "-atime",
+      "type": "string",
+      "value_name": "n[smhdw]",
+      "description": "If no units are specified, true if the difference between the file last access time and the time find was started, rounded up to the next full 24-hour period, is n 24-hour periods. If units are specified, true if that difference is exactly n units. The units are s (second), m (minute), h (hour), d (day) and w (week), and any number of them may be combined in one argument, for example \"-atime -1h30m\"."
+    },
+    {
+      "short": "-cmin",
+      "type": "string",
+      "value_name": "[-|+]n",
+      "description": "True if the difference between the time of last change of file status information and the time find was started, rounded up to the next full minute, is more than n (+n), less than n (-n), or exactly n minutes ago."
+    },
+    {
+      "short": "-cnewer",
+      "type": "path",
+      "value_name": "file",
+      "description": "Same as -newercm."
+    },
+    {
+      "short": "-ctime",
+      "type": "string",
+      "value_name": "n[smhdw]",
+      "description": "If no units are specified, true if the difference between the time of last change of file status information and the time find was started, rounded up to the next full 24-hour period, is n 24-hour periods. If units are specified, true if that difference is exactly n units; see -atime for the unit letters."
+    },
+    {
+      "short": "-delete",
+      "type": "boolean",
+      "conflicts_with": [
+        "-L",
+        "-follow"
+      ],
+      "description": "Delete found files and/or directories. Always returns true. This executes from the current working directory as find recurses down the tree. It will not attempt to delete a filename with a \"/\" character in its pathname relative to \".\" for security reasons. Depth-first traversal processing is implied. It will fail to delete a directory if it is not empty. WARNING: it immediately attempts to delete the current path when evaluated, so as a general rule it should almost always come last; if in doubt, run with -print in place of -delete first."
+    },
+    {
+      "short": "-depth",
+      "type": "string",
+      "value_name": "[n]",
+      "conflicts_with": [
+        "-prune"
+      ],
+      "description": "With no argument this is always true and causes find to perform a depth-first traversal, i.e., directories are visited in post-order and all entries in a directory will be acted on before the directory itself; it is the same as the non-portable -d option. With an argument it is instead a test, true if the depth of the file relative to the starting point of the traversal is n. The overlay format carries one type per flag, so both forms are recorded here."
+    },
+    {
+      "short": "-empty",
+      "type": "boolean",
+      "description": "True if the current file or directory is empty."
+    },
+    {
+      "short": "-exec",
+      "type": "string",
+      "value_name": "utility [argument ...] ;",
+      "description": "True if the program named utility returns a zero value as its exit status. Optional arguments may be passed to the utility. The expression must be terminated by a semicolon (\";\"), which usually has to be quoted from the shell. If the string \"{}\" appears anywhere in the utility name or the arguments it is replaced by the pathname of the current file. Utility will be executed from the directory from which find was executed. In the alternative form terminated by '{} +', \"{}\" is replaced with as many pathnames as possible for each invocation, the primary always returns true, and find returns a non-zero exit status if at least one invocation did."
+    },
+    {
+      "short": "-execdir",
+      "type": "string",
+      "value_name": "utility [argument ...] ;",
+      "description": "Identical to -exec except that utility will be executed from the directory that holds the current file, and the filename substituted for \"{}\" is not qualified. The '{} +' form behaves as it does for -exec."
+    },
+    {
+      "short": "-false",
+      "type": "boolean",
+      "description": "Always false."
+    },
+    {
+      "short": "-flags",
+      "type": "string",
+      "value_name": "[-|+]flags,notflags",
+      "description": "The flags are specified using symbolic names (see chflags(1)). Those with the \"no\" prefix (except \"nodump\") are said to be notflags. Flags in flags are checked to be set, and flags in notflags are checked to be not set. If preceded by a dash, true if at least all of the bits in flags and none of the bits in notflags are set; if preceded by a plus, true if any of the bits in flags is set or any of the bits in notflags is not set; otherwise true on an exact match."
+    },
+    {
+      "short": "-follow",
+      "type": "boolean",
+      "conflicts_with": [
+        "-delete"
+      ],
+      "description": "Deprecated equivalent of the -L option: follow symbolic links. COMPATIBILITY recommends -L instead."
+    },
+    {
+      "short": "-fstype",
+      "type": "string",
+      "value_name": "type",
+      "description": "True if the file is contained in a file system of type type. In addition to the types lsvfs(1) reports, there are two pseudo-types: \"local\" matches any file system physically mounted on the system where find is being executed, and \"rdonly\" matches any file system which is mounted read-only."
+    },
+    {
+      "short": "-gid",
+      "type": "string",
+      "value_name": "gname",
+      "description": "The same thing as -group gname, for compatibility with GNU find. GNU find imposes a restriction that gname is numeric, while this find does not."
+    },
+    {
+      "short": "-group",
+      "type": "string",
+      "value_name": "gname",
+      "description": "True if the file belongs to the group gname. If gname is numeric and there is no such group name, then gname is treated as a group ID."
+    },
+    {
+      "short": "-ignore_readdir_race",
+      "type": "boolean",
+      "description": "Ignore errors because a file or a directory is deleted after reading the name from a directory. This does not affect errors occurring on starting points."
+    },
+    {
+      "short": "-ilname",
+      "type": "string",
+      "value_name": "pattern",
+      "description": "Like -lname, but the match is case insensitive. This is a GNU find extension."
+    },
+    {
+      "short": "-iname",
+      "type": "string",
+      "value_name": "pattern",
+      "description": "Like -name, but the match is case insensitive."
+    },
+    {
+      "short": "-inum",
+      "type": "string",
+      "value_name": "[-|+]n",
+      "description": "True if the file has inode number n."
+    },
+    {
+      "short": "-ipath",
+      "type": "string",
+      "value_name": "pattern",
+      "description": "Like -path, but the match is case insensitive."
+    },
+    {
+      "short": "-iregex",
+      "type": "string",
+      "value_name": "pattern",
+      "description": "Like -regex, but the match is case insensitive."
+    },
+    {
+      "short": "-iwholename",
+      "type": "string",
+      "value_name": "pattern",
+      "description": "The same thing as -ipath, for GNU find compatibility."
+    },
+    {
+      "short": "-links",
+      "type": "string",
+      "value_name": "[-|+]n",
+      "description": "True if the file has n links."
+    },
+    {
+      "short": "-lname",
+      "type": "string",
+      "value_name": "pattern",
+      "description": "Like -name, but the contents of the symbolic link are matched instead of the file name. Note that this only matches broken symbolic links if symbolic links are being followed. This is a GNU find extension."
+    },
+    {
+      "short": "-ls",
+      "type": "boolean",
+      "description": "Always true. Writes the inode number, size in 512-byte blocks, file permissions, number of hard links, owner, group, size in bytes, last modification time and pathname of the current file to standard output. For a block or character special file the device number is displayed instead of the size in bytes; for a symbolic link the pathname of the linked-to file is displayed preceded by \"->\". The format is identical to that produced by \"ls -dgils\"."
+    },
+    {
+      "short": "-maxdepth",
+      "type": "integer",
+      "value_name": "n",
+      "description": "Always true; descend at most n directory levels below the command line arguments. If any -maxdepth primary is specified, it applies to the entire expression even if it would not normally be evaluated. \"-maxdepth 0\" limits the whole search to the command line arguments."
+    },
+    {
+      "short": "-mindepth",
+      "type": "integer",
+      "value_name": "n",
+      "description": "Always true; do not apply any tests or actions at levels less than n. If any -mindepth primary is specified, it applies to the entire expression even if it would not normally be evaluated. \"-mindepth 1\" processes all but the command line arguments."
+    },
+    {
+      "short": "-mmin",
+      "type": "string",
+      "value_name": "[-|+]n",
+      "description": "True if the difference between the file last modification time and the time find was started, rounded up to the next full minute, is more than n (+n), less than n (-n), or exactly n minutes ago."
+    },
+    {
+      "short": "-mnewer",
+      "type": "path",
+      "value_name": "file",
+      "description": "Same as -newer."
+    },
+    {
+      "short": "-mount",
+      "type": "boolean",
+      "description": "The same thing as -xdev, for GNU find compatibility."
+    },
+    {
+      "short": "-mtime",
+      "type": "string",
+      "value_name": "n[smhdw]",
+      "description": "If no units are specified, true if the difference between the file last modification time and the time find was started, rounded up to the next full 24-hour period, is n 24-hour periods. If units are specified, true if that difference is exactly n units; see -atime for the unit letters."
+    },
+    {
+      "short": "-name",
+      "type": "string",
+      "value_name": "pattern",
+      "description": "True if the last component of the pathname being examined matches pattern. Special shell pattern matching characters (\"[\", \"]\", \"*\" and \"?\") may be used as part of pattern, and may be matched explicitly by escaping them with a backslash."
+    },
+    {
+      "short": "-newer",
+      "type": "path",
+      "value_name": "file",
+      "description": "True if the current file has a more recent last modification time than file."
+    },
+    {
+      "short": "-neweraa",
+      "type": "path",
+      "value_name": "file",
+      "description": "True if the current file has a more recent last access time than the last access time of file."
+    },
+    {
+      "short": "-neweraB",
+      "type": "path",
+      "value_name": "file",
+      "description": "True if the current file has a more recent last access time than the inode creation (birth) time of file."
+    },
+    {
+      "short": "-newerac",
+      "type": "path",
+      "value_name": "file",
+      "description": "True if the current file has a more recent last access time than the last file status change time of file."
+    },
+    {
+      "short": "-neweram",
+      "type": "path",
+      "value_name": "file",
+      "description": "True if the current file has a more recent last access time than the last modification time of file."
+    },
+    {
+      "short": "-newerat",
+      "type": "string",
+      "value_name": "date",
+      "description": "True if the current file has a more recent last access time than the date given directly as the argument, which is interpreted as a direct date specification."
+    },
+    {
+      "short": "-newerBa",
+      "type": "path",
+      "value_name": "file",
+      "description": "True if the current file has a more recent inode creation (birth) time than the last access time of file."
+    },
+    {
+      "short": "-newerBB",
+      "type": "path",
+      "value_name": "file",
+      "description": "True if the current file has a more recent inode creation (birth) time than the inode creation (birth) time of file."
+    },
+    {
+      "short": "-newerBc",
+      "type": "path",
+      "value_name": "file",
+      "description": "True if the current file has a more recent inode creation (birth) time than the last file status change time of file."
+    },
+    {
+      "short": "-newerBm",
+      "type": "path",
+      "value_name": "file",
+      "description": "True if the current file has a more recent inode creation (birth) time than the last modification time of file."
+    },
+    {
+      "short": "-newerBt",
+      "type": "string",
+      "value_name": "date",
+      "description": "True if the current file has a more recent inode creation (birth) time than the date given directly as the argument, which is interpreted as a direct date specification."
+    },
+    {
+      "short": "-newerca",
+      "type": "path",
+      "value_name": "file",
+      "description": "True if the current file has a more recent last file status change time than the last access time of file."
+    },
+    {
+      "short": "-newercB",
+      "type": "path",
+      "value_name": "file",
+      "description": "True if the current file has a more recent last file status change time than the inode creation (birth) time of file."
+    },
+    {
+      "short": "-newercc",
+      "type": "path",
+      "value_name": "file",
+      "description": "True if the current file has a more recent last file status change time than the last file status change time of file."
+    },
+    {
+      "short": "-newercm",
+      "type": "path",
+      "value_name": "file",
+      "description": "True if the current file has a more recent last file status change time than the last modification time of file."
+    },
+    {
+      "short": "-newerct",
+      "type": "string",
+      "value_name": "date",
+      "description": "True if the current file has a more recent last file status change time than the date given directly as the argument, which is interpreted as a direct date specification."
+    },
+    {
+      "short": "-newerma",
+      "type": "path",
+      "value_name": "file",
+      "description": "True if the current file has a more recent last modification time than the last access time of file."
+    },
+    {
+      "short": "-newermB",
+      "type": "path",
+      "value_name": "file",
+      "description": "True if the current file has a more recent last modification time than the inode creation (birth) time of file."
+    },
+    {
+      "short": "-newermc",
+      "type": "path",
+      "value_name": "file",
+      "description": "True if the current file has a more recent last modification time than the last file status change time of file."
+    },
+    {
+      "short": "-newermm",
+      "type": "path",
+      "value_name": "file",
+      "description": "True if the current file has a more recent last modification time than the last modification time of file. -newermm is equivalent to -newer."
+    },
+    {
+      "short": "-newermt",
+      "type": "string",
+      "value_name": "date",
+      "description": "True if the current file has a more recent last modification time than the date given directly as the argument, which is interpreted as a direct date specification."
+    },
+    {
+      "short": "-nogroup",
+      "type": "boolean",
+      "description": "True if the file belongs to an unknown group."
+    },
+    {
+      "short": "-noignore_readdir_race",
+      "type": "boolean",
+      "description": "Turn off the effect of -ignore_readdir_race. This is default behaviour."
+    },
+    {
+      "short": "-noleaf",
+      "type": "boolean",
+      "description": "This option is for GNU find compatibility. In GNU find it disables an optimization not relevant to this find, so it is ignored."
+    },
+    {
+      "short": "-nouser",
+      "type": "boolean",
+      "description": "True if the file belongs to an unknown user."
+    },
+    {
+      "short": "-ok",
+      "type": "string",
+      "value_name": "utility [argument ...] ;",
+      "description": "Identical to -exec except that find requests user affirmation for the execution of the utility by printing a message to the terminal and reading a response. If the response is not affirmative ('y' in the POSIX locale), the command is not executed and the value of the -ok expression is false."
+    },
+    {
+      "short": "-okdir",
+      "type": "string",
+      "value_name": "utility [argument ...] ;",
+      "description": "Identical to -execdir with the same user-affirmation exception as -ok."
+    },
+    {
+      "short": "-path",
+      "type": "string",
+      "value_name": "pattern",
+      "description": "True if the pathname being examined matches pattern. Special shell pattern matching characters (\"[\", \"]\", \"*\" and \"?\") may be used as part of pattern. Slashes (\"/\") are treated as normal characters and do not have to be matched explicitly."
+    },
+    {
+      "short": "-perm",
+      "type": "string",
+      "value_name": "[-|+]mode",
+      "description": "The mode may be either symbolic (see chmod(1)) or an octal number. If symbolic, a starting value of zero is assumed and the mode sets or clears permissions without regard to the process' file mode creation mask. If octal, only bits 07777 of the file's mode bits participate in the comparison. If the mode is preceded by a dash, true if at least all of the bits in the mode are set; if preceded by a plus, true if any of the bits in the mode are set; otherwise true on an exact match. The first character of a symbolic mode may not be a dash."
+    },
+    {
+      "short": "-print",
+      "type": "boolean",
+      "description": "Always true. Prints the pathname of the current file to standard output."
+    },
+    {
+      "short": "-print0",
+      "type": "boolean",
+      "description": "Always true. Prints the pathname of the current file to standard output, followed by an ASCII NUL character (character code 0)."
+    },
+    {
+      "short": "-prune",
+      "type": "boolean",
+      "conflicts_with": [
+        "-d",
+        "-depth"
+      ],
+      "description": "Always true. Causes find to not descend into the current file. It has no effect if the -d option or the -depth primary was specified, and the binary does not diagnose that combination -- the pruned subtree is simply still traversed."
+    },
+    {
+      "short": "-quit",
+      "type": "boolean",
+      "description": "Causes find to terminate immediately."
+    },
+    {
+      "short": "-regex",
+      "type": "string",
+      "value_name": "pattern",
+      "description": "True if the whole path of the file matches pattern using a regular expression. To match a file named \"./foo/xyzzy\" you can use \".*/[xyz]*\" or \".*/foo/.*\", but not \"xyzzy\" or \"/foo/\". The -E option switches this primary to extended regular expressions."
+    },
+    {
+      "short": "-samefile",
+      "type": "path",
+      "value_name": "name",
+      "description": "True if the file is a hard link to name. If the command option -L is specified, it is also true if the file is a symbolic link and points to name."
+    },
+    {
+      "short": "-size",
+      "type": "string",
+      "value_name": "n[ckMGTP]",
+      "description": "True if the file's size, rounded up, in 512-byte blocks is n. If n is followed by a c the primary is true if the file's size is n bytes; the other scale indicators are k (kilobytes), M (megabytes), G (gigabytes), T (terabytes) and P (petabytes), each 1024 of the previous."
+    },
+    {
+      "short": "-sparse",
+      "type": "boolean",
+      "description": "True if the current file is sparse, i.e. has fewer blocks allocated than expected based on its size in bytes. This might also match files that have been compressed by the filesystem."
+    },
+    {
+      "short": "-true",
+      "type": "boolean",
+      "description": "Always true."
+    },
+    {
+      "short": "-type",
+      "type": "enum",
+      "value_name": "t",
+      "enum_values": [
+        "b",
+        "c",
+        "d",
+        "f",
+        "l",
+        "p",
+        "s"
+      ],
+      "description": "True if the file is of the specified type: b block special, c character special, d directory, f regular file, l symbolic link, p FIFO, s socket."
+    },
+    {
+      "short": "-uid",
+      "type": "string",
+      "value_name": "uname",
+      "description": "The same thing as -user uname, for compatibility with GNU find. GNU find imposes a restriction that uname is numeric, while this find does not."
+    },
+    {
+      "short": "-user",
+      "type": "string",
+      "value_name": "uname",
+      "description": "True if the file belongs to the user uname. If uname is numeric and there is no such user name, then uname is treated as a user ID."
+    },
+    {
+      "short": "-wholename",
+      "type": "string",
+      "value_name": "pattern",
+      "description": "The same thing as -path, for GNU find compatibility."
+    },
+    {
+      "short": "-xattr",
+      "type": "boolean",
+      "description": "True if the file has any extended attributes."
+    },
+    {
+      "short": "-xattrname",
+      "type": "string",
+      "value_name": "name",
+      "description": "True if the file has an extended attribute with the specified name."
+    },
+    {
+      "short": "-xdev",
+      "type": "boolean",
+      "description": "Deprecated equivalent of the -x option: do not descend into directories on a different device."
+    },
+    {
+      "short": "-not",
+      "type": "boolean",
+      "description": "The unary NOT operator, also spelled '!'. It evaluates to true if the following expression is false, and fails with 'no following expression' if there is none."
+    },
+    {
+      "short": "-and",
+      "type": "boolean",
+      "description": "The logical AND operator, implied by the juxtaposition of two expressions. The expression evaluates to true if both expressions are true; the second is not evaluated if the first is false."
+    },
+    {
+      "short": "-a",
+      "type": "boolean",
+      "description": "The historic spelling of -and."
+    },
+    {
+      "short": "-or",
+      "type": "boolean",
+      "description": "The logical OR operator. The expression evaluates to true if either the first or the second expression is true; the second is not evaluated if the first is true."
+    },
+    {
+      "short": "-o",
+      "type": "boolean",
+      "description": "The historic spelling of -or."
+    }
   ],
   "positional_args": [
-    { "name": "path", "type": "path", "variadic": true, "required": false, "before_flags": true, "description": "Paths whose hierarchies are walked. At least one is required unless -f supplies them; there is no implied default directory, unlike GNU find. A path beginning with '!', '(' or '-' has to be introduced with -f instead. Must be rendered before the primaries: this find takes the leading dash of a primary as an option when no path has been seen yet." },
-    { "name": "expression", "type": "string", "variadic": true, "required": false, "description": "The primaries and operators evaluated for each file. All operands and primaries must be separate arguments to find. With no action primary the expression is effectively wrapped as ( expression ) -print." }
+    {
+      "name": "path",
+      "type": "path",
+      "variadic": true,
+      "required": false,
+      "before_flags": true,
+      "description": "Paths whose hierarchies are walked. At least one is required unless -f supplies them; there is no implied default directory, unlike GNU find. A path beginning with '!', '(' or '-' has to be introduced with -f instead. Must be rendered before the primaries: this find takes the leading dash of a primary as an option when no path has been seen yet."
+    },
+    {
+      "name": "expression",
+      "type": "string",
+      "variadic": true,
+      "required": false,
+      "description": "The primaries and operators evaluated for each file. All operands and primaries must be separate arguments to find. With no action primary the expression is effectively wrapped as ( expression ) -print."
+    }
   ],
   "annotations": {
     "readonly": false,
     "destructive": true,
     "idempotent": false,
-    "requires_approval": true
+    "requires_approval": true,
+    "open_world": true
   }
 }
