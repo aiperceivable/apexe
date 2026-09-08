@@ -299,6 +299,12 @@ fn test_shipped_find_overlays_declare_operand_and_flag_placement() {
 /// against the build its overlay's provenance records; see `docs/overlays.md`.
 #[test]
 fn test_shipped_overlays_mark_every_optional_value_flag() {
+    // The corpus is a sibling checkout, not vendored (see `corpus_dir`).
+    // Skip rather than panic when it is absent, which is what every other
+    // corpus-backed test in this file already does -- these three reached
+    // `overlay_flag`/`overlay_annotations` without the check and failed
+    // `make check` on any machine without the sibling repo.
+    let Some(_corpus) = corpus_dir() else { return };
     // (overlay, flags whose value is optional and therefore must be attached)
     const OPTIONAL: &[(&str, &[&str])] = &[
         (
@@ -359,6 +365,12 @@ fn test_shipped_overlays_mark_every_optional_value_flag() {
 /// being introduced later.
 #[test]
 fn test_shipped_overlays_leave_required_value_flags_unmarked() {
+    // The corpus is a sibling checkout, not vendored (see `corpus_dir`).
+    // Skip rather than panic when it is absent, which is what every other
+    // corpus-backed test in this file already does -- these three reached
+    // `overlay_flag`/`overlay_annotations` without the check and failed
+    // `make check` on any machine without the sibling repo.
+    let Some(_corpus) = corpus_dir() else { return };
     const REQUIRED: &[(&str, &[&str])] = &[
         ("du@gnu", &["--time-style"]),
         ("grep@bsd", &["--after-context", "--before-context"]),
@@ -414,6 +426,12 @@ fn overlay_annotations(overlay: &str) -> Option<serde_json::Value> {
 /// Every overlay whose tool runs a caller-supplied command belongs here.
 #[test]
 fn test_shipped_overlays_mark_command_executors_destructive() {
+    // The corpus is a sibling checkout, not vendored (see `corpus_dir`).
+    // Skip rather than panic when it is absent, which is what every other
+    // corpus-backed test in this file already does -- these three reached
+    // `overlay_flag`/`overlay_annotations` without the check and failed
+    // `make check` on any machine without the sibling repo.
+    let Some(_corpus) = corpus_dir() else { return };
     const EXEC_WRAPPERS: &[&str] = &["xargs@bsd", "xargs@gnu"];
 
     for overlay in EXEC_WRAPPERS {
