@@ -9,7 +9,7 @@ use tempfile::TempDir;
 fn test_config() -> (TempDir, ApexeConfig) {
     let tmp = TempDir::new().unwrap();
     let config = ApexeConfig {
-        modules_dir: tmp.path().join("modules"),
+        bindings_dir: tmp.path().join("modules"),
         cache_dir: tmp.path().join("cache"),
         config_dir: tmp.path().to_path_buf(),
         audit_log: tmp.path().join("audit.jsonl"),

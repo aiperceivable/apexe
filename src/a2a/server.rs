@@ -16,7 +16,7 @@ pub struct A2aServerBuilder {
     name: String,
     url: String,
     explorer: bool,
-    modules_dir: Option<std::path::PathBuf>,
+    bindings_dir: Option<std::path::PathBuf>,
     timeout_ms: u64,
     /// Path to ACL YAML file for access control.
     acl_path: Option<std::path::PathBuf>,
@@ -229,7 +229,7 @@ impl A2aServerBuilder {
             name: "apexe".to_string(),
             url: DEFAULT_A2A_URL.to_string(),
             explorer: false,
-            modules_dir: None,
+            bindings_dir: None,
             timeout_ms: 30_000,
             acl_path: None,
             filter: crate::module::ModuleFilter::default(),
@@ -278,8 +278,8 @@ impl A2aServerBuilder {
     }
 
     /// Set the directory containing `.binding.yaml` module files.
-    pub fn modules_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
-        self.modules_dir = Some(dir.into());
+    pub fn bindings_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.bindings_dir = Some(dir.into());
         self
     }
 
@@ -410,7 +410,7 @@ impl A2aServerBuilder {
     /// Options shared with the MCP builder for assembling a governed `Executor`.
     fn executor_options(&self) -> ExecutorOptions<'_> {
         ExecutorOptions {
-            modules_dir: self.modules_dir.as_deref(),
+            bindings_dir: self.bindings_dir.as_deref(),
             timeout_ms: self.timeout_ms,
             acl_path: self.acl_path.as_deref(),
             filter: self.filter.clone(),
@@ -548,7 +548,7 @@ mod tests {
         assert_eq!(builder.name, "apexe");
         assert_eq!(builder.url, "http://127.0.0.1:8000");
         assert!(!builder.explorer);
-        assert!(builder.modules_dir.is_none());
+        assert!(builder.bindings_dir.is_none());
         assert_eq!(builder.timeout_ms, 30_000);
         assert_eq!(builder.execution_timeout, 300);
         assert!(builder.cors_origins.is_empty());
@@ -560,7 +560,7 @@ mod tests {
             .name("my-agent")
             .url("http://0.0.0.0:9090")
             .explorer(true)
-            .modules_dir("/tmp/modules")
+            .bindings_dir("/tmp/modules")
             .timeout_ms(60_000)
             .execution_timeout(600)
             .cors_origins(vec!["https://example.com".to_string()]);
@@ -569,7 +569,7 @@ mod tests {
         assert_eq!(builder.url, "http://0.0.0.0:9090");
         assert!(builder.explorer);
         assert_eq!(
-            builder.modules_dir,
+            builder.bindings_dir,
             Some(std::path::PathBuf::from("/tmp/modules"))
         );
         assert_eq!(builder.timeout_ms, 60_000);
@@ -600,11 +600,18 @@ mod tests {
         let (_executor, config) = builder.prepare().expect("prepare should succeed");
         assert_eq!(config.version, crate::VERSION);
         assert_eq!(config.version, env!("CARGO_PKG_VERSION"));
-        assert_ne!(
-            config.version,
-            APCoreA2AConfig::default().version,
-            "the card must not report the framework's version as its own"
-        );
+
+        // There used to be an `assert_ne!` against
+        // `APCoreA2AConfig::default().version` here, on the reasoning that the
+        // card must not carry the framework's constant. It was removed when
+        // apexe 0.7.0 met apcore-a2a 0.7.0: two independently versioned crates
+        // are free to collide, and on that day the guard failed while the
+        // behaviour it guards was correct. It could not have caught the
+        // regression then either -- if `prepare` had forgotten to set
+        // `config.version`, the fallback would have been "0.7.0" and the
+        // assertion would have passed. The equality assertions above are the
+        // load-bearing ones: they pin the value to apexe's own version
+        // whatever the framework's happens to be.
     }
 
     #[tokio::test]

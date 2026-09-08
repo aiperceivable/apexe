@@ -169,7 +169,7 @@ impl ScanArgs {
             .collect();
 
         let output_dir = self.output_dir
-            .unwrap_or_else(|| config.modules_dir.clone());
+            .unwrap_or_else(|| config.bindings_dir.clone());
 
         let yaml_output = YamlOutput::new();
         let results = yaml_output.write(&modules, &output_dir, self.dry_run, self.verify)?;

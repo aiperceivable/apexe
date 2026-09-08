@@ -9,7 +9,7 @@ use predicates::prelude::*;
 /// override. Without this, every test that spawns the real binary reads and
 /// writes the developer's own `~/.apexe`: `apexe scan` merges into
 /// `~/.apexe/acl.yaml`, and `apexe serve` appends to `~/.apexe/audit.jsonl`.
-/// `--output-dir` / `--modules-dir` only redirect bindings, never those two.
+/// `--output-dir` / `--bindings-dir` only redirect bindings, never those two.
 ///
 /// The temporary directory backing `$HOME` is deliberately not cleaned up
 /// (`TempDir::keep`): it must outlive the returned `Command`, and a leaked
@@ -79,7 +79,7 @@ fn test_a2a_help_shows_expected_flags() {
         .assert()
         .success()
         .stdout(predicate::str::contains("--url"))
-        .stdout(predicate::str::contains("--modules-dir"))
+        .stdout(predicate::str::contains("--bindings-dir"))
         .stdout(predicate::str::contains("--acl"))
         .stdout(predicate::str::contains("--explorer"))
         // A2A has no interactive elicitation, so --enable-approval is not offered
@@ -98,7 +98,7 @@ fn test_config_show_succeeds() {
         .args(["config", "--show"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("modules_dir"))
+        .stdout(predicate::str::contains("bindings_dir"))
         .stdout(predicate::str::contains("log_level"));
 }
 
@@ -183,7 +183,7 @@ fn args_of(config: &serde_json::Value, name: &str) -> Vec<String> {
 fn test_show_config_stdio_carries_every_surface_flag() {
     let config = show_config(&[
         "claude-desktop",
-        "--modules-dir",
+        "--bindings-dir",
         "/srv/apexe/modules",
         "--prefix",
         "cli.git",
@@ -197,7 +197,7 @@ fn test_show_config_stdio_carries_every_surface_flag() {
 
     assert_eq!(config["mcpServers"]["apexe"]["command"], "apexe");
     for pair in [
-        ["--modules-dir", "/srv/apexe/modules"],
+        ["--bindings-dir", "/srv/apexe/modules"],
         ["--prefix", "cli.git"],
         ["--tags", "readonly"],
         ["--acl", "/etc/apexe/acl.yaml"],
@@ -418,7 +418,7 @@ fn test_a_non_zero_exit_is_not_reported_as_an_mcp_error() {
             "serve",
             "--transport",
             "stdio",
-            "--modules-dir",
+            "--bindings-dir",
             modules.to_str().unwrap(),
         ])
         .write_stdin(session)

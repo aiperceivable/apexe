@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use apcore::{Config as CoreConfig, ModuleError};
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{info, warn};
 
 /// Global apexe configuration.
 ///
@@ -11,11 +11,11 @@ use tracing::warn;
 // `ApexeConfig::default()` for that field instead of failing to parse the
 // whole file -- required for the field-level merge `load_config` documents
 // (a config.yaml that only sets e.g. `default_timeout` must not force every
-// other field, like `modules_dir`, to also be spelled out).
+// other field, like `bindings_dir`, to also be spelled out).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ApexeConfig {
-    pub modules_dir: PathBuf,
+    pub bindings_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub config_dir: PathBuf,
     pub audit_log: PathBuf,
@@ -90,7 +90,7 @@ impl Default for ApexeConfig {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let apexe_dir = home.join(".apexe");
         Self {
-            modules_dir: apexe_dir.join("modules"),
+            bindings_dir: apexe_dir.join("bindings"),
             cache_dir: apexe_dir.join("cache"),
             config_dir: apexe_dir.clone(),
             audit_log: apexe_dir.join("audit.jsonl"),
@@ -131,7 +131,7 @@ impl ApexeConfig {
     /// keeps the underlying `ErrorKind` on the way through.
     #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
     pub fn ensure_dirs(&self) -> Result<(), ModuleError> {
-        for dir in [&self.modules_dir, &self.cache_dir, &self.config_dir] {
+        for dir in [&self.bindings_dir, &self.cache_dir, &self.config_dir] {
             std::fs::create_dir_all(dir).map_err(|e| {
                 let context = std::io::Error::new(
                     e.kind(),
@@ -150,13 +150,13 @@ impl ApexeConfig {
 /// 2. If config file exists, parse YAML and merge it over the defaults
 ///    field by field (a field the file omits keeps its default -- see
 ///    `ApexeConfig`'s `#[serde(default)]`)
-/// 3. Check env vars (APEXE_MODULES_DIR, APEXE_CACHE_DIR, APEXE_LOG_LEVEL,
+/// 3. Check env vars (APEXE_BINDINGS_DIR, APEXE_CACHE_DIR, APEXE_LOG_LEVEL,
 ///    APEXE_TIMEOUT) and override matching fields
 /// 4. Return ApexeConfig
 ///
 /// CLI-flag overrides are applied separately, after this returns: `--timeout`
 /// via `ApexeConfig::with_timeout_override` (called from `Cli::run`),
-/// `--scan-depth`/`--log-level`/`--modules-dir` via clap's own typed flags on
+/// `--scan-depth`/`--log-level`/`--bindings-dir` via clap's own typed flags on
 /// each subcommand. There is no third, map-based override mechanism here --
 /// there used to be one (`apply_cli_overrides`, taking a
 /// `HashMap<String, String>`), but every production caller passed `None` for
@@ -169,10 +169,51 @@ pub fn load_config(config_path: Option<&Path>) -> anyhow::Result<ApexeConfig> {
         .unwrap_or_else(|| config.config_dir.join("config.yaml"));
     apply_file_config(&mut config, &file_path)?;
 
-    apply_env_overrides(&mut config);
+    // Before the environment tier, so `APEXE_BINDINGS_DIR` still outranks it,
+    // and after the file tier, so apcore wins where both declare the location.
     load_core_config(&mut config);
+    apply_core_bindings_dir(&mut config);
+    apply_env_overrides(&mut config);
 
     Ok(config)
+}
+
+/// Let apcore's canonical `bindings.dir` decide where binding files live.
+///
+/// `bindings.dir` is apcore's key for this (PROTOCOL_SPEC §9.1.1, canonical
+/// since apcore 0.30) and apexe used to carry a second one, `modules_dir`, for
+/// the same directory. Two names for one location is the kind of duplication
+/// that ends with the two disagreeing, so the ecosystem's key is authoritative:
+/// where an `apcore.yaml` declares it, it beats what apexe's own `config.yaml`
+/// says. `APEXE_BINDINGS_DIR` and `--bindings-dir` still outrank both, because
+/// those are per-invocation overrides rather than a second standing opinion.
+///
+/// **Only a *declared* value counts.** Since 0.30 `Config::get("bindings.dir")`
+/// answers `./bindings` for a configuration that declares nothing, so taking
+/// its result unconditionally would replace apexe's absolute default with a
+/// working-directory-relative path on every machine that has an `apcore.yaml`
+/// at all -- `apexe scan` would write beside wherever the operator happened to
+/// be standing, and `apexe serve` from another directory would find nothing.
+/// Comparing against `Config::default_for` is what separates "the operator
+/// asked for this" from "apcore filled in its own default".
+fn apply_core_bindings_dir(config: &mut ApexeConfig) {
+    let Some(core) = config.core_config.as_ref() else {
+        return;
+    };
+    let Some(declared) = core.get("bindings.dir") else {
+        return;
+    };
+    if Some(&declared) == CoreConfig::default_for("bindings.dir").as_ref() {
+        return;
+    }
+    let Some(dir) = declared.as_str().filter(|s| !s.is_empty()) else {
+        return;
+    };
+    info!(
+        bindings_dir = dir,
+        "apcore.yaml declares bindings.dir; it takes precedence over apexe's config.yaml"
+    );
+    config.bindings_dir = PathBuf::from(dir);
 }
 
 /// The config keys whose silent loss widens what the process will permit.
@@ -304,8 +345,8 @@ fn apply_file_config(config: &mut ApexeConfig, file_path: &Path) -> anyhow::Resu
 
 /// Override `config` from `APEXE_*` environment variables, when set and valid.
 fn apply_env_overrides(config: &mut ApexeConfig) {
-    if let Ok(val) = std::env::var("APEXE_MODULES_DIR") {
-        config.modules_dir = PathBuf::from(val);
+    if let Ok(val) = std::env::var("APEXE_BINDINGS_DIR") {
+        config.bindings_dir = PathBuf::from(val);
     }
     if let Ok(val) = std::env::var("APEXE_CACHE_DIR") {
         config.cache_dir = PathBuf::from(val);
@@ -363,7 +404,7 @@ mod tests {
     fn test_known_config_keys_match_the_struct_fields() {
         let keys = known_config_keys();
         for expected in [
-            "modules_dir",
+            "bindings_dir",
             "cache_dir",
             "config_dir",
             "audit_log",
@@ -548,12 +589,12 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn test_default_modules_dir_ends_with_apexe_modules() {
+    fn test_default_bindings_dir_ends_with_apexe_modules() {
         let config = ApexeConfig::default();
         assert!(
-            config.modules_dir.ends_with(".apexe/modules"),
-            "modules_dir should end with .apexe/modules, got: {:?}",
-            config.modules_dir
+            config.bindings_dir.ends_with(".apexe/bindings"),
+            "bindings_dir should end with .apexe/bindings, got: {:?}",
+            config.bindings_dir
         );
     }
 
@@ -597,7 +638,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.yaml");
         let default = ApexeConfig {
-            modules_dir: tmp.path().join("my_modules"),
+            bindings_dir: tmp.path().join("my_modules"),
             cache_dir: tmp.path().join("my_cache"),
             config_dir: tmp.path().to_path_buf(),
             audit_log: tmp.path().join("audit.jsonl"),
@@ -635,9 +676,9 @@ mod tests {
             "the field set in the partial config.yaml must take effect"
         );
         assert!(
-            config.modules_dir.ends_with(".apexe/modules"),
+            config.bindings_dir.ends_with(".apexe/bindings"),
             "a field omitted from the partial config.yaml must keep its default, got: {:?}",
-            config.modules_dir
+            config.bindings_dir
         );
     }
 
@@ -655,17 +696,17 @@ mod tests {
     }
 
     #[test]
-    fn test_env_var_override_modules_dir() {
+    fn test_env_var_override_bindings_dir() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("nonexistent.yaml");
 
-        let unique_dir = "/tmp/apexe_test_modules_dir_unique";
-        unsafe { std::env::set_var("APEXE_MODULES_DIR", unique_dir) };
+        let unique_dir = "/tmp/apexe_test_bindings_dir_unique";
+        unsafe { std::env::set_var("APEXE_BINDINGS_DIR", unique_dir) };
         let config = load_config(Some(config_path.as_path())).unwrap();
-        unsafe { std::env::remove_var("APEXE_MODULES_DIR") };
+        unsafe { std::env::remove_var("APEXE_BINDINGS_DIR") };
 
-        assert_eq!(config.modules_dir, PathBuf::from(unique_dir));
+        assert_eq!(config.bindings_dir, PathBuf::from(unique_dir));
     }
 
     #[test]
@@ -725,19 +766,19 @@ mod tests {
     fn test_ensure_dirs_creates_directories() {
         let tmp = TempDir::new().unwrap();
         let config = ApexeConfig {
-            modules_dir: tmp.path().join("m"),
+            bindings_dir: tmp.path().join("m"),
             cache_dir: tmp.path().join("c"),
             config_dir: tmp.path().join("cfg"),
             ..ApexeConfig::default()
         };
 
-        assert!(!config.modules_dir.exists());
+        assert!(!config.bindings_dir.exists());
         assert!(!config.cache_dir.exists());
         assert!(!config.config_dir.exists());
 
         config.ensure_dirs().unwrap();
 
-        assert!(config.modules_dir.exists());
+        assert!(config.bindings_dir.exists());
         assert!(config.cache_dir.exists());
         assert!(config.config_dir.exists());
     }
@@ -777,6 +818,106 @@ mod tests {
         assert!(config.core_config.is_none());
     }
 
+    /// The fields `apcore::Config::load` requires of any config file.
+    ///
+    /// Spelled out because a fixture missing them does not fail loudly: `load`
+    /// returns `Err`, `core_config` stays `None`, and every precedence test
+    /// below would pass by never exercising the code it names.
+    const APCORE_YAML_HEAD: &str = "version: \"1.0\"\nproject:\n  name: apexe-test\n";
+
+    /// A declared `bindings.dir` outranks apexe's own `config.yaml`.
+    ///
+    /// Two names for one directory is the duplication this precedence exists to
+    /// settle: apcore owns the key, so where both files name the location, the
+    /// ecosystem's answer is the one that binds.
+    #[test]
+    fn test_apcore_bindings_dir_outranks_the_apexe_config_file() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::write(
+            dir.join("apcore.yaml"),
+            APCORE_YAML_HEAD.to_string() + "bindings:\n  dir: /srv/declared-by-apcore\n",
+        )
+        .unwrap();
+        let apexe_yaml = dir.join("config.yaml");
+        std::fs::write(
+            &apexe_yaml,
+            format!(
+                "config_dir: {}\nbindings_dir: /srv/declared-by-apexe\n",
+                dir.display()
+            ),
+        )
+        .unwrap();
+
+        let config = load_config(Some(apexe_yaml.as_path())).unwrap();
+
+        assert_eq!(
+            config.bindings_dir,
+            PathBuf::from("/srv/declared-by-apcore"),
+            "apcore.yaml declares bindings.dir, so it decides where bindings live"
+        );
+    }
+
+    /// An `apcore.yaml` that declares no `bindings.dir` must leave apexe's alone.
+    ///
+    /// The trap this pins: since apcore 0.30 `Config::get("bindings.dir")`
+    /// answers the canonical `./bindings` for a configuration that declares
+    /// nothing. Taking that unconditionally would swap apexe's absolute default
+    /// for a working-directory-relative path on every machine that merely *has*
+    /// an apcore.yaml -- `apexe scan` would write beside wherever the operator
+    /// was standing, and `apexe serve` elsewhere would find nothing.
+    #[test]
+    fn test_an_undeclared_bindings_dir_does_not_override_apexe() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        // Valid apcore config that says nothing about bindings.
+        std::fs::write(dir.join("apcore.yaml"), APCORE_YAML_HEAD).unwrap();
+        let apexe_yaml = dir.join("config.yaml");
+        std::fs::write(
+            &apexe_yaml,
+            format!(
+                "config_dir: {}\nbindings_dir: /srv/declared-by-apexe\n",
+                dir.display()
+            ),
+        )
+        .unwrap();
+
+        let config = load_config(Some(apexe_yaml.as_path())).unwrap();
+
+        assert_eq!(
+            config.bindings_dir,
+            PathBuf::from("/srv/declared-by-apexe"),
+            "apcore's canonical default is not a declaration and must not override"
+        );
+    }
+
+    /// `APEXE_BINDINGS_DIR` still outranks a declared `bindings.dir`.
+    ///
+    /// The environment tier is a per-invocation override; apcore's file is a
+    /// standing declaration. Deferring to apcore must not cost the ability to
+    /// point one run somewhere else.
+    #[test]
+    fn test_env_outranks_a_declared_apcore_bindings_dir() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::write(
+            dir.join("apcore.yaml"),
+            APCORE_YAML_HEAD.to_string() + "bindings:\n  dir: /srv/declared-by-apcore\n",
+        )
+        .unwrap();
+        let apexe_yaml = dir.join("config.yaml");
+        std::fs::write(&apexe_yaml, format!("config_dir: {}\n", dir.display())).unwrap();
+
+        unsafe { std::env::set_var("APEXE_BINDINGS_DIR", "/srv/from-env") };
+        let config = load_config(Some(apexe_yaml.as_path())).unwrap();
+        unsafe { std::env::remove_var("APEXE_BINDINGS_DIR") };
+
+        assert_eq!(config.bindings_dir, PathBuf::from("/srv/from-env"));
+    }
+
     #[test]
     fn test_core_config_accessor_returns_default() {
         let config = ApexeConfig::default();
@@ -797,7 +938,7 @@ mod tests {
         std::fs::write(&blocker, b"x").unwrap();
 
         let config = ApexeConfig {
-            modules_dir: blocker.join("modules"),
+            bindings_dir: blocker.join("modules"),
             cache_dir: tmp.path().join("cache"),
             config_dir: tmp.path().join("config"),
             ..ApexeConfig::default()
@@ -818,7 +959,7 @@ mod tests {
     fn test_ensure_dirs_idempotent() {
         let tmp = TempDir::new().unwrap();
         let config = ApexeConfig {
-            modules_dir: tmp.path().join("m"),
+            bindings_dir: tmp.path().join("m"),
             cache_dir: tmp.path().join("c"),
             config_dir: tmp.path().join("cfg"),
             ..ApexeConfig::default()
@@ -828,7 +969,7 @@ mod tests {
         // Call again -- should not error
         config.ensure_dirs().unwrap();
 
-        assert!(config.modules_dir.exists());
+        assert!(config.bindings_dir.exists());
         assert!(config.cache_dir.exists());
         assert!(config.config_dir.exists());
     }

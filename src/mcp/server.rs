@@ -21,7 +21,7 @@ fn exempt_paths() -> HashSet<String> {
 
 /// Builder for creating an MCP server from apexe's scanned CLI modules.
 ///
-/// Loads `.binding.yaml` files from a modules directory via
+/// Loads `.binding.yaml` files from a bindings directory via
 /// [`build_executor`](crate::module::build_executor), which wraps each as a
 /// `CliModule`, registers them into an apcore `Registry`, and hands the
 /// resulting [`Executor`] to apcore-mcp's [`APCoreMCP`] server.
@@ -44,7 +44,7 @@ pub struct McpServerBuilder {
     host: String,
     port: u16,
     explorer: bool,
-    modules_dir: Option<std::path::PathBuf>,
+    bindings_dir: Option<std::path::PathBuf>,
     timeout_ms: u64,
     /// Filter exposed tools by tags (AND logic).
     tags: Option<Vec<String>>,
@@ -92,7 +92,7 @@ impl McpServerBuilder {
             host: "127.0.0.1".to_string(),
             port: 8000,
             explorer: false,
-            modules_dir: None,
+            bindings_dir: None,
             timeout_ms: 30_000,
             tags: None,
             prefix: None,
@@ -151,8 +151,8 @@ impl McpServerBuilder {
     }
 
     /// Set the directory containing `.binding.yaml` module files.
-    pub fn modules_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
-        self.modules_dir = Some(dir.into());
+    pub fn bindings_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.bindings_dir = Some(dir.into());
         self
     }
 
@@ -282,7 +282,7 @@ impl McpServerBuilder {
     /// Options shared with the A2A builder for assembling a governed `Executor`.
     fn executor_options(&self) -> ExecutorOptions<'_> {
         ExecutorOptions {
-            modules_dir: self.modules_dir.as_deref(),
+            bindings_dir: self.bindings_dir.as_deref(),
             timeout_ms: self.timeout_ms,
             acl_path: self.acl_path.as_deref(),
             // The filter is applied at registration rather than being handed to
@@ -646,7 +646,7 @@ mod tests {
         assert_eq!(builder.host, "127.0.0.1");
         assert_eq!(builder.port, 8000);
         assert!(!builder.explorer);
-        assert!(builder.modules_dir.is_none());
+        assert!(builder.bindings_dir.is_none());
         assert_eq!(builder.timeout_ms, 30_000);
     }
 
@@ -674,7 +674,7 @@ mod tests {
             .host("0.0.0.0")
             .port(9090)
             .explorer(true)
-            .modules_dir("/tmp/modules")
+            .bindings_dir("/tmp/modules")
             .timeout_ms(60_000);
 
         assert_eq!(builder.name, "my-server");
@@ -683,7 +683,7 @@ mod tests {
         assert_eq!(builder.port, 9090);
         assert!(builder.explorer);
         assert_eq!(
-            builder.modules_dir,
+            builder.bindings_dir,
             Some(std::path::PathBuf::from("/tmp/modules"))
         );
         assert_eq!(builder.timeout_ms, 60_000);
@@ -703,9 +703,9 @@ mod tests {
     }
 
     #[test]
-    fn test_mcp_server_builder_no_modules_dir() {
+    fn test_mcp_server_builder_no_bindings_dir() {
         let result = McpServerBuilder::new().build();
-        assert!(result.is_ok(), "build without modules_dir should succeed");
+        assert!(result.is_ok(), "build without bindings_dir should succeed");
     }
 
     #[test]
@@ -724,7 +724,7 @@ mod tests {
         let output = YamlOutput::without_verification();
         output.write(&modules, dir.path(), false).unwrap();
 
-        let result = McpServerBuilder::new().modules_dir(dir.path()).build();
+        let result = McpServerBuilder::new().bindings_dir(dir.path()).build();
         assert!(
             result.is_ok(),
             "build with valid modules should succeed: {:?}",
@@ -733,9 +733,9 @@ mod tests {
     }
 
     #[test]
-    fn test_mcp_server_builder_nonexistent_modules_dir() {
+    fn test_mcp_server_builder_nonexistent_bindings_dir() {
         let result = McpServerBuilder::new()
-            .modules_dir("/nonexistent/path/xyz_12345")
+            .bindings_dir("/nonexistent/path/xyz_12345")
             .build();
         // Should succeed with zero tools (warns but does not error)
         assert!(
@@ -976,7 +976,7 @@ mod tests {
         output.write(&modules, dir.path(), false).unwrap();
 
         let result = McpServerBuilder::new()
-            .modules_dir(dir.path())
+            .bindings_dir(dir.path())
             .export_openai_tools();
         assert!(result.is_ok());
         let tools = result.unwrap();

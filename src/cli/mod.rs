@@ -119,7 +119,7 @@ pub struct ScanArgs {
     #[arg(required = true)]
     pub tools: Vec<String>,
 
-    /// Output directory for binding files (default: ~/.apexe/modules/)
+    /// Output directory for binding files (default: ~/.apexe/bindings/)
     #[arg(long)]
     pub output_dir: Option<PathBuf>,
 
@@ -189,7 +189,7 @@ impl ScanArgs {
         let output_dir = self
             .output_dir
             .clone()
-            .unwrap_or_else(|| config.modules_dir.clone());
+            .unwrap_or_else(|| config.bindings_dir.clone());
 
         let converter = crate::adapter::CliToolConverter::new();
         let modules = converter.convert_all(&outcome.tools);
@@ -445,14 +445,14 @@ pub struct ServeArgs {
 
     /// Directory containing binding files
     #[arg(long)]
-    pub modules_dir: Option<PathBuf>,
+    pub bindings_dir: Option<PathBuf>,
 
     /// MCP server name
     #[arg(long, default_value = "apexe")]
     pub name: String,
 
     /// Print integration config snippet and exit. The snippet reproduces the
-    /// rest of this invocation (`--modules-dir`, `--tags`, `--prefix`,
+    /// rest of this invocation (`--bindings-dir`, `--tags`, `--prefix`,
     /// `--acl`, the governance toggles) so the configured client serves the
     /// same surface. Credentials are never included.
     #[arg(long, value_parser = config_gen::ConfigFormat::VALUES)]
@@ -567,7 +567,7 @@ impl ServeArgs {
             transport: self.transport.clone(),
             host: self.host.clone(),
             port: self.port,
-            modules_dir: self.modules_dir.clone(),
+            bindings_dir: self.bindings_dir.clone(),
             tags: self.tags.clone(),
             prefix: self.prefix.clone(),
             acl: self.acl.clone(),
@@ -580,17 +580,17 @@ impl ServeArgs {
     }
 
     fn build_server(&self, config: &ApexeConfig) -> anyhow::Result<apcore_mcp::APCoreMCP> {
-        let modules_dir = self
-            .modules_dir
+        let bindings_dir = self
+            .bindings_dir
             .clone()
-            .unwrap_or_else(|| config.modules_dir.clone());
+            .unwrap_or_else(|| config.bindings_dir.clone());
         let mut builder = crate::mcp::McpServerBuilder::new()
             .name(&self.name)
             .transport(&self.transport)
             .host(&self.host)
             .port(self.port)
             .explorer(self.explorer)
-            .modules_dir(modules_dir)
+            .bindings_dir(bindings_dir)
             .timeout_ms(config.default_timeout * 1000)
             .enable_logging(!self.no_logging)
             .log_arguments(!self.no_log_arguments)
@@ -690,7 +690,7 @@ pub struct A2aArgs {
 
     /// Directory containing binding files
     #[arg(long)]
-    pub modules_dir: Option<PathBuf>,
+    pub bindings_dir: Option<PathBuf>,
 
     /// A2A agent name
     #[arg(long, default_value = "apexe")]
@@ -769,15 +769,15 @@ impl A2aArgs {
     }
 
     fn build_server(&self, config: &ApexeConfig) -> anyhow::Result<crate::a2a::A2aServerBuilder> {
-        let modules_dir = self
-            .modules_dir
+        let bindings_dir = self
+            .bindings_dir
             .clone()
-            .unwrap_or_else(|| config.modules_dir.clone());
+            .unwrap_or_else(|| config.bindings_dir.clone());
         let mut builder = crate::a2a::A2aServerBuilder::new()
             .name(&self.name)
             .url(&self.url)
             .explorer(self.explorer)
-            .modules_dir(modules_dir)
+            .bindings_dir(bindings_dir)
             .timeout_ms(config.default_timeout * 1000)
             .enable_logging(!self.no_logging)
             .log_arguments(!self.no_log_arguments)
@@ -814,7 +814,7 @@ pub struct ListArgs {
 
     /// Directory containing binding files
     #[arg(long)]
-    pub modules_dir: Option<PathBuf>,
+    pub bindings_dir: Option<PathBuf>,
 
     /// Print each module's behavioral annotations (readonly, destructive,
     /// idempotent, requires_approval, open_world) and, when an ACL policy is
@@ -841,7 +841,7 @@ pub struct ListArgs {
     /// machine.
     ///
     /// A binding file's `target` is a snapshot taken at `apexe scan` time --
-    /// the tool it names can be uninstalled, moved, or the `modules_dir`
+    /// the tool it names can be uninstalled, moved, or the `bindings_dir`
     /// copied to a different host since. Off by default so `list` still shows
     /// everything ever scanned (e.g. to review before moving to a new
     /// machine); `apexe serve`/`apexe a2a` apply this check unconditionally,
@@ -852,9 +852,9 @@ pub struct ListArgs {
 
 impl ListArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
-        let modules_dir = self.modules_dir.as_ref().unwrap_or(&config.modules_dir);
+        let bindings_dir = self.bindings_dir.as_ref().unwrap_or(&config.bindings_dir);
 
-        let mut modules = self.load_modules(modules_dir)?;
+        let mut modules = self.load_modules(bindings_dir)?;
         if modules.is_empty() {
             println!("No modules found. Run 'apexe scan <tool>' first.");
             return Ok(());
@@ -1568,7 +1568,7 @@ mod tests {
         let cli = Cli::try_parse_from([
             "apexe",
             "serve",
-            "--modules-dir",
+            "--bindings-dir",
             "/srv/modules",
             "--tags",
             "readonly",
@@ -1587,7 +1587,7 @@ mod tests {
         };
         let invocation = args.invocation();
         assert_eq!(invocation.name, "mytools");
-        assert_eq!(invocation.modules_dir, Some(PathBuf::from("/srv/modules")));
+        assert_eq!(invocation.bindings_dir, Some(PathBuf::from("/srv/modules")));
         assert_eq!(invocation.tags.as_deref(), Some("readonly"));
         assert_eq!(invocation.prefix.as_deref(), Some("cli.git"));
         assert_eq!(invocation.acl, Some(PathBuf::from("/etc/apexe/acl.yaml")));
@@ -1929,7 +1929,7 @@ mod tests {
 
         let args = ListArgs {
             format: "table".to_string(),
-            modules_dir: Some(tmp.path().to_path_buf()),
+            bindings_dir: Some(tmp.path().to_path_buf()),
             verbose: false,
             acl: None,
             available_only: true,
@@ -1958,7 +1958,7 @@ mod tests {
         };
         let args = ListArgs {
             format: "table".to_string(),
-            modules_dir: None,
+            bindings_dir: None,
             verbose: true,
             acl: Some(explicit_acl.clone()),
             available_only: false,
@@ -1978,7 +1978,7 @@ mod tests {
         };
         let args = ListArgs {
             format: "table".to_string(),
-            modules_dir: None,
+            bindings_dir: None,
             verbose: true,
             acl: None,
             available_only: false,
@@ -1995,7 +1995,7 @@ mod tests {
         };
         let args = ListArgs {
             format: "table".to_string(),
-            modules_dir: None,
+            bindings_dir: None,
             verbose: true,
             acl: None,
             available_only: false,
@@ -2081,7 +2081,7 @@ mod tests {
     fn test_config_show_outputs_valid_yaml() {
         let tmp = tempfile::TempDir::new().unwrap();
         let config = ApexeConfig {
-            modules_dir: tmp.path().join("modules"),
+            bindings_dir: tmp.path().join("modules"),
             cache_dir: tmp.path().join("cache"),
             config_dir: tmp.path().to_path_buf(),
             audit_log: tmp.path().join("audit.jsonl"),
@@ -2103,7 +2103,7 @@ mod tests {
     fn test_config_init_creates_file() {
         let tmp = tempfile::TempDir::new().unwrap();
         let config = ApexeConfig {
-            modules_dir: tmp.path().join("modules"),
+            bindings_dir: tmp.path().join("modules"),
             cache_dir: tmp.path().join("cache"),
             config_dir: tmp.path().to_path_buf(),
             audit_log: tmp.path().join("audit.jsonl"),
@@ -2136,7 +2136,7 @@ mod tests {
         std::fs::write(&config_path, "existing content").unwrap();
 
         let config = ApexeConfig {
-            modules_dir: tmp.path().join("modules"),
+            bindings_dir: tmp.path().join("modules"),
             cache_dir: tmp.path().join("cache"),
             config_dir: tmp.path().to_path_buf(),
             audit_log: tmp.path().join("audit.jsonl"),
@@ -2283,7 +2283,7 @@ mod tests {
 
         let args = ListArgs {
             format: "table".to_string(),
-            modules_dir: Some(tmp.path().to_path_buf()),
+            bindings_dir: Some(tmp.path().to_path_buf()),
             verbose: false,
             acl: None,
             available_only: false,

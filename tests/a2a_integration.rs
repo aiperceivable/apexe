@@ -46,7 +46,7 @@ async fn test_a2a_agent_card_exposes_scanned_skill() {
 
     let card = A2aServerBuilder::new()
         .name("apexe-test")
-        .modules_dir(dir.path())
+        .bindings_dir(dir.path())
         .agent_card()
         .await
         .expect("agent card should build from bindings");
@@ -72,7 +72,7 @@ async fn test_a2a_agent_card_reports_the_apexe_version() {
 
     let card = A2aServerBuilder::new()
         .name("apexe-test")
-        .modules_dir(dir.path())
+        .bindings_dir(dir.path())
         .agent_card()
         .await
         .expect("agent card should build from bindings");
@@ -98,7 +98,7 @@ async fn test_a2a_agent_card_skill_id_is_the_module_id() {
     write_echo_binding(dir.path());
 
     let card = A2aServerBuilder::new()
-        .modules_dir(dir.path())
+        .bindings_dir(dir.path())
         .agent_card()
         .await
         .expect("agent card should build from bindings");
@@ -122,7 +122,7 @@ async fn test_a2a_empty_registry_errors() {
     let dir = TempDir::new().unwrap();
 
     let result = A2aServerBuilder::new()
-        .modules_dir(dir.path())
+        .bindings_dir(dir.path())
         .agent_card()
         .await;
 
@@ -141,7 +141,7 @@ async fn test_a2a_serve_fails_fast_on_enable_approval_without_store() {
     write_echo_binding(dir.path());
 
     let result = A2aServerBuilder::new()
-        .modules_dir(dir.path())
+        .bindings_dir(dir.path())
         .enable_approval(true)
         .agent_card()
         .await;
@@ -181,7 +181,7 @@ async fn test_a2a_prefix_filter_excludes_a_module_from_the_card() {
     write_true_binding(dir.path());
 
     let card = A2aServerBuilder::new()
-        .modules_dir(dir.path())
+        .bindings_dir(dir.path())
         .prefix("cli.")
         .agent_card()
         .await
@@ -202,7 +202,7 @@ async fn test_a2a_tags_filter_excludes_a_module_from_the_card() {
     write_true_binding(dir.path());
 
     let card = A2aServerBuilder::new()
-        .modules_dir(dir.path())
+        .bindings_dir(dir.path())
         .tags(vec!["sys".to_string()])
         .agent_card()
         .await
@@ -227,7 +227,7 @@ async fn test_a2a_filter_that_admits_nothing_leaves_an_empty_registry() {
     write_echo_binding(dir.path());
 
     let result = A2aServerBuilder::new()
-        .modules_dir(dir.path())
+        .bindings_dir(dir.path())
         .prefix("nomatch.")
         .agent_card()
         .await;
@@ -258,7 +258,7 @@ async fn test_every_skill_advertises_json_only_input() {
     write_echo_binding(dir.path());
 
     let card = A2aServerBuilder::new()
-        .modules_dir(dir.path())
+        .bindings_dir(dir.path())
         .agent_card()
         .await
         .expect("agent card should build from bindings");
@@ -440,7 +440,7 @@ async fn test_a2a_acl_denial_tells_the_caller_it_was_denied() {
 
     let response = post_jsonrpc(
         A2aServerBuilder::new()
-            .modules_dir(dir.path())
+            .bindings_dir(dir.path())
             .acl_path(&acl_path),
         send_request("cli.echo"),
     )
@@ -473,7 +473,7 @@ async fn test_a2a_still_reports_an_unknown_skill_as_not_found() {
     write_echo_binding(dir.path());
 
     let response = post_jsonrpc(
-        A2aServerBuilder::new().modules_dir(dir.path()),
+        A2aServerBuilder::new().bindings_dir(dir.path()),
         send_request("cli.nosuchtool"),
     )
     .await;
@@ -501,7 +501,7 @@ async fn test_a2a_allowed_call_still_runs_under_a_denying_acl() {
     // nothing is refused — `default_effect: allow` carries the call.
     let response = post_jsonrpc(
         A2aServerBuilder::new()
-            .modules_dir(dir.path())
+            .bindings_dir(dir.path())
             .acl_path(&acl_path),
         send_request("cli.echo"),
     )
@@ -509,7 +509,7 @@ async fn test_a2a_allowed_call_still_runs_under_a_denying_acl() {
     assert_eq!(response["result"]["status"]["state"], "TASK_STATE_REJECTED");
 
     let response = post_jsonrpc(
-        A2aServerBuilder::new().modules_dir(dir.path()),
+        A2aServerBuilder::new().bindings_dir(dir.path()),
         send_request("cli.echo"),
     )
     .await;
@@ -534,7 +534,7 @@ async fn test_a2a_agent_card_carries_the_url_and_protocol_version() {
     let card = A2aServerBuilder::new()
         .name("apexe-test")
         .url("http://127.0.0.1:8793")
-        .modules_dir(dir.path())
+        .bindings_dir(dir.path())
         .agent_card()
         .await
         .expect("agent card should build from bindings");

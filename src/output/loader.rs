@@ -19,7 +19,7 @@ pub fn load_modules_from_dir(dir: &Path) -> Result<Vec<ScannedModule>, ModuleErr
         .map_err(|e| match e {
             BindingLoadError::PathNotFound { path } => ModuleError::new(
                 ErrorCode::GeneralInternalError,
-                format!("Modules directory not found: {path}"),
+                format!("Bindings directory not found: {path}"),
             ),
             other => ModuleError::new(ErrorCode::GeneralInternalError, other.to_string()),
         })

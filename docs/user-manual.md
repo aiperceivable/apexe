@@ -85,7 +85,7 @@ apexe scan <TOOLS>... [OPTIONS]
 | Argument / Option | Default | Description |
 |-------------------|---------|-------------|
 | `<TOOLS>...` | (required) | CLI tool names to scan (must be on `$PATH`) |
-| `--output-dir <DIR>` | `~/.apexe/modules/` | Directory to write binding files |
+| `--output-dir <DIR>` | `~/.apexe/bindings/` | Directory to write binding files |
 | `--depth <N>` | `2` | Subcommand recursion depth (1-5). `git remote add` = depth 2 |
 | `--no-cache` | off | Force fresh scan, bypass cache |
 | `--format <FMT>` | `table` | Output format: `json`, `yaml`, or `table` |
@@ -118,7 +118,7 @@ apexe serve [OPTIONS]
 | `--host <HOST>` | `127.0.0.1` | Host for HTTP/SSE transports |
 | `--port <PORT>` | `8000` | Port for HTTP/SSE transports (1-65535) |
 | `--explorer` | off | Enable the browser-based Tool Explorer UI. HTTP/SSE only — on stdio it warns and mounts nothing, since there is no HTTP surface to serve it on |
-| `--modules-dir <DIR>` | `~/.apexe/modules/` | Directory containing binding files |
+| `--bindings-dir <DIR>` | `~/.apexe/bindings/` | Directory containing binding files |
 | `--name <NAME>` | `apexe` | MCP server name |
 | `--show-config <TARGET>` | - | Print an integration snippet for `claude-desktop` or `cursor` and exit — see [§12](#12-integrating-with-ai-agents). Any other value is an error on stderr with a non-zero exit |
 | `--prefix <PREFIX>` | - | Serve only modules whose id starts with `<PREFIX>` — excluded modules are not callable either |
@@ -156,7 +156,7 @@ apexe a2a [OPTIONS]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--url <URL>` | `http://127.0.0.1:8000` | Base URL to bind the A2A server to |
-| `--modules-dir <DIR>` | `~/.apexe/modules/` | Directory containing binding files |
+| `--bindings-dir <DIR>` | `~/.apexe/bindings/` | Directory containing binding files |
 | `--name <NAME>` | `apexe` | A2A agent name |
 | `--explorer` | off | Enable browser-based Explorer UI |
 | `--acl <PATH>` | - | Path to ACL policy YAML file |
@@ -206,7 +206,7 @@ apexe list [OPTIONS]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--format <FMT>` | `table` | Output format: `table` or `json` |
-| `--modules-dir <DIR>` | `~/.apexe/modules/` | Directory to read binding files from |
+| `--bindings-dir <DIR>` | `~/.apexe/bindings/` | Directory to read binding files from |
 | `--verbose` | off | Print each module's behavioral annotations and, with `--acl`, the ACL decision an unauthenticated caller would get |
 | `--acl <PATH>` | `<config_dir>/acl.yaml` if present | ACL policy file to evaluate against in `--verbose` output. Read-only report — does not enable enforcement anywhere |
 | `--available-only` | off | Only list modules whose binary is reachable on this machine right now. `apexe serve`/`apexe a2a` apply this check unconditionally; here it is opt-in so the plain listing still shows everything ever scanned — see [Availability Filtering](#availability-filtering) |
@@ -281,12 +281,31 @@ Configuration resolves in 4 tiers (highest priority wins):
 CLI flags  >  Environment variables  >  Config file  >  Defaults
 ```
 
+**`bindings_dir` has a fifth tier, and apcore owns it.** `bindings.dir` is
+apcore's canonical key for the directory holding `.binding.yaml` files
+(PROTOCOL_SPEC §9.1.1). apexe used to carry a second name for the same
+location, which is the kind of duplication that ends with the two disagreeing,
+so where an `~/.apexe/apcore.yaml` **declares** `bindings.dir`, that value beats
+apexe's own `config.yaml`:
+
+```
+--bindings-dir  >  APEXE_BINDINGS_DIR  >  apcore.yaml bindings.dir  >  config.yaml bindings_dir  >  default
+```
+
+The two override tiers stay on top because they are per-invocation instructions
+rather than a second standing opinion. Only a *declared* value counts: apcore
+answers `./bindings` for a configuration that declares nothing, and taking that
+would replace apexe's absolute default with a working-directory-relative path on
+every machine that merely has an `apcore.yaml` — `apexe scan` would write beside
+wherever you were standing, and `apexe serve` from elsewhere would find nothing.
+apexe logs at `info` when apcore's declaration is the one that decided.
+
 ### Config file
 
 Located at `~/.apexe/config.yaml`. Create with `apexe config --init`.
 
 ```yaml
-modules_dir: ~/.apexe/modules
+bindings_dir: ~/.apexe/bindings
 cache_dir: ~/.apexe/cache
 audit_log: ~/.apexe/audit.jsonl
 log_level: info
@@ -305,7 +324,7 @@ allowed_paths:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `modules_dir` | path | `~/.apexe/modules` | Binding file storage |
+| `bindings_dir` | path | `~/.apexe/bindings` | Binding file storage |
 | `cache_dir` | path | `~/.apexe/cache` | Scan result cache |
 | `audit_log` | path | `~/.apexe/audit.jsonl` | Audit trail file |
 | `log_level` | string | `info` | Log level: error, warn, info, debug, trace |
@@ -337,7 +356,7 @@ the remaining keys still apply.
 
 | Variable | Overrides | Example |
 |----------|-----------|---------|
-| `APEXE_MODULES_DIR` | `modules_dir` | `/opt/apexe/modules` |
+| `APEXE_BINDINGS_DIR` | `bindings_dir` | `/opt/apexe/bindings` |
 | `APEXE_CACHE_DIR` | `cache_dir` | `/tmp/apexe-cache` |
 | `APEXE_LOG_LEVEL` | `log_level` | `debug` |
 | `APEXE_TIMEOUT` | `default_timeout` | `120` |
@@ -1139,7 +1158,7 @@ forever.
 > bindings already on disk. Check with
 >
 > ```bash
-> grep -L x-sensitive ~/.apexe/modules/*.yaml
+> grep -L x-sensitive ~/.apexe/bindings/*.yaml
 > ```
 >
 > — every file listed still logs credentials verbatim. Re-scan those tools
@@ -1205,14 +1224,14 @@ For per-caller rules, use `--acl` (§9.2).
 > host is not an error (one invocation is meant to be portable across
 > differently scanned machines), but if the filter excludes every loaded
 > module apexe logs a **warning** saying so, rather than the `admitted=0` info
-> line that looked identical to an empty modules directory.
+> line that looked identical to an empty bindings directory.
 
 ### Availability Filtering
 
 Registration also drops any module whose binary is not actually reachable on
 this machine — checked against the `target` (`exec://{binary_path} ...`)
 recorded in its binding file at scan time. A binding file can outlive the tool
-it wraps: uninstalled since, moved, or the `modules_dir` copied to a different
+it wraps: uninstalled since, moved, or the `bindings_dir` copied to a different
 host. Unlike `--tags`/`--prefix`, this check is **unconditional** and has no
 opt-out flag — `apexe serve` and `apexe a2a` share the same `build_executor`,
 so it applies to both, and it is not optional because an MCP/A2A client has no
@@ -1228,7 +1247,7 @@ from the registered tool surface module_id="cli.ghost" target="exec:///..."
 ```
 
 `apexe list` shows binding files as-is by default (useful for reviewing what
-was ever scanned, e.g. before moving `modules_dir` to a new host); pass
+was ever scanned, e.g. before moving `bindings_dir` to a new host); pass
 `--available-only` to apply the same check there:
 
 ```bash
@@ -1265,7 +1284,7 @@ Export tool definitions in OpenAI function calling format (programmatic API):
 
 ```rust
 let tools = McpServerBuilder::new()
-    .modules_dir("~/.apexe/modules")
+    .bindings_dir("~/.apexe/bindings")
     .export_openai_tools()?;
 ```
 
@@ -1375,7 +1394,7 @@ every flag you intend to serve with:
 
 ```bash
 apexe serve --show-config claude-desktop \
-  --modules-dir /srv/apexe/modules --prefix cli.git --acl /etc/apexe/acl.yaml
+  --bindings-dir /srv/apexe/modules --prefix cli.git --acl /etc/apexe/acl.yaml
 ```
 
 ```json
@@ -1384,7 +1403,7 @@ apexe serve --show-config claude-desktop \
     "apexe": {
       "command": "apexe",
       "args": ["serve", "--transport", "stdio",
-               "--modules-dir", "/srv/apexe/modules",
+               "--bindings-dir", "/srv/apexe/modules",
                "--prefix", "cli.git",
                "--acl", "/etc/apexe/acl.yaml"]
     }
@@ -1392,17 +1411,17 @@ apexe serve --show-config claude-desktop \
 }
 ```
 
-`--modules-dir`, `--tags`, `--prefix`, `--acl`, `--name`, `--enable-approval`,
+`--bindings-dir`, `--tags`, `--prefix`, `--acl`, `--name`, `--enable-approval`,
 `--no-logging`, `--no-log-arguments`, `--no-circuit-breaker` and `--no-retry`
-are all carried through. `--modules-dir` matters most: a client launching
-`apexe serve` without it reads the default `~/.apexe/modules`, so anyone who
+are all carried through. `--bindings-dir` matters most: a client launching
+`apexe serve` without it reads the default `~/.apexe/bindings`, so anyone who
 scanned elsewhere would get a server with **no tools at all**.
 
-**Paths are made absolute.** A relative `--modules-dir ./modules` is written
+**Paths are made absolute.** A relative `--bindings-dir ./modules` is written
 into the snippet as `/abs/path/to/cwd/modules`, resolved against the directory
 you ran `--show-config` in. The client that later runs the snippet launches
 `apexe` from its own working directory, so a relative path would resolve
-somewhere else entirely — the server would log `Modules directory not found,
+somewhere else entirely — the server would log `Bindings directory not found,
 starting with zero tools` and exit 0, and a relative `--acl` would silently
 apply no policy at all.
 
@@ -1569,7 +1588,7 @@ the command run", not "did it succeed".
 | Path | Purpose | Created by |
 |------|---------|------------|
 | `~/.apexe/config.yaml` | Configuration | `apexe config --init` |
-| `~/.apexe/modules/*.binding.yaml` | Tool binding files | `apexe scan` |
+| `~/.apexe/bindings/*.binding.yaml` | Tool binding files | `apexe scan` |
 | `~/.apexe/cache/` | Scan result cache | `apexe scan` |
 | `~/.apexe/acl.yaml` | Access control rules | `apexe scan` |
 | `~/.apexe/audit.jsonl` | Audit trail | `apexe serve` (runtime) |

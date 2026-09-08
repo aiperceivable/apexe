@@ -44,7 +44,7 @@ fn write_echo_binding(dir: &Path) {
 
 fn exec_opts(dir: &Path) -> ExecutorOptions<'_> {
     ExecutorOptions {
-        modules_dir: Some(dir),
+        bindings_dir: Some(dir),
         timeout_ms: 5_000,
         acl_path: None,
         filter: apexe::module::ModuleFilter::default(),
@@ -115,12 +115,12 @@ fn test_mcp_server_builds_and_exposes_scanned_tools() {
     write_echo_binding(dir.path());
 
     McpServerBuilder::new()
-        .modules_dir(dir.path())
+        .bindings_dir(dir.path())
         .build()
         .expect("MCP server should build from bindings");
 
     let tools = McpServerBuilder::new()
-        .modules_dir(dir.path())
+        .bindings_dir(dir.path())
         .export_openai_tools()
         .expect("tool export should succeed");
     let names: Vec<&str> = tools
@@ -533,13 +533,13 @@ async fn test_mcp_tools_call_unknown_module_errors() {
 /// answers and exits on its own — no port binding and no timeout juggling.
 /// Logs go to stderr (`src/main.rs` pins the subscriber writer), so stdout is
 /// pure JSON-RPC.
-fn stdio_jsonrpc_roundtrip(modules_dir: &Path, request: &serde_json::Value) -> serde_json::Value {
+fn stdio_jsonrpc_roundtrip(bindings_dir: &Path, request: &serde_json::Value) -> serde_json::Value {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_apexe"))
-        .args(["serve", "--transport", "stdio", "--modules-dir"])
-        .arg(modules_dir)
+        .args(["serve", "--transport", "stdio", "--bindings-dir"])
+        .arg(bindings_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -613,7 +613,7 @@ fn test_mcp_serve_refuses_acl_whose_target_misspells_a_registered_module() {
     let acl_path = write_acl_with_targets(dir.path(), "[\"echo\"]");
 
     let err = McpServerBuilder::new()
-        .modules_dir(dir.path())
+        .bindings_dir(dir.path())
         .acl_path(&acl_path)
         .build()
         .err()
@@ -627,21 +627,29 @@ fn test_mcp_serve_refuses_acl_whose_target_misspells_a_registered_module() {
 
 #[test]
 fn test_mcp_serve_refuses_acl_with_an_empty_target_list() {
-    // #39 item 5(b): apcore accepts `targets: []` and its matcher returns false
-    // for an empty pattern list, so the rule is inert.
+    // #39 item 5(b): apcore used to accept `targets: []` while its matcher
+    // returned false for an empty pattern list, so the rule was inert and
+    // apexe refused to start on it.
+    //
+    // apcore 0.29 (apcore#112) closed the pattern-array shape at `ACL::load`,
+    // so the refusal now comes from upstream and names the field rather than
+    // the shape ("'targets' is empty" where apexe said "empty list"). The
+    // guarantee this test exists for -- an inert rule never reaches a serving
+    // registry -- is unchanged, so it asserts the outcome and the field rather
+    // than wording apexe no longer owns.
     let dir = TempDir::new().unwrap();
     write_echo_binding(dir.path());
     let acl_path = write_acl_with_targets(dir.path(), "[]");
 
     let err = McpServerBuilder::new()
-        .modules_dir(dir.path())
+        .bindings_dir(dir.path())
         .acl_path(&acl_path)
         .build()
         .err()
         .expect("an inert ACL rule must refuse to start");
     assert!(
-        err.message.contains("empty list"),
-        "error should name the defect: {}",
+        err.message.contains("targets"),
+        "error should name the offending field: {}",
         err.message
     );
 }
@@ -655,7 +663,7 @@ fn test_mcp_serve_accepts_acl_targeting_the_registered_module() {
 
     assert!(
         McpServerBuilder::new()
-            .modules_dir(dir.path())
+            .bindings_dir(dir.path())
             .acl_path(&acl_path)
             .build()
             .is_ok(),

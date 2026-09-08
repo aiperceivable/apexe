@@ -944,7 +944,7 @@ mod tests {
 
     fn test_config(tmp: &TempDir) -> ApexeConfig {
         ApexeConfig {
-            modules_dir: tmp.path().join("modules"),
+            bindings_dir: tmp.path().join("modules"),
             cache_dir: tmp.path().join("cache"),
             config_dir: tmp.path().to_path_buf(),
             audit_log: tmp.path().join("audit.jsonl"),

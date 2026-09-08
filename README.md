@@ -65,11 +65,11 @@ generated for you — reviewing and enabling it is yours.**
 
 | Crate | Role |
 |-------|------|
-| [apcore](https://github.com/aiperceivable/apcore-rust) 0.28 | Module trait, Registry, ACL, ModuleError, Context |
-| [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit-rust) 0.10 | ScannedModule, YAMLWriter, DisplayResolver |
-| [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) 0.19 | MCP server with middleware, auth, Explorer UI |
-| [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust) 0.6 | A2A agent server sharing the same governed `Executor` |
-| [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) 0.11 | `--man` page generation |
+| [apcore](https://github.com/aiperceivable/apcore-rust) 0.30 | Module trait, Registry, ACL, ModuleError, Context |
+| [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit-rust) 0.11 | ScannedModule, YAMLWriter, DisplayResolver |
+| [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) 0.21 | MCP server with middleware, auth, Explorer UI |
+| [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust) 0.7 | A2A agent server sharing the same governed `Executor` |
+| [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) 0.12 | `--man` page generation |
 
 ---
 
@@ -155,7 +155,7 @@ apexe serve --show-config claude-desktop
 # Restart Claude Desktop — git commands appear as MCP tools
 ```
 
-The snippet carries the rest of the command line (`--modules-dir`, `--prefix`,
+The snippet carries the rest of the command line (`--bindings-dir`, `--prefix`,
 `--tags`, `--acl`, `--name`, the governance toggles), so pass the flags you
 intend to serve with. `--auth-token` / `--jwt-secret` are deliberately never
 included.
@@ -427,7 +427,7 @@ apexe config --init    # Creates ~/.apexe/config.yaml
 
 | Env Variable | Default | Description |
 |-------------|---------|-------------|
-| `APEXE_MODULES_DIR` | `~/.apexe/modules` | Binding file storage |
+| `APEXE_BINDINGS_DIR` | `~/.apexe/bindings` | Binding file storage |
 | `APEXE_CACHE_DIR` | `~/.apexe/cache` | Scan cache |
 | `APEXE_LOG_LEVEL` | `info` | Log level |
 | `APEXE_TIMEOUT` | `30` | CLI subprocess timeout (seconds) |
@@ -440,7 +440,7 @@ apexe config --init    # Creates ~/.apexe/config.yaml
 | Path | Purpose |
 |------|---------|
 | `~/.apexe/config.yaml` | Configuration |
-| `~/.apexe/modules/*.binding.yaml` | Generated tool bindings |
+| `~/.apexe/bindings/*.binding.yaml` | Generated tool bindings |
 | `~/.apexe/cache/` | Scan result cache |
 | `~/.apexe/acl.yaml` | Access control rules |
 | `~/.apexe/audit.jsonl` | Audit trail |

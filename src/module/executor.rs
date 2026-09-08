@@ -2396,13 +2396,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_subprocess_timeout_leaves_retryable_unset() {
-        // Retryability depends on the module's `idempotent` annotation,
-        // which this layer doesn't have; `CliModule::execute` decides it.
+    async fn test_execute_subprocess_timeout_inherits_the_framework_default() {
+        // Retryability depends on the module's `idempotent` annotation, which
+        // this layer does not have -- `CliModule::execute` is what decides it,
+        // and `test_cli_module_timeout_retryable_only_when_idempotent` pins
+        // both directions there.
+        //
+        // This assertion changed with apcore 0.29 (apcore#36): `ModuleError::new`
+        // now resolves a default `retryable` from the error code, and
+        // `MODULE_TIMEOUT` defaults to `Some(true)`. It used to be `None`.
+        // Asserted rather than ignored because it is the *unsafe* direction for
+        // anything calling this `pub` function directly without CliModule's
+        // override: a killed non-idempotent command reports itself retryable.
         let result = execute_subprocess("sleep", &["1".to_string()], None, 10, 1024).await;
         let err = result.unwrap_err();
         assert_eq!(err.code, ErrorCode::ModuleTimeout);
-        assert_eq!(err.retryable, None);
+        assert_eq!(
+            err.retryable,
+            Some(true),
+            "apcore 0.29 resolves MODULE_TIMEOUT to retryable; CliModule::execute \
+             overrides it per the module's idempotent annotation"
+        );
     }
 
     #[tokio::test]

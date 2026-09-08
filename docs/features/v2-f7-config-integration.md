@@ -16,7 +16,7 @@
 
 ## 1. Purpose
 
-Integrate apcore's `Config` system into `ApexeConfig` so that ecosystem-shared settings (log level, timeout, registry configuration) use the standard apcore configuration mechanism while apexe-specific settings (scan depth, cache directory, modules directory) remain on the apexe config struct. Also adopt apcore-cli's 4-tier `ConfigResolver` precedence: CLI flags > env vars > config file > defaults.
+Integrate apcore's `Config` system into `ApexeConfig` so that ecosystem-shared settings (log level, timeout, registry configuration) use the standard apcore configuration mechanism while apexe-specific settings (scan depth, cache directory, bindings directory) remain on the apexe config struct. Also adopt apcore-cli's 4-tier `ConfigResolver` precedence: CLI flags > env vars > config file > defaults.
 
 ---
 
@@ -24,7 +24,7 @@ Integrate apcore's `Config` system into `ApexeConfig` so that ecosystem-shared s
 
 ```rust
 pub struct ApexeConfig {
-    pub modules_dir: PathBuf,
+    pub bindings_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub config_dir: PathBuf,
     pub audit_log: PathBuf,
@@ -57,7 +57,7 @@ pub struct ApexeConfig {
     // === apexe-specific settings ===
 
     /// Directory for binding YAML files.
-    pub modules_dir: PathBuf,
+    pub bindings_dir: PathBuf,
     /// Directory for scanner cache files.
     pub cache_dir: PathBuf,
     /// Directory for configuration files.
@@ -119,8 +119,8 @@ pub fn load_config(
     }
 
     // Step 2: Override from env vars (APEXE_* prefix)
-    if let Ok(val) = std::env::var("APEXE_MODULES_DIR") {
-        config.modules_dir = PathBuf::from(val);
+    if let Ok(val) = std::env::var("APEXE_BINDINGS_DIR") {
+        config.bindings_dir = PathBuf::from(val);
     }
     if let Ok(val) = std::env::var("APEXE_CACHE_DIR") {
         config.cache_dir = PathBuf::from(val);
@@ -143,8 +143,8 @@ pub fn load_config(
 
     // Step 3: Apply CLI overrides (highest priority)
     if let Some(overrides) = cli_overrides {
-        if let Some(val) = overrides.get("modules_dir") {
-            config.modules_dir = PathBuf::from(val);
+        if let Some(val) = overrides.get("bindings_dir") {
+            config.bindings_dir = PathBuf::from(val);
         }
         if let Some(val) = overrides.get("log_level") {
             config.log_level = val.clone();
@@ -191,7 +191,7 @@ impl ApexeConfig {
 
     /// Create all required directories if they do not exist.
     pub fn ensure_dirs(&self) -> Result<(), ModuleError> {
-        std::fs::create_dir_all(&self.modules_dir)
+        std::fs::create_dir_all(&self.bindings_dir)
             .map_err(|e| ApexeError::Io(e))?;
         std::fs::create_dir_all(&self.cache_dir)
             .map_err(|e| ApexeError::Io(e))?;
@@ -252,7 +252,7 @@ pub struct Cli {
 | `~/.apexe/apcore.yaml` | apcore ecosystem settings (optional) | Manual or `apcore config` |
 | `~/.apexe/acl.yaml` | ACL rules | `apexe scan` (auto-generated) |
 | `~/.apexe/audit.jsonl` | Audit log | `apexe serve` (auto-appended) |
-| `~/.apexe/modules/*.binding.yaml` | Binding files | `apexe scan` |
+| `~/.apexe/bindings/*.binding.yaml` | Binding files | `apexe scan` |
 | `~/.apexe/cache/` | Scanner cache files | `apexe scan` |
 
 ---
@@ -261,7 +261,7 @@ pub struct Cli {
 
 | Variable | Config Field | Type | Default |
 |---|---|---|---|
-| `APEXE_MODULES_DIR` | `modules_dir` | PathBuf | `~/.apexe/modules` |
+| `APEXE_BINDINGS_DIR` | `bindings_dir` | PathBuf | `~/.apexe/bindings` |
 | `APEXE_CACHE_DIR` | `cache_dir` | PathBuf | `~/.apexe/cache` |
 | `APEXE_LOG_LEVEL` | `log_level` | String | `"info"` |
 | `APEXE_TIMEOUT` | `default_timeout` | u64 | `30` |
@@ -277,7 +277,7 @@ The 14 existing config tests are modified to account for the new `core_config` f
 
 | Test Name | Change |
 |---|---|
-| `test_default_modules_dir_ends_with_apexe_modules` | No change |
+| `test_default_bindings_dir_ends_with_apexe_modules` | No change |
 | `test_default_log_level_is_info` | No change |
 | `test_default_timeout_is_30` | No change |
 | `test_default_scan_depth_is_2` | No change |

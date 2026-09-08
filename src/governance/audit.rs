@@ -359,7 +359,7 @@ mod tests {
                     .log_execution(
                         "cli.probe",
                         &format!("trace{i:040}"),
-                        Some("@external"),
+                        Some(apcore::EXTERNAL_CALLER),
                         "success",
                         0,
                         1,

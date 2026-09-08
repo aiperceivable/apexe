@@ -59,7 +59,7 @@ fn main() -> anyhow::Result<()> {
 
     // --- Step 3: Write binding YAML ---
     println!("\n=== Writing binding files ===\n");
-    let output_dir = config.modules_dir.clone();
+    let output_dir = config.bindings_dir.clone();
     let yaml_output = YamlOutput::new();
     let results = yaml_output.write(&modules, &output_dir, false)?;
     for wr in &results {
@@ -71,7 +71,7 @@ fn main() -> anyhow::Result<()> {
     // --- Step 4: Export OpenAI tools ---
     println!("\n=== Exporting OpenAI-compatible tool definitions ===\n");
     let openai_tools = McpServerBuilder::new()
-        .modules_dir(&output_dir)
+        .bindings_dir(&output_dir)
         .export_openai_tools();
 
     match openai_tools {
@@ -90,7 +90,7 @@ fn main() -> anyhow::Result<()> {
     let server = McpServerBuilder::new()
         .name("example-server")
         .transport("stdio")
-        .modules_dir(&output_dir)
+        .bindings_dir(&output_dir)
         .enable_logging(true)
         .enable_approval(false)
         .build();

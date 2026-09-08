@@ -128,11 +128,11 @@ src/
 
 | Crate | Version | Usage |
 |-------|---------|-------|
-| `apcore` | 0.28 | Module trait, Registry, ACL, ModuleError, ErrorCode, Context, Config |
-| `apcore-toolkit` | 0.10 | ScannedModule, YAMLWriter, Verifier, ModuleAnnotations, `deduplicate_ids` |
-| `apcore-mcp` | 0.19 | APCoreMCP server (stdio, streamable-http, SSE, Explorer UI) |
-| `apcore-a2a` | 0.6 | A2A agent server (`async_serve` / `build_app`, `Authenticator`) |
-| `apcore-cli` | 0.11 | `--man` page generation (`build_program_man_page`) |
+| `apcore` | 0.30 | Module trait, Registry, ACL, ModuleError, ErrorCode, Context, Config |
+| `apcore-toolkit` | 0.11 | ScannedModule, YAMLWriter, Verifier, ModuleAnnotations, `deduplicate_ids` |
+| `apcore-mcp` | 0.21 | APCoreMCP server (stdio, streamable-http, SSE, Explorer UI) |
+| `apcore-a2a` | 0.7 | A2A agent server (`async_serve` / `build_app`, `Authenticator`) |
+| `apcore-cli` | 0.12 | `--man` page generation (`build_program_man_page`) |
 
 ## v0.1.0 Features
 
@@ -163,7 +163,7 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 - `load_modules_from_dir`: reads `.binding.yaml` files back as `Vec<ScannedModule>`
 
 ### MCP Server (v0.1.0 new, replaces v0.1.x self-built server)
-- `McpServerBuilder`: modules_dir → Registry → Executor → APCoreMCP
+- `McpServerBuilder`: bindings_dir → Registry → Executor → APCoreMCP
 - Transports: stdio, streamable-http (was "http"), SSE
 - Full MCP protocol compliance via apcore-mcp
 - Explorer UI (HTTP transports)

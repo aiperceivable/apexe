@@ -53,9 +53,23 @@ impl AclManager {
     #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
     pub fn from_config(config_path: &Path) -> Result<Self, ModuleError> {
         let acl = ACL::load(&config_path.to_string_lossy()).map_err(|e| {
+            // `GeneralInvalidInput`, not `GeneralInternalError`: every way
+            // `ACL::load` fails is a problem with the file the operator pointed
+            // `--acl` at, not a fault inside apexe. Since apcore 0.29 that
+            // includes the pattern-arity refusals (apcore#112) apexe used to
+            // catch itself in `validate_acl_rules`, which reported them as
+            // invalid input -- so mapping apcore's own refusal to an internal
+            // error would have *downgraded* the diagnosis for exactly the
+            // policy defects upstream just started catching.
             ModuleError::new(
-                ErrorCode::GeneralInternalError,
-                format!("Failed to load ACL: {e}"),
+                ErrorCode::GeneralInvalidInput,
+                format!("Failed to load ACL '{}': {e}", config_path.display()),
+            )
+            .with_retryable(false)
+            .with_ai_guidance(
+                "The ACL file is malformed. Check the rule that the message names, then \
+                 re-run. A rule's `callers`/`targets` must each hold at least one non-empty \
+                 pattern -- `[]` matches nothing and protects nothing.",
             )
         })?;
         // Re-read the file to extract default_effect since ACL has no public accessor.
@@ -93,7 +107,7 @@ impl AclManager {
     /// Merge freshly-generated default rules into an existing ACL file.
     ///
     /// `apexe scan` runs incrementally — one invocation covers only the
-    /// tools named on that command line, while `modules_dir` accumulates
+    /// tools named on that command line, while `bindings_dir` accumulates
     /// bindings across every scan ever run. Regenerating from `modules`
     /// alone and overwriting the file (the previous behaviour) discarded
     /// every earlier scan's readonly/destructive membership, and any rule
@@ -233,34 +247,26 @@ impl AclManager {
     }
 
     fn open_world_rule(targets: Vec<String>) -> ACLRule {
-        ACLRule {
-            callers: vec!["*".to_string()],
-            targets,
-            effect: "deny".to_string(),
-            description: Some(OPEN_WORLD_RULE_DESCRIPTION.to_string()),
-            conditions: None,
-            // Deliberately not `allow` + `approval: required`, which is the
-            // other defensible reading of "the network needs a human". That
-            // would *loosen* the shipped default from deny to
-            // allow-with-a-prompt, and choosing to be reachable is an
-            // operator's decision to make explicitly, not one to inherit from a
-            // generated file.
-            approval: None,
-        }
+        // `approval` is deliberately left unset rather than paired with
+        // `allow`, which is the other defensible reading of "the network needs
+        // a human". That would *loosen* the shipped default from deny to
+        // allow-with-a-prompt, and choosing to be reachable is an operator's
+        // decision to make explicitly, not one to inherit from a generated
+        // file. `ACLRule::new` sets neither `approval` nor `conditions`, which
+        // is exactly what this rule wants.
+        let mut rule = ACLRule::new(vec!["*".to_string()], targets, "deny");
+        rule.description = Some(OPEN_WORLD_RULE_DESCRIPTION.to_string());
+        rule
     }
 
     fn readonly_rule(targets: Vec<String>) -> ACLRule {
-        ACLRule {
-            callers: vec!["*".to_string()],
-            targets,
-            effect: "allow".to_string(),
-            description: Some(READONLY_RULE_DESCRIPTION.to_string()),
-            conditions: None,
-            // apcore 0.28 (PROTOCOL_SPEC §6.1.6) splits a rule's answer into
-            // authorization and approval requirement. Read-only commands need
-            // neither, so the second axis stays unset.
-            approval: None,
-        }
+        // apcore 0.28 (PROTOCOL_SPEC §6.1.6) splits a rule's answer into
+        // authorization and approval requirement. Read-only commands need
+        // neither, so the second axis stays unset -- which is what
+        // `ACLRule::new` leaves it as.
+        let mut rule = ACLRule::new(vec!["*".to_string()], targets, "allow");
+        rule.description = Some(READONLY_RULE_DESCRIPTION.to_string());
+        rule
     }
 
     /// Destructive commands are denied outright here rather than gated on a
@@ -284,17 +290,13 @@ impl AclManager {
     }
 
     fn destructive_rule(targets: Vec<String>) -> ACLRule {
-        ACLRule {
-            callers: vec!["*".to_string()],
-            targets,
-            effect: "deny".to_string(),
-            description: Some(DESTRUCTIVE_RULE_DESCRIPTION.to_string()),
-            conditions: None,
-            // MUST stay `None` on a `deny` rule: §6.1.6 rule 2 rejects
-            // `approval: required` paired with `deny` at every entry point,
-            // because "refused AND put it to a human" means nothing.
-            approval: None,
-        }
+        // `approval` MUST stay unset on a `deny` rule: §6.1.6 rule 2 rejects
+        // `approval: required` paired with `deny` at every entry point,
+        // because "refused AND put it to a human" means nothing.
+        // `ACLRule::new` leaves it unset.
+        let mut rule = ACLRule::new(vec!["*".to_string()], targets, "deny");
+        rule.description = Some(DESTRUCTIVE_RULE_DESCRIPTION.to_string());
+        rule
     }
 
     /// Write ACL to a YAML file.
@@ -352,7 +354,10 @@ impl AclManager {
     /// [`AclDecision::matched_rule_has_conditions`] flags that gap rather
     /// than silently guessing.
     pub fn explain(&self, target_id: &str) -> AclDecision {
-        const GENERIC_CALLER: &str = "@external";
+        // apcore's own sentinel rather than a second copy of the literal: the
+        // value has to agree with what `ACL::check_inner` resolves a `None`
+        // caller to, and a private constant here could drift from it silently.
+        const GENERIC_CALLER: &str = apcore::EXTERNAL_CALLER;
         let rule_matches = |patterns: &[String], value: &str| {
             target_patterns(patterns)
                 .iter()
@@ -578,7 +583,7 @@ fn describe_near_miss(target: &UnmatchedTarget) -> String {
 /// `crate::module::build_executor` populates the `Registry` first and
 /// constructs the ACL second, so it is the only place where both sets are in
 /// hand — and the ids must come from the registry rather than from the
-/// modules directory, because `ModuleFilter` deliberately drops modules at
+/// bindings directory, because `ModuleFilter` deliberately drops modules at
 /// registration time.
 ///
 /// # Refuse vs. warn
@@ -842,14 +847,11 @@ mod tests {
         let modules = vec![make_module_with_annotations("cli.git.clean", false, true)];
         let mgr = AclManager::generate_default(&modules);
         let mut rules = mgr.acl.rules().to_vec();
-        rules.push(ACLRule {
-            callers: vec!["*".to_string()],
-            targets: vec!["cli.git.clean".to_string()],
-            effect: "allow".to_string(),
-            description: None,
-            conditions: None,
-            approval: None,
-        });
+        rules.push(ACLRule::new(
+            vec!["*".to_string()],
+            vec!["cli.git.clean".to_string()],
+            "allow",
+        ));
         let acl = ACL::new(rules, "allow", None);
         assert!(
             !acl.check(None, "cli.git.clean", None),
@@ -1108,14 +1110,11 @@ mod tests {
     }
 
     fn rule(targets: &[&str], effect: &str) -> ACLRule {
-        ACLRule {
-            callers: vec!["*".to_string()],
-            targets: targets.iter().map(|t| (*t).to_string()).collect(),
-            effect: effect.to_string(),
-            description: None,
-            conditions: None,
-            approval: None,
-        }
+        ACLRule::new(
+            vec!["*".to_string()],
+            targets.iter().map(|t| (*t).to_string()).collect(),
+            effect,
+        )
     }
 
     fn registered(ids: &[&str]) -> Vec<String> {
@@ -1378,7 +1377,7 @@ mod tests {
         }
 
         // A destructive module is denied for an external caller; audited.
-        let allowed = acl.check(Some("@external"), "cli.rm", None);
+        let allowed = acl.check(Some(apcore::EXTERNAL_CALLER), "cli.rm", None);
         assert!(!allowed);
 
         // `log_acl_decision` offloads its write via a fire-and-forget
@@ -1468,7 +1467,7 @@ mod tests {
 
         for id in ["cli.git.status", "cli.rm", "cli.echo"] {
             let decision = mgr.explain(id);
-            let allowed = mgr.acl.check(Some("@external"), id, None);
+            let allowed = mgr.acl.check(Some(apcore::EXTERNAL_CALLER), id, None);
             assert_eq!(
                 decision.effect == "allow",
                 allowed,
@@ -1479,14 +1478,13 @@ mod tests {
 
     #[test]
     fn test_explain_flags_a_matched_rule_that_carries_conditions() {
-        let rule = ACLRule {
-            callers: vec!["*".to_string()],
-            targets: vec!["cli.deploy".to_string()],
-            effect: "allow".to_string(),
-            description: Some("Ops-only deploy".to_string()),
-            conditions: Some(json!({"roles": ["ops"]})),
-            approval: None,
-        };
+        let mut rule = ACLRule::new(
+            vec!["*".to_string()],
+            vec!["cli.deploy".to_string()],
+            "allow",
+        );
+        rule.description = Some("Ops-only deploy".to_string());
+        rule.conditions = Some(json!({"roles": ["ops"]}));
         let acl = ACL::new(vec![rule], "deny", None);
         let mgr = AclManager {
             acl,

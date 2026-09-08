@@ -63,7 +63,7 @@ impl ModuleFilter {
 
 /// Options controlling how the shared `Executor` is assembled.
 pub struct ExecutorOptions<'a> {
-    pub modules_dir: Option<&'a Path>,
+    pub bindings_dir: Option<&'a Path>,
     pub timeout_ms: u64,
     pub acl_path: Option<&'a Path>,
     /// Restrict which scanned modules are registered at all. See
@@ -138,7 +138,7 @@ pub struct ExecutorOptions<'a> {
 // the rest of the apexe/apcore API surface.
 #[allow(clippy::result_large_err)]
 pub fn build_executor(opts: &ExecutorOptions<'_>) -> Result<Arc<Executor>, ModuleError> {
-    let modules = load_scanned_modules(opts.modules_dir)?;
+    let modules = load_scanned_modules(opts.bindings_dir)?;
 
     // Governance audit sink (F5 §4.3): shared across all modules and the ACL.
     let audit = opts
@@ -204,7 +204,7 @@ fn admit_modules(modules: Vec<ScannedModule>, filter: &ModuleFilter) -> Vec<Scan
 ///
 /// A module's `target` is a snapshot taken at `apexe scan` time; the binding
 /// file can outlive the tool it wraps (uninstalled since, moved, or the
-/// `modules_dir` copied to a different host). Registering it anyway would
+/// `bindings_dir` copied to a different host). Registering it anyway would
 /// advertise a tool over MCP/A2A that fails every call with
 /// `ModuleNotFound`/"not installed" -- worse for an external caller than
 /// simply not being offered it in the first place.
@@ -398,15 +398,15 @@ fn install_failure_log(
     }
 }
 
-/// Load `ScannedModule`s from the configured modules directory.
+/// Load `ScannedModule`s from the configured bindings directory.
 #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
-fn load_scanned_modules(modules_dir: Option<&Path>) -> Result<Vec<ScannedModule>, ModuleError> {
-    match modules_dir {
+fn load_scanned_modules(bindings_dir: Option<&Path>) -> Result<Vec<ScannedModule>, ModuleError> {
+    match bindings_dir {
         Some(dir) if dir.is_dir() => load_modules_from_dir(dir),
         Some(dir) => {
             tracing::warn!(
                 dir = %dir.display(),
-                "Modules directory not found, starting with zero tools"
+                "Bindings directory not found, starting with zero tools"
             );
             Ok(vec![])
         }
@@ -522,9 +522,9 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
-    fn opts(modules_dir: Option<&Path>) -> ExecutorOptions<'_> {
+    fn opts(bindings_dir: Option<&Path>) -> ExecutorOptions<'_> {
         ExecutorOptions {
-            modules_dir,
+            bindings_dir,
             timeout_ms: 30_000,
             acl_path: None,
             filter: ModuleFilter::default(),
@@ -819,7 +819,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_executor_no_modules_dir() {
+    fn test_build_executor_no_bindings_dir() {
         let executor = build_executor(&opts(None)).unwrap();
         assert_eq!(executor.registry().count(), 0);
     }
@@ -882,9 +882,18 @@ mod tests {
 
     #[test]
     fn test_build_executor_fails_closed_on_empty_acl_target_list() {
-        // #39 item 5(b): apcore accepts `targets: []` (only an OMITTED key is
-        // rejected) and its matcher returns false for an empty pattern list, so
-        // the deny never fires and the module runs. Refuse to start.
+        // #39 item 5(b): apcore used to accept `targets: []` (only an OMITTED
+        // key was rejected) while its matcher returned false for an empty
+        // pattern list, so the deny never fired and the module ran. apexe
+        // caught it in `validate_acl_rules` and refused to start.
+        //
+        // apcore 0.29 closed the pattern-array shape at every entry point
+        // (apcore#112), so `ACL::load` now refuses the file before apexe sees
+        // the rules at all. The outcome this test exists for is unchanged --
+        // a start is still refused, still as `GeneralInvalidInput` -- but the
+        // layer that refuses moved upstream, and so did the wording. Asserting
+        // the outcome rather than the message keeps the guarantee pinned
+        // wherever it is enforced from.
         let dir = TempDir::new().unwrap();
         write_two_modules(dir.path());
         let acl_path = write_acl(
@@ -897,8 +906,8 @@ mod tests {
         let err = build_executor(&opts).expect_err("an inert deny rule must refuse to start");
         assert_eq!(err.code, ErrorCode::GeneralInvalidInput);
         assert!(
-            err.message.contains("empty list"),
-            "error should name the defect: {}",
+            err.message.contains("targets") || err.message.contains("empty"),
+            "error should name the offending field: {}",
             err.message
         );
     }

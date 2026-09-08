@@ -576,7 +576,7 @@ path guard existed. So an installation scanned before 0.7.0 serves modules with
 no `x-apexe-path`, no `x-apexe-escalates` and no `x-sensitive`, and the path
 guard, the approval gate and log redaction all evaluate against nothing --
 silently, with the only available diagnosis being the manual's suggestion to
-`grep -L x-sensitive` the modules directory by hand. A Stage 2 pilot on such an
+`grep -L x-sensitive` the bindings directory by hand. A Stage 2 pilot on such an
 installation measures 0.5.0's behaviour and reports it as 0.7.0's. `YamlOutput`
 must record the scan-format version and `build_executor` must warn per stale
 module before any number below is worth reading.

@@ -66,28 +66,28 @@ impl ServeArgs {
         }
 
         // Step 2: Load modules from binding YAML files
-        let modules_dir = self.modules_dir
-            .unwrap_or_else(|| config.modules_dir.clone());
+        let bindings_dir = self.bindings_dir
+            .unwrap_or_else(|| config.bindings_dir.clone());
 
-        let modules = if modules_dir.is_dir() {
-            let loaded = crate::output::load_modules_from_dir(&modules_dir)?;
+        let modules = if bindings_dir.is_dir() {
+            let loaded = crate::output::load_modules_from_dir(&bindings_dir)?;
             if loaded.is_empty() {
                 tracing::warn!(
-                    dir = %modules_dir.display(),
+                    dir = %bindings_dir.display(),
                     "No binding files found. Run `apexe scan` first."
                 );
             } else {
                 tracing::info!(
                     count = loaded.len(),
-                    dir = %modules_dir.display(),
+                    dir = %bindings_dir.display(),
                     "Loaded tools"
                 );
             }
             loaded
         } else {
             tracing::warn!(
-                dir = %modules_dir.display(),
-                "Modules directory not found. Starting with zero tools."
+                dir = %bindings_dir.display(),
+                "Bindings directory not found. Starting with zero tools."
             );
             vec![]
         };
@@ -206,7 +206,7 @@ pub struct ServeArgs {
     #[arg(long)]
     pub explorer: bool,
     #[arg(long)]
-    pub modules_dir: Option<PathBuf>,
+    pub bindings_dir: Option<PathBuf>,
     #[arg(long, default_value = "apexe")]
     pub name: String,
     #[arg(long)]

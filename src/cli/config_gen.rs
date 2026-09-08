@@ -2,7 +2,7 @@
 //!
 //! A snippet has to launch (or address) a server that serves the *same* tool
 //! surface as the invocation the operator just typed. Emitting a fixed
-//! `["serve", "--transport", "stdio"]` regardless of `--modules-dir`,
+//! `["serve", "--transport", "stdio"]` regardless of `--bindings-dir`,
 //! `--prefix`, `--tags`, `--acl` or the governance toggles produced a config
 //! that silently exposed a different (often empty) surface: an operator who
 //! scanned into a non-default directory got a server with no tools at all.
@@ -72,11 +72,11 @@ pub struct ServeInvocation {
     pub host: String,
     /// `--port`, used to address the HTTP transports.
     pub port: u16,
-    /// `--modules-dir`: without it a launched server reads the default
+    /// `--bindings-dir`: without it a launched server reads the default
     /// directory, which is empty for anyone who scanned elsewhere. Stored as
     /// the operator typed it and made absolute when rendered — see
     /// [`path_str`].
-    pub modules_dir: Option<PathBuf>,
+    pub bindings_dir: Option<PathBuf>,
     /// `--tags` (comma-separated, AND).
     pub tags: Option<String>,
     /// `--prefix`.
@@ -102,7 +102,7 @@ impl Default for ServeInvocation {
             transport: "stdio".to_string(),
             host: "127.0.0.1".to_string(),
             port: 8000,
-            modules_dir: None,
+            bindings_dir: None,
             tags: None,
             prefix: None,
             acl: None,
@@ -152,8 +152,8 @@ impl ServeInvocation {
 
     /// Flags that decide *which* modules the server serves at all.
     fn push_surface_flags(&self, args: &mut Vec<String>) {
-        let modules_dir = path_str(self.modules_dir.as_deref());
-        push_value_flag(args, "--modules-dir", modules_dir.as_deref());
+        let bindings_dir = path_str(self.bindings_dir.as_deref());
+        push_value_flag(args, "--bindings-dir", bindings_dir.as_deref());
         push_value_flag(args, "--tags", self.tags.as_deref());
         push_value_flag(args, "--prefix", self.prefix.as_deref());
     }
@@ -189,15 +189,15 @@ fn push_bool_flag(args: &mut Vec<String>, flag: &str, enabled: bool) {
 ///
 /// A snippet is not executed where it was generated. The MCP client launches
 /// `apexe` from *its own* working directory — Claude Desktop's is `/`, Cursor's
-/// is the workspace root — so `--show-config claude-desktop --modules-dir
+/// is the workspace root — so `--show-config claude-desktop --bindings-dir
 /// ./modules` emitted verbatim points the launched server at a directory that
-/// does not exist. It then logs "Modules directory not found, starting with
+/// does not exist. It then logs "Bindings directory not found, starting with
 /// zero tools" and exits 0: a server with no tools and no error. `--acl` fails
 /// more quietly still — the file is simply absent, so the governance boundary
 /// is not the one the operator asked for.
 ///
 /// `std::path::absolute` rather than `canonicalize`: the target need not exist
-/// yet (the ordinary case for a `--modules-dir` about to be scanned into), and
+/// yet (the ordinary case for a `--bindings-dir` about to be scanned into), and
 /// symlinks stay spelled the way the operator wrote them.
 ///
 /// A path that is not valid UTF-8, or that cannot be resolved at all, is
@@ -339,17 +339,17 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_config_stdio_carries_modules_dir() {
+    fn test_generate_config_stdio_carries_bindings_dir() {
         // The defect that made a generated config expose no tools at all.
         let invocation = ServeInvocation {
-            modules_dir: Some(PathBuf::from("/srv/apexe/modules")),
+            bindings_dir: Some(PathBuf::from("/srv/apexe/modules")),
             ..stdio_invocation()
         };
         let snippet = generate_config("claude-desktop", &invocation).unwrap();
         let args = args_of(&snippet, "apexe");
         assert!(
             args.windows(2)
-                .any(|w| w == ["--modules-dir", "/srv/apexe/modules"]),
+                .any(|w| w == ["--bindings-dir", "/srv/apexe/modules"]),
             "args: {args:?}"
         );
     }
@@ -359,9 +359,9 @@ mod tests {
         // The client launches `apexe` from its own working directory, not the
         // one `--show-config` ran in, so a verbatim `./modules` points the
         // launched server at a directory that does not exist: it logs
-        // "Modules directory not found, starting with zero tools" and exits 0.
+        // "Bindings directory not found, starting with zero tools" and exits 0.
         let invocation = ServeInvocation {
-            modules_dir: Some(PathBuf::from("./modules")),
+            bindings_dir: Some(PathBuf::from("./modules")),
             acl: Some(PathBuf::from("policy/acl.yaml")),
             ..stdio_invocation()
         };
@@ -370,7 +370,7 @@ mod tests {
             "apexe",
         );
 
-        for flag in ["--modules-dir", "--acl"] {
+        for flag in ["--bindings-dir", "--acl"] {
             let value = args
                 .windows(2)
                 .find(|w| w[0] == flag)
@@ -383,9 +383,9 @@ mod tests {
         }
 
         let cwd = std::env::current_dir().unwrap();
-        assert!(args
-            .windows(2)
-            .any(|w| { w[0] == "--modules-dir" && w[1] == cwd.join("modules").to_str().unwrap() }));
+        assert!(args.windows(2).any(|w| {
+            w[0] == "--bindings-dir" && w[1] == cwd.join("modules").to_str().unwrap()
+        }));
         assert!(args
             .windows(2)
             .any(|w| { w[0] == "--acl" && w[1] == cwd.join("policy/acl.yaml").to_str().unwrap() }));
@@ -394,14 +394,14 @@ mod tests {
     #[test]
     fn test_generate_config_leaves_absolute_paths_alone() {
         let invocation = ServeInvocation {
-            modules_dir: Some(PathBuf::from("/srv/apexe/modules")),
+            bindings_dir: Some(PathBuf::from("/srv/apexe/modules")),
             acl: Some(PathBuf::from("/etc/apexe/acl.yaml")),
             ..stdio_invocation()
         };
         let args = args_of(&generate_config("cursor", &invocation).unwrap(), "apexe");
         assert!(args
             .windows(2)
-            .any(|w| w == ["--modules-dir", "/srv/apexe/modules"]));
+            .any(|w| w == ["--bindings-dir", "/srv/apexe/modules"]));
         assert!(args
             .windows(2)
             .any(|w| w == ["--acl", "/etc/apexe/acl.yaml"]));
@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn test_generate_config_stdio_carries_surface_and_governance_flags() {
         let invocation = ServeInvocation {
-            modules_dir: Some(PathBuf::from("/srv/modules")),
+            bindings_dir: Some(PathBuf::from("/srv/modules")),
             tags: Some("readonly,git".to_string()),
             prefix: Some("cli.git".to_string()),
             acl: Some(PathBuf::from("/etc/apexe/acl.yaml")),
@@ -426,7 +426,7 @@ mod tests {
             DEFAULT_SERVER_NAME,
         );
         for expected in [
-            "--modules-dir",
+            "--bindings-dir",
             "--tags",
             "--prefix",
             "--acl",

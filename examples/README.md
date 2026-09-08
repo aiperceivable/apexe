@@ -125,7 +125,7 @@ Module: cli.echo — Execute echo
   display alias: echo
 
 === Writing binding files ===
-Written: /Users/you/.apexe/modules/cli.echo.binding.yaml
+Written: /Users/you/.apexe/bindings/cli.echo.binding.yaml
 
 === Exporting OpenAI-compatible tool definitions ===
 1 tool(s) exported:
@@ -178,7 +178,7 @@ let results = yaml.write(&modules, output_dir, false)?;
 use apexe::mcp::McpServerBuilder;
 
 let tools = McpServerBuilder::new()
-    .modules_dir("/path/to/modules")
+    .bindings_dir("/path/to/modules")
     .export_openai_tools()?;
 // Returns Vec<serde_json::Value> in OpenAI function_tools format
 ```
@@ -190,7 +190,7 @@ let server = McpServerBuilder::new()
     .transport("http")            // or "stdio", "sse"
     .port(8000)
     .explorer(true)               // browser-based tool explorer UI
-    .modules_dir("/path/to/modules")
+    .bindings_dir("/path/to/modules")
     .enable_logging(true)         // structured logging middleware
     .enable_approval(true)        // approval dialog for destructive commands
     .tags(vec!["readonly".into()]) // only expose readonly tools
@@ -397,7 +397,7 @@ apexe serve --show-config cursor
 
 ```bash
 apexe scan git --output-dir ./my-project/tools
-apexe serve --modules-dir ./my-project/tools
+apexe serve --bindings-dir ./my-project/tools
 ```
 
 ### View generated JSON Schema

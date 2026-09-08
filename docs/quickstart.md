@@ -33,12 +33,12 @@ apexe serve --show-config claude-desktop
 Copy the output into `~/Library/Application Support/Claude/claude_desktop_config.json`, then restart Claude Desktop.
 
 The snippet reproduces whatever else you put on that command line, so pass the
-flags you intend to serve with — above all `--modules-dir` if you scanned
-somewhere other than `~/.apexe/modules`, since a client that launches `apexe
+flags you intend to serve with — above all `--bindings-dir` if you scanned
+somewhere other than `~/.apexe/bindings`, since a client that launches `apexe
 serve` without it finds no tools:
 
 ```bash
-apexe serve --show-config claude-desktop --modules-dir /srv/apexe/modules --acl ~/.apexe/acl.yaml
+apexe serve --show-config claude-desktop --bindings-dir /srv/apexe/modules --acl ~/.apexe/acl.yaml
 ```
 
 Credentials (`--auth-token`, `--jwt-secret`) are never written into the
@@ -73,7 +73,7 @@ apexe a2a
 ## What happened?
 
 1. `apexe scan git` ran git's `--help`, parsed man pages, and checked shell completions.
-2. Wrote one binding file per command into `~/.apexe/modules/` — `cli.git.commit.binding.yaml`, `cli.git.log.binding.yaml`, and so on, each carrying a JSON Schema for that command. There is no single `git.binding.yaml`; the file name is the module id.
+2. Wrote one binding file per command into `~/.apexe/bindings/` — `cli.git.commit.binding.yaml`, `cli.git.log.binding.yaml`, and so on, each carrying a JSON Schema for that command. There is no single `git.binding.yaml`; the file name is the module id.
 3. Wrote `~/.apexe/acl.yaml` with `default_effect: deny` — readonly commands get an explicit allow rule, destructive ones an explicit deny, and anything the scan could not classify falls through to deny.
 4. `apexe serve --acl …` started an MCP server on stdio, exposing the scanned tools **under that policy**. Without `--acl` the same command serves the same tools with no access control.
 

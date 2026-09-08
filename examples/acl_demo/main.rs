@@ -33,7 +33,7 @@ use tempfile::TempDir;
 /// Both wrap a harmless `echo` invocation: this demo is about the ACL
 /// contract, not the underlying command. A real integration would point
 /// `target` at the actual delete/list binary (as `apexe scan` does).
-fn build_demo_executor(modules_dir: &Path) -> Arc<Executor> {
+fn build_demo_executor(bindings_dir: &Path) -> Arc<Executor> {
     let mut delete_module = ScannedModule::new(
         "orders.delete".to_string(),
         "Delete an order (admins only)".to_string(),
@@ -66,7 +66,7 @@ fn build_demo_executor(modules_dir: &Path) -> Arc<Executor> {
     });
 
     YamlOutput::new()
-        .write(&[delete_module, list_module], modules_dir, false)
+        .write(&[delete_module, list_module], bindings_dir, false)
         .expect("failed to write orders.* binding files");
 
     let acl_path = Path::new(concat!(
@@ -75,7 +75,7 @@ fn build_demo_executor(modules_dir: &Path) -> Arc<Executor> {
     ));
 
     build_executor(&ExecutorOptions {
-        modules_dir: Some(modules_dir),
+        bindings_dir: Some(bindings_dir),
         timeout_ms: 5_000,
         acl_path: Some(acl_path),
         filter: apexe::module::ModuleFilter::default(),
@@ -108,8 +108,8 @@ async fn main() {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
-    let modules_dir = TempDir::new().expect("failed to create temp modules dir");
-    let executor = build_demo_executor(modules_dir.path());
+    let bindings_dir = TempDir::new().expect("failed to create temp modules dir");
+    let executor = build_demo_executor(bindings_dir.path());
 
     let admin = ctx_with_roles(vec!["admin".to_string()]);
     let user = ctx_with_roles(vec!["user".to_string()]);
@@ -146,8 +146,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_acl_demo_orders_contract() {
-        let modules_dir = TempDir::new().unwrap();
-        let executor = build_demo_executor(modules_dir.path());
+        let bindings_dir = TempDir::new().unwrap();
+        let executor = build_demo_executor(bindings_dir.path());
 
         let admin = ctx_with_roles(vec!["admin".to_string()]);
         let user = ctx_with_roles(vec!["user".to_string()]);

@@ -66,17 +66,17 @@ fn path_taking_module(id: &str, description: &str, readonly: bool) -> ScannedMod
 ///
 /// No ACL is attached. Everything refused below is refused by the path guard
 /// alone, which is the point — it needs no `--acl` and no `--enable-approval`.
-fn build_demo_executor(modules_dir: &Path) -> Arc<Executor> {
+fn build_demo_executor(bindings_dir: &Path) -> Arc<Executor> {
     let modules = [
         path_taking_module("demo.read", "Read a file (readonly)", true),
         path_taking_module("demo.write", "Modify a file (writer)", false),
     ];
     YamlOutput::new()
-        .write(&modules, modules_dir, false)
+        .write(&modules, bindings_dir, false)
         .expect("failed to write demo binding files");
 
     build_executor(&ExecutorOptions {
-        modules_dir: Some(modules_dir),
+        bindings_dir: Some(bindings_dir),
         timeout_ms: 5_000,
         acl_path: None,
         filter: apexe::module::ModuleFilter::default(),
@@ -189,10 +189,10 @@ async fn main() {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
-    let modules_dir = TempDir::new().expect("failed to create temp modules dir");
+    let bindings_dir = TempDir::new().expect("failed to create temp modules dir");
     let workspace = TempDir::new().expect("failed to create temp workspace");
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home/user"));
-    let executor = build_demo_executor(modules_dir.path());
+    let executor = build_demo_executor(bindings_dir.path());
 
     println!("=== The compiled-in baselines (no configuration) ===\n");
     run_probes(&executor, &probes(&home, workspace.path())).await;
@@ -262,8 +262,8 @@ mod tests {
     /// The four-quadrant contract the example prints, as an assertion.
     #[tokio::test]
     async fn test_path_guard_demo_contract() {
-        let modules_dir = TempDir::new().unwrap();
-        let executor = build_demo_executor(modules_dir.path());
+        let bindings_dir = TempDir::new().unwrap();
+        let executor = build_demo_executor(bindings_dir.path());
         let home = dirs::home_dir().expect("home directory");
 
         let call = |module: &'static str, path: String| {

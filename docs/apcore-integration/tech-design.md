@@ -609,14 +609,14 @@ pub struct ApexeConfig {
     pub core_config: apcore::Config,
 
     // Paths (kept, apexe-specific directory layout)
-    pub modules_dir: PathBuf,
+    pub bindings_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub config_dir: PathBuf,
     pub audit_log: PathBuf,
 }
 ```
 
-The `core_config` field provides access to apcore's standard settings (log level, timeout, registry configuration) while apexe-specific settings (scan depth, cache directory, modules directory) remain on `ApexeConfig`.
+The `core_config` field provides access to apcore's standard settings (log level, timeout, registry configuration) while apexe-specific settings (scan depth, cache directory, bindings directory) remain on `ApexeConfig`.
 
 The 4-tier precedence from apcore-cli `ConfigResolver` is adopted: CLI flags > env vars > config file > defaults.
 
@@ -697,7 +697,7 @@ ApexeConfig    ──[contains]──────────> apcore::Config
 ```
 apexe scan <tools...> [--output-dir PATH] [--depth N] [--no-cache] [--format json|yaml|table]
 apexe serve [--transport stdio|http|sse] [--host ADDR] [--port N] [--explorer] [--name NAME]
-apexe list [--format json|table] [--modules-dir PATH]
+apexe list [--format json|table] [--bindings-dir PATH]
 apexe config [--show] [--init]
 ```
 
@@ -744,7 +744,7 @@ Input: apexe scan git docker --verify
 Input: apexe serve --transport http --port 8000 --explorer
 
 1. CLI parses args → ServeArgs
-2. Load binding YAML files from modules_dir → Vec<ScannedModule> (via DisplayResolver)
+2. Load binding YAML files from bindings_dir → Vec<ScannedModule> (via DisplayResolver)
 3. For each ScannedModule, create CliModule (impl Module)
 4. Register all CliModule instances in apcore Registry
 5. Create Executor with Registry + middleware (Logging, Tracing)
