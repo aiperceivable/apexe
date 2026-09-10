@@ -195,8 +195,13 @@ despite being nothing alike. The split follows the risk:
 - **Credential paths** — `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`
   and `~/.apexe` under the invoking user's home, plus the token stores that do
   not sit at the top level: `~/.config/gh`, `~/.config/gcloud`,
-  `~/.git-credentials` and `~/.netrc`. All are refused to readers and writers
-  alike. Deleting a private key announces itself the next time the key is used;
+  `~/.config/apcore`, `~/.git-credentials` and `~/.netrc`. All are refused to
+  readers and writers alike. `~/.config/apcore` is listed ahead of anything
+  writing there: it is the normative location for the OAuth tokens
+  apcore-toolkit's device-authorization flow persists, and a baseline entry for
+  a path nothing has created yet costs nothing, while adding it afterwards
+  leaves a window in which apexe wraps tools able to read a credential apexe
+  does not know exists. Deleting a private key announces itself the next time the key is used;
   copying one into a model context leaves no trace at all, so the stricter
   treatment goes to the risk that is harder to notice. `~/.apexe` is on this
   list rather than the other because it holds the ACL and the audit trail

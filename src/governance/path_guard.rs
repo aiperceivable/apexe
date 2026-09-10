@@ -128,6 +128,15 @@ const BASELINE_SYSTEM_PATHS: &[&str] = &[
 ///
 /// * `.config/gh` — the GitHub CLI's `hosts.yml`, which holds the OAuth token.
 /// * `.config/gcloud` — the same role `~/.aws` and `~/.kube` already have here.
+/// * `.config/apcore` — `credentials.json`, where apcore-toolkit's
+///   `FileTokenStore` persists OAuth access and refresh tokens acquired through
+///   the RFC 8628 device flow. Added ahead of that feature shipping rather than
+///   after: the path is normative in the toolkit's spec
+///   (`docs/features/device-auth.md`), and a guard entry for a path nothing has
+///   written yet costs nothing, while the reverse ordering leaves a window in
+///   which apexe wraps tools that can read a credential apexe does not know
+///   exists. This is the blind spot aiperceivable/apcore-toolkit#17 called out
+///   for tools in exactly this position.
 /// * `.git-credentials` — what git's `store` credential helper writes, in
 ///   plaintext, by default.
 /// * `.netrc` — read by git and curl for HTTP auth, and by much else besides.
@@ -152,6 +161,7 @@ const BASELINE_CREDENTIAL_HOME_SUBPATHS: &[&str] = &[
     ".apexe",
     ".config/gh",
     ".config/gcloud",
+    ".config/apcore",
     ".git-credentials",
     ".netrc",
 ];
@@ -869,7 +879,13 @@ mod tests {
             );
         }
 
-        for refused in [".config/gh", ".config/gh/hosts.yml", ".config/gcloud"] {
+        for refused in [
+            ".config/gh",
+            ".config/gh/hosts.yml",
+            ".config/gcloud",
+            ".config/apcore",
+            ".config/apcore/credentials.json",
+        ] {
             let probe = home_path(refused);
             let error = guard
                 .check("Parameter 'file'", &probe, ReadOnly)
