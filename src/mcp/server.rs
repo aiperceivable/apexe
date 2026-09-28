@@ -45,6 +45,7 @@ pub struct McpServerBuilder {
     port: u16,
     explorer: bool,
     bindings_dir: Option<std::path::PathBuf>,
+    bindings_pattern: Option<String>,
     timeout_ms: u64,
     /// Filter exposed tools by tags (AND logic).
     tags: Option<Vec<String>>,
@@ -93,6 +94,7 @@ impl McpServerBuilder {
             port: 8000,
             explorer: false,
             bindings_dir: None,
+            bindings_pattern: None,
             timeout_ms: 30_000,
             tags: None,
             prefix: None,
@@ -151,6 +153,18 @@ impl McpServerBuilder {
     }
 
     /// Set the directory containing `.binding.yaml` module files.
+    /// Select binding files by a filename glob instead of the default.
+    ///
+    /// Normally left unset: `None` reaches apcore-toolkit's loader, which
+    /// applies apcore's canonical `bindings.pattern` default itself. Set this
+    /// only to honour a configuration that *declares* the key -- see
+    /// `ApexeConfig::bindings_pattern`.
+    #[must_use]
+    pub fn bindings_pattern(mut self, pattern: impl Into<String>) -> Self {
+        self.bindings_pattern = Some(pattern.into());
+        self
+    }
+
     pub fn bindings_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
         self.bindings_dir = Some(dir.into());
         self
@@ -283,6 +297,7 @@ impl McpServerBuilder {
     fn executor_options(&self) -> ExecutorOptions<'_> {
         ExecutorOptions {
             bindings_dir: self.bindings_dir.as_deref(),
+            bindings_pattern: self.bindings_pattern.as_deref(),
             timeout_ms: self.timeout_ms,
             acl_path: self.acl_path.as_deref(),
             // The filter is applied at registration rather than being handed to

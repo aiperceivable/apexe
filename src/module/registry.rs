@@ -64,6 +64,11 @@ impl ModuleFilter {
 /// Options controlling how the shared `Executor` is assembled.
 pub struct ExecutorOptions<'a> {
     pub bindings_dir: Option<&'a Path>,
+    /// apcore's `bindings.pattern` when a configuration declares one.
+    ///
+    /// `None` selects apcore-toolkit's own canonical default, so apexe holds no
+    /// second copy of the value. See [`crate::output::load_modules_from_dir`].
+    pub bindings_pattern: Option<&'a str>,
     pub timeout_ms: u64,
     pub acl_path: Option<&'a Path>,
     /// Restrict which scanned modules are registered at all. See
@@ -138,7 +143,7 @@ pub struct ExecutorOptions<'a> {
 // the rest of the apexe/apcore API surface.
 #[allow(clippy::result_large_err)]
 pub fn build_executor(opts: &ExecutorOptions<'_>) -> Result<Arc<Executor>, ModuleError> {
-    let modules = load_scanned_modules(opts.bindings_dir)?;
+    let modules = load_scanned_modules(opts.bindings_dir, opts.bindings_pattern)?;
 
     // Governance audit sink (F5 §4.3): shared across all modules and the ACL.
     let audit = opts
@@ -400,9 +405,12 @@ fn install_failure_log(
 
 /// Load `ScannedModule`s from the configured bindings directory.
 #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
-fn load_scanned_modules(bindings_dir: Option<&Path>) -> Result<Vec<ScannedModule>, ModuleError> {
+fn load_scanned_modules(
+    bindings_dir: Option<&Path>,
+    bindings_pattern: Option<&str>,
+) -> Result<Vec<ScannedModule>, ModuleError> {
     match bindings_dir {
-        Some(dir) if dir.is_dir() => load_modules_from_dir(dir),
+        Some(dir) if dir.is_dir() => load_modules_from_dir(dir, bindings_pattern),
         Some(dir) => {
             tracing::warn!(
                 dir = %dir.display(),
@@ -525,6 +533,7 @@ mod tests {
     fn opts(bindings_dir: Option<&Path>) -> ExecutorOptions<'_> {
         ExecutorOptions {
             bindings_dir,
+            bindings_pattern: None,
             timeout_ms: 30_000,
             acl_path: None,
             filter: ModuleFilter::default(),

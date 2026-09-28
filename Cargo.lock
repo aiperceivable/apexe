@@ -139,9 +139,9 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "apcore"
-version = "0.30.0"
+version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e83a50c0710283651003d041b817abe9a87981aeed90f045217d9b4694409df"
+checksum = "1b38cb784b350347fd7bc8cdde52ae4b562ecc6d7b8529893988d36c879be6e2"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -149,7 +149,6 @@ dependencies = [
  "dashmap",
  "futures-core",
  "futures-util",
- "glob",
  "jsonschema 0.28.3",
  "notify",
  "parking_lot",
@@ -167,9 +166,9 @@ dependencies = [
 
 [[package]]
 name = "apcore-a2a"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b2b9ddf44680496b49bd8383eea68e9a9a5c8a07160755239ae43e6d61e54da"
+checksum = "5edac8b9897916bb2665c825f6121c861f913c89df28b67705b70d8a36b4ddd5"
 dependencies = [
  "apcore",
  "apcore-toolkit",
@@ -198,9 +197,9 @@ dependencies = [
 
 [[package]]
 name = "apcore-cli"
-version = "0.12.0"
+version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c2db8e62bbc3265a9832ae49ef280481db7dc0c387b79aa2eefe6065b13c3f9"
+checksum = "8e6aa522b453a0452c701c63edb0719c43ea7443fb589b5721d6d20913c725a6"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -234,9 +233,9 @@ dependencies = [
 
 [[package]]
 name = "apcore-mcp"
-version = "0.21.0"
+version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6508c145e6dc50c3c176532f4fbff922e3b696f57f81362d336ba1245c85a56d"
+checksum = "ba71f93c35507bddbc29b43aa5bfd8206d36a89ea1885204d4b3a4aa897f50be"
 dependencies = [
  "apcore",
  "apcore-toolkit",
@@ -264,9 +263,9 @@ dependencies = [
 
 [[package]]
 name = "apcore-toolkit"
-version = "0.11.1"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "651b9140f353086de5cfe817839f679dbe550cb0595f74e61986d5393371783a"
+checksum = "16b763d456cf9bdde9815492f1d6d596a78b90b1a533903a8bbd2c9ac2244bc9"
 dependencies = [
  "apcore",
  "async-trait",
@@ -279,6 +278,7 @@ dependencies = [
  "serde_yaml_ng",
  "syn 2.0.117",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "ureq",
  "walkdir",

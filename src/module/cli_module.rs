@@ -164,7 +164,7 @@ impl CliModule {
                 .log_execution(
                     &self.module_id,
                     &ctx.trace_id,
-                    ctx.identity.as_ref().map(|id| id.id()),
+                    crate::governance::audit_caller_id(ctx),
                     status,
                     exit_code,
                     duration_ms,

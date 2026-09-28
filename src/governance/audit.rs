@@ -3,6 +3,35 @@ use serde::Serialize;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// The principal to record for a call, from the context apcore handed the module.
+///
+/// Prefers the authenticated `Identity`, then falls back to `Context::caller_id`.
+/// Both halves are load-bearing and the order matters.
+///
+/// `Identity` is the authenticated principal and is the answer whenever there is
+/// one. It comes first because `Context::caller_id` names the calling *module*
+/// in a nested chain, so for an authenticated call it would report something
+/// else entirely.
+///
+/// The fallback exists because apcore 0.31 (decision D-103) stopped
+/// synthesizing an `Identity` for a call that supplied none — correctly, since a
+/// module written to the spec's own `if not context.identity: raise` example was
+/// being admitted by the manufactured principal. apcore marks such a call by
+/// setting `Context::caller_id` to `@external` instead. Reading only `Identity`
+/// would therefore drop the field from every unauthenticated `execution` and
+/// `refusal` row, while apcore's own `acl_decision` rows for the same call still
+/// record `@external` — two record kinds in one file disagreeing about one
+/// caller, which is worse than either answer on its own.
+///
+/// Nothing is invented: `@external` is apcore's value, read rather than guessed,
+/// and a call carrying neither field still records no principal at all.
+pub fn audit_caller_id<T>(ctx: &apcore::Context<T>) -> Option<&str> {
+    ctx.identity
+        .as_ref()
+        .map(apcore::Identity::id)
+        .or(ctx.caller_id.as_deref())
+}
+
 /// One line of `audit.jsonl`, whichever kind of event produced it.
 ///
 /// # Why apexe writes this instead of delegating
@@ -582,5 +611,49 @@ mod tests {
         let mgr = AuditManager::new(&path);
 
         assert_eq!(mgr.log_path(), path);
+    }
+
+    /// An authenticated call records the principal, not the module-chain caller.
+    ///
+    /// Order matters: `Context::caller_id` names the calling *module* in a nested
+    /// chain, so preferring it would report the wrong thing for every
+    /// authenticated call.
+    #[test]
+    fn test_audit_caller_id_prefers_the_authenticated_identity() {
+        let mut ctx: apcore::Context<serde_json::Value> = apcore::Context::anonymous();
+        ctx.identity = Some(apcore::Identity::new(
+            "api.gateway".to_string(),
+            "token".to_string(),
+            vec![],
+            std::collections::HashMap::new(),
+        ));
+        ctx.caller_id = Some("cli.some.module".to_string());
+
+        assert_eq!(audit_caller_id(&ctx), Some("api.gateway"));
+    }
+
+    /// An unauthenticated inbound call still records `@external`.
+    ///
+    /// This is the case apcore 0.31 changed (D-103): it no longer synthesizes an
+    /// `Identity`, and marks the call through `Context::caller_id` instead. With
+    /// no fallback the field would vanish from every unauthenticated
+    /// `execution` row while apcore's own `acl_decision` rows for the same call
+    /// kept recording `@external`.
+    #[test]
+    fn test_audit_caller_id_falls_back_to_the_external_sentinel() {
+        let mut ctx: apcore::Context<serde_json::Value> = apcore::Context::anonymous();
+        ctx.caller_id = Some(apcore::EXTERNAL_CALLER.to_string());
+
+        assert_eq!(audit_caller_id(&ctx), Some(apcore::EXTERNAL_CALLER));
+    }
+
+    /// A context carrying neither field records no principal rather than a guess.
+    #[test]
+    fn test_audit_caller_id_records_nothing_when_the_context_names_nobody() {
+        let ctx: apcore::Context<serde_json::Value> = apcore::Context::anonymous();
+
+        assert_eq!(ctx.identity, None, "anonymous() carries no identity");
+        assert_eq!(ctx.caller_id, None, "nor a caller_id until a step sets one");
+        assert_eq!(audit_caller_id(&ctx), None);
     }
 }

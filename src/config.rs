@@ -16,6 +16,19 @@ use tracing::{info, warn};
 #[serde(default)]
 pub struct ApexeConfig {
     pub bindings_dir: PathBuf,
+    /// The filename glob selecting binding files inside [`Self::bindings_dir`].
+    ///
+    /// `None` means "whatever apcore's canonical default is", which the toolkit
+    /// loader already applies (`*.binding.yaml`) — apexe does not restate the
+    /// value, so the two cannot drift apart. `Some` only when an `apcore.yaml`
+    /// *declares* `bindings.pattern`; see [`apply_core_bindings`].
+    ///
+    /// `#[serde(skip)]` because apcore owns this key, the same way it owns
+    /// `bindings.dir`. Carrying a second spelling in apexe's own `config.yaml`
+    /// is the duplication that ends with the two disagreeing, and unlike
+    /// `bindings_dir` there is no apexe default worth reporting.
+    #[serde(skip)]
+    pub bindings_pattern: Option<String>,
     pub cache_dir: PathBuf,
     pub config_dir: PathBuf,
     pub audit_log: PathBuf,
@@ -91,6 +104,7 @@ impl Default for ApexeConfig {
         let apexe_dir = home.join(".apexe");
         Self {
             bindings_dir: apexe_dir.join("bindings"),
+            bindings_pattern: None,
             cache_dir: apexe_dir.join("cache"),
             config_dir: apexe_dir.clone(),
             audit_log: apexe_dir.join("audit.jsonl"),
@@ -172,7 +186,7 @@ pub fn load_config(config_path: Option<&Path>) -> anyhow::Result<ApexeConfig> {
     // Before the environment tier, so `APEXE_BINDINGS_DIR` still outranks it,
     // and after the file tier, so apcore wins where both declare the location.
     load_core_config(&mut config);
-    apply_core_bindings_dir(&mut config);
+    apply_core_bindings(&mut config);
     apply_env_overrides(&mut config);
 
     Ok(config)
@@ -196,7 +210,8 @@ pub fn load_config(config_path: Option<&Path>) -> anyhow::Result<ApexeConfig> {
 /// be standing, and `apexe serve` from another directory would find nothing.
 /// Comparing against `Config::default_for` is what separates "the operator
 /// asked for this" from "apcore filled in its own default".
-fn apply_core_bindings_dir(config: &mut ApexeConfig) {
+fn apply_core_bindings(config: &mut ApexeConfig) {
+    apply_core_bindings_pattern(config);
     let Some(core) = config.core_config.as_ref() else {
         return;
     };
@@ -214,6 +229,39 @@ fn apply_core_bindings_dir(config: &mut ApexeConfig) {
         "apcore.yaml declares bindings.dir; it takes precedence over apexe's config.yaml"
     );
     config.bindings_dir = PathBuf::from(dir);
+}
+
+/// Adopt a declared `bindings.pattern`, on the same terms as `bindings.dir`.
+///
+/// Separate from the directory because the two differ in what "undeclared"
+/// means. An undeclared `bindings.dir` has to fall back to apexe's own absolute
+/// default, so the canonical `./bindings` must be recognised and discarded. An
+/// undeclared `bindings.pattern` needs no apexe value at all: `None` reaches the
+/// toolkit loader, which applies the identical canonical default itself. Leaving
+/// it `None` is therefore strictly better than copying the string — apexe cannot
+/// drift from a value it does not hold.
+///
+/// apcore-toolkit 0.12 is what made this reachable: before it, `BindingLoader`
+/// had no pattern parameter, so this key could be resolved and not honoured
+/// (apcore-toolkit#18).
+fn apply_core_bindings_pattern(config: &mut ApexeConfig) {
+    let Some(core) = config.core_config.as_ref() else {
+        return;
+    };
+    let Some(declared) = core.get("bindings.pattern") else {
+        return;
+    };
+    if Some(&declared) == CoreConfig::default_for("bindings.pattern").as_ref() {
+        return;
+    }
+    let Some(pattern) = declared.as_str().filter(|s| !s.is_empty()) else {
+        return;
+    };
+    info!(
+        bindings_pattern = pattern,
+        "apcore.yaml declares bindings.pattern; binding files are selected by it"
+    );
+    config.bindings_pattern = Some(pattern.to_string());
 }
 
 /// The config keys whose silent loss widens what the process will permit.
@@ -856,6 +904,54 @@ mod tests {
             config.bindings_dir,
             PathBuf::from("/srv/declared-by-apcore"),
             "apcore.yaml declares bindings.dir, so it decides where bindings live"
+        );
+    }
+
+    /// A declared `bindings.pattern` is adopted.
+    ///
+    /// Reachable only since apcore-toolkit 0.12: before it, `BindingLoader` had
+    /// no pattern parameter, so this key could be resolved and not honoured
+    /// (apcore-toolkit#18).
+    #[test]
+    fn test_apcore_bindings_pattern_is_adopted_when_declared() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::write(
+            dir.join("apcore.yaml"),
+            APCORE_YAML_HEAD.to_string() + "bindings:\n  pattern: \"*.apexe.yaml\"\n",
+        )
+        .unwrap();
+        let apexe_yaml = dir.join("config.yaml");
+        std::fs::write(&apexe_yaml, format!("config_dir: {}\n", dir.display())).unwrap();
+
+        let config = load_config(Some(apexe_yaml.as_path())).unwrap();
+
+        assert_eq!(config.bindings_pattern.as_deref(), Some("*.apexe.yaml"));
+    }
+
+    /// An undeclared `bindings.pattern` stays `None`, not the canonical string.
+    ///
+    /// `None` reaches apcore-toolkit's loader, which applies the identical
+    /// canonical default itself. Copying the value here would give apexe a
+    /// second thing to keep in sync for no gain -- and `Config::get` answers the
+    /// canonical default for a configuration that declares nothing, so without
+    /// this guard every machine with an `apcore.yaml` would look like it had
+    /// declared one.
+    #[test]
+    fn test_an_undeclared_bindings_pattern_stays_none() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("apcore.yaml"), APCORE_YAML_HEAD).unwrap();
+        let apexe_yaml = dir.join("config.yaml");
+        std::fs::write(&apexe_yaml, format!("config_dir: {}\n", dir.display())).unwrap();
+
+        let config = load_config(Some(apexe_yaml.as_path())).unwrap();
+
+        assert_eq!(
+            config.bindings_pattern, None,
+            "apcore's canonical default is not a declaration"
         );
     }
 

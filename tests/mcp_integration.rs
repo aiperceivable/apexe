@@ -45,6 +45,7 @@ fn write_echo_binding(dir: &Path) {
 fn exec_opts(dir: &Path) -> ExecutorOptions<'_> {
     ExecutorOptions {
         bindings_dir: Some(dir),
+        bindings_pattern: None,
         timeout_ms: 5_000,
         acl_path: None,
         filter: apexe::module::ModuleFilter::default(),

@@ -300,6 +300,18 @@ every machine that merely has an `apcore.yaml` — `apexe scan` would write besi
 wherever you were standing, and `apexe serve` from elsewhere would find nothing.
 apexe logs at `info` when apcore's declaration is the one that decided.
 
+**`bindings.pattern` is apcore's too, and apexe holds no copy of it.** The glob
+selecting binding files inside that directory is read from the same
+`apcore.yaml`, on the same declared-only terms. There is no apexe config key and
+no default value here: when nothing declares the key, apexe passes nothing and
+apcore-toolkit's loader applies the identical canonical default
+(`*.binding.yaml`) itself — so there is no second string that could drift. The
+pattern matches the **file name** only; `*` and `?` are the metacharacters, and
+recursion is not expressible through it (apexe loads one directory,
+non-recursively). Honouring this key at all needs apcore-toolkit 0.12 or later:
+before it the loader took no pattern, so the key could be resolved and not
+applied.
+
 ### Config file
 
 Located at `~/.apexe/config.yaml`. Create with `apexe config --init`.
@@ -779,9 +791,18 @@ A call the governance stack stopped — `event: "refusal"`. `error_code` replace
   attempt either way — the sequence an audit exists to capture.
 - **`caller_id` is the authenticated principal**, or `@external` for an
   unauthenticated inbound request (apcore's canonical name for one). It is
-  omitted entirely rather than guessed when no identity is attached at all.
-  Note this is *not* apcore's `Context::caller_id`, which names the calling
-  *module* in a nested chain and is `None` for every inbound request.
+  omitted entirely rather than guessed when the call names nobody at all.
+  Resolved from `Context::identity` first and `Context::caller_id` second, and
+  the order matters in both directions: `Context::caller_id` names the calling
+  *module* in a nested chain, so preferring it would report the wrong thing for
+  an authenticated call — but apcore 0.31 stopped synthesizing an `Identity`
+  for a call that supplied none (decision D-103, correctly: a module written to
+  check `if not context.identity` was being admitted by the manufactured
+  principal), and marks such a call by setting `Context::caller_id` to
+  `@external` instead. Reading only `identity` would therefore drop the field
+  from every unauthenticated `execution` and `refusal` row while apcore's own
+  `acl_decision` rows for the same call kept recording `@external` — two record
+  kinds in one file disagreeing about one caller.
 - **`duration_ms` is 0 for a refusal that short-circuited** ahead of the
   middleware phase — in practice the approval gate, since an ACL denial
   produces no apexe `refusal` row at all (see below). No clock had started.

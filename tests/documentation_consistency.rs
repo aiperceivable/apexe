@@ -104,6 +104,7 @@ fn test_user_manual_names_the_wired_circuit_breaker() {
     let installed = |enabled: bool| -> Vec<String> {
         let opts = ExecutorOptions {
             bindings_dir: None,
+            bindings_pattern: None,
             timeout_ms: 30_000,
             acl_path: None,
             filter: apexe::module::ModuleFilter::default(),
@@ -302,6 +303,7 @@ async fn test_user_manual_states_that_filters_gate_execution() {
 
     let executor = build_executor(&ExecutorOptions {
         bindings_dir: Some(dir.path()),
+        bindings_pattern: None,
         timeout_ms: 1_000,
         acl_path: None,
         filter: ModuleFilter {

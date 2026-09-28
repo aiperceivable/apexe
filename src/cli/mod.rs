@@ -854,7 +854,7 @@ impl ListArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
         let bindings_dir = self.bindings_dir.as_ref().unwrap_or(&config.bindings_dir);
 
-        let mut modules = self.load_modules(bindings_dir)?;
+        let mut modules = self.load_modules(bindings_dir, config.bindings_pattern.as_deref())?;
         if modules.is_empty() {
             println!("No modules found. Run 'apexe scan <tool>' first.");
             return Ok(());
@@ -883,6 +883,7 @@ impl ListArgs {
     fn load_modules(
         &self,
         dir: &std::path::Path,
+        pattern: Option<&str>,
     ) -> anyhow::Result<Vec<apcore_toolkit::ScannedModule>> {
         // An absent directory legitimately means "no modules yet". A load
         // FAILURE (e.g. a corrupt .binding.yaml) must surface, not be masked as
@@ -890,7 +891,7 @@ impl ListArgs {
         if !dir.exists() {
             return Ok(vec![]);
         }
-        crate::output::load_modules_from_dir(dir).map_err(|e| anyhow::anyhow!(e))
+        crate::output::load_modules_from_dir(dir, pattern).map_err(|e| anyhow::anyhow!(e))
     }
 
     /// `--acl`, or `<config_dir>/acl.yaml` when `--acl` is absent and that
@@ -1934,7 +1935,7 @@ mod tests {
             acl: None,
             available_only: true,
         };
-        let loaded = args.load_modules(tmp.path()).unwrap();
+        let loaded = args.load_modules(tmp.path(), None).unwrap();
         let available: Vec<_> = loaded
             .iter()
             .filter(|m| crate::scanner::resolver::target_is_available(&m.target))
@@ -2288,7 +2289,7 @@ mod tests {
             acl: None,
             available_only: false,
         };
-        let result = args.load_modules(tmp.path());
+        let result = args.load_modules(tmp.path(), None);
         assert!(
             result.is_err(),
             "corrupt binding must surface, not collapse to an empty module list"

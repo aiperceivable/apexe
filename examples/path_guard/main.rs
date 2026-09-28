@@ -77,6 +77,7 @@ fn build_demo_executor(bindings_dir: &Path) -> Arc<Executor> {
 
     build_executor(&ExecutorOptions {
         bindings_dir: Some(bindings_dir),
+        bindings_pattern: None,
         timeout_ms: 5_000,
         acl_path: None,
         filter: apexe::module::ModuleFilter::default(),

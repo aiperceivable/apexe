@@ -276,9 +276,7 @@ impl ApprovalGate {
         self.audit_refusal(
             &request.module_id,
             context.map_or("", |ctx| ctx.trace_id.as_str()),
-            context
-                .and_then(|ctx| ctx.identity.as_ref())
-                .map(|id| id.id()),
+            context.and_then(crate::governance::audit_caller_id),
             None,
         )
         .await;

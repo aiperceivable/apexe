@@ -17,6 +17,7 @@ pub struct A2aServerBuilder {
     url: String,
     explorer: bool,
     bindings_dir: Option<std::path::PathBuf>,
+    bindings_pattern: Option<String>,
     timeout_ms: u64,
     /// Path to ACL YAML file for access control.
     acl_path: Option<std::path::PathBuf>,
@@ -230,6 +231,7 @@ impl A2aServerBuilder {
             url: DEFAULT_A2A_URL.to_string(),
             explorer: false,
             bindings_dir: None,
+            bindings_pattern: None,
             timeout_ms: 30_000,
             acl_path: None,
             filter: crate::module::ModuleFilter::default(),
@@ -278,6 +280,18 @@ impl A2aServerBuilder {
     }
 
     /// Set the directory containing `.binding.yaml` module files.
+    /// Select binding files by a filename glob instead of the default.
+    ///
+    /// Normally left unset: `None` reaches apcore-toolkit's loader, which
+    /// applies apcore's canonical `bindings.pattern` default itself. Set this
+    /// only to honour a configuration that *declares* the key -- see
+    /// `ApexeConfig::bindings_pattern`.
+    #[must_use]
+    pub fn bindings_pattern(mut self, pattern: impl Into<String>) -> Self {
+        self.bindings_pattern = Some(pattern.into());
+        self
+    }
+
     pub fn bindings_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
         self.bindings_dir = Some(dir.into());
         self
@@ -411,6 +425,7 @@ impl A2aServerBuilder {
     fn executor_options(&self) -> ExecutorOptions<'_> {
         ExecutorOptions {
             bindings_dir: self.bindings_dir.as_deref(),
+            bindings_pattern: self.bindings_pattern.as_deref(),
             timeout_ms: self.timeout_ms,
             acl_path: self.acl_path.as_deref(),
             filter: self.filter.clone(),

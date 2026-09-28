@@ -3,19 +3,39 @@ use std::path::Path;
 use apcore::{ErrorCode, ModuleError};
 use apcore_toolkit::{BindingLoadError, BindingLoader, ScannedModule};
 
-/// Load `ScannedModule`s from `.binding.yaml` files in a directory.
+/// Load `ScannedModule`s from the binding files in a directory.
 ///
 /// Delegates to apcore-toolkit's [`BindingLoader`] (non-recursive, strict
 /// mode — `module_id`, `description`, `input_schema`, `output_schema`,
 /// `tags`, and `target` are all required, matching what `YAMLWriter` always
 /// emits), which additionally enforces a 16 MiB per-file cap and a 10,000
 /// file per-directory cap that the previous hand-rolled parser did not.
+///
+/// `pattern` is apcore's `bindings.pattern` when a configuration declares one,
+/// and `None` otherwise — which selects the toolkit's own `*.binding.yaml`,
+/// the same canonical default. It is threaded through rather than read here
+/// because the pure-data loader holds no `Config`; see
+/// [`crate::config::ApexeConfig::bindings_pattern`] for where the value is
+/// resolved and why only a declared one counts.
+///
+/// Until apcore-toolkit 0.12 there was no parameter to pass it through, so a
+/// consumer needing the loader's *return value* rather than apcore's
+/// registration side effect silently ignored the key
+/// ([apcore-toolkit#18](https://github.com/aiperceivable/apcore-toolkit/issues/18)).
+/// apexe is that consumer: it converts each `ScannedModule` into its own
+/// `CliModule`, so apcore's config-aware loader would bypass every control
+/// `CliModule` exists to apply.
 // ModuleError is the crate-wide domain error; boxing it would diverge from the
 // rest of the apexe/apcore API surface.
 #[allow(clippy::result_large_err)]
-pub fn load_modules_from_dir(dir: &Path) -> Result<Vec<ScannedModule>, ModuleError> {
+pub fn load_modules_from_dir(
+    dir: &Path,
+    pattern: Option<&str>,
+) -> Result<Vec<ScannedModule>, ModuleError> {
     BindingLoader::new()
-        .load(dir, /* strict */ true, /* recursive */ false)
+        .load_with_pattern(
+            dir, /* strict */ true, /* recursive */ false, pattern,
+        )
         .map_err(|e| match e {
             BindingLoadError::PathNotFound { path } => ModuleError::new(
                 ErrorCode::GeneralInternalError,
@@ -50,7 +70,7 @@ mod tests {
         let modules = vec![make_test_module("loader_read")];
         output.write(&modules, dir.path(), false).unwrap();
 
-        let loaded = load_modules_from_dir(dir.path()).unwrap();
+        let loaded = load_modules_from_dir(dir.path(), None).unwrap();
 
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].module_id, "loader_read");
@@ -82,7 +102,7 @@ mod tests {
         YamlOutput::without_verification()
             .write(&[module], dir.path(), false)
             .unwrap();
-        let loaded = load_modules_from_dir(dir.path()).unwrap();
+        let loaded = load_modules_from_dir(dir.path(), None).unwrap();
 
         let extra = &loaded[0].annotations.as_ref().unwrap().extra;
         assert_eq!(
@@ -99,14 +119,14 @@ mod tests {
     fn test_loader_empty_directory() {
         let dir = TempDir::new().unwrap();
 
-        let loaded = load_modules_from_dir(dir.path()).unwrap();
+        let loaded = load_modules_from_dir(dir.path(), None).unwrap();
 
         assert!(loaded.is_empty());
     }
 
     #[test]
     fn test_loader_nonexistent_directory() {
-        let result = load_modules_from_dir(Path::new("/nonexistent/path/abc123"));
+        let result = load_modules_from_dir(Path::new("/nonexistent/path/abc123"), None);
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -123,7 +143,7 @@ mod tests {
         std::fs::write(dir.path().join("readme.txt"), "not a binding").unwrap();
         std::fs::write(dir.path().join("data.json"), "{}").unwrap();
 
-        let loaded = load_modules_from_dir(dir.path()).unwrap();
+        let loaded = load_modules_from_dir(dir.path(), None).unwrap();
 
         assert!(loaded.is_empty());
     }
@@ -138,7 +158,7 @@ mod tests {
         ];
         output.write(&original, dir.path(), false).unwrap();
 
-        let loaded = load_modules_from_dir(dir.path()).unwrap();
+        let loaded = load_modules_from_dir(dir.path(), None).unwrap();
 
         assert_eq!(loaded.len(), 2);
         let mut ids: Vec<&str> = loaded.iter().map(|m| m.module_id.as_str()).collect();
@@ -167,7 +187,44 @@ mod tests {
         )
         .unwrap();
 
-        let result = load_modules_from_dir(dir.path());
+        let result = load_modules_from_dir(dir.path(), None);
         assert!(result.is_err(), "incomplete binding should be rejected");
+    }
+
+    /// A declared pattern selects by it, not by the default suffix.
+    ///
+    /// The end of what apcore-toolkit#18 opened: apexe resolves
+    /// `bindings.pattern` from apcore's `Config` and hands it to the loader.
+    /// Asserted on both sides of the same directory so a pattern that quietly
+    /// did nothing would fail rather than look like a pass.
+    #[test]
+    fn test_a_declared_pattern_decides_which_files_are_loaded() {
+        let dir = TempDir::new().unwrap();
+        let output = YamlOutput::without_verification();
+        output
+            .write(&[make_test_module("default_suffix")], dir.path(), false)
+            .unwrap();
+
+        // Same content under a name the default pattern does not select.
+        let written = dir.path().join("default_suffix.binding.yaml");
+        std::fs::copy(&written, dir.path().join("renamed.apexe.yaml")).unwrap();
+
+        let default_pattern = load_modules_from_dir(dir.path(), None).unwrap();
+        assert_eq!(
+            default_pattern.len(),
+            1,
+            "the default pattern selects only the .binding.yaml file"
+        );
+
+        let declared = load_modules_from_dir(dir.path(), Some("*.apexe.yaml")).unwrap();
+        assert_eq!(
+            declared.len(),
+            1,
+            "a declared pattern selects the other file instead"
+        );
+        assert_eq!(declared[0].module_id, "default_suffix");
+
+        let both = load_modules_from_dir(dir.path(), Some("*.yaml")).unwrap();
+        assert_eq!(both.len(), 2, "a wider pattern selects both");
     }
 }
