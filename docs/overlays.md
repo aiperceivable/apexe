@@ -92,10 +92,11 @@ docker run --rm debian:stable-slim ls --help \
   | grep -oE '\--?[A-Za-z0-9][A-Za-z0-9-]*' | sort -u
 ```
 
-and from the overlay:
+and from the overlay, run in the corpus checkout's `overlays/` directory (apexe
+ships none of its own — see [Where the file goes](#where-the-file-goes)):
 
 ```bash
-python3 -c "import json;print('\n'.join(sorted(f['long'] for f in json.load(open('overlays/ls@gnu.json'))['flags'] if f.get('long'))))"
+python3 -c "import json;print('\n'.join(sorted(f['long'] for f in json.load(open('ls@gnu.json'))['flags'] if f.get('long'))))"
 ```
 
 Then `diff` them. Two directions, two different meanings:

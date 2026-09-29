@@ -554,7 +554,40 @@ Better still, do not scan them into the registry at all. A wrapped `env` buys
 nothing that wrapping the underlying tool directly does not, and it costs every
 control in §4.
 
-### 5.10 Reserved: four limitations that arrive with local execution
+### 5.10 A binding older than the control it feeds turns that control off
+
+Three of the controls in §4 read the schema rather than the command: the path
+guard acts on values typed `x-apexe-path` (§4.8), the approval gate on
+`x-apexe-escalates` and `x-apexe-approval-basis` (§4.9), and log redaction on
+`x-sensitive`. A binding file written before a keyword existed does not carry
+it, so for that module the control **has nothing to act on and enforces
+nothing**. Nothing fails; the call simply is not checked.
+
+This is a different limitation from §5.8's first bullet, and the difference is
+the remedy. There, the scanner could not tell that an option takes a filename,
+and no rescan changes that. Here the scanner infers it perfectly well and the
+file on disk merely predates it — **a rescan fixes it completely**. Reading
+§5.8 as covering both would leave an operator concluding there is nothing to
+do.
+
+It is not a hypothetical. 0.7.0 introduced all three keywords; on the
+development machine where this was found, 166 of 166 binding files had been
+written by an earlier release, so all three controls were inert across the
+entire registry and no mechanism existed to say so.
+
+Two things narrow it as of 0.8.0, neither of which closes it:
+
+- Every binding now records `metadata.generated_by` (`apexe <version>`). Nothing
+  reads it yet — it is the half that has to exist before a later release can
+  compare it against its own and refuse to serve, or warn, on a mismatch.
+- `bindings.dir` moved the default directory, so the upgrade to 0.8.0 forces a
+  rescan and clears the backlog once. That is luck, not a mechanism: the next
+  release to add a keyword has no such move behind it.
+
+**Until a version check ships, re-run `apexe scan` after every apexe upgrade.**
+§6 states this as a deployment step.
+
+### 5.11 Reserved: four limitations that arrive with local execution
 
 Not limitations of apexe today — the surface they describe does not exist yet.
 They are recorded here so they land *with* the feature rather than after it.
@@ -607,7 +640,13 @@ subsection of this section when that ships:
 7. Re-review the ACL after every `apexe scan`. A rescan merges freshly generated
    rules into the existing file, so new commands arrive with heuristic
    classifications you have not read yet (§5.2).
-8. Do not wrap command executors — `env`, `xargs`, `sudo`, `timeout`, `nice`
+8. **Re-run `apexe scan` after every apexe upgrade**, before trusting the path
+   guard, the approval gate or log redaction on that host. All three read
+   keywords out of the binding file, so a binding written by an earlier release
+   silently carries none of them and the control enforces nothing (§5.10). A
+   rescan fixes it completely; nothing else does, and as of 0.8.0 nothing
+   detects it.
+9. Do not wrap command executors — `env`, `xargs`, `sudo`, `timeout`, `nice`
    and their kin (§5.9). They are classified `destructive` so the generated ACL
    denies them, but the durable fix is to keep them out of the registry: argv
    is caller-controlled there, and no control in §4 can see inside it.

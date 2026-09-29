@@ -66,11 +66,23 @@ impl ScanCache {
 /// What this build knows about a tool. Bump whenever a change alters the result
 /// for an unchanged binary — a scanner change or a curated-overlay one.
 ///
-/// The overlays count because they are compiled in with `include_str!` and, in
-/// `authoritative` mode, *are* the answer for the tools they cover: correcting
-/// one changes the emitted contract for a binary whose name, variant and
-/// version are all unchanged, which is precisely the case this key exists to
-/// catch.
+/// **Overlays are deliberately not part of this**, and the cached document does
+/// not contain them. They used to: while they were compiled in with
+/// `include_str!`, correcting one required a new build, and bumping this
+/// constant was how that reached a warm cache — history entry 3 below is such a
+/// bump. Moving the corpus to `cli-permissions` voided that, because a corpus
+/// update changes nothing this key can see: the tool's name, variant and
+/// version are all still the same, and no release of apexe has happened to bump
+/// anything. The failure was silent and the whole point of externalising the
+/// corpus is that a correction ships without us.
+///
+/// So the split is by *what the value is a function of*. Tiers 1-3 are a
+/// function of the binary, which is what this key names, and they are cached.
+/// Tier 4 is a function of the corpus, so it is applied after every read
+/// instead — see `ScanOrchestrator::apply_curated_layer`. Re-applying it costs
+/// nothing (no subprocess; the overlays are already in memory), which also
+/// makes a corpus update cheaper than a key-widening fix would: the scan itself
+/// is reused rather than re-run.
 ///
 /// A cache entry records what apexe *understood*, not just what the tool is, so
 /// the key has to name both. Without this component an upgrade was invisible to
@@ -89,7 +101,11 @@ impl ScanCache {
 /// - 3: `value_optional` on the 34 curated flags whose value may be omitted
 ///   (#40). Without a bump a cached entry keeps rendering `--color never`,
 ///   which these tools read as "no value, and here is an operand".
-const SCAN_FORMAT_VERSION: u32 = 3;
+/// - 4: the document is now pre-overlay. An entry written by 3 has tier-4 data
+///   baked in, so reusing one would serve a corpus assertion as though it were
+///   something the binary said — and would re-apply the current overlay on top
+///   of a stale one. This is the last bump an overlay change will ever need.
+const SCAN_FORMAT_VERSION: u32 = 4;
 
 /// Build the on-disk cache file name for one scan result.
 ///

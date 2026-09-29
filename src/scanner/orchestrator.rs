@@ -216,11 +216,14 @@ impl ScanOrchestrator {
         let detected = self.detect_variant(command_name, &resolved.binary_path);
 
         if !no_cache {
-            if let Some(cached) =
+            if let Some(mut cached) =
                 self.cache
                     .get(command_name, detected.variant, resolved.version.as_deref())
             {
                 info!(tool = %command_name, variant = detected.variant.as_str(), "Using cached scan result");
+                // The cache holds tiers 1-3 only, so tier 4 is layered on here
+                // exactly as it is on a miss. See `SCAN_FORMAT_VERSION`.
+                self.apply_curated_layer(&mut cached, command_name, &detected);
                 return Ok(cached);
             }
         }
@@ -230,19 +233,47 @@ impl ScanOrchestrator {
 
         self.enrich_with_man_page(&mut tool, command_name);
         self.enrich_with_completions(&mut tool, command_name);
-        self.apply_matching_overlay(&mut tool, &detected);
+
+        // Written before the curated layer, so what lands on disk is tiers 1-3
+        // and nothing else -- the part that really is a function of this
+        // binary, which is what the cache key names.
+        if let Err(e) = self.cache.put(&tool) {
+            warn!(tool = %command_name, "Failed to cache scan result: {e}");
+        }
+
+        self.apply_curated_layer(&mut tool, command_name, &detected);
+
+        Ok(tool)
+    }
+
+    /// Everything that is *not* a function of the binary: tier 4, and the
+    /// verdict that depends on it.
+    ///
+    /// Kept out of the cache and applied on both paths. An overlay is a human
+    /// assertion held in a corpus that ships and updates independently of this
+    /// crate, so a change to it is invisible to a key built from the tool's
+    /// name, variant and version — the three things that did not change. Before
+    /// this split, correcting an overlay left every host with a warm cache
+    /// serving the old contract at exit 0, with `--no-cache` the only escape
+    /// and nothing pointing at it.
+    ///
+    /// The "nothing extracted" warning belongs here rather than beside the
+    /// scan: an `authoritative` overlay may be the entire flag set for a tool
+    /// whose `--help` yields nothing, and warning about a gap the overlay has
+    /// already filled would be false.
+    fn apply_curated_layer(
+        &self,
+        tool: &mut ScannedCLITool,
+        command_name: &str,
+        detected: &DetectedVariant,
+    ) {
+        self.apply_matching_overlay(tool, detected);
 
         if tool.global_flags.is_empty() && tool.subcommands.is_empty() {
             tool.warnings.push(format!(
                 "No flags or subcommands extracted for '{command_name}' from --help, man page, or shell completions"
             ));
         }
-
-        if let Err(e) = self.cache.put(&tool) {
-            warn!(tool = %command_name, "Failed to cache scan result: {e}");
-        }
-
-        Ok(tool)
     }
 
     /// Run `--help`, then any expanded variant that yields more, and parse it.
@@ -996,6 +1027,93 @@ mod tests {
               "flags": []
             }}"#
         )
+    }
+
+    /// A `merge` overlay for whichever `wc` this machine has. `confidence: low`
+    /// so no `provenance` block is required, and an empty `match` so it applies
+    /// on any platform -- the variant is filled from what the scan detected,
+    /// which is what makes this work on both macOS and Linux.
+    fn wc_overlay(variant: crate::models::ToolVariant) -> String {
+        format!(
+            r#"{{
+              "schema_version": "1.0",
+              "command": "wc",
+              "variant": "{}",
+              "match": {{}},
+              "mode": "merge",
+              "confidence": "low",
+              "annotations": {{ "open_world": true }}
+            }}"#,
+            variant.as_str()
+        )
+    }
+
+    /// A corpus correction must reach a host whose cache is already warm.
+    ///
+    /// This is the regression that motivated splitting tier 4 out of the cached
+    /// document. The corpus ships and updates independently of this crate, so
+    /// nothing in the cache key -- name, variant, version, scan-format version
+    /// -- changes when an overlay is corrected. Before the split, step 3 below
+    /// returned the pre-correction contract at exit 0, with `--no-cache` the
+    /// only escape and nothing pointing at it. The overlays corrected in 0.8.0
+    /// were `sort`, `find` and `xargs` gaining `open_world`, so the annotation
+    /// that silently failed to arrive was a security-relevant one.
+    #[test]
+    fn test_a_corpus_correction_is_not_masked_by_a_warm_cache() {
+        let tmp = TempDir::new().unwrap();
+        let overlays = tmp.path().join("overlays");
+        std::fs::create_dir_all(&overlays).unwrap();
+
+        // 1. Warm the cache with no overlay in sight. `false` is `no_cache`.
+        let first = ScanOrchestrator::new(test_config(&tmp))
+            .scan(&["wc".into()], false, 1)
+            .tools;
+        assert_eq!(first.len(), 1, "wc must be scannable: {first:?}");
+        assert!(
+            first[0].overlay.is_none(),
+            "no overlay directory was configured, so nothing should have applied"
+        );
+        let variant = first[0].variant;
+
+        // 2. What lands on disk carries no tier-4 data. This is the invariant;
+        //    the rest of the test is the behaviour that follows from it.
+        let cached: Vec<PathBuf> = std::fs::read_dir(tmp.path().join("cache"))
+            .expect("the scan must have written a cache entry")
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        assert_eq!(cached.len(), 1, "expected one cache entry: {cached:?}");
+        let document: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cached[0]).unwrap()).unwrap();
+        assert!(
+            document["overlay"].is_null(),
+            "a cached document must not name an overlay, or a later corpus \
+             correction cannot displace it: {document:#}"
+        );
+        assert!(
+            document["scan_tier"].as_u64().unwrap() < u64::from(super::super::MAX_SCAN_TIER),
+            "a cached document must not claim the curated tier"
+        );
+
+        // 3. The corpus gains an assertion for exactly this variant, and the
+        //    cache is still warm. The correction has to arrive anyway.
+        std::fs::write(overlays.join("wc.json"), wc_overlay(variant)).unwrap();
+        let mut with_corpus = test_config(&tmp);
+        with_corpus.overlay_dirs = vec![overlays];
+        let second = ScanOrchestrator::new(with_corpus)
+            .scan(&["wc".into()], false, 1)
+            .tools;
+
+        assert_eq!(
+            second[0].overlay.as_deref(),
+            Some(format!("wc@{}", variant.as_str()).as_str()),
+            "the corpus correction was masked by the warm cache"
+        );
+        assert_eq!(
+            second[0].scan_tier,
+            super::super::MAX_SCAN_TIER,
+            "the curated tier must be reported on a cache hit too"
+        );
     }
 
     fn widget_context() -> crate::adapter::overlay::MatchContext {
