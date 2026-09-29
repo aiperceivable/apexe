@@ -129,7 +129,7 @@ src/
 | Crate | Version | Usage |
 |-------|---------|-------|
 | `apcore` | 0.31 | Module trait, Registry, ACL, ModuleError, ErrorCode, Context, Config |
-| `apcore-toolkit` | 0.12 | ScannedModule, YAMLWriter, Verifier, ModuleAnnotations, `deduplicate_ids` |
+| `apcore-toolkit` | 0.13 | ScannedModule, YAMLWriter, Verifier, ModuleAnnotations, `deduplicate_ids` |
 | `apcore-mcp` | 0.22 | APCoreMCP server (stdio, streamable-http, SSE, Explorer UI) |
 | `apcore-a2a` | 0.8 | A2A agent server (`async_serve` / `build_app`, `Authenticator`) |
 | `apcore-cli` | 0.12 | `--man` page generation (`build_program_man_page`) |

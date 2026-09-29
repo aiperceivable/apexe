@@ -66,7 +66,7 @@ generated for you — reviewing and enabling it is yours.**
 | Crate | Role |
 |-------|------|
 | [apcore](https://github.com/aiperceivable/apcore-rust) 0.31 | Module trait, Registry, ACL, ModuleError, Context |
-| [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit-rust) 0.12 | ScannedModule, YAMLWriter, DisplayResolver |
+| [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit-rust) 0.13 | ScannedModule, YAMLWriter, DisplayResolver |
 | [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) 0.22 | MCP server with middleware, auth, Explorer UI |
 | [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust) 0.8 | A2A agent server sharing the same governed `Executor` |
 | [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) 0.12 | `--man` page generation |
