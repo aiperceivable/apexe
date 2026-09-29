@@ -478,6 +478,36 @@ fn property_escalates(property: &serde_json::Value) -> bool {
 /// name as argv needs it is preserved in `metadata["command_path"]`, and
 /// collisions introduced by the folding (`cat-file` vs a hypothetical
 /// `cat_file`) are resolved downstream by [`deduplicate_ids`].
+///
+/// This is the *repairing* normalisation of the apcore spec (the `snake_case`
+/// of §2.1.1), not Algorithm A02 of §2.2. A02 takes an identifier its author
+/// chose and rejects what the grammar cannot hold, which is the right answer
+/// when the author can rename it. Here nobody can: `7z` is what 7-Zip is
+/// called. So this repairs, and the three properties that keeps it honest are
+/// pinned by `test_sanitize_id_segment_holds_its_contract`:
+///
+/// - **The result always satisfies the grammar.** That is the whole point —
+///   the 63 dropped git subcommands above were the failure of not having it.
+/// - **Nothing is collapsed or stripped.** `cat--file` folds to `cat__file`,
+///   not `cat_file`; the output is exactly as long as the input, plus the one
+///   prefix character when one is needed. A consecutive `_` carries meaning in
+///   the names this sees, and apcore's own SDKs got this wrong in the other
+///   direction — `apcore-python` and `apcore-rust` collapse `__`, which is
+///   aiperceivable/apcore#122.
+/// - **Idempotent**, so it is safe to apply at more than one layer.
+///
+/// ASCII-scoped on purpose. The output alphabet is ASCII, so Unicode-aware
+/// case folding would buy nothing a caller can observe and cost
+/// cross-implementation determinism: `char::is_uppercase`, Python's
+/// `str.isdigit` and JavaScript's `toLowerCase` are three different predicates,
+/// and `char::to_lowercase().next()` silently truncates a multi-code-point
+/// mapping. `apcore-toolkit` reached the same conclusion for the same reason.
+///
+/// It differs from `apcore-toolkit`'s `normalize_module_id` on one case: for a
+/// digit-leading name that crate warns and emits an illegal id, where this
+/// prefixes. Its input is authored and ours is given, so both are right for
+/// their own domain — but the function should not be written twice at all.
+/// Replacing this with the upstream one is aiperceivable/apcore-toolkit#19.
 fn sanitize_id_segment(name: &str) -> String {
     let folded: String = name
         .chars()
@@ -1141,6 +1171,61 @@ mod tests {
         assert_eq!(sanitize_id_segment("plain"), "plain");
         // A leading non-letter would still fail the grammar.
         assert_eq!(sanitize_id_segment("7z"), "t7z");
+        // A run of `_` is carried through, not collapsed. This is the case
+        // apcore-python and apcore-rust get wrong (aiperceivable/apcore#122),
+        // and the one a future switch to an upstream helper would regress.
+        assert_eq!(sanitize_id_segment("cat--file"), "cat__file");
+        assert_eq!(sanitize_id_segment("a___b"), "a___b");
+        // Non-ASCII is folded per character, never dropped, so two names that
+        // differ only outside the charset stay one collision for
+        // `deduplicate_ids` to resolve rather than silently becoming one id.
+        assert_eq!(sanitize_id_segment("café"), "caf_");
+        assert_eq!(sanitize_id_segment("Über"), "t_ber");
+    }
+
+    /// Sweep the charset boundary and assert the three properties the doc
+    /// comment claims, rather than trusting a handful of examples: apcore's own
+    /// `normalize_id` fixtures are 16 happy-path cases, which is why two of its
+    /// SDKs diverged while CI stayed green.
+    #[test]
+    fn test_sanitize_id_segment_holds_its_contract() {
+        let alphabet = [
+            "a", "z", "A", "Z", "0", "9", "_", "-", ".", "/", " ", "é", "Ü",
+        ];
+        let grammar = regex::Regex::new("^[a-z][a-z0-9_]*$").expect("valid regex");
+        let mut cases = vec![String::new()];
+        for _ in 0..3 {
+            let mut next = Vec::new();
+            for prefix in &cases {
+                for unit in alphabet {
+                    next.push(format!("{prefix}{unit}"));
+                }
+            }
+            cases.extend(next);
+        }
+
+        for input in &cases {
+            let folded = sanitize_id_segment(input);
+
+            assert!(
+                grammar.is_match(&folded),
+                "{input:?} folded to {folded:?}, which the apcore grammar rejects"
+            );
+
+            let (from, to) = (input.chars().count(), folded.chars().count());
+            assert!(
+                to == from || to == from + 1,
+                "{input:?} ({from} chars) folded to {folded:?} ({to} chars): a \
+                 length other than n or n+1 means a character was collapsed or \
+                 stripped"
+            );
+
+            assert_eq!(
+                sanitize_id_segment(&folded),
+                folded,
+                "folding {input:?} is not idempotent"
+            );
+        }
     }
 
     #[test]
