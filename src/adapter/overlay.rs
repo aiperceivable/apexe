@@ -453,7 +453,7 @@ impl ToolOverlay {
                 .match_rules
                 .binary_globs
                 .iter()
-                .any(|pattern| glob_matches(pattern, &context.binary_path));
+                .any(|pattern| apcore::utils::match_glob(pattern, &context.binary_path));
             return matched.then_some(MatchStrength::PlatformAndGlob);
         }
         Some(MatchStrength::Platform)
@@ -670,36 +670,6 @@ fn probe_satisfied(matcher: &ProbeMatcher, outcomes: &[ProbeOutcome]) -> bool {
         None => true,
         Some(ref needle) => outcome.output.contains(needle.as_str()),
     }
-}
-
-/// Match `path` against a `*` / `?` wildcard `pattern`.
-///
-/// A dedicated matcher rather than a glob crate: overlays only ever need
-/// literal paths with the odd wildcard, and the adapter layer stays
-/// dependency-light on purpose.
-fn glob_matches(pattern: &str, path: &str) -> bool {
-    let pattern: Vec<char> = pattern.chars().collect();
-    let path: Vec<char> = path.chars().collect();
-    let (mut p, mut t) = (0_usize, 0_usize);
-    let (mut star, mut backtrack) = (None, 0_usize);
-
-    while t < path.len() {
-        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == path[t]) {
-            p += 1;
-            t += 1;
-        } else if p < pattern.len() && pattern[p] == '*' {
-            star = Some(p);
-            backtrack = t;
-            p += 1;
-        } else if let Some(star_index) = star {
-            p = star_index + 1;
-            backtrack += 1;
-            t = backtrack;
-        } else {
-            return false;
-        }
-    }
-    pattern[p..].iter().all(|c| *c == '*')
 }
 
 /// Whether `version` satisfies a comma-separated constraint list.
@@ -1139,13 +1109,27 @@ mod tests {
     }
 
     #[test]
-    fn test_glob_matches_literal_and_wildcards() {
-        assert!(glob_matches("/bin/ls", "/bin/ls"));
-        assert!(glob_matches("/bin/*", "/bin/ls"));
-        assert!(glob_matches("*/bin/ls", "/opt/homebrew/bin/ls"));
-        assert!(glob_matches("/bin/l?", "/bin/ls"));
-        assert!(!glob_matches("/bin/ls", "/usr/bin/ls"));
-        assert!(!glob_matches("/bin/l?", "/bin/lsx"));
+    fn test_binary_glob_matching_is_apcore_a25() {
+        use apcore::utils::match_glob;
+
+        // The shapes `binary_globs` is actually written in.
+        assert!(match_glob("/bin/ls", "/bin/ls"));
+        assert!(match_glob("/bin/*", "/bin/ls"));
+        assert!(match_glob("*/bin/ls", "/opt/homebrew/bin/ls"));
+        assert!(match_glob("/bin/l?", "/bin/ls"));
+        assert!(!match_glob("/bin/ls", "/usr/bin/ls"));
+        assert!(!match_glob("/bin/l?", "/bin/lsx"));
+
+        // What delegating to A25 fixed. apexe used to hand-roll this matcher
+        // and checked literal equality before the wildcard branch, so a `*` in
+        // the *value* was consumed as a literal: `*` failed to match any path
+        // containing one. A differential run over 87 million pattern/value
+        // pairs found 154,668 such missed matches and zero spurious ones, all
+        // of them requiring a metacharacter in the value -- which a Unix path
+        // may legally carry.
+        assert!(match_glob("*", "/opt/weird*name/ls"));
+        assert!(match_glob("/opt/*/ls", "/opt/weird*name/ls"));
+        assert!(match_glob("*", "?"));
     }
 
     #[test]

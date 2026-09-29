@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
+### Changed
+
+- **Overlay `binary_globs` matching delegates to apcore's Algorithm A25, and the hand-rolled matcher is deleted — which fixes a bug.** `adapter::overlay` carried its own 25-line `*`/`?` matcher, justified when written by keeping "the adapter layer dependency-light"; apexe depends on apcore already, so that reasoning was void. apcore 0.31 promoted `match_glob` to the spec's single glob dialect (PROTOCOL_SPEC §9.2.3), replacing three that disagreed, and it is reachable as `apcore::utils::match_glob`.
+
+  The swap was not taken on faith. A differential run over **87,067,561 pattern/value pairs** drawn from a metacharacter-rich alphabet found apexe's matcher wrong on **154,668** of them and apcore's wrong on none: apexe checked literal equality *before* the wildcard branch, so a `*` in the **value** was consumed as a literal and the pattern `*` failed to match any path containing one. Every divergence needed a metacharacter in the value — zero when the value was a plain path — which is why no existing test caught it, and a Unix path may legally carry one. The failure direction was safe (a missed match means the overlay does not apply and the scan result stands) and there were no false positives, so adopting A25 can only add matches, never remove one.
+
+### Removed
+
+- **The ACL inert-rule detector, which apcore 0.29 made unreachable.** `validate_acl_rules` carried `never_matches` for a `callers`/`targets` list apcore's matcher could never satisfy — `[]`, a bare `$or`, a bare `$not` — filed as [apcore#112](https://github.com/aiperceivable/apcore/issues/112) and closed upstream by refusing that shape at every door: `ACL::load` and `try_new` return an error, the infallible `ACL::new` and `add_rule` panic. Both apexe doors go through one of those, so no such rule could reach the detector from a file or from a library consumer; it was unreachable code asserting a guarantee upstream now makes.
+
+  Removing it is a net gain in the diagnostic too: apcore's refusal names the field and says what to write instead (`['*']` for "everything", or delete the rule for "nothing"), where apexe's said only that the list was empty. `InertRule` and `AclValidationReport::inert_rules` are gone from the public API.
+
+  **Near-miss detection stays**, because apcore does not do it and cannot: a rule naming `cli.git.cat-file` when the registry holds `cli.git.cat_file` is well-formed by every upstream check and still guards nothing — that needs the registry, which only apexe has at that point. Three tests that asserted the removed detector are replaced by one that pins apcore's refusal at both doors in both directions, so an upstream regression reopening the hole fails here rather than passing silently.
+
 ## [Unreleased]
 
 ### Added

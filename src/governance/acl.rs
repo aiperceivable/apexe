@@ -422,20 +422,6 @@ const NOT_SENTINEL: &str = "$not";
 /// Maximum number of near-miss module ids named in one diagnostic.
 const MAX_SUGGESTIONS: usize = 3;
 
-/// A `callers` or `targets` list apcore's matcher can never satisfy, so the
-/// rule carrying it is dead weight no matter which modules are registered.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InertRule {
-    /// Index of the rule in the ACL file's `rules` list.
-    pub rule_index: usize,
-    /// Which list is inert: `"callers"` or `"targets"`.
-    pub field: String,
-    /// The rule's declared effect, so the diagnostic can say what was lost.
-    pub effect: String,
-    /// Why apcore's matcher can never satisfy this list.
-    pub reason: String,
-}
-
 /// A target pattern that matches none of the module ids actually registered.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnmatchedTarget {
@@ -467,9 +453,20 @@ impl UnmatchedTarget {
 /// Outcome of checking a loaded ACL against the registry it will guard.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AclValidationReport {
-    /// Rules whose caller or target list can never match anything.
-    pub inert_rules: Vec<InertRule>,
     /// Target patterns that match no registered module id.
+    ///
+    /// The report used to carry a second kind, `inert_rules`, for a `callers` or
+    /// `targets` list apcore's matcher could never satisfy (`[]`, a bare `$or`,
+    /// a bare `$not`). apcore 0.29 closed that shape at every door it exposes —
+    /// `ACL::load` and `try_new` refuse it, the infallible `ACL::new` and
+    /// `add_rule` panic on it (apcore#112) — so no such rule can reach this
+    /// function, from a file or from a library consumer. Detecting it here was
+    /// then unreachable code asserting a guarantee upstream now makes, which is
+    /// the duplication worth removing rather than keeping as a belt.
+    ///
+    /// Near-miss detection stays, because apcore does not do it: a rule naming
+    /// `cli.git.cat-file` when the registry holds `cli.git.cat_file` is
+    /// well-formed by every upstream check and still protects nothing.
     pub unmatched_targets: Vec<UnmatchedTarget>,
 }
 
@@ -477,11 +474,9 @@ impl AclValidationReport {
     /// Whether the findings warrant refusing to start. See
     /// [`validate_acl_rules`] for the refuse-vs-warn split.
     pub fn is_fatal(&self) -> bool {
-        !self.inert_rules.is_empty()
-            || self
-                .unmatched_targets
-                .iter()
-                .any(UnmatchedTarget::is_near_miss)
+        self.unmatched_targets
+            .iter()
+            .any(UnmatchedTarget::is_near_miss)
     }
 
     /// Log the non-fatal findings — target patterns that match nothing today
@@ -520,13 +515,12 @@ impl AclValidationReport {
         if !self.is_fatal() {
             return None;
         }
-        let mut lines: Vec<String> = self.inert_rules.iter().map(describe_inert).collect();
-        lines.extend(
-            self.unmatched_targets
-                .iter()
-                .filter(|t| t.is_near_miss())
-                .map(describe_near_miss),
-        );
+        let lines: Vec<String> = self
+            .unmatched_targets
+            .iter()
+            .filter(|t| t.is_near_miss())
+            .map(describe_near_miss)
+            .collect();
         Some(
             ModuleError::new(
                 ErrorCode::GeneralInvalidInput,
@@ -542,14 +536,6 @@ impl AclValidationReport {
             .with_retryable(false),
         )
     }
-}
-
-/// One human-readable line describing an inert rule.
-fn describe_inert(rule: &InertRule) -> String {
-    format!(
-        "  - rule {} ({}): `{}` is {}",
-        rule.rule_index, rule.effect, rule.field, rule.reason
-    )
 }
 
 /// One human-readable line describing a target that is a typo of a registered
@@ -616,27 +602,12 @@ fn describe_near_miss(target: &UnmatchedTarget) -> String {
 pub fn validate_acl_rules(rules: &[ACLRule], registered_ids: &[String]) -> AclValidationReport {
     let mut report = AclValidationReport::default();
     for (rule_index, rule) in rules.iter().enumerate() {
-        collect_inert(rule_index, rule, &mut report);
         if registered_ids.is_empty() {
             continue;
         }
         collect_unmatched_targets(rule_index, rule, registered_ids, &mut report);
     }
     report
-}
-
-/// Record the rule's `callers`/`targets` lists that apcore can never satisfy.
-fn collect_inert(rule_index: usize, rule: &ACLRule, report: &mut AclValidationReport) {
-    for (field, patterns) in [("callers", &rule.callers), ("targets", &rule.targets)] {
-        if let Some(reason) = never_matches(patterns) {
-            report.inert_rules.push(InertRule {
-                rule_index,
-                field: field.to_string(),
-                effect: rule.effect.clone(),
-                reason,
-            });
-        }
-    }
 }
 
 /// Record the rule's target patterns that match no registered module id.
@@ -660,27 +631,6 @@ fn collect_unmatched_targets(
             negated: target.negated,
             suggestions: suggest_similar(target.pattern, registered_ids),
         });
-    }
-}
-
-/// Why apcore's `match_patterns` can never return `true` for this list, or
-/// `None` when it can.
-fn never_matches(patterns: &[String]) -> Option<String> {
-    if patterns.is_empty() {
-        return Some(
-            "an empty list — apcore's matcher returns `false` for an empty pattern list, so \
-             this rule can never fire"
-                .to_string(),
-        );
-    }
-    match patterns[0].as_str() {
-        NOT_SENTINEL if patterns.len() < 2 => {
-            Some("`$not` with no operand, which apcore's matcher rejects outright".to_string())
-        }
-        OR_SENTINEL if patterns.len() < 2 => {
-            Some("`$or` with no operands, so there is nothing to match".to_string())
-        }
-        _ => None,
     }
 }
 
@@ -1131,38 +1081,48 @@ mod tests {
         assert!(!report.is_fatal());
     }
 
+    /// The inert shapes apexe used to detect are refused by apcore itself now.
+    ///
+    /// apexe carried a `never_matches` detector for a `callers`/`targets` list
+    /// apcore's matcher could never satisfy — `[]`, a bare `$or`, a bare `$not`.
+    /// apcore 0.29 closed that shape at every door (apcore#112), so the detector
+    /// became unreachable and was removed rather than kept as a belt over a
+    /// guarantee upstream now makes.
+    ///
+    /// This test replaces it by pinning the guarantee where it now lives: both
+    /// doors, both directions. Without it, an upstream regression would silently
+    /// reopen the hole apexe used to cover, and nothing here would notice.
     #[test]
-    fn test_validate_acl_rules_flags_empty_target_list_as_inert() {
-        // #39 item 5(b): apcore rejects an OMITTED `targets` key but accepts
-        // `targets: []`, and its matcher returns false for an empty pattern
-        // list — so the deny rule never fires and the module runs.
-        let report = validate_acl_rules(&[rule(&[], "deny")], &registered(&["cli.cp"]));
-        assert_eq!(report.inert_rules.len(), 1);
-        assert_eq!(report.inert_rules[0].field, "targets");
-        assert_eq!(report.inert_rules[0].effect, "deny");
-        assert!(report.is_fatal());
-    }
+    fn test_apcore_refuses_an_inert_pattern_list_at_every_door() {
+        for (label, callers, targets) in [
+            ("empty targets", vec!["*".to_string()], vec![]),
+            ("empty callers", vec![], vec!["cli.cp".to_string()]),
+            (
+                "bare $or",
+                vec!["*".to_string()],
+                vec![OR_SENTINEL.to_string()],
+            ),
+            (
+                "bare $not",
+                vec!["*".to_string()],
+                vec![NOT_SENTINEL.to_string()],
+            ),
+        ] {
+            let mut r = ACLRule::new(vec!["*".to_string()], vec!["cli.cp".to_string()], "deny");
+            r.callers = callers;
+            r.targets = targets;
 
-    #[test]
-    fn test_validate_acl_rules_flags_empty_caller_list_as_inert() {
-        // `callers` goes through the same `match_patterns`, so an empty caller
-        // list is inert for exactly the same reason.
-        let mut inert = rule(&["cli.cp"], "deny");
-        inert.callers = vec![];
-        let report = validate_acl_rules(&[inert], &registered(&["cli.cp"]));
-        assert_eq!(report.inert_rules.len(), 1);
-        assert_eq!(report.inert_rules[0].field, "callers");
-    }
-
-    #[test]
-    fn test_validate_acl_rules_flags_bare_compound_sentinels_as_inert() {
-        let report = validate_acl_rules(
-            &[rule(&["$not"], "deny"), rule(&["$or"], "allow")],
-            &registered(&["cli.cp"]),
-        );
-        assert_eq!(report.inert_rules.len(), 2);
-        assert!(report.inert_rules[0].reason.contains("$not"));
-        assert!(report.inert_rules[1].reason.contains("$or"));
+            // The fallible door reports it...
+            assert!(
+                ACL::try_new(vec![r.clone()], "deny", None).is_err(),
+                "{label}: ACL::try_new must refuse an inert pattern list"
+            );
+            // ...and the infallible one panics rather than admitting it.
+            assert!(
+                std::panic::catch_unwind(move || ACL::new(vec![r], "deny", None)).is_err(),
+                "{label}: ACL::new must panic rather than build an inert rule"
+            );
+        }
     }
 
     #[test]
@@ -1318,16 +1278,14 @@ mod tests {
     #[test]
     fn test_validate_acl_rules_skips_target_check_on_empty_registry() {
         // Nothing to validate against — reporting every pattern would be noise.
-        // Structural findings still stand.
-        let report = validate_acl_rules(&[rule(&["cli.cp"], "deny"), rule(&[], "deny")], &[]);
-        assert!(report.unmatched_targets.is_empty());
-        assert_eq!(report.inert_rules.len(), 1);
+        let report = validate_acl_rules(&[rule(&["cli.cp"], "deny")], &[]);
+        assert_eq!(report, AclValidationReport::default());
     }
 
     #[test]
     fn test_acl_validation_report_fatal_error_names_the_findings() {
         let report = validate_acl_rules(
-            &[rule(&["cli.git.cat-file"], "deny"), rule(&[], "deny")],
+            &[rule(&["cli.git.cat-file"], "deny")],
             &registered(&["cli.git.cat_file"]),
         );
         let err = report
@@ -1335,8 +1293,11 @@ mod tests {
             .expect("report should be fatal");
         assert_eq!(err.code, ErrorCode::GeneralInvalidInput);
         assert!(err.message.contains("/etc/apexe/acl.yaml"));
+        // The near miss names the spelling that IS registered, which is the
+        // whole value of the diagnostic: the operator wrote a rule that looks
+        // right and guards nothing.
         assert!(err.message.contains("cli.git.cat_file"));
-        assert!(err.message.contains("empty list"));
+        assert!(err.message.contains("cli.git.cat-file"));
     }
 
     #[test]
