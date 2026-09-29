@@ -889,9 +889,15 @@ impl ListArgs {
         // FAILURE (e.g. a corrupt .binding.yaml) must surface, not be masked as
         // an empty list that misleadingly prints "No modules found".
         if !dir.exists() {
+            crate::output::warn_if_no_bindings(dir, 0);
             return Ok(vec![]);
         }
-        crate::output::load_modules_from_dir(dir, pattern).map_err(|e| anyhow::anyhow!(e))
+        let modules =
+            crate::output::load_modules_from_dir(dir, pattern).map_err(|e| anyhow::anyhow!(e))?;
+        // "No modules found" does not say *why*, and after the 0.8.0 move the
+        // commonest why is that they are in the previous default directory.
+        crate::output::warn_if_no_bindings(dir, modules.len());
+        Ok(modules)
     }
 
     /// `--acl`, or `<config_dir>/acl.yaml` when `--acl` is absent and that

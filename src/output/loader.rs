@@ -45,10 +45,139 @@ pub fn load_modules_from_dir(
         })
 }
 
+/// The pre-0.8.0 default bindings directory, when it still holds bindings.
+///
+/// Returns `None` unless `dir` is a default-layout `bindings` directory whose
+/// `modules` sibling exists and holds at least one `*.binding.yaml`. The
+/// `file_name` guard is deliberate: an operator who declared `bindings.dir`
+/// pointing somewhere of their own has no `modules` sibling to have upgraded
+/// from, and guessing one would name a path that was never apexe's.
+fn legacy_bindings_dir(dir: &Path) -> Option<std::path::PathBuf> {
+    if dir.file_name()? != std::ffi::OsStr::new("bindings") {
+        return None;
+    }
+    let legacy = dir.parent()?.join("modules");
+    let holds_a_binding = std::fs::read_dir(&legacy).ok()?.flatten().any(|entry| {
+        entry
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".binding.yaml")
+    });
+    holds_a_binding.then_some(legacy)
+}
+
+/// Warn when a bindings directory yields nothing to serve.
+///
+/// A server with zero modules is a server with no callable tools, and until
+/// now that arrived silently: [`crate::module::registry`] warned only when the
+/// directory was *missing*, and `apexe list` treated a missing one as "no
+/// modules yet" and said nothing at all. An empty directory and an unscanned
+/// host read identically, which is the shape the 0.8.0 upgrade turns into a
+/// certainty rather than a possibility — apcore's canonical `bindings.dir`
+/// moved the default from `~/.apexe/modules` to `~/.apexe/bindings`, so an
+/// install that scanned under 0.7.0 finds the new directory empty and its
+/// bindings still sitting in the old one.
+///
+/// Called by the two places a user reaches, not by
+/// [`load_modules_from_dir`] itself, which stays a pure data path.
+pub fn warn_if_no_bindings(dir: &Path, loaded: usize) {
+    if loaded > 0 {
+        return;
+    }
+    match legacy_bindings_dir(dir) {
+        Some(legacy) => tracing::warn!(
+            dir = %dir.display(),
+            legacy_dir = %legacy.display(),
+            "No bindings here, so there are NO callable tools -- but the pre-0.8.0 \
+             default directory still holds some. apexe now follows apcore's canonical \
+             `bindings.dir`, which moved the default from `modules` to `bindings`. \
+             Re-run `apexe scan` to regenerate them here (recommended -- a binding \
+             written by an older apexe can also be missing contract keywords), or move \
+             the files across."
+        ),
+        None => tracing::warn!(
+            dir = %dir.display(),
+            "No bindings found, so there are NO callable tools. Run `apexe scan <tool>` first."
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::output::YamlOutput;
+
+    /// The upgrade case: `bindings` is empty and `modules` still holds files.
+    #[test]
+    fn test_the_pre_0_8_0_directory_is_named_when_it_still_holds_bindings() {
+        let root = TempDir::new().unwrap();
+        let bindings = root.path().join("bindings");
+        let legacy = root.path().join("modules");
+        std::fs::create_dir_all(&bindings).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("cli.git.binding.yaml"), "bindings: []\n").unwrap();
+
+        assert_eq!(legacy_bindings_dir(&bindings), Some(legacy));
+    }
+
+    /// A fresh install has no `modules` sibling, and an operator who already
+    /// migrated has an empty one. Neither should be pointed at.
+    #[test]
+    fn test_the_pre_0_8_0_directory_is_not_named_when_it_holds_nothing() {
+        let root = TempDir::new().unwrap();
+        let bindings = root.path().join("bindings");
+        std::fs::create_dir_all(&bindings).unwrap();
+        assert_eq!(legacy_bindings_dir(&bindings), None, "no sibling at all");
+
+        let legacy = root.path().join("modules");
+        std::fs::create_dir_all(&legacy).unwrap();
+        assert_eq!(legacy_bindings_dir(&bindings), None, "empty sibling");
+
+        std::fs::write(legacy.join("notes.txt"), "not a binding").unwrap();
+        assert_eq!(
+            legacy_bindings_dir(&bindings),
+            None,
+            "a sibling holding no *.binding.yaml is not a bindings directory"
+        );
+    }
+
+    /// A declared `bindings.dir` of the operator's own never had a `modules`
+    /// sibling to upgrade from, so guessing one would name a path that was
+    /// never apexe's -- even when such a directory happens to exist.
+    #[test]
+    fn test_a_declared_bindings_dir_is_not_given_a_legacy_sibling() {
+        let root = TempDir::new().unwrap();
+        let declared = root.path().join("team-policy");
+        let decoy = root.path().join("modules");
+        std::fs::create_dir_all(&declared).unwrap();
+        std::fs::create_dir_all(&decoy).unwrap();
+        std::fs::write(decoy.join("cli.git.binding.yaml"), "bindings: []\n").unwrap();
+
+        assert_eq!(legacy_bindings_dir(&declared), None);
+    }
+
+    /// The version has to survive the write, or a later apexe reads nothing.
+    #[test]
+    fn test_the_generating_version_round_trips_through_a_binding_file() {
+        let dir = TempDir::new().unwrap();
+        let mut module = make_test_module("cli.demo");
+        module.metadata.insert(
+            "generated_by".to_string(),
+            json!(format!("apexe {}", env!("CARGO_PKG_VERSION"))),
+        );
+
+        YamlOutput::new()
+            .write(std::slice::from_ref(&module), dir.path(), false)
+            .unwrap();
+        let loaded = load_modules_from_dir(dir.path(), None).unwrap();
+
+        assert_eq!(
+            loaded[0].metadata.get("generated_by"),
+            Some(&json!(format!("apexe {}", env!("CARGO_PKG_VERSION")))),
+            "a binding must say which apexe wrote it after a round trip, or a \
+             later release cannot tell a stale file from a current one"
+        );
+    }
     use serde_json::json;
     use tempfile::TempDir;
 

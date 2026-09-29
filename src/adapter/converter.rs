@@ -152,6 +152,19 @@ impl CliToolConverter {
             )
         };
         let mut metadata = HashMap::new();
+        // Which apexe wrote this file. A binding is read by whatever apexe is
+        // installed later, and a release that adds a contract keyword cannot
+        // tell a file written before it existed from one written after: the
+        // keyword is simply absent either way. 0.7.0 shipped the path guard,
+        // the approval gate and log redaction all keyed on `x-apexe-*`, so a
+        // binding written by 0.6.x served with every one of them silently
+        // inert -- and nothing could detect it. Recording the producer is the
+        // half that has to exist first; a later release can then compare it
+        // against its own and say "rescan" instead of enforcing nothing.
+        metadata.insert(
+            "generated_by".to_string(),
+            json!(format!("apexe {}", env!("CARGO_PKG_VERSION"))),
+        );
         metadata.insert("scan_tier".to_string(), json!(tool.scan_tier));
         metadata.insert("help_format".to_string(), json!(help_format_name));
         metadata.insert("binary_path".to_string(), json!(tool.binary_path));
@@ -1161,6 +1174,25 @@ mod tests {
             modules[0].metadata.get("command_path"),
             Some(&json!(["git", "cat-file"]))
         );
+    }
+
+    #[test]
+    fn test_every_converted_module_records_the_apexe_version_that_wrote_it() {
+        let cmd = make_command("list", "mytool list");
+        let tool = make_tool("mytool", vec![cmd]);
+        let modules = CliToolConverter::new().convert(&tool);
+
+        let expected = json!(format!("apexe {}", env!("CARGO_PKG_VERSION")));
+        assert!(!modules.is_empty());
+        for module in &modules {
+            assert_eq!(
+                module.metadata.get("generated_by"),
+                Some(&expected),
+                "{} carries no producer, so a later apexe cannot tell whether it \
+                 predates a contract keyword it now enforces",
+                module.module_id
+            );
+        }
     }
 
     #[test]

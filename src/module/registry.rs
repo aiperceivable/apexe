@@ -410,12 +410,16 @@ fn load_scanned_modules(
     bindings_pattern: Option<&str>,
 ) -> Result<Vec<ScannedModule>, ModuleError> {
     match bindings_dir {
-        Some(dir) if dir.is_dir() => load_modules_from_dir(dir, bindings_pattern),
+        Some(dir) if dir.is_dir() => {
+            let modules = load_modules_from_dir(dir, bindings_pattern)?;
+            crate::output::warn_if_no_bindings(dir, modules.len());
+            Ok(modules)
+        }
         Some(dir) => {
-            tracing::warn!(
-                dir = %dir.display(),
-                "Bindings directory not found, starting with zero tools"
-            );
+            // A missing directory is the same outcome as an empty one, and gets
+            // the same diagnostic: it is the one that names the pre-0.8.0
+            // location when bindings are still sitting there.
+            crate::output::warn_if_no_bindings(dir, 0);
             Ok(vec![])
         }
         None => Ok(vec![]),
