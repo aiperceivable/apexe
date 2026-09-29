@@ -80,7 +80,7 @@ fn legacy_bindings_dir(dir: &Path) -> Option<std::path::PathBuf> {
 ///
 /// Called by the two places a user reaches, not by
 /// [`load_modules_from_dir`] itself, which stays a pure data path.
-pub fn warn_if_no_bindings(dir: &Path, loaded: usize) {
+pub(crate) fn warn_if_no_bindings(dir: &Path, loaded: usize) {
     if loaded > 0 {
         return;
     }
