@@ -137,15 +137,21 @@ and a `/?` parser, and is not implemented.
 # Scan git — extracts commands, flags, types, annotations
 apexe scan git
 
-# See what was generated
-apexe list
+# Review the generated module-level ACL decision
+apexe list --verbose --acl ~/.apexe/acl.yaml
 
-# Start MCP server (Claude Desktop / Cursor)
-apexe serve
+# Start MCP server with the reviewed ACL enforced
+apexe serve --acl ~/.apexe/acl.yaml
 
 # Or HTTP with browser-based tool explorer
-apexe serve --transport http --port 8000 --explorer
+apexe serve --transport http --port 8000 --explorer --acl ~/.apexe/acl.yaml
 ```
+
+`scan` writes a starter `~/.apexe/acl.yaml` with `default_effect: deny`.
+Read-only local modules are allowed by default; destructive, network-reaching,
+and unknown modules are denied. Generating that file does **not** enable it:
+pass `--acl` to `serve` or `a2a` after reviewing and editing it for the tools
+you intend to expose. See [Wrap a CLI and enforce its ACL](docs/user-manual.md#911-wrap-a-cli-and-enforce-its-acl).
 
 ### Claude Desktop integration
 
@@ -514,23 +520,28 @@ gh workflow run release.yml -f tag=rust/vX.Y.Z
 
 | Document | Description |
 |----------|-------------|
-| **[Quick Start](docs/quickstart.md)** | Get running in 30 seconds |
-| **[User Manual](docs/user-manual.md)** | Full reference — commands, config, scanning, schema generation, annotations, governance, MCP server, AI integration, error handling |
-| **[Threat Model](docs/threat-model.md)** | What apexe enforces, how, and what it explicitly does not cover — read before relying on it |
+| **[Documentation hub](docs/README.md)** | Choose the user or developer documentation path |
+| **[Quick Start](docs/quickstart.md)** | Scan a CLI, review its ACL, and connect an agent |
+| **[User Manual](docs/user-manual.md)** | Operator reference — commands, configuration, governance, transports, and troubleshooting |
+| **[Threat Model](docs/threat-model.md)** | What apexe enforces and what still requires sandboxing or host policy |
 | **[Security Policy](SECURITY.md)** | How to report a vulnerability privately, and what counts as one |
-| **[Authoring Tool Overlays](docs/overlays.md)** | How to write and verify a curated overlay — required reading before adding one |
-| **[Examples](examples/README.md)** | Shell script walkthrough + Rust library API usage |
+| **[Basic example](examples/basic/README.md)** | Runnable terminal walkthrough with ACL enforcement |
+| **[cli-permissions example](examples/cli_permissions/README.md)** | Scan verified POSIX command facts from the external corpus |
 | **[Changelog](CHANGELOG.md)** | Release history and migration notes |
 
-### Architecture & Design
+### Developer and contributor references
 
 | Document | Description |
 |----------|-------------|
+| **[Developer Guide](docs/developer-guide.md)** | Library embedding, extension points, and contributor navigation |
+| [Programmatic example](examples/programmatic/README.md) | Rust library API usage |
+| [ACL library example](examples/acl_demo/README.md) | Role-based ACL with an explicit apcore context |
+| [Authoring Tool Overlays](docs/overlays.md) | Write and verify a curated overlay |
 | [Technical Design](docs/apcore-integration/tech-design.md) | v0.1.0 architecture with apcore ecosystem integration |
 | [Feature Manifest](docs/FEATURE_MANIFEST.md) | Module map, crate dependencies, project status |
 | [Feature Specs](docs/features/v2-overview.md) | Detailed specifications for features F1-F7 |
 
-### Feature Specs
+#### Feature specs
 
 | Spec | Description |
 |------|-------------|

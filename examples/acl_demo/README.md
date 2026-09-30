@@ -39,9 +39,11 @@ integrations (see [`axum-apcore/examples/acl_demo`](../../../axum-apcore/example
 are independent gates: this demo builds the executor with
 `enable_approval: false`, so an admin's call clears the ACL check and then
 skips the (unconfigured) approval gate — apcore logs a warning about that at
-`RUST_LOG=warn`. Pass `enable_approval: true` in `ExecutorOptions` (what
-`apexe serve --enable-approval` / `apexe a2a --enable-approval` do) to
-additionally require human approval even for admins.
+`RUST_LOG=warn`. Pass `enable_approval: true` in `ExecutorOptions` (the option
+behind `apexe serve --enable-approval`) to additionally require human approval
+even for admins. The `apexe a2a` command has no interactive elicitation
+transport, so it does not expose an `--enable-approval` flag; A2A approval is a
+library-only integration using an `ApprovalStore`.
 
 ## Run it
 

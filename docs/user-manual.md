@@ -1,5 +1,11 @@
 # apexe User Manual
 
+> **Audience:** This manual is for people operating `apexe` from the terminal:
+> scanning an existing CLI, reviewing the generated policy, connecting an AI
+> client, and troubleshooting a deployment. For Rust embedding, parser
+> extensions, overlays, and architecture records, see the
+> [Developer Guide](developer-guide.md).
+
 | Field | Value |
 |-------|-------|
 | **Version** | 0.8.0 |
@@ -15,9 +21,9 @@
 3. [Quick Start](#3-quick-start)
 4. [Commands Reference](#4-commands-reference)
 5. [Configuration](#5-configuration)
-6. [Scanning Engine](#6-scanning-engine)
-7. [Schema Generation](#7-schema-generation)
-8. [Behavioral Annotations](#8-behavioral-annotations)
+6. [How apexe reads a CLI](#6-scanning-engine)
+7. [What agents receive](#7-schema-generation)
+8. [How apexe classifies risk](#8-behavioral-annotations)
 9. [Governance](#9-governance)
 10. [MCP Server](#10-mcp-server)
 11. [A2A Server](#11-a2a-server)
@@ -325,6 +331,11 @@ default_timeout: 30
 scan_depth: 2
 json_output_preference: true
 
+# Read reviewed command facts from an external overlay corpus. Paths are loaded
+# in order; a local ~/.apexe/overlays entry still takes precedence.
+overlay_dirs:
+  - /opt/cli-permissions/overlays
+
 # Appended to the compiled-in path-guard baselines. See section 9.7.
 additional_denied_paths:
   - /srv/production-data
@@ -343,6 +354,7 @@ allowed_paths:
 | `default_timeout` | integer | `30` | CLI subprocess timeout (seconds) |
 | `scan_depth` | integer | `2` | Default subcommand recursion depth |
 | `json_output_preference` | boolean | `true` | Prefer JSON output from CLI tools when available |
+| `overlay_dirs` | list of paths | `[]` | Extra overlay corpora to load before personal overlays |
 | `additional_denied_paths` | list of paths | `[]` | Locations to deny **in addition to** the path-guard baselines (§9.7) |
 | `allowed_paths` | list of paths | `[]` | Carve-outs **out of** the path-guard baselines (§9.7). The only setting that relaxes the guard; you own the consequences |
 
@@ -452,7 +464,7 @@ The same command name can be a different program depending on the host, and BSD/
 
 ### 6.5 Tool Overlays
 
-An overlay is a curated, human-reviewed description of one tool variant, keyed by `(command, variant, version_range)`. 42 ship built in, covering the 21-command POSIX core (`cat chmod cp cut df diff du find grep head ln ls mkdir mv rm sort tail touch uniq wc xargs`) across their BSD/GNU/Apple variants.
+An overlay is a curated, human-reviewed description of one tool variant, keyed by `(command, variant, version_range)`. apexe ships no overlays itself. The independently maintained [cli-permissions](https://github.com/aiperceivable/cli-permissions) corpus contains reviewed POSIX-core and `sed` variants, and apexe consumes it at scan time.
 
 - **`mode: authoritative`** replaces the scan result for that command entirely.
 - **`mode: merge`** keeps the scan as the base and only overrides the flags the overlay declares — a gap in the overlay degrades to the scanner's answer instead of erasing a real flag.
@@ -460,8 +472,8 @@ An overlay is a curated, human-reviewed description of one tool variant, keyed b
 - Overlays are the only source that can express `conflicts_with` (mutually exclusive flags) and `long_running` (a flag that may block indefinitely, e.g. `tail -f`) — no `--help`/man format expresses either machine-readably.
 - Overlays can also override behavioral annotations (`readonly`/`destructive`/`idempotent`/`requires_approval`/`open_world`) for a specific command. `open_world` is the one inference reads off a *name list* rather than the command's own surface, so it is the one an overlay most often has to correct: GNU sed runs `s///e` as a shell command while BSD sed rejects the flag, and the name `sed` cannot tell them apart.
 
-Load one explicit overlay with `apexe scan <tool> --overlay <PATH>` (JSON or YAML), or install multiple overlays by dropping files under `~/.apexe/overlays/`. The format is defined by [`tool-overlay.schema.json`](https://github.com/aiperceivable/cli-permissions/blob/main/schemas/tool-overlay.schema.json), which ships with
-the corpus rather than with apexe. See [`docs/overlay-consumers.md`](overlay-consumers.md) for reading overlays from
+Load one explicit overlay with `apexe scan <tool> --overlay <PATH>` (JSON or YAML), add a corpus directory through `overlay_dirs` or `APEXE_OVERLAY_DIRS`, or place a local correction under `~/.apexe/overlays/`. The format is defined by [`tool-overlay.schema.json`](https://github.com/aiperceivable/cli-permissions/blob/main/schemas/tool-overlay.schema.json), which ships with
+the corpus rather than with apexe. See the [cli-permissions example](../examples/cli_permissions/README.md) for an operator walkthrough, [`docs/overlay-consumers.md`](overlay-consumers.md) for reading overlays from
 outside apexe, and [`docs/overlays.md`](overlays.md) for the full authoring and verification procedure — writing a `verified` overlay from memory instead of a real installation is exactly what it warns against.
 
 ---
@@ -688,6 +700,65 @@ rules:
     effect: deny
     description: "Block open-world CLI commands by default"
 ```
+
+#### 9.1.1 Wrap a CLI and enforce its ACL
+
+Use this sequence when introducing an existing CLI to an agent. It produces
+bindings, lets you review the policy against the modules actually generated,
+and then enables the reviewed policy on either transport:
+
+```bash
+# Scan commands on PATH and write bindings plus ~/.apexe/acl.yaml.
+apexe scan git
+
+# Show modules and the decision the ACL makes for the served anonymous caller.
+apexe list --verbose --acl ~/.apexe/acl.yaml
+
+# Review and edit the generated YAML before relying on it.
+${EDITOR:-vi} ~/.apexe/acl.yaml
+
+# Serve the same bindings through MCP or A2A with ACL enforcement enabled.
+apexe serve --acl ~/.apexe/acl.yaml
+# Or:
+apexe a2a --acl ~/.apexe/acl.yaml
+```
+
+The generated policy is a starting point, not an authorization decision made
+for your environment. By default it permits local readonly modules and denies
+destructive, open-world, and unclassified modules. For example, a scan of Git
+will normally permit `cli.git.status`, `cli.git.log`, and `cli.git.diff`, while
+denying `cli.git.reset`, `cli.git.clean`, `cli.git.push`, and `cli.git.fetch`.
+An operator can grant a narrowly selected module by adding it to an allow rule;
+place narrow deny rules before broad allow rules because evaluation is
+first-match-wins.
+
+`--acl` is the switch that attaches the policy to the Executor. Omitting it
+does not mean “use the generated default”; it means no ACL is enforced. The
+path guard remains active either way, so a path-typed argument still cannot
+write a protected system location or read a credential store.
+
+> **Current served-identity limitation:** `apexe serve` and `apexe a2a` do not
+> populate a distinct `Identity` or role set for each network caller. Rules
+> that use `roles` or `identity_types` are useful when embedding the Executor
+> with an explicit apcore `Context`, but do not currently provide per-user RBAC
+> over apexe's built-in MCP or A2A commands. Use the generated module-level
+> allow/deny rules, `--prefix`/`--tags`, transport authentication where
+> available, and the path guard as the current served boundary.
+
+#### 9.1.2 A wrapped tool is not a shell pipeline
+
+Each generated module executes exactly one scanned binary with a direct argv
+array. apexe does not parse shell source, spawn a shell, or connect one module's
+stdout to another module's stdin. A `|` in an input value is just an argument
+byte; it cannot create a pipeline. The child receives stdin from `/dev/null`.
+
+This is intentional: accepting `ls | grep secret` as shell text would bypass
+the binding contract and make ACL, argument validation, path checks, and audit
+records ambiguous. For now, an agent must make separate tool calls and use the
+first result in its own reasoning. A future pipeline feature must be a
+declarative, no-shell graph whose every stage is a scanned module and receives
+its own ACL, path-guard, timeout, output-limit, and audit decision; it must not
+be emulated with `sh -c`.
 
 > **A deny rule must be unconditional to deny.** apcore registers exactly five
 > condition keys — `identity_types`, `roles`, `max_call_depth`, `$or`, `$not`.
