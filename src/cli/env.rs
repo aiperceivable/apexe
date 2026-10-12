@@ -205,13 +205,18 @@ fn install(directory: &Path, mut manifest: Manifest) -> anyhow::Result<()> {
         None
     };
     if let Some(old) = &old {
-        // Retain missing commands as tombstones: their shims refuse rather
-        // than falling through to ungoverned binaries during an upgrade.
+        // Retain each missing command path as a tombstone, including removed
+        // subcommands of a binary that still has other registered routes.
         for (name, routes) in &old.commands {
-            manifest
-                .commands
-                .entry(name.clone())
-                .or_insert_with(|| routes.clone());
+            let current = manifest.commands.entry(name.clone()).or_default();
+            for route in routes {
+                if !current
+                    .iter()
+                    .any(|entry| entry.command_path == route.command_path)
+                {
+                    current.push(route.clone());
+                }
+            }
         }
     }
     verify_destinations(directory, &manifest, old.as_ref())?;

@@ -41,36 +41,139 @@ pub(crate) fn resolve_command_argv(
     Parser::new(schema)?.parse(argv, command)
 }
 
-#[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
-pub(crate) fn command_matches(
-    argv: &[String],
-    schema: &Value,
-    command: &[String],
-) -> Result<bool, ModuleError> {
-    let parser = Parser::new(schema)?;
-    let mut cursor = 0;
-    let mut matched = 0;
-    let mut input = Map::new();
-    while matched < command.len() {
-        let Some(token) = argv.get(cursor) else {
-            return Ok(false);
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FlagArity {
+    Boolean,
+    Required,
+    Optional,
+}
+
+/// Locate command tokens using shared global option arity, without validating
+/// values or granting those options to the selected module.
+pub(crate) struct CommandMatcher {
+    flags: BTreeMap<String, FlagArity>,
+    short_flag_bundling: bool,
+}
+
+impl CommandMatcher {
+    #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    pub(crate) fn new(schemas: &[(&Value, bool)]) -> Result<Self, ModuleError> {
+        let mut matcher = Self {
+            flags: BTreeMap::new(),
+            short_flag_bundling: false,
         };
-        cursor += 1;
-        if token.starts_with('-') {
-            parser.parse_flag(
-                token,
-                argv,
-                &mut cursor,
-                &mut input,
-                FlagPosition::BeforeCommand,
-            )?;
-        } else if token == &command[matched] {
-            matched += 1;
-        } else {
-            return Ok(false);
+        for (schema, root) in schemas {
+            matcher.short_flag_bundling |= schema["x-apexe-short-flag-bundling"] == true;
+            let properties = schema["properties"]
+                .as_object()
+                .ok_or_else(|| invalid("Native argv requires declared properties"))?;
+            for (name, value) in properties {
+                if value["x-apexe-positional"].as_u64().is_some()
+                    || !root && value["x-apexe-flag-position"] != "before-subcommand"
+                {
+                    continue;
+                }
+                let arity = if boolean_only(value) {
+                    FlagArity::Boolean
+                } else if value["x-apexe-value-optional"] == true {
+                    FlagArity::Optional
+                } else {
+                    FlagArity::Required
+                };
+                for literal in declared_flags(Property {
+                    name,
+                    schema: value,
+                })? {
+                    if matcher
+                        .flags
+                        .insert(literal.clone(), arity)
+                        .is_some_and(|previous| previous != arity)
+                    {
+                        return Err(invalid(format!(
+                            "Ambiguous global flag arity for '{literal}'"
+                        )));
+                    }
+                }
+            }
         }
+        Ok(matcher)
     }
-    Ok(true)
+
+    #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    pub(crate) fn matches(&self, argv: &[String], command: &[String]) -> Result<bool, ModuleError> {
+        let mut cursor = 0;
+        let mut matched = 0;
+        while matched < command.len() {
+            let Some(token) = argv.get(cursor) else {
+                return Ok(false);
+            };
+            cursor += 1;
+            if token == "--" {
+                return Err(invalid(
+                    "End-of-options before a declared subcommand is ambiguous",
+                ));
+            } else if token.starts_with('-') && token != "-" {
+                self.skip_flag(token, argv, &mut cursor)?;
+            } else if token == &command[matched] {
+                matched += 1;
+            } else {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    fn skip_flag(
+        &self,
+        token: &str,
+        argv: &[String],
+        cursor: &mut usize,
+    ) -> Result<(), ModuleError> {
+        let (literal, attached) = if token.starts_with("--") {
+            token
+                .split_once('=')
+                .map_or((token, false), |(name, _)| (name, true))
+        } else {
+            (token, false)
+        };
+        if let Some(arity) = self.flags.get(literal) {
+            return skip_value(*arity, attached, argv, cursor);
+        }
+        if token.starts_with("--") || !self.short_flag_bundling {
+            return Err(invalid(format!(
+                "Undeclared flag '{token}' or undeclared short-flag bundling"
+            )));
+        }
+        for (offset, character) in token[1..].char_indices() {
+            let literal = format!("-{character}");
+            let arity = self
+                .flags
+                .get(&literal)
+                .ok_or_else(|| invalid(format!("Undeclared flag '{literal}' in '{token}'")))?;
+            let attached = 1 + offset + character.len_utf8() < token.len();
+            if *arity != FlagArity::Boolean {
+                return skip_value(*arity, attached, argv, cursor);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+fn skip_value(
+    arity: FlagArity,
+    attached: bool,
+    argv: &[String],
+    cursor: &mut usize,
+) -> Result<(), ModuleError> {
+    if arity == FlagArity::Required && !attached {
+        if argv.get(*cursor).is_none() {
+            return Err(invalid("Global flag requires a value"));
+        }
+        *cursor += 1;
+    }
+    Ok(())
 }
 
 impl<'a> Parser<'a> {
@@ -471,5 +574,61 @@ mod tests {
             .unwrap(),
             json!({"directory":"tmp","file":"object"})
         );
+    }
+
+    #[test]
+    fn test_command_matcher_skips_bundled_and_attached_global_values() {
+        let schema = json!({"type":"object","x-apexe-short-flag-bundling":true,"properties":{
+            "verbose":{"type":"boolean","x-apexe-flag":"-v","x-apexe-flag-position":"before-subcommand"},
+            "directory":{"type":"string","x-apexe-flag":"-C","x-apexe-flag-position":"before-subcommand"}
+        }});
+        let matcher = CommandMatcher::new(&[(&schema, false)]).unwrap();
+        for argv in [
+            args(&["-vCdanger", "danger"]),
+            args(&["-vC", "danger", "danger"]),
+        ] {
+            assert!(matcher.matches(&argv, &args(&["danger"])).unwrap());
+        }
+        assert!(!matcher
+            .matches(&args(&["-Cdanger"]), &args(&["danger"]))
+            .unwrap());
+        assert!(matcher.matches(&args(&["-C"]), &args(&["danger"])).is_err());
+    }
+
+    #[test]
+    fn test_command_matcher_defers_global_value_validation_to_selected_route() {
+        let schema = json!({"type":"object","properties":{
+            "count":{"type":"integer","x-apexe-flag":"--count","x-apexe-flag-position":"before-subcommand"}
+        }});
+        let matcher = CommandMatcher::new(&[(&schema, false)]).unwrap();
+        let argv = args(&["--count", "invalid", "danger"]);
+        let command = args(&["danger"]);
+        assert!(matcher.matches(&argv, &command).unwrap());
+        assert!(resolve_command_argv(&argv, &schema, &command).is_err());
+    }
+
+    #[test]
+    fn test_command_matcher_optional_values_do_not_consume_command_tokens() {
+        let schema = json!({"type":"object","properties":{
+            "color":{"type":["string","boolean"],"x-apexe-value-optional":true,"x-apexe-flag":"--color"}
+        }});
+        let matcher = CommandMatcher::new(&[(&schema, true)]).unwrap();
+        assert!(matcher
+            .matches(&args(&["--color", "danger"]), &args(&["danger"]))
+            .unwrap());
+        assert!(!matcher
+            .matches(&args(&["--color=danger"]), &args(&["danger"]))
+            .unwrap());
+    }
+
+    #[test]
+    fn test_command_matcher_refuses_ambiguous_global_flag_arity() {
+        let root = json!({"type":"object","properties":{
+            "shared":{"type":"boolean","x-apexe-flag":"--shared"}
+        }});
+        let leaf = json!({"type":"object","properties":{
+            "shared":{"type":"string","x-apexe-flag":"--shared","x-apexe-flag-position":"before-subcommand"}
+        }});
+        assert!(CommandMatcher::new(&[(&root, true), (&leaf, false)]).is_err());
     }
 }

@@ -1031,6 +1031,174 @@ fn test_shim_subcommand_refusal_never_falls_back_to_root() {
         .stdout("danger 5");
 }
 
+fn routing_fixture() -> Fixture {
+    let fixture = Fixture::new();
+    let binary = fixture.script("dispatch-bin", "printf '%s' \"$*\"");
+    fixture.write(
+        "cli.tool",
+        "tool",
+        binary.to_str().unwrap(),
+        json!({"type":"object","x-apexe-end-of-options":true,"properties":{
+            "args":{"type":"array","items":{"type":"string"},"x-apexe-positional":0},
+            "help":{"type":"boolean","x-apexe-flag":"--help"},
+            "setting":{"type":"string","x-apexe-flag":"--setting"}
+        },"additionalProperties":false}),
+        false,
+    );
+    fixture.write(
+        "cli.tool.danger", "tool", binary.to_str().unwrap(),
+        json!({"type":"object","properties":{
+            "count":{"type":"integer","x-apexe-positional":0},
+            "directory":{"type":"string","x-apexe-flag":"-C","x-apexe-flag-position":"before-subcommand"}
+        },"additionalProperties":false}), false,
+    );
+    let mut modules = apexe::output::load_modules_from_dir(&fixture.bindings(), None).unwrap();
+    let leaf = modules
+        .iter_mut()
+        .find(|module| module.module_id == "cli.tool.danger")
+        .unwrap();
+    leaf.target.push_str(" danger");
+    leaf.metadata
+        .insert("command_path".into(), json!(["tool", "danger"]));
+    leaf.tags.push("restricted".into());
+    apexe::output::YamlOutput::without_verification()
+        .write(&modules, &fixture.bindings(), false)
+        .unwrap();
+    std::fs::write(fixture.home.path().join(".apexe/acl.yaml"),
+        "default_effect: deny\nrules:\n  - callers: ['*']\n    targets: [cli.tool]\n    effect: allow\n  - callers: ['*']\n    targets: [cli.tool.danger]\n    effect: deny\n").unwrap();
+    fixture.enable();
+    fixture
+}
+
+#[test]
+fn test_reload_retains_removed_subcommand_tombstone() {
+    let fixture = routing_fixture();
+    fixture
+        .shim("tool")
+        .args(["danger", "5"])
+        .assert()
+        .failure()
+        .stdout("");
+    std::fs::remove_file(fixture.bindings().join("cli.tool.danger.binding.yaml")).unwrap();
+    for _ in 0..2 {
+        fixture
+            .command()
+            .args(["env", "--reload"])
+            .assert()
+            .success();
+        fixture
+            .shim("tool")
+            .args(["danger", "5"])
+            .assert()
+            .failure()
+            .stdout("")
+            .stderr(predicates::str::contains("no longer registered"));
+        fixture
+            .shim("tool")
+            .arg("--help")
+            .assert()
+            .success()
+            .stdout("--help");
+    }
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(fixture.shims().join(".apexe-shims.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["commands"]["tool"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn test_reload_retains_filtered_subcommand_tombstone() {
+    let fixture = routing_fixture();
+    let mut modules = apexe::output::load_modules_from_dir(&fixture.bindings(), None).unwrap();
+    modules
+        .iter_mut()
+        .find(|module| module.module_id == "cli.tool")
+        .unwrap()
+        .tags
+        .push("root-only".into());
+    apexe::output::YamlOutput::without_verification()
+        .write(&modules, &fixture.bindings(), false)
+        .unwrap();
+    fixture
+        .command()
+        .args(["env", "--reload", "--tags", "root-only"])
+        .assert()
+        .success();
+    fixture
+        .shim("tool")
+        .args(["danger", "5"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicates::str::contains("no longer registered"));
+    fixture
+        .shim("tool")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout("--help");
+}
+
+#[test]
+fn test_shim_root_flags_are_not_validated_against_unrelated_subcommands() {
+    let fixture = routing_fixture();
+    fixture
+        .shim("tool")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout("--help");
+    fixture
+        .shim("tool")
+        .args(["--setting", "danger"])
+        .assert()
+        .success()
+        .stdout("--setting danger");
+    fixture
+        .shim("tool")
+        .args(["--setting=danger"])
+        .assert()
+        .success()
+        .stdout("--setting danger");
+}
+
+#[test]
+fn test_shim_root_flags_cannot_hide_a_selected_subcommand() {
+    let fixture = routing_fixture();
+    for arguments in [
+        vec!["--help", "danger", "5"],
+        vec!["--setting", "value", "danger", "5"],
+        vec!["--setting=value", "danger", "5"],
+        vec!["--", "danger", "5"],
+    ] {
+        fixture
+            .shim("tool")
+            .args(arguments)
+            .assert()
+            .failure()
+            .stdout("");
+    }
+}
+
+#[test]
+fn test_shim_global_flag_values_do_not_count_as_subcommands() {
+    let fixture = routing_fixture();
+    fixture
+        .shim("tool")
+        .args(["-C", "danger", "danger", "5"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicates::str::contains("Access denied"));
+    fixture
+        .shim("tool")
+        .args(["--unknown", "danger", "5"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicates::str::contains("Undeclared flag"));
+}
+
 #[test]
 fn test_shim_preserves_child_stderr_and_never_appends_json_flag() {
     let fixture = Fixture::new();

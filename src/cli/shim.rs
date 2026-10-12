@@ -200,34 +200,24 @@ fn resolve_route<'a>(
     let routes = manifest.commands.get(name).ok_or_else(|| {
         anyhow::anyhow!("Shim '{name}' has no registered route; re-run apexe env --enable")
     })?;
-    let mut routes: Vec<&Route> = routes.iter().collect();
-    routes.sort_by_key(|route| std::cmp::Reverse(route.command_path.len()));
-    let mut candidates = Vec::new();
-    for route in routes {
-        let module = modules
-            .iter()
-            .find(|module| module.module_id == route.module_id && manifest.filter.admits(module))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "{} is no longer registered; no native fallback is permitted",
-                    route.module_id
-                )
-            })?;
-        eligible(module)?;
-        anyhow::ensure!(
-            command_path(module)? == route.command_path,
-            "Shim command_path changed; reinstall shims"
-        );
-        candidates.push((module, route));
-    }
+    let candidates = route_candidates(routes, manifest, modules)?;
+    let schemas: Vec<(&serde_json::Value, bool)> = candidates
+        .iter()
+        .filter_map(|(module, route)| {
+            module.map(|module| (&module.input_schema, route.command_path.len() == 1))
+        })
+        .collect();
+    let matcher = crate::adapter::argv::CommandMatcher::new(&schemas)?;
     for (module, route) in candidates {
-        if !crate::adapter::argv::command_matches(
-            args,
-            &module.input_schema,
-            &route.command_path[1..],
-        )? {
+        if !matcher.matches(args, &route.command_path[1..])? {
             continue;
         }
+        let module = module.ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} is no longer registered; no native fallback is permitted",
+                route.module_id
+            )
+        })?;
         // Once a subcommand is selected, any input refusal is final. Falling
         // back to a broader root module could bypass the selected module's ACL.
         let input = crate::adapter::argv::resolve_command_argv(
@@ -243,6 +233,30 @@ fn resolve_route<'a>(
         return Ok((module, input));
     }
     anyhow::bail!("Shim '{name}' has no matching declared command_path. Re-run apexe scan; no native fallback is permitted")
+}
+
+fn route_candidates<'module, 'route>(
+    routes: &'route [Route],
+    manifest: &Manifest,
+    modules: &'module [ScannedModule],
+) -> anyhow::Result<Vec<(Option<&'module ScannedModule>, &'route Route)>> {
+    let mut routes: Vec<&Route> = routes.iter().collect();
+    routes.sort_by_key(|route| std::cmp::Reverse(route.command_path.len()));
+    let mut candidates = Vec::new();
+    for route in routes {
+        let module = modules
+            .iter()
+            .find(|module| module.module_id == route.module_id && manifest.filter.admits(module));
+        if let Some(module) = module {
+            eligible(module)?;
+            anyhow::ensure!(
+                command_path(module)? == route.command_path,
+                "Shim command_path changed; reinstall shims"
+            );
+        }
+        candidates.push((module, route));
+    }
+    Ok(candidates)
 }
 
 fn execute(
