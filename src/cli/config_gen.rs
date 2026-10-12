@@ -83,6 +83,9 @@ pub struct ServeInvocation {
     pub prefix: Option<String>,
     /// `--acl`. Made absolute when rendered — see [`path_str`].
     pub acl: Option<PathBuf>,
+    pub openapi_source: Option<String>,
+    pub openapi_base_url: Option<String>,
+    pub openapi_prefix: Option<String>,
     /// `--enable-approval`.
     pub enable_approval: bool,
     /// `--no-logging`.
@@ -106,6 +109,9 @@ impl Default for ServeInvocation {
             tags: None,
             prefix: None,
             acl: None,
+            openapi_source: None,
+            openapi_base_url: None,
+            openapi_prefix: None,
             enable_approval: false,
             no_logging: false,
             no_log_arguments: false,
@@ -156,6 +162,16 @@ impl ServeInvocation {
         push_value_flag(args, "--bindings-dir", bindings_dir.as_deref());
         push_value_flag(args, "--tags", self.tags.as_deref());
         push_value_flag(args, "--prefix", self.prefix.as_deref());
+        let source = self.openapi_source.as_ref().map(|source| {
+            if source.starts_with("http://") || source.starts_with("https://") {
+                source.clone()
+            } else {
+                path_str(Some(Path::new(source))).unwrap_or_else(|| source.clone())
+            }
+        });
+        push_value_flag(args, "--openapi", source.as_deref());
+        push_value_flag(args, "--openapi-base-url", self.openapi_base_url.as_deref());
+        push_value_flag(args, "--openapi-prefix", self.openapi_prefix.as_deref());
     }
 
     /// Flags that decide how calls are governed and recorded.

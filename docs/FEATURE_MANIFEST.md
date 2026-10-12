@@ -4,12 +4,12 @@
 
 **apexe** -- Outside-In CLI-to-Agent Bridge. Automatically wraps CLI tools into governed apcore modules, served via MCP/A2A.
 
-**Version:** 0.8.0 — Full apcore ecosystem integration (MCP + A2A), variant-aware scanning against an external overlay corpus, an always-on filesystem path guard and per-call approval escalation.
+**Version:** 0.9.0 — Full apcore ecosystem integration (MCP + A2A), variant-aware scanning against an external overlay corpus, an always-on filesystem path guard and per-call approval escalation.
 
-**Status:** F1–F7 implemented; F8 (local execution) is design, Stage 1 ready to build. Run `cargo test --all-features` for the current test count — two integration tests are ignored unless `git`/`docker` are on `PATH`.
+**Status:** F1–F7 implemented; F8 Stages 1 and 2 (local execution and governed PATH shims) are implemented with a bounded reviewed-overlay pilot. MCP and A2A can import OpenAPI HTTP operations at startup. Run `cargo test --all-features` for the current test count — git/docker scan tests are opt-in; the macOS native-example test also requires the reviewed companion corpus.
 
 > The section headings below tagged "(v0.1.0 …)" record when each piece first
-> landed; the crate is now **0.8.0**. For the authoritative current state see
+> landed; the crate is now **0.9.0**. For the authoritative current state see
 > [`CHANGELOG.md`](../CHANGELOG.md) and [`docs/user-manual.md`](user-manual.md).
 
 ## Architecture
@@ -82,8 +82,10 @@ src/
 │   └── overlay      ToolOverlay: curated flag/arg descriptions, apply_overlay
 ├── auth             Transport authentication for the HTTP-family MCP/A2A
 │                    transports (token/JWT, loopback-bind detection)
-├── cli/             clap CLI entry point (scan/serve/a2a/list/config/policy)
-│   └── config_gen   Claude Desktop / Cursor config snippet generation
+├── cli/             clap CLI entry point (scan/serve/a2a/run/env/verify/list/config/policy)
+│   ├── config_gen   Claude Desktop / Cursor config snippet generation
+│   ├── env          Governed shim enable/reload/disable and activation output
+│   └── shell_init   Managed startup blocks for automatic terminal activation
 ├── config           ApexeConfig + apcore CoreConfig integration
 ├── errors           ApexeError + From<ApexeError> for ModuleError
 ├── governance/      Access control, audit, filesystem boundary
@@ -131,7 +133,7 @@ src/
 | `apcore` | 0.32.0 | Module trait, Registry, ACL, ModuleError, ErrorCode, Context, Config |
 | `apcore-toolkit` | 0.14.0 | ScannedModule, YAMLWriter, Verifier, ModuleAnnotations, `deduplicate_ids` |
 | `apcore-mcp` | 0.22.3 | APCoreMCP server (stdio, streamable-http, SSE, Explorer UI) |
-| `apcore-a2a` | 0.8.2 | A2A agent server (`async_serve` / `build_app`); no transport authentication |
+| `apcore-a2a` | 0.8.2 | A2A agent server with token/JWT authentication (`build_app_with_auth`) |
 | `apcore-cli` | 0.12.3 | `--man` page generation (`build_program_man_page`) |
 
 ## v0.1.0 Features
@@ -208,7 +210,9 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 1. **A2A protocol** -- Implemented in 0.3.0 (`apexe a2a`, `A2aServerBuilder`).
 2. **CLI rewiring completion** -- `apexe scan` fully rewired; `apexe serve` uses McpServerBuilder.
 3. **Tool overlays & variant detection** -- Implemented in 0.4.0; man page examples and `open_world` inference added in 0.5.0.
-4. **F8 local execution** -- Design only; see [`features/v2-f8-local-execution.md`](features/v2-f8-local-execution.md). Stage 1 (`apexe run` with a preflight that reports every governance decision) is ready to build. Stage 2 (PATH shims) is blocked on two contracts the spec names: an `ExecutionIo` mode for passthrough I/O, and a `streaming_stdin_safe` allowlist. Four threat-model additions are reserved for it in [`threat-model.md`](threat-model.md) §5.11.
-5. **Per-caller identity over the wire** -- `Identity.roles` is not populated from a JWT claim or header on either surface, so role-gated ACL conditions are unreachable over MCP/A2A. See user-manual §11.
+4. **F8 local execution** -- Implemented: captured `apexe run` and native PATH shims through `apexe env --enable`, `--reload` and `--disable`. Reload retains installed settings and automatically enables when absent. stdin and bundling require explicit overlay capabilities; order-dependent or unasserted grammar is excluded. The verified BSD pilot covers cat/head/ls. See [`features/v2-f8-local-execution.md`](features/v2-f8-local-execution.md) for measurements and remaining daemon work.
+5. **Per-caller identity over the wire** -- Implemented: token/JWT authentication establishes identities; JWT roles are available to ACL conditions and subjects reach audit records. `callers` still matches module-chain IDs. See user-manual §11.
 6. **OS-level sandboxing** -- seccomp/landlock, namespaces and cgroup limits remain roadmap. v0.x relies on the governance stack plus process hygiene; see [`threat-model.md`](threat-model.md) §1.
 7. **`apexe evo`** -- Deferred. Depends on apevo product maturity.
+
+Source drift verification and explicit readonly behavioral cases are available through `apexe verify`. Reports bind earned case results to binding, binary and case SHA-256 digests; author-declared overlay confidence remains distinct.

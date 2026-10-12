@@ -39,10 +39,14 @@ fn init_logging(cli: &Cli) {
         .map(|c| c.log_level)
         .unwrap_or_else(|_| "info".to_string());
     let fallback_level = cli.effective_log_level(&config_level);
+    init_logging_level(&fallback_level);
+}
+
+fn init_logging_level(fallback_level: &str) {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&fallback_level)),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(fallback_level)),
         )
         .init();
 }
@@ -86,7 +90,24 @@ fn report_error(error: anyhow::Error) {
 fn main() {
     apcore_cli::set_docs_url(Some("https://github.com/aiperceivable/apexe".to_string()));
 
-    let raw_args: Vec<String> = std::env::args().collect();
+    let raw_os_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if apexe::cli::is_shim_invocation(&raw_os_args) {
+        let level = apexe::config::load_config(None)
+            .map(|config| config.log_level)
+            .unwrap_or_else(|_| "info".into());
+        init_logging_level(&level);
+        match apexe::cli::run_shim(&raw_os_args) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                report_error(error);
+                std::process::exit(1);
+            }
+        }
+    }
+    let raw_args: Vec<String> = raw_os_args
+        .iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect();
     if print_man_page_if_requested(&raw_args) {
         return;
     }

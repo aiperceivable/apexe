@@ -14,6 +14,96 @@ There is deliberately **no `apexe overlay verify` command**. See [What cannot be
 
 ---
 
+## Installing and packaging a corpus
+
+```bash
+apexe overlays install https://github.com/aiperceivable/cli-permissions
+apexe overlays list
+apexe scan ls --no-cache
+apexe overlays update cli-permissions
+```
+
+`--ref <REF>` selects a branch, tag or commit on install or update. The resolved
+commit is recorded; a commit-pinned installation stays pinned until its reference
+is explicitly changed. `apexe overlays remove <NAME>` unregisters only the owned
+corpus. Managed corpora are loaded after packaged sources and before configured
+`overlay_dirs`, personal overlays and `--overlay`. Existing bindings require a
+rescan after a corpus update; enabled shims then require `apexe env --reload`.
+See the [command reference](user-manual.md#410-apexe-overlays) for overrides.
+
+During local overlay development, prefer reading the checkout directly:
+
+```bash
+# From the apexe checkout, with a sibling cli-permissions working directory.
+APEXE_OVERLAY_DIRS=../cli-permissions/overlays apexe scan ls --no-cache
+```
+
+This reads uncommitted edits without installing a snapshot. The environment
+variable affects only that command; rescan after each overlay change. To install
+a managed snapshot of the local repository's committed content instead, use
+`apexe overlays install ../cli-permissions`.
+
+A repository may publish a root `manifest.json`:
+
+```json
+{
+  "schema_version": "1.0",
+  "name": "team-cli-facts",
+  "description": "Reviewed command facts for the team's installed CLI variants.",
+  "version": "0.1.0",
+  "overlay_directory": "overlays",
+  "homepage": "https://example.com/team-cli-facts",
+  "license": "Apache-2.0"
+}
+```
+
+Its schema is [corpus-manifest.schema.json](https://github.com/aiperceivable/cli-permissions/blob/main/schemas/corpus-manifest.schema.json).
+The manifest format version, corpus SemVer release, per-overlay format version,
+CLI binary version and Git commit identify different things. `homepage` and
+`license` are optional. `--name` and `--subdir` override the manifest; without a
+manifest they default to the repository basename and `overlays`. The directory
+must stay within the checkout and outside `.git`; symlinked directories or
+overlay files are rejected. The installer validates every overlay before
+registering the snapshot, preserves an active installation on update failure,
+and runs no repository scripts, hooks or submodules. Git must be installed.
+Installing metadata does not install command binaries, grant ACL permissions,
+or establish the truth of a `verified` assertion: the procedure below still
+applies to every human claim.
+
+## Native shim capabilities (format 1.1)
+
+The converter writes these facts to root schema keywords:
+`x-apexe-cross-flag-ordering`, `x-apexe-short-flag-bundling` and
+`x-apexe-streaming-stdin-safe`. Metadata records the overlay mode and variant;
+shim eligibility checks that both representations agree.
+
+The scanner accepts overlay formats 1.0 and 1.1. The companion corpus schema
+accepts both. Use 1.1 when adding these explicit declarations:
+
+```json
+"short_flag_bundling": true,
+"streaming_stdin_safe": true,
+"cross_flag_ordering": false
+```
+
+`short_flag_bundling` covers combined short flags and the remainder of a valued
+short token (`-n20`). Absent is unverified and does not enable either form.
+`streaming_stdin_safe` asserts that stdin is data, not executable code or an
+unguarded configuration/program channel. It defaults to false and must never
+be inferred from a command name. `cross_flag_ordering: false` asserts that
+invocations admitted by the declared conflict rules can be normalized across
+flag properties; absent or true excludes shim generation. A complete flag
+inventory alone establishes none of these facts.
+
+Read the real installation and probe the native forms before declaring them.
+In particular, compare both orders of interacting flags and record conflicts:
+BSD `ls` has order-dependent formatting combinations that a JSON object cannot
+preserve. A correct inventory can still have an incomplete conflict table.
+Record the installation, date, commands and bounded scope in provenance notes.
+The macOS pilot checks updated the BSD `cat`, `head` and `ls` entries; no GNU or
+BusyBox capability was copied from them. See [F8](features/v2-f8-local-execution.md)
+for runtime behavior and measurements.
+
 ## When to write one
 
 Write an overlay when heuristic scanning structurally cannot produce the truth:
@@ -701,3 +791,5 @@ The binary prints `[-q]` where its SYNOPSIS prints `[-qv]`. `-v` is real and
 documented, so `tail@bsd` follows the man page. Noted in that overlay's
 `provenance.notes`. If more cases like this appear, the scanner may need to
 prefer one source explicitly rather than leaving it to whoever writes the overlay.
+
+`x-apexe-flag-aliases` records every declared short and long spelling for native argv resolution; it does not infer aliases from property names.

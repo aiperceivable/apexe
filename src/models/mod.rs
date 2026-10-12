@@ -342,8 +342,23 @@ pub struct ScannedCommand {
 }
 
 /// Complete scan result for a single CLI tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShimContract {
+    pub authoritative: bool,
+    pub variant: ToolVariant,
+    pub short_flag_bundling: Option<bool>,
+    pub streaming_stdin_safe: bool,
+    pub cross_flag_ordering: Option<bool>,
+}
+
+/// Complete scan result for a single CLI tool.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScannedCLITool {
+    /// Source contracts before curated overlays, keyed by canonical module ID.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub source_contracts: std::collections::BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shim_contract: Option<ShimContract>,
     /// Tool binary name (e.g., "git").
     pub name: String,
     /// What the tool does, usually taken from its man page DESCRIPTION.

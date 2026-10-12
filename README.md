@@ -234,10 +234,43 @@ installed separately; without it a scan falls back to heuristics, which recover
 the flag names and not much else — `conflicts_with` and `long_running` have no
 other source.
 
+Install and register the corpus directly from GitHub:
+
+```bash
+apexe overlays install https://github.com/aiperceivable/cli-permissions
+apexe scan cat head ls --no-cache
+# After reviewing the ACL, enable eligible commands in new terminals.
+apexe env --enable
+# Refresh corpus facts, bindings and the shim list when needed.
+apexe overlays update cli-permissions
+apexe scan cat head ls --no-cache
+apexe env --reload
+```
+
+Use `--ref <branch|tag|commit>` to pin the source, `apexe overlays list` to
+inspect installed metadata and Git commits, and `apexe overlays remove <name>`
+to unregister it. An optional root `manifest.json` names the corpus, its SemVer
+release and overlay directory; legacy repositories also work. See the
+[command reference](docs/user-manual.md#410-apexe-overlays) for overrides and
+update behavior. Git and the wrapped CLI binaries must be installed separately.
+
+For local overlay development, read the working directory directly:
+
+```bash
+# From the apexe checkout, with cli-permissions checked out alongside it.
+APEXE_OVERLAY_DIRS=../cli-permissions/overlays apexe scan ls --no-cache
+```
+
+This includes uncommitted edits without installing a new corpus snapshot. The
+variable applies only to this scan. Rescan after editing overlays; use
+`apexe env --reload` afterward if the eligible native command set changes.
+For a managed installation from a local Git repository instead, use
+`apexe overlays install ../cli-permissions`: it installs committed Git content.
+
 Overlays are loaded from, in increasing precedence: a packaged corpus in a
 well-known location (`$XDG_DATA_HOME/cli-permissions/overlays`,
-`/usr/local/share/…`, `/usr/share/…`, and Homebrew's prefix on macOS), each
-directory listed in `overlay_dirs` in the order given,
+`/usr/local/share/…`, `/usr/share/…`, and Homebrew's prefix on macOS), managed
+corpora installed with `apexe overlays install`, each directory listed in `overlay_dirs` in the order given,
 `~/.apexe/overlays/*.{json,yaml}`, and `--overlay <PATH>`. `overlay_dirs` is how
 a corpus someone else maintains — a team policy repository, a plugin that ships
 overlays — is consumed without copying files into the operator's own directory;
@@ -318,14 +351,30 @@ apexe a2a --acl ~/.apexe/acl.yaml               # Governed by an ACL policy
 apexe a2a --cors-origin https://example.com     # Allow a browser origin
 ```
 
-> **`apexe a2a` has no transport authentication.** The `--auth*` flags are
-> `apexe serve` only, so there is no credential to opt into — bind A2A to
-> loopback, or put it behind a reverse proxy that authenticates. A non-loopback
-> `--url` refuses to start without `--allow-unauthenticated-bind`.
+> **A2A requires bearer authentication by default.** apcore-a2a provides an
+> `Authenticator`; apexe wires it through token/JWT modes. Use `APEXE_AUTH_TOKEN`
+> or the generated startup token. `--auth none` off loopback requires
+> `--allow-unauthenticated-bind`. JWT subjects and roles reach ACL and audit.
 
 > A2A has no interactive elicitation transport, so there is **no `--enable-approval`
 > flag** on `apexe a2a` (it's available on `apexe serve`, and on A2A only via the
 > library `ApprovalStore` API). See [`docs/user-manual.md`](docs/user-manual.md).
+
+### `apexe verify`
+
+Compare fresh source contracts with the recorded pre-overlay baseline, without
+replacing bindings. Breaking drift, unclassified source changes and missing
+baselines fail the command. Optional readonly behavioral cases run only for
+explicitly allowlisted system cat/head/ls binaries against temporary fixtures.
+The report records actual case outcomes and binding/binary/case hashes;
+overlay confidence remains a separate human assertion.
+
+```bash
+apexe verify --report verification.json
+apexe verify --cases readonly-cases.json --report verification.json
+```
+
+See the [verification reference](docs/user-manual.md#49-apexe-verify).
 
 ### `apexe list`
 
@@ -515,6 +564,80 @@ gh workflow run release.yml -f tag=rust/vX.Y.Z
 ```
 
 ---
+
+## Local execution and OpenAPI import
+
+```bash
+# Inspect governance without running a process, then execute locally.
+apexe run cli.ls --input '{"file":["."]}' --dry-run
+apexe run cli.ls --input '{"file":["."]}'
+
+# Import an HTTP API alongside scanned CLI tools.
+apexe serve --openapi ./openapi.yaml --openapi-base-url https://api.example.com --acl ./acl.yaml
+apexe a2a --openapi ./openapi.yaml --openapi-base-url https://api.example.com --acl ./acl.yaml
+```
+
+Local execution defaults to the `local` caller and loads `~/.apexe/acl.yaml`
+when present; a malformed policy fails closed. `--as` is available only for
+`--dry-run`. OpenAPI 3.0/3.1 JSON/YAML sources may be local files or HTTP(S)
+URLs. Operations default to the `api.*` namespace and share schema validation,
+ACL and auditing with CLI modules. Set `APEXE_OPENAPI_TOKEN` for the upstream
+API credential; `--openapi-header` is only for fetching the specification.
+See the [command reference](docs/user-manual.md#47-apexe-run),
+[OpenAPI guide](docs/openapi.md), and [runnable API example](examples/openapi_import/README.md)
+for flags, proxy limits and tested setup.
+
+```bash
+# After scanning with overlays that declare reviewed native grammar:
+apexe env --enable
+# Open a new terminal; installed shims load automatically.
+cat sample.txt | head -n1
+ls -la
+# Refresh if subsequent scans change the eligible command set.
+apexe env --reload
+# Remove owned shims and managed shell startup blocks.
+apexe env --disable
+```
+
+`--enable` installs shims and configures startup in one step, detecting the shell
+from `SHELL`; use `--shell` and `--rc-file` for a
+custom startup layout. bash, zsh and fish load shims in new interactive
+terminals; sh uses its login profile. PowerShell requires
+`apexe env --enable --shell powershell --rc-file "$PROFILE"` in the target host.
+Enabling preserves existing configuration and avoids duplicate blocks. Once
+enabled, use native commands directly without repeating setup. `--reload`
+retains the installed binding directory, ACL and filters when refreshing the
+command set. With no installation, it automatically enables shims using current
+settings.
+For immediate activation in the current sh, bash or zsh session, use
+`eval "$(apexe env)"` after installation.
+
+Shims inherit output streams, preserve exit status and use the same local
+policy. Only matching authoritative overlays declaring order-independent
+accepted invocations are eligible. stdin and short bundles require explicit
+capabilities; the verified BSD corpus pilot enables `cat`, `head` and `ls`.
+Builtins, aliases and absolute paths bypass PATH shims. See
+[F8](docs/features/v2-f8-local-execution.md) and the
+[runnable local example](examples/local_execution/README.md) for latency, scope
+and temporary-home demonstrations.
+
+Run the self-contained examples from the repository root with Python 3:
+
+```bash
+cargo build --all-features
+python3 examples/local_execution/demo.py --apexe target/debug/apexe
+# On macOS, with the reviewed companion corpus available:
+python3 examples/local_execution/demo.py --apexe target/debug/apexe \
+  --corpus ../cli-permissions/overlays --shims
+python3 examples/openapi_import/demo.py --apexe target/debug/apexe
+python3 examples/openapi_import/demo.py --apexe target/debug/apexe --remote-spec
+```
+
+The local demo checks preflight, execution, ACL denial and audit in a temporary
+HOME; `--shims` also checks a native pipeline and owned uninstall. The OpenAPI
+demo starts its own local HTTP API and exercises both MCP and A2A, including
+JSON requests, ACL denial and separate specification/API credentials. See the
+[Quick Start](docs/quickstart.md#next-steps) for the walkthrough.
 
 ## Documentation
 

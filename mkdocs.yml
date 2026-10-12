@@ -48,6 +48,7 @@ nav:
   - Home: index.md
   - Quick Start: quickstart.md
   - User Manual: user-manual.md
+  - OpenAPI Import: openapi.md
   - Threat Model: threat-model.md
   - Authoring Overlays: overlays.md
   - Changelog: changelog.md
@@ -63,5 +64,5 @@ nav:
       - F5 - Governance: features/v2-f5-governance.md
       - F6 - Error Migration: features/v2-f6-error-migration.md
       - F7 - Config Integration: features/v2-f7-config-integration.md
-      - F8 - Local Execution (design): features/v2-f8-local-execution.md
+      - F8 - Local Execution: features/v2-f8-local-execution.md
   - Examples: examples.md

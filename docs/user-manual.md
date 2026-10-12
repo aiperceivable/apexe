@@ -8,7 +8,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 0.8.0 |
+| **Version** | 0.9.0 |
 | **Date** | 2026-09-29 |
 | **Platform** | macOS / Linux |
 
@@ -174,7 +174,10 @@ apexe a2a [OPTIONS]
 | `--no-retry` | off | Disable RetryMiddleware (on by default; only ever retries idempotent timeouts) |
 | `--execution-timeout <SECS>` | `300` | Per-task execution timeout in seconds |
 | `--cors-origin <ORIGIN>` | - | Allowed CORS origin (repeatable) |
-| `--allow-unauthenticated-bind` | off | Acknowledge a non-loopback `--url` (otherwise refused). A2A has no authenticator, so there is no credential to opt into |
+| `--auth <MODE>` | `token` | A2A transport authentication: `token`, `jwt`, `none` |
+| `--auth-token <TOKEN>` | generated | Shared bearer credential, or `APEXE_AUTH_TOKEN` |
+| `--jwt-secret <SECRET>` | absent | JWT signing secret, or `APEXE_JWT_SECRET` |
+| `--allow-unauthenticated-bind` | off | Acknowledge `--auth none` on a non-loopback URL |
 
 > **No `--enable-approval` on `apexe a2a`.** A2A has no interactive elicitation
 > transport, so an approval prompt can never be resolved over it; the flag would
@@ -183,19 +186,17 @@ apexe a2a [OPTIONS]
 > `--enable-approval`, which prompts the connected MCP client for a human
 > decision — see §9.6.
 
-> **`apexe a2a` has no transport authentication.** The `--auth*` flags are
-> `apexe serve` only. Bind A2A to loopback, or put it behind a reverse proxy
-> that authenticates. Because there is no credential to grant or
-> withhold, `--prefix`/`--tags` carry more weight here than on `apexe serve`:
-> narrowing the registered surface is the only mechanism that limits what an
-> unauthenticated caller can reach, short of an `--acl` keyed on an identity
-> A2A never establishes.
+> **A2A requires bearer authentication by default.** apcore-a2a provides an
+> `Authenticator`, and apexe now wires token/JWT modes. `--auth token` generates
+> a startup token when none is supplied. `--auth none` on a non-loopback bind
+> requires `--allow-unauthenticated-bind`. The shared token authenticates as
+> `apexe-token`; JWT preserves its subject and roles for ACL and audit.
 
 ```bash
 apexe a2a                                       # http://127.0.0.1:8000
 apexe a2a --url http://127.0.0.1:9000 --explorer  # custom port + browser UI
-# A non-loopback bind needs the acknowledgement, because A2A has no authenticator:
-apexe a2a --url http://0.0.0.0:9000 --allow-unauthenticated-bind
+# A public unauthenticated bind requires both explicit opt-outs:
+apexe a2a --url http://0.0.0.0:9000 --auth none --allow-unauthenticated-bind
 apexe a2a --acl ~/.apexe/acl.yaml               # governed by an ACL policy
 apexe a2a --prefix cli.git.                     # serve only the git modules
 apexe a2a --tags readonly                       # serve only readonly modules
@@ -278,6 +279,351 @@ ALLOW  /etc/passwd  (mode: read)
 ```
 
 ---
+
+### 4.7 `apexe run`
+
+Execute one scanned CLI module locally and return its captured output as JSON.
+
+```bash
+apexe run cli.ls --input '{"file":["."]}'
+apexe run cli.ls --input '{"file":["."]}' --dry-run
+apexe run cli.ls --input '{"file":["."]}' --dry-run --as ci
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--input <JSON>` | `{}` | JSON object matching the module's input schema |
+| `--bindings-dir <DIR>` | configured bindings directory | Binding files to load |
+| `--acl <PATH>` | `<config_dir>/acl.yaml` when present | Access policy; a missing explicitly requested file or malformed policy is a hard failure |
+| `--dry-run` | off | Print schema, ACL, approval and path-guard decisions plus the exact argv without starting the wrapped process |
+| `--as <CALLER>` | `local` | Simulate a caller; accepted only with `--dry-run` |
+
+Real execution uses the fixed `local` caller for ACL `callers` rules. No ACL
+file means no access control, with a warning on stderr. The path guard, timeout,
+environment scrubbing and audit remain active. stdout contains only the JSON
+result; diagnostics go to stderr. A failed child returns its captured result
+with a nonzero apexe exit status. A refused dry-run still prints JSON checks
+and exits nonzero. ACL-denied preflights omit binary and argv details.
+
+`approval_required` reports whether the executor would require a human decision.
+Local execution has no MCP client to prompt, so such a real call is refused;
+dry-run can still inspect it. `--as` is an asserted simulation identity, not
+an authenticated principal. Captured execution supplies no stdin. For native argv and passthrough streams,
+use the Stage 2 shims loaded by `apexe env --enable`.
+
+### 4.8 `apexe env`
+
+Install governed external-command shims and configure automatic activation in
+new terminals with one command:
+
+```bash
+# Install the companion corpus, then scan reviewed native capabilities.
+apexe overlays install https://github.com/aiperceivable/cli-permissions
+apexe scan cat head ls --no-cache
+# Review ~/.apexe/acl.yaml, then enable the eligible commands.
+apexe env --enable
+# Open a new terminal; installed shims now load automatically.
+cat sample.txt | head -n1
+ls -la
+# If the eligible command set changes after a scan, refresh it.
+apexe env --reload
+# Remove owned shims and managed startup blocks.
+apexe env --disable
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--enable` | off | Create or update eligible shims and managed shell startup blocks |
+| `--reload` | off | Refresh an existing installation using its stored settings; automatically enable when absent |
+| `--disable` | off | Remove owned shims and managed startup blocks; succeeds when already disabled |
+| `--rc-file <PATH>` | detected startup file | Configure an explicit startup file with `--enable` or `--reload` |
+| `--shim-dir <DIR>` | `<config_dir>/bin` | Directory for command links and their routing manifest |
+| `--bindings-dir <DIR>` | configured directory | Binding snapshot to install from |
+| `--acl <PATH>` | default ACL when present | Explicit policy path to store in the manifest |
+| `--tags <TAGS>` | absent | Require every listed tag |
+| `--prefix <PREFIX>` | absent | Restrict the eligible module IDs |
+| `--shell <SHELL>` | detected for `--enable`; `sh` for printed activation | Choose `sh`, `bash`, `zsh`, `fish` or `powershell` |
+
+`--enable` detects the shell from `SHELL` and integrates startup configuration
+with shim installation. Startup blocks are validated before links are installed.
+An unknown shell requires an explicit `--shell`. The startup block activates
+only when the apexe executable and shim manifest exist. Once enabled, use native
+commands directly; there is no per-command or per-terminal setup to repeat.
+Use `--reload` when newly scanned eligible tools or subcommands change the shim
+list or routing, or when changing the prefix/tag filter. For example, adding
+reviewed `ls` to an installation previously covering `cat` and `head` needs
+reload. Existing bindings are read during execution, so parameter descriptions
+or schemas alone normally do not require rebuilding the shim list.
+
+For an existing installation, reload retains its binding directory, binding
+pattern, explicit ACL path, prefix and tags unless command-line options override
+them. It preserves startup files by default and does not need shell detection.
+An explicit `--shell` or `--rc-file` also updates startup configuration. When
+there is no installed manifest, including after disable, reload automatically
+performs enable with the current settings and flags. Open a new terminal after
+that initial enabling step.
+
+| Shell | Default startup file |
+|-------|----------------------|
+| zsh | `$ZDOTDIR/.zshrc`, or `~/.zshrc` when `ZDOTDIR` is unset |
+| bash | `~/.bashrc` and the first existing login file among `.bash_profile`, `.bash_login`, `.profile`; creates `.bash_profile` if none exists |
+| fish | `$XDG_CONFIG_HOME/fish/config.fish`, or `~/.config/fish/config.fish` |
+| sh / dash | `~/.profile`, loaded by login shells |
+| PowerShell | Requires `--rc-file "$PROFILE"` in the target PowerShell host |
+
+Use absolute `ZDOTDIR` and `XDG_CONFIG_HOME` paths. For custom shell startup
+layouts or multiple installed shells, configure each explicitly:
+
+```bash
+apexe env --enable --shell zsh
+apexe env --enable --shell bash --rc-file ~/.config/bash/interactive.rc
+```
+
+```powershell
+apexe env --enable --shell powershell --rc-file "$PROFILE"
+```
+
+Enabling preserves unrelated text, existing file permissions and startup
+file symlinks. It is idempotent and records ownership in
+`<shim-dir>/.apexe-shell-init.json`. Disable removes only the recorded blocks,
+preserving user edits outside them and leaving startup files in place. A managed
+block changed by hand is refused; restore or remove that block before retrying.
+
+New terminals calculate activation using their current PATH. Enabling
+does not modify the current shell or capture its PATH permanently. To activate
+an existing installation immediately in sh, bash or zsh:
+
+```bash
+eval "$(apexe env)"
+```
+
+`--enable` and `--reload` emit diagnostics on stderr without printing activation
+scripts. Disable cannot change the
+PATH of terminals already open; open a new terminal to load the cleaned startup
+configuration. With `--shim-dir`, use the same directory for enabling, reloading
+and disabling. Enable, reload and disable are mutually exclusive operations.
+
+`--rc-file` requires `--enable` or `--reload`.
+
+An eligible binding needs a matching authoritative overlay and an explicit
+`cross_flag_ordering: false` assertion. Short bundles such as `-la` and attached
+short values such as `-n20` need `short_flag_bundling: true`. Inherited stdin
+needs `streaming_stdin_safe: true`; otherwise stdin is null. These are reviewed
+overlay facts, never scanner guesses. Re-scan after updating an overlay: old
+bindings cannot acquire capabilities just by reinstalling links. Overlay format
+1.1 introduces these fields; format 1.0 remains supported for scanning.
+
+The locally verified BSD pilot covers `cat`, `head` and `ls` in the companion
+corpus. Other entries remain scan-only until their native grammar is reviewed.
+Unknown flags, unsupported grammar and mutually exclusive options are refused.
+The parser builds typed JSON, and the executor validates it and rebuilds the
+actual argv; no unresolved tokens are forwarded. Subcommands route through the
+original `command_path`, and a selected subcommand's refusal is final.
+
+stdout and stderr are inherited; there is no JSON envelope or output buffering.
+A child exit code reaches the shell unchanged; a POSIX signal returns `128 +
+signal`. POSIX children restore default SIGPIPE, so an upstream pipeline stage
+exits quietly when its reader closes. The timeout still bounds execution;
+the captured-output byte cap does not apply to passthrough. ACL, approval,
+path checks, environment scrubbing and audit stay active. A call requiring
+approval is refused because this local surface has no MCP client to prompt.
+The shim uses the current `default_timeout` / `APEXE_TIMEOUT` configuration.
+
+Activation is idempotent. Scanners and wrapped children remove managed shim
+directories from PATH. Reinstalling updates owned links and refuses name
+collisions or unowned files. Removed commands remain refusal tombstones until
+an explicit uninstall; a missing module never falls through to a native binary.
+Installation uses symbolic links on Unix and hard links on Windows.
+
+Shims cover external commands only. Builtins, aliases, functions and absolute
+paths can bypass them; a local human gets an audit trail and mistake guard,
+while enforcement requires an externally controlled PATH and filesystem.
+Per-call latency measurements and their limits are in the
+[F8 delivery record](features/v2-f8-local-execution.md#10-delivery-record).
+
+The [runnable local execution example](../examples/local_execution/README.md)
+uses a temporary HOME and working directory. From the repository root:
+
+```bash
+cargo build --all-features
+python3 examples/local_execution/demo.py --apexe target/debug/apexe
+# On macOS, with the reviewed companion corpus available:
+python3 examples/local_execution/demo.py --apexe target/debug/apexe \
+  --corpus ../cli-permissions/overlays --shims
+```
+
+The default demo checks captured execution, preflight, ACL denial and audit.
+The `--shims` variant also checks a native pipeline and owned uninstall.
+
+### 4.9 `apexe verify`
+
+Re-scan source help/man/completion contracts without replacing stored bindings.
+The baseline is captured before overlays are applied, so an authoritative overlay
+cannot hide a source upgrade. Changes are classified as `breaking`, `additive`,
+`cosmetic` or `review`; unparsed source-text changes require review. Breaking,
+review and unverifiable checks exit nonzero. `--strict` also fails on additive
+or cosmetic changes. A missing baseline requires a rescan, never an invented pass.
+
+```bash
+apexe scan cat head ls --no-cache
+apexe verify --report ./verification.json
+apexe verify --cases ./readonly-cases.json --report ./verification.json
+```
+
+| Option | Description |
+|---|---|
+| `--bindings-dir <DIR>` | Binding baseline to compare |
+| `--depth <N>` | Fresh subcommand scan depth (1-5, default 2) |
+| `--strict` | Fail on every detected change |
+| `--cases <PATH>` | Explicit JSON behavioral cases; none execute by default |
+| `--overlay <PATH>` | Reapply an explicit overlay used by the original scan |
+| `--report <PATH>` | Save JSON with binding, binary and case digests; destination must be outside the binding baseline directory |
+
+```json
+{"allowlist":["cli.cat"],"cases":[{"module_id":"cli.cat",
+ "input":{"file":["$FIXTURE/input.txt"]},
+ "fixtures":{"input.txt":"hello\n"},"expected_stdout":"hello\n"}]}
+```
+
+Behavioral admission is conjunctive: explicitly allowlisted, readonly/idempotent,
+non-destructive, no approval requirement and no network boundary. The initial
+independently reviewed binary allowlist is system cat/head/ls; other modules are
+recorded as `unverifiable`. String inputs are restricted to fixture paths, selected flags must have literal
+option spellings, and system cat/head/ls do not accept appended JSON-output
+flags. Every path operand must reference `$WORKDIR` or
+`$FIXTURE/name`; real paths and long-running options are refused. Each case uses
+an isolated temporary HOME/work directory and a governed `apexe run` child,
+with a scrubbed environment, a temporary default-deny ACL allowing only the
+selected readonly module, and bounded timeout. Expected stdout and exit zero
+must match. A failed case is `failed`, an inadmissible case `unverifiable`.
+
+`passed` is earned for the specific case and hashes in the report. Overlay
+`confidence: verified` remains an author assertion backed by provenance; it is
+not behavioral evidence. No case requested means behavioral `unverifiable`,
+without failing the default drift-only command. The report never rewrites a
+binding or silently promotes overlay confidence. Dry-run probes of destructive
+tools and namespace isolation are excluded from this initial verifier.
+
+### OpenAPI sources on `serve` and `a2a`
+
+See the [OpenAPI guide](openapi.md) and its
+[runnable MCP/A2A example](../examples/openapi_import/README.md).
+
+Both servers can import an OpenAPI 3.0/3.1 document at startup, alongside the
+CLI bindings. Imported operations are HTTP proxy modules, not CLI targets;
+no generated binding files or helper programs are needed.
+
+To run both MCP and A2A against a temporary local API, use Python 3 from the
+repository root:
+
+```bash
+cargo build --all-features
+python3 examples/openapi_import/demo.py --apexe target/debug/apexe
+python3 examples/openapi_import/demo.py --apexe target/debug/apexe --remote-spec
+```
+
+The demo checks path/query parameters, JSON bodies, ACL denial and independent
+transport/API credentials. `--remote-spec` additionally checks protected
+specification fetching with a separate credential.
+
+```bash
+apexe serve --openapi ./openapi.yaml --openapi-base-url https://api.example.com --acl ./acl.yaml
+apexe a2a --openapi https://api.example.com/openapi.json --openapi-prefix api.inventory --acl ./acl.yaml
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--openapi <SOURCE>` | absent | Local JSON/YAML file or exact HTTP(S) specification URL |
+| `--openapi-base-url <URL>` | document `servers[0].url` | Absolute HTTP(S) API base URL |
+| `--openapi-prefix <PREFIX>` | `api` | Canonical apcore namespace for imported operation IDs; `getPet` becomes `api.get_pet` |
+| `--openapi-header <NAME: VALUE>` | absent | Repeatable specification-fetch header; never forwarded to API calls |
+| `--openapi-token <TOKEN>` | `APEXE_OPENAPI_TOKEN` | Upstream API bearer credential; separate from MCP `--auth-token` |
+
+`--tags` and `--prefix` filter both sources before serving. Imported operations
+use the same schema validation, ACL, approval configuration and audit sink.
+ACL rules may target `api.*` or individual operation IDs. API operations are
+marked `open_world`; DELETE operations also require approval when the approval
+gate is enabled. `--timeout` governs specification fetching and proxied requests.
+Missing origins, malformed documents, registration failures and ID collisions
+fail startup. The source is read again on each startup; it is not persisted.
+`--show-config` preserves the source, base URL and namespace, resolving local
+sources to absolute paths. Credentials and specification-fetch headers are
+omitted; supply credentials separately in the client launch environment.
+
+The current SDK proxy handles path parameters, query parameters on GET/DELETE/
+HEAD/OPTIONS/TRACE, and JSON bodies on POST/PUT/PATCH. A body method declaring
+query parameters is refused because the SDK would put them in the body.
+Multipart uploads, per-input header/cookie parameters and non-JSON responses
+are outside this initial import surface. The local subprocess path guard does
+not govern paths on a remote API. Review the imported API's permissions and
+write operations when authoring its ACL.
+
+### 4.10 `apexe overlays`
+
+Install a Git-hosted overlay corpus and make it available to subsequent scans.
+Git must be installed. Repository sources may be GitHub `OWNER/REPO`, an HTTPS
+Git URL without embedded credentials, or a local Git repository path.
+
+```bash
+apexe overlays install https://github.com/aiperceivable/cli-permissions
+apexe overlays list
+apexe scan cat head ls --no-cache
+# Review the generated ACL before enabling eligible native commands.
+apexe env --enable
+# Fetch a new snapshot, rescan bindings, then refresh enabled shims.
+apexe overlays update cli-permissions
+apexe scan cat head ls --no-cache
+apexe env --reload
+apexe overlays remove cli-permissions
+```
+
+| Command or option | Behavior |
+|---|---|
+| `install <REPOSITORY>` | Fetch and validate a new corpus; refuse an existing installation name |
+| `install --name <NAME>` | Override the manifest name or repository basename |
+| `install --ref <REF>` | Pin a branch, tag or commit; default is remote HEAD |
+| `install --subdir <PATH>` | Override the manifest overlay directory; default without a manifest is `overlays` |
+| `update <NAME> [--ref <REF>]` | Fetch the stored source/reference, or override its reference explicitly |
+| `list` | Print installed metadata, resolved commit and overlay count as JSON |
+| `remove <NAME>` | Unregister the corpus and remove its owned snapshots |
+
+An optional root `manifest.json` supplies `schema_version`, `name`,
+`description`, SemVer `version`, `overlay_directory`, and optional HTTPS
+`homepage` and `license`. The manifest format, corpus release and per-overlay
+format have independent versions. Legacy repositories without a manifest work
+with `--name` and `--subdir` overrides. Every installation records a resolved
+Git commit; updating a commit-pinned source keeps that commit unless `--ref`
+is changed. The installer downloads data and does not run repository scripts,
+Git hooks or submodules. It does not install the CLI binaries or grant access.
+
+Local Git installation uses committed content and records the resolved commit:
+
+```bash
+apexe overlays install ../cli-permissions
+```
+
+For local overlay development, direct working-directory loading is recommended:
+
+```bash
+# Include uncommitted overlay edits without installing a snapshot.
+APEXE_OVERLAY_DIRS=../cli-permissions/overlays apexe scan ls --no-cache
+```
+
+`APEXE_OVERLAY_DIRS` applies to this scan and replaces configured `overlay_dirs`
+for that command; it does not register or update a managed corpus. Rescan after
+editing overlays. Refresh enabled shims with `apexe env --reload` when the
+eligible command set changes.
+
+Managed corpora live under the configured apexe directory's `corpora/` and are
+discovered automatically without editing `config.yaml`. A failed download or
+validation leaves the active snapshot unchanged. Older snapshots remain until
+`remove`, allowing concurrent scans to finish. Within equal-strength overlay
+matches, precedence is packaged corpora, managed corpora in installation order,
+configured `overlay_dirs`, personal overlays, then explicit `--overlay`.
+Updating a corpus preserves its priority. Removing or updating a corpus does
+not rewrite existing bindings or shims: rescan affected commands and use
+`apexe env --reload`. Native eligibility still requires matching authoritative
+overlays with reviewed capabilities. See [the authoring procedure](overlays.md).
 
 ## 5. Configuration
 
@@ -482,7 +828,7 @@ An overlay is a curated, human-reviewed description of one tool variant, keyed b
 - Overlays are the only source that can express `conflicts_with` (mutually exclusive flags) and `long_running` (a flag that may block indefinitely, e.g. `tail -f`) — no `--help`/man format expresses either machine-readably.
 - Overlays can also override behavioral annotations (`readonly`/`destructive`/`idempotent`/`requires_approval`/`open_world`) for a specific command. `open_world` is the one inference reads off a *name list* rather than the command's own surface, so it is the one an overlay most often has to correct: GNU sed runs `s///e` as a shell command while BSD sed rejects the flag, and the name `sed` cannot tell them apart.
 
-Load one explicit overlay with `apexe scan <tool> --overlay <PATH>` (JSON or YAML), add a corpus directory through `overlay_dirs` or `APEXE_OVERLAY_DIRS`, or place a local correction under `~/.apexe/overlays/`. The format is defined by [`tool-overlay.schema.json`](https://github.com/aiperceivable/cli-permissions/blob/main/schemas/tool-overlay.schema.json), which ships with
+Install a managed corpus with `apexe overlays install <REPOSITORY>`, load one explicit overlay with `apexe scan <tool> --overlay <PATH>` (JSON or YAML), add a corpus directory through `overlay_dirs` or `APEXE_OVERLAY_DIRS`, or place a local correction under `~/.apexe/overlays/`. The format is defined by [`tool-overlay.schema.json`](https://github.com/aiperceivable/cli-permissions/blob/main/schemas/tool-overlay.schema.json), which ships with
 the corpus rather than with apexe. See the [cli-permissions example](../examples/cli_permissions/README.md) for an operator walkthrough, [`docs/overlay-consumers.md`](overlay-consumers.md) for reading overlays from
 outside apexe, and [`docs/overlays.md`](overlays.md) for the full authoring and verification procedure — writing a `verified` overlay from memory instead of a real installation is exactly what it warns against.
 
@@ -797,7 +1143,7 @@ through. Put the narrow denials above the broad allows.
 [ACLDenied] Access denied: caller 'None' cannot access module 'cli.cp'
 ```
 
-Over A2A the task lands in `TASK_STATE_FAILED` carrying the same reason in
+Over A2A the task lands in `TASK_STATE_REJECTED` carrying its refusal class in
 `status.message`, and the JSON-RPC error carries a governance-specific code:
 
 ```
@@ -811,15 +1157,14 @@ used. That distinction is what an agent should branch on: the code itself now
 says *stop and pick a different skill*, where `Task not found` used to invite a
 retry of the one thing that was fine.
 
-By default upstream sends only the fixed per-class string (`Access denied`),
-naming no caller, target or rule. `apexe a2a` opts into the full reason
-(`disclose_refusal_reason`), because on this server the masking protects
-nothing: apcore-a2a already ACL-filters the agent card, so a denied skill is
-absent from it and the refusal confirms nothing a caller did not already know;
-and `apexe a2a` wires no authenticator, so every caller is the same anonymous
-`@external` principal and there is no privileged caller to keep a secret from.
-A deployment that puts an authenticator in front of `apexe a2a` should turn the
-flag back off.
+Authenticated A2A returns the fixed per-class string (`Access denied`), naming
+no caller, target or rule. `disclose_refusal_reason` is disabled to preserve the
+boundary between principals. Explicit `--auth none` and an unauthenticated
+library builder retain the detailed reason shown above. A2A JSON-RPC
+notifications (requests with no `id`) produce HTTP 204 with an empty body;
+explicit `id: null` requests still receive replies. A2A 1.0 SSE events use
+`statusUpdate` / `artifactUpdate` wrappers, and endpoint versions live in
+`supportedInterfaces`, rather than the obsolete 0.3 top-level fields.
 
 The same applies to an approval denial and an approval timeout (§9.6); an
 approval *pending* is untouched and still arrives as
@@ -1410,8 +1755,8 @@ Transport authentication (§10) is likewise `apexe serve` only.
 ```bash
 apexe a2a                                       # http://127.0.0.1:8000
 apexe a2a --url http://127.0.0.1:9000 --explorer  # custom port + browser UI
-# A non-loopback bind needs the acknowledgement, because A2A has no authenticator:
-apexe a2a --url http://0.0.0.0:9000 --allow-unauthenticated-bind
+# A public unauthenticated bind requires both explicit opt-outs:
+apexe a2a --url http://0.0.0.0:9000 --auth none --allow-unauthenticated-bind
 apexe a2a --acl ~/.apexe/acl.yaml               # governed by an ACL policy
 ```
 
@@ -1471,19 +1816,26 @@ Like MCP, A2A reads the `display` overlay `apexe scan` computes
 (`metadata["display"]["a2a"]["alias"]`) to name each skill; see
 [Display Names](#display-names) below.
 
-### Current limitation: no per-caller identity over the wire
+### Authenticated caller identities
 
-apcore's ACL engine evaluates whatever roles a caller's `Context::identity`
-carries, but `apexe a2a` (and `apexe serve`) do not yet populate
-`Identity.roles` from a JWT claim or request header — every call served
-today runs as a single implicit anonymous caller. Role-gated ACL rules
-(`conditions: {roles: [...]}`) are therefore not yet reachable over MCP/A2A;
-`--acl` is most useful today for apexe's readonly-allow / destructive-deny
-default policy (§9.1), alongside `--enable-approval` (§9.6), whose prompt
-asks the connected client rather than keying on a caller identity.
-See [`examples/acl_demo`](../examples/acl_demo/) for a library-level
-demonstration of the same role-based ACL contract, driven directly against
-the `Executor`.
+Token authentication establishes the shared `apexe-token` identity. JWT maps
+`sub` and `roles` into the executor context and audit records. ACL `callers`
+match module call-chain IDs, not JWT subjects: inbound transport requests use
+`@external`. Gate authenticated roles through conditions, for example:
+
+```yaml
+version: '1.0'
+default_effect: deny
+rules:
+  - callers: ['@external']
+    targets: ['cli.echo']
+    effect: allow
+    conditions: {roles: [ops]}
+```
+
+An expired or invalid credential is rejected before module execution.
+Authenticated A2A returns masked governance messages; an explicit
+unauthenticated surface may disclose detailed refusal reasons.
 
 ---
 
@@ -1693,6 +2045,8 @@ the command run", not "did it succeed".
 | `~/.apexe/bindings/*.binding.yaml` | Tool binding files | `apexe scan` |
 | `~/.apexe/cache/` | Scan result cache | `apexe scan` |
 | `~/.apexe/acl.yaml` | Access control rules | `apexe scan` |
+| `~/.apexe/bin/.apexe-shims.json` | Owned shim routes | `apexe env --enable` |
+| `~/.apexe/bin/.apexe-shell-init.json` | Owned shell startup blocks | `apexe env --enable` |
 | `~/.apexe/audit.jsonl` | Audit trail | `apexe serve` (runtime) |
 | `~/.apexe/apcore.yaml` | apcore ecosystem config (optional) | Manual |
 
@@ -1778,7 +2132,7 @@ rm -rf ~/.apexe/cache/
 
 ### Known Limitations
 
-- **A2A per-caller identity**: `apexe a2a` (and `apexe serve`) do not yet populate `Identity.roles` from a JWT/header, so role-gated ACL rules are unreachable over the wire — see [§11](#11-a2a-server).
+- **Authenticated identities**: MCP and A2A token/JWT modes carry identities into execution. JWT roles gate ACL conditions; module-chain `callers` and authenticated subjects are separate — see [§11](#11-a2a-server).
 - **Windows**: Not supported.
 - **Interactive CLI tools**: Tools requiring stdin input (e.g., `ssh`, `vim`) cannot be wrapped.
 - **Streaming output**: CLI subprocess output is collected in full, then returned. No real-time streaming.

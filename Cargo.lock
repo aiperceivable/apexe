@@ -286,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "apexe"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "apcore",
@@ -301,13 +301,17 @@ dependencies = [
  "clap",
  "dirs",
  "http-body-util",
+ "jsonwebtoken",
+ "libc",
  "openssl",
  "predicates",
  "regex",
  "rstest",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "shell-words",
  "tempfile",
  "thiserror 2.0.18",
@@ -316,6 +320,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
  "which",
 ]

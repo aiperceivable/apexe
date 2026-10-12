@@ -3,10 +3,12 @@ pub mod breaker;
 pub mod cli_module;
 pub mod executor;
 pub mod failure_log;
+pub mod io;
 pub mod registry;
+pub use io::{ExecutionIo, StdinMode};
 
 pub use approval::ApprovalGate;
 pub use breaker::HealthOnlyCircuitBreaker;
 pub use cli_module::CliModule;
 pub use failure_log::FailureLogMiddleware;
-pub use registry::{build_executor, ExecutorOptions, ModuleFilter};
+pub use registry::{build_executor, build_executor_with_openapi, ExecutorOptions, ModuleFilter};

@@ -21,7 +21,7 @@ use crate::models::{
 };
 
 /// Overlay schema version this build understands.
-pub const OVERLAY_SCHEMA_VERSION: &str = "1.0";
+pub const OVERLAY_SCHEMA_VERSION: &str = "1.1";
 
 /// Host operating system, as named in an overlay's `match.platform`.
 ///
@@ -327,6 +327,13 @@ pub struct OverlayProvenance {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolOverlay {
+    /// Native grammar and stdin capabilities are assertions, never inferred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_flag_bundling: Option<bool>,
+    #[serde(default)]
+    pub streaming_stdin_safe: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_flag_ordering: Option<bool>,
     /// Pointer to the JSON Schema this file claims to follow.
     ///
     /// Carried so an author can write the `$schema` line every editor uses for
@@ -343,7 +350,7 @@ pub struct ToolOverlay {
     #[serde(rename = "$schema", default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<String>,
 
-    /// Format version; only [`OVERLAY_SCHEMA_VERSION`] is accepted.
+    /// Format version; 1.0 and the current [`OVERLAY_SCHEMA_VERSION`] are accepted.
     pub schema_version: String,
     /// Command name this overlay describes (`ls`, not `/bin/ls`).
     pub command: String,
@@ -381,6 +388,9 @@ pub struct ToolOverlay {
 impl Default for ToolOverlay {
     fn default() -> Self {
         Self {
+            short_flag_bundling: None,
+            streaming_stdin_safe: false,
+            cross_flag_ordering: None,
             schema: None,
             schema_version: OVERLAY_SCHEMA_VERSION.to_string(),
             command: String::new(),
@@ -426,7 +436,7 @@ impl ToolOverlay {
 
     /// Whether this overlay's declared schema version is supported.
     pub fn is_supported_version(&self) -> bool {
-        self.schema_version == OVERLAY_SCHEMA_VERSION
+        matches!(self.schema_version.as_str(), "1.0" | OVERLAY_SCHEMA_VERSION)
     }
 
     /// Decide whether this overlay applies to `context`, and how strongly.
@@ -797,6 +807,13 @@ fn same_flag(left: &ScannedFlag, right: &ScannedFlag) -> bool {
 /// completion script, say). In [`OverlayMode::Merge`] the scan stays the base
 /// and the overlay overrides matching flags and appends missing ones.
 pub fn apply_overlay(tool: &mut ScannedCLITool, overlay: &ToolOverlay) {
+    tool.shim_contract = Some(crate::models::ShimContract {
+        authoritative: overlay.mode == OverlayMode::Authoritative,
+        variant: overlay.variant,
+        short_flag_bundling: overlay.short_flag_bundling,
+        streaming_stdin_safe: overlay.streaming_stdin_safe,
+        cross_flag_ordering: overlay.cross_flag_ordering,
+    });
     let confidence = overlay.confidence;
     let curated: Vec<ScannedFlag> = overlay
         .flags
@@ -900,6 +917,9 @@ mod tests {
 
     fn overlay(mode: OverlayMode) -> ToolOverlay {
         ToolOverlay {
+            short_flag_bundling: None,
+            streaming_stdin_safe: false,
+            cross_flag_ordering: None,
             schema: None,
             schema_version: OVERLAY_SCHEMA_VERSION.to_string(),
             command: "ls".to_string(),
@@ -1291,6 +1311,45 @@ mod tests {
     }
 
     #[test]
+    fn test_overlay_native_capabilities_reach_metadata_and_schema() {
+        let mut overlay = overlay(OverlayMode::Authoritative);
+        let mut tool = ScannedCLITool {
+            name: "ls".into(),
+            variant: ToolVariant::Bsd,
+            ..Default::default()
+        };
+        apply_overlay(&mut tool, &overlay);
+        let module = crate::adapter::CliToolConverter::new()
+            .convert(&tool)
+            .remove(0);
+        assert!(module
+            .input_schema
+            .get("x-apexe-cross-flag-ordering")
+            .is_none());
+        assert!(module
+            .input_schema
+            .get("x-apexe-short-flag-bundling")
+            .is_none());
+        assert_eq!(module.input_schema["x-apexe-streaming-stdin-safe"], false);
+        overlay.short_flag_bundling = Some(true);
+        overlay.streaming_stdin_safe = true;
+        overlay.cross_flag_ordering = Some(false);
+        apply_overlay(&mut tool, &overlay);
+        let module = crate::adapter::CliToolConverter::new()
+            .convert(&tool)
+            .remove(0);
+        assert_eq!(module.metadata["shim_contract"]["authoritative"], true);
+        assert_eq!(module.metadata["shim_contract"]["variant"], "bsd");
+        assert_eq!(module.input_schema["x-apexe-cross-flag-ordering"], false);
+        assert_eq!(module.input_schema["x-apexe-short-flag-bundling"], true);
+        assert_eq!(module.input_schema["x-apexe-streaming-stdin-safe"], true);
+        assert_eq!(
+            module.input_schema["properties"]["l"]["x-apexe-flag-aliases"],
+            serde_json::json!(["-l"])
+        );
+    }
+
+    #[test]
     fn test_overlay_round_trips_through_json() {
         let original = overlay(OverlayMode::Authoritative);
         let encoded = serde_json::to_string(&original).unwrap();
@@ -1638,10 +1697,11 @@ mod tests {
     #[test]
     fn test_schema_file_is_valid_json_and_pins_the_supported_version() {
         let Some(schema) = schema_json() else { return };
-        assert_eq!(
-            schema["properties"]["schema_version"]["const"],
-            OVERLAY_SCHEMA_VERSION
-        );
+        assert!(schema["properties"]["schema_version"]["enum"]
+            .as_array()
+            .is_some_and(|versions| versions
+                .iter()
+                .any(|version| version == OVERLAY_SCHEMA_VERSION)));
     }
 
     #[test]

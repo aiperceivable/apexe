@@ -18,7 +18,7 @@
 //! one desktop MCP client talking to one local server, where JWT's issuer, key
 //! management, expiry and rotation buy nothing. JWT stays available as a mode
 //! for multi-user deployments, where an identity-bearing credential is what
-//! makes the ACL's `callers` field and the audit log's caller dimension
+//! makes ACL identity/role conditions and the audit log's caller dimension
 //! meaningful.
 
 use std::collections::HashMap;

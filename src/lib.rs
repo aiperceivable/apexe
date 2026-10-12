@@ -23,12 +23,16 @@ pub mod adapter;
 pub mod auth;
 pub mod cli;
 pub mod config;
+mod corpus;
 pub mod errors;
 pub mod governance;
 pub mod mcp;
 pub mod models;
 pub mod module;
+pub mod openapi;
 pub mod output;
+mod runtime_path;
 pub mod scanner;
+pub mod verification;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

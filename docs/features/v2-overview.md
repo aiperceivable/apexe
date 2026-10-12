@@ -30,7 +30,7 @@
 | F5 | Governance | Implemented | P1 (Security) | 5.5 |
 | F6 | Error Migration | Implemented | P0 (Foundation) | 5.7 |
 | F7 | Config Integration | Implemented | P2 (Polish) | 5.8 |
-| F8 | Local Execution | **Design** — Stage 1 ready to build, Stage 2 blocked | P1 (Surface) | — (post-dates the tech design) |
+| F8 | Local Execution | Stages 1 and 2 implemented; reviewed-overlay pilot | P1 (Surface) | — (post-dates the tech design) |
 
 Three features shipped materially differently from their spec, and each spec
 says so inline: F3 never built `RegistryOutput` (registration is
@@ -90,12 +90,13 @@ F4 (MCP Server) required both F2 and F3. F5 (Governance) required F2.
 ### Phase 4: Polish (F7)
 F7 (Config Integration) was the last of the original set, requiring F4 and F5.
 
-### Next: F8 (not started)
+### Phase 5: Local execution (F8)
 Stage 1 (`apexe run` plus a preflight that reports every governance decision)
-reuses the executor as it stands and can be built now. Stage 2 (PATH shims) is
-blocked on two contracts the spec requires settling first: an `ExecutionIo` mode
-for passthrough I/O, and a `streaming_stdin_safe` per-module allowlist. See
-[F8 §10](v2-f8-local-execution.md) for the delivery plan.
+reuses the executor. Stage 2 (PATH shims) is implemented with explicit native
+grammar and stdin
+capabilities, PATH isolation, passthrough output, SIGPIPE restoration and status
+propagation. The current verified BSD pilot covers cat/head/ls; other overlays
+need an order-independence review before admission.
 
 ---
 

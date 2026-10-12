@@ -13,6 +13,7 @@ use crate::module::{build_executor, ExecutorOptions};
 /// middleware, and the approval handler apply identically whether a module
 /// is served over MCP or A2A.
 pub struct A2aServerBuilder {
+    auth_options: Option<crate::auth::AuthOptions>,
     name: String,
     url: String,
     explorer: bool,
@@ -52,9 +53,7 @@ pub struct A2aServerBuilder {
     /// module does not exist on the server, so it is absent from the agent
     /// card *and* uncallable. See [`ModuleFilter`](crate::module::ModuleFilter).
     filter: crate::module::ModuleFilter,
-    /// Acknowledge binding A2A to a non-loopback address. A2A has no
-    /// authenticator at all, so this is the `apexe serve --auth none`
-    /// configuration with no way to opt back in — see [`validate_bind_url`].
+    /// Acknowledge a non-loopback bind only when authentication is disabled.
     allow_unauthenticated_bind: bool,
 }
 
@@ -184,17 +183,8 @@ fn split_host_port(authority: &str) -> Option<(&str, &str)> {
     Some((host, port))
 }
 
-/// Refuse a non-loopback bind unless it was explicitly acknowledged.
-///
-/// `apexe serve` already applies this to `--auth none`, on the grounds that
-/// apexe wraps arbitrary local binaries and an unauthenticated non-loopback
-/// bind is a remote-execution entry point rather than an open API. A2A is that
-/// configuration with no way out of it: apcore-a2a has no `Authenticator`, so
-/// there is no `--auth token` to reach for, and an unauthenticated
-/// `GET /.well-known/agent-card.json` returns the full skill list with
-/// `securitySchemes: {}` while an unauthenticated `POST /` reaches the JSON-RPC
-/// handler. Applying the weaker rule to the weaker transport would be backwards,
-/// so the same acknowledgement flag governs both.
+/// Refuse an explicitly unauthenticated non-loopback bind without acknowledgement.
+/// Authenticated CLI configurations use `validate_endpoint` instead.
 #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
 fn validate_bind_url(url: &str, acknowledged: bool) -> Result<BindAddress, ModuleError> {
     let bind = parse_bind_url(url)?;
@@ -206,7 +196,7 @@ fn validate_bind_url(url: &str, acknowledged: bool) -> Result<BindAddress, Modul
             ErrorCode::GeneralInvalidInput,
             format!(
                 "Refusing to start: --url '{url}' binds the non-loopback host '{}', and \
-                 the A2A server has no transport authentication of any kind — the agent \
+                 this A2A configuration has no transport authentication — the agent \
                  card and every wrapped binary would be reachable from the network with \
                  no credential. Bind to loopback (`{DEFAULT_A2A_URL}`) and put a \
                  reverse proxy that authenticates in front, or pass \
@@ -227,6 +217,7 @@ impl A2aServerBuilder {
     /// Create a new builder with sensible defaults.
     pub fn new() -> Self {
         Self {
+            auth_options: None,
             name: "apexe".to_string(),
             url: DEFAULT_A2A_URL.to_string(),
             explorer: false,
@@ -245,6 +236,36 @@ impl A2aServerBuilder {
             execution_timeout: 300,
             cors_origins: vec![],
             allow_unauthenticated_bind: false,
+        }
+    }
+
+    /// Configure token, JWT or explicitly unauthenticated A2A transport.
+    pub fn auth(mut self, options: crate::auth::AuthOptions) -> Self {
+        self.allow_unauthenticated_bind = options.allow_unauthenticated_bind;
+        self.auth_options = Some(options);
+        self
+    }
+
+    #[allow(clippy::result_large_err)] // Preserve the shared ModuleError boundary.
+    pub fn transport_auth(
+        &self,
+    ) -> Result<Option<Arc<dyn apcore_a2a::Authenticator>>, ModuleError> {
+        match &self.auth_options {
+            Some(options) => super::auth::resolve(&parse_bind_url(&self.url)?.host, options),
+            None => Ok(None),
+        }
+    }
+
+    #[allow(clippy::result_large_err)] // Preserve the shared ModuleError boundary.
+    fn validate_endpoint(&self) -> Result<BindAddress, ModuleError> {
+        if self
+            .auth_options
+            .as_ref()
+            .is_some_and(|options| options.mode != Some(crate::auth::AuthMode::None))
+        {
+            parse_bind_url(&self.url)
+        } else {
+            validate_bind_url(&self.url, self.allow_unauthenticated_bind)
         }
     }
 
@@ -403,11 +424,8 @@ impl A2aServerBuilder {
 
     /// Serve only modules whose `module_id` starts with `prefix`.
     ///
-    /// Excluded modules are absent from the agent card and uncallable, because
-    /// the filter runs at registration rather than over the card. On A2A that
-    /// distinction carries more weight than on MCP: `apexe a2a` has no
-    /// authenticator, so narrowing the surface is the only mechanism available
-    /// for limiting what an unauthenticated caller can reach.
+    /// Excluded modules are absent from the agent card and uncallable because
+    /// the filter runs at registration rather than over the card.
     pub fn prefix(mut self, prefix: impl Into<String>) -> Self {
         self.filter.prefix = Some(prefix.into());
         self
@@ -445,16 +463,89 @@ impl A2aServerBuilder {
     // the rest of the apexe/apcore API surface.
     #[allow(clippy::result_large_err)]
     pub async fn serve(self) -> Result<(), ModuleError> {
-        let (executor, config) = self.prepare()?;
+        let (router, _) = self.app(None).await?;
+        let listener = self.listener().await?;
+        Self::serve_router(listener, router).await
+    }
 
-        apcore_a2a::async_serve(BackendSource::Executor(executor), config)
+    /// Import OpenAPI operations alongside CLI bindings and serve A2A.
+    #[allow(clippy::result_large_err)] // Preserve the shared ModuleError boundary.
+    pub async fn serve_with_openapi(
+        self,
+        openapi: &crate::openapi::OpenApiOptions,
+    ) -> Result<(), ModuleError> {
+        let (router, _) = self.app(Some(openapi)).await?;
+        let listener = self.listener().await?;
+        Self::serve_router(listener, router).await
+    }
+
+    #[allow(clippy::result_large_err)] // Preserve the shared ModuleError boundary.
+    async fn listener(&self) -> Result<tokio::net::TcpListener, ModuleError> {
+        let bind = self.validate_endpoint()?;
+        tokio::net::TcpListener::bind((bind.host.as_str(), bind.port))
             .await
-            .map_err(|e| {
+            .map_err(|error| {
                 ModuleError::new(
                     ErrorCode::GeneralInternalError,
-                    format!("A2A server error: {e}"),
+                    format!("A2A bind failed: {error}"),
                 )
             })
+    }
+
+    #[allow(clippy::result_large_err)] // Preserve the shared ModuleError boundary.
+    async fn serve_router(
+        listener: tokio::net::TcpListener,
+        router: axum::Router,
+    ) -> Result<(), ModuleError> {
+        axum::serve(listener, router).await.map_err(|error| {
+            ModuleError::new(
+                ErrorCode::GeneralInternalError,
+                format!("A2A server failed: {error}"),
+            )
+        })
+    }
+
+    /// Assemble the exact router used by both A2A serving paths.
+    #[allow(clippy::result_large_err)] // Preserve the shared ModuleError boundary.
+    pub async fn app(
+        &self,
+        openapi: Option<&crate::openapi::OpenApiOptions>,
+    ) -> Result<(axum::Router, serde_json::Value), ModuleError> {
+        let (executor, config) = match openapi {
+            Some(options) => self.prepare_with_openapi(options).await?,
+            None => self.prepare()?,
+        };
+        let (router, card) = apcore_a2a::build_app_with_auth(
+            BackendSource::Executor(executor),
+            config,
+            self.transport_auth()?,
+        )
+        .await
+        .map_err(|error| {
+            ModuleError::new(
+                ErrorCode::GeneralInternalError,
+                format!("A2A assembly failed: {error}"),
+            )
+        })?;
+        let router = router.layer(axum::middleware::from_fn(
+            super::notifications::suppress_reply,
+        ));
+        let card = serde_json::to_value(card).map_err(|error| {
+            ModuleError::new(ErrorCode::GeneralInternalError, error.to_string())
+        })?;
+        Ok((router, card))
+    }
+
+    /// Assemble the same governed HTTP and CLI surface without binding a port.
+    #[allow(clippy::result_large_err)] // Match the crate-wide ModuleError boundary.
+    pub async fn prepare_with_openapi(
+        &self,
+        openapi: &crate::openapi::OpenApiOptions,
+    ) -> Result<(Arc<Executor>, APCoreA2AConfig), ModuleError> {
+        self.validate_endpoint()?;
+        let executor =
+            crate::module::build_executor_with_openapi(&self.executor_options(), openapi).await?;
+        self.finish_prepare(executor)
     }
 
     /// Build the A2A agent card without binding a port.
@@ -467,30 +558,26 @@ impl A2aServerBuilder {
     /// live server. Returns `Err` when no modules are present (empty registry).
     #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
     pub async fn agent_card(self) -> Result<serde_json::Value, ModuleError> {
-        let (executor, config) = self.prepare()?;
-        let (_router, card) = apcore_a2a::build_app(BackendSource::Executor(executor), config)
-            .await
-            .map_err(|e| {
-                ModuleError::new(
-                    ErrorCode::GeneralInternalError,
-                    format!("Failed to build A2A app: {e}"),
-                )
-            })?;
-        serde_json::to_value(&card).map_err(|e| {
-            ModuleError::new(
-                ErrorCode::GeneralInternalError,
-                format!("Failed to serialize agent card: {e}"),
-            )
-        })
+        self.app(None).await.map(|(_, card)| card)
     }
 
     /// Shared assembly for `serve` and `agent_card`: enforce the approval
     /// precondition, build the governed executor, and construct the A2A config.
     #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
     fn prepare(&self) -> Result<(Arc<Executor>, APCoreA2AConfig), ModuleError> {
+        self.validate_endpoint()?;
+        let executor = build_executor(&self.executor_options())?;
+        self.finish_prepare(executor)
+    }
+
+    #[allow(clippy::result_large_err)] // Match the crate-wide ModuleError boundary.
+    fn finish_prepare(
+        &self,
+        executor: Arc<Executor>,
+    ) -> Result<(Arc<Executor>, APCoreA2AConfig), ModuleError> {
         // Before anything else: a bad `--url` is the one failure that would
         // otherwise succeed loudly on the wrong socket.
-        validate_bind_url(&self.url, self.allow_unauthenticated_bind)?;
+        self.validate_endpoint()?;
 
         if self.enable_approval && self.approval_store.is_none() {
             return Err(ModuleError::new(
@@ -507,39 +594,24 @@ impl A2aServerBuilder {
             ));
         }
 
-        let executor = build_executor(&self.executor_options())?;
-
         let config = APCoreA2AConfig {
             name: self.name.clone(),
             description: format!("apexe A2A agent '{}'", self.name),
             // The agent card's `version` describes THIS agent, not the
-            // framework serving it. `APCoreA2AConfig::default()` fills it from
-            // `apcore_a2a::VERSION`, which is a hard-coded constant in that
-            // crate and is stale besides ("0.4.1" on apcore-a2a 0.4.4), so a
-            // client reading the card learned neither which apexe nor which
-            // apcore-a2a it was talking to. Set it explicitly.
+            // framework serving it. The default is apcore-a2a's package
+            // version, so override it with apexe's package version.
             version: crate::VERSION.to_string(),
             url: self.url.clone(),
             execution_timeout: self.execution_timeout,
             explorer: self.explorer,
             sys_modules: false,
             cors_origins: self.cors_origins.clone(),
-            // apcore-a2a 0.6 answers a governance refusal with its own
-            // JSON-RPC code (access-denied / approval-denied / approval-timeout)
-            // instead of the `Task not found` and `Internal server error` that
-            // used to send an agent off to retry a call that can never succeed.
-            // By default it still sends only the fixed per-class string; this
-            // opts into apcore's own message, which is what `apexe a2a` needs
-            // and what it already did through its own relay before 0.6:
-            //
-            // * the agent card is ACL-filtered per caller, so a denied skill is
-            //   absent from it and a caller naming one already had the id;
-            // * `apexe a2a` wires no authenticator, so every caller is the same
-            //   anonymous `@external` principal and there is no privileged
-            //   caller for the masking to keep a secret from.
-            //
-            // Set this to `false` if apexe ever grows an authenticator here.
-            disclose_refusal_reason: true,
+            // Authenticated transports mask detailed reasons across principals.
+            // Explicit unauthenticated surfaces retain actionable refusal details.
+            disclose_refusal_reason: self
+                .auth_options
+                .as_ref()
+                .is_none_or(|options| options.mode == Some(crate::auth::AuthMode::None)),
             ..APCoreA2AConfig::default()
         };
 

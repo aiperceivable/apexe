@@ -113,6 +113,123 @@ apexe list --format json
 
 ## Next steps
 
+### Run locally and activate PATH shims
+
+After scanning a tool, use its module ID and scanned input schema to inspect
+governance without executing, then run with captured JSON output:
+
+```bash
+apexe overlays install https://github.com/aiperceivable/cli-permissions
+apexe scan ls --no-cache
+apexe run cli.ls --input '{"file":["."]}' --dry-run
+apexe run cli.ls --input '{"file":["."]}'
+```
+
+The `file` property above is the reviewed BSD `ls` operand; consult your
+binding schema for other variants. Local execution loads `~/.apexe/acl.yaml`
+when present. Review that policy before executing.
+
+For native command syntax and pipelines, scan with overlays that explicitly
+declare reviewed native capabilities, then enable the shims:
+
+```bash
+apexe scan cat head ls --no-cache
+# Review ~/.apexe/acl.yaml before activation.
+apexe env --enable
+# Open a new terminal; installed shims load automatically.
+cat sample.txt | head -n1
+ls -la
+# Refresh when the eligible command set changes after a scan.
+apexe env --reload
+# Remove both owned shims and managed shell startup blocks.
+apexe env --disable
+```
+
+After updating corpus facts with `apexe overlays update cli-permissions`,
+rescan affected commands and use `apexe env --reload`. Inspect sources with
+`apexe overlays list`; pin a reviewed revision with `install --ref <REF>`.
+See the [corpus command reference](user-manual.md#410-apexe-overlays).
+For local overlay development, read a sibling checkout directly:
+
+```bash
+APEXE_OVERLAY_DIRS=../cli-permissions/overlays apexe scan ls --no-cache
+```
+
+This scan reads the current files, including uncommitted edits, without
+installing a snapshot. The environment variable applies only to this command.
+`apexe overlays install ../cli-permissions` instead installs the local Git
+repository's committed content; use that for a managed, repeatable snapshot.
+
+Use an existing `sample.txt` for that pipeline. The current reviewed native
+pilot covers BSD `cat`, `head` and `ls` on macOS; other variants need their own
+reviewed overlays. Builtins, aliases, functions and absolute paths bypass PATH
+shims. See the [local command reference](user-manual.md#47-apexe-run) and
+[F8 specification](features/v2-f8-local-execution.md) for scope and requirements.
+
+Enabling detects zsh, bash, fish or sh from `SHELL`; override it with
+`--shell`. Use `--rc-file` for a custom startup file. sh requires a new login
+shell. In PowerShell, configure the current host profile explicitly:
+
+```powershell
+apexe env --enable --shell powershell --rc-file "$PROFILE"
+```
+
+To activate immediately in the current sh, bash or zsh session, run
+`eval "$(apexe env)"` once after installation. Future terminals load shims
+automatically. Native commands need no repeated setup; refresh with
+`apexe env --reload` when newly scanned eligible tools or subcommands change the
+installed command set. Reload retains the previous binding directory, ACL and
+filters. If no installation exists, including after disable, it automatically
+enables shims with the current settings; then open a new terminal.
+
+To try a self-contained example from the repository root with Python 3:
+
+```bash
+cargo build --all-features
+python3 examples/local_execution/demo.py --apexe target/debug/apexe
+# On macOS, with the reviewed companion corpus available:
+python3 examples/local_execution/demo.py --apexe target/debug/apexe \
+  --corpus ../cli-permissions/overlays --shims
+```
+
+The [local execution demo](../examples/local_execution/README.md) uses a
+temporary HOME and working directory. It checks preflight, execution, ACL
+denial and audit; `--shims` also checks a native pipeline and owned uninstall.
+
+### Import an existing HTTP API with OpenAPI
+
+Supply an OpenAPI 3.0/3.1 JSON or YAML document and a reviewed ACL to either
+server. Set `APEXE_OPENAPI_TOKEN` in the launch environment if the upstream API
+requires a bearer credential:
+
+```bash
+apexe serve --openapi ./openapi.yaml \
+  --openapi-base-url https://api.example.com --acl ./acl.yaml --no-log-arguments
+apexe a2a --openapi ./openapi.yaml \
+  --openapi-base-url https://api.example.com --acl ./acl.yaml --no-log-arguments
+```
+
+Operations use the `api.*` namespace by default. They share schema validation,
+ACL and auditing with CLI modules. A2A transport authentication is separate
+from the upstream API credential. `--openapi-header` authenticates specification
+fetching only. See the [OpenAPI guide](openapi.md) for supported request formats
+and proxy limits.
+
+Try both MCP and A2A against a temporary local API from the repository root:
+
+```bash
+cargo build --all-features
+python3 examples/openapi_import/demo.py --apexe target/debug/apexe
+# Also fetch a protected specification with a separate credential:
+python3 examples/openapi_import/demo.py --apexe target/debug/apexe --remote-spec
+```
+
+The [OpenAPI import demo](../examples/openapi_import/README.md) checks GET path
+and query parameters, POST JSON bodies, ACL-denied DELETE and credential
+separation. It requires Python 3 and creates its own local API and credentials.
+
+### Explore more options
+
 ```bash
 # Deep scan with 3 levels of subcommands
 apexe scan git --depth 3

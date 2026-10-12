@@ -575,37 +575,35 @@ development machine where this was found, 166 of 166 binding files had been
 written by an earlier release, so all three controls were inert across the
 entire registry and no mechanism existed to say so.
 
-Two things narrow it as of 0.8.0, neither of which closes it:
+Bindings now carry `metadata.apexe_scan_format`, and every registered CLI
+module with a missing or incompatible format produces a rescan warning. The
+producer stamp `metadata.generated_by` is retained as provenance, while the
+format number is what the runtime compares. Existing bindings remain loadable:
+a warning identifies the gap, but does not repair missing markers or certify
+that a tool still matches its schema. Re-run `apexe scan` after a format warning.
 
-- Every binding now records `metadata.generated_by` (`apexe <version>`). Nothing
-  reads it yet — it is the half that has to exist before a later release can
-  compare it against its own and refuse to serve, or warn, on a mismatch.
-- `bindings.dir` moved the default directory, so the upgrade to 0.8.0 forces a
-  rescan and clears the backlog once. That is luck, not a mechanism: the next
-  release to add a keyword has no such move behind it.
+### 5.11 Local execution and the remaining Stage 2 boundaries
 
-**Until a version check ships, re-run `apexe scan` after every apexe upgrade.**
-§6 states this as a deployment step.
-
-### 5.11 Reserved: four limitations that arrive with local execution
-
-Not limitations of apexe today — the surface they describe does not exist yet.
-They are recorded here so they land *with* the feature rather than after it.
+Stage 1 (`apexe run`) executes only declared modules with captured output and
+null stdin. Stage 2 installs reviewed external-command shims that inherit output
+streams and receive stdin only under an explicit overlay capability. It uses the fixed `local` ACL caller; `--as` is accepted only for
+a non-executing simulation and marks that identity as asserted. It loads the
+default ACL when present and fails closed on an unreadable or malformed policy.
+These limitations remain present even with the implemented PATH shims.
 [`docs/features/v2-f8-local-execution.md`](features/v2-f8-local-execution.md) §8
-makes each a release condition for its Stage 2, and each becomes a numbered
-subsection of this section when that ships:
+describes the shipped stdin and shim boundaries:
 
-- **stdin would be an ungoverned input channel.** Every control in §4 acts on
+- **stdin is an ungoverned input channel.** Every control in §4 acts on
   argv. An inherited stdin is not schema-validated, not path-checked and not
   recorded — and for any tool that reads a program from stdin (`python -`,
   `awk`, `sh -s`, `sed -f -`) that is a complete bypass by a different route
   than §5.9's. F8 requires an allowlist (`streaming_stdin_safe`, a human
   assertion per module), never a denylist.
-- **Shim coverage would be partial, and the gap silent.** Shell builtins —
+- **Shim coverage is partial, and the gap silent.** Shell builtins —
   `cd`, `echo`, `test`, and in most shells `kill` — are resolved without
   consulting `PATH`, so no shim can sit in front of them and nothing at the
   point of use distinguishes a governed command from an ungoverned one.
-- **A shim would be bypassable by absolute path.** `/bin/ls` is not a `PATH`
+- **A shim is bypassable by absolute path.** `/bin/ls` is not a `PATH`
   lookup. This is §5.1 applied locally: against a human the shim is an audit
   trail, not enforcement; it is a real boundary only where `PATH` and the
   filesystem are controlled externally (a container, a CI runner image).
@@ -644,8 +642,8 @@ subsection of this section when that ships:
    guard, the approval gate or log redaction on that host. All three read
    keywords out of the binding file, so a binding written by an earlier release
    silently carries none of them and the control enforces nothing (§5.10). A
-   rescan fixes it completely; nothing else does, and as of 0.8.0 nothing
-   detects it.
+   rescan refreshes these markers. Missing or incompatible scan-format metadata
+   now produces a warning; native shim installation excludes such bindings.
 9. Do not wrap command executors — `env`, `xargs`, `sudo`, `timeout`, `nice`
    and their kin (§5.9). They are classified `destructive` so the generated ACL
    denies them, but the durable fix is to keep them out of the registry: argv

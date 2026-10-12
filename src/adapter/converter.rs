@@ -127,6 +127,11 @@ impl CliToolConverter {
         module.annotations = Some(fields.annotations);
         module.documentation = fields.documentation;
         module.metadata = self.build_metadata(tool, path, help_format_name);
+        if let Some(source) = tool.source_contracts.get(&module.module_id) {
+            module
+                .metadata
+                .insert("source_contract".into(), source.clone());
+        }
         module.warnings = tool.warnings.clone();
         module.examples = Self::build_examples(fields.examples);
         module
@@ -168,6 +173,10 @@ impl CliToolConverter {
         metadata.insert("scan_tier".to_string(), json!(tool.scan_tier));
         metadata.insert("help_format".to_string(), json!(help_format_name));
         metadata.insert("binary_path".to_string(), json!(tool.binary_path));
+        metadata.insert("variant".into(), json!(tool.variant));
+        if let Some(contract) = &tool.shim_contract {
+            metadata.insert("shim_contract".into(), json!(contract));
+        }
         metadata.insert("suggested_alias".to_string(), json!(suggested_alias));
         // The module id folds `-` to `_` to satisfy the apcore id grammar, so
         // `git cat-file` is served as `cli.git.cat_file`. The hyphenated form is
@@ -236,7 +245,16 @@ impl CliToolConverter {
 
         // Built once and shared: `mark_escalating_params` reads the property
         // names off it, and those must be the names the module ships with.
-        let input_schema = schema::build_input_schema(command, &tool.global_flags, position);
+        let mut input_schema = schema::build_input_schema(command, &tool.global_flags, position);
+        if let Some(contract) = &tool.shim_contract {
+            if let Some(bundling) = contract.short_flag_bundling {
+                input_schema["x-apexe-short-flag-bundling"] = json!(bundling);
+            }
+            input_schema["x-apexe-streaming-stdin-safe"] = json!(contract.streaming_stdin_safe);
+            if let Some(ordering) = contract.cross_flag_ordering {
+                input_schema["x-apexe-cross-flag-ordering"] = json!(ordering);
+            }
+        }
 
         CommandFields {
             description: Self::command_description(

@@ -403,10 +403,10 @@ fn test_user_manual_documents_transport_authentication() {
 ///
 /// The manual said so; the README did not, and a reader who starts from the
 /// README meets the `--auth*` flags under `apexe serve` and reasonably assumes
-/// they apply. apcore-a2a has no `Authenticator` at all, so the only defence is
-/// the bind address — which is exactly what the refusal below enforces.
+/// they apply. apcore-a2a provides an `Authenticator`, but apexe does not
+/// wire it; the bind guard remains necessary for the current A2A surface.
 #[tokio::test]
-async fn test_every_document_discloses_that_a2a_has_no_authentication() {
+async fn test_every_document_discloses_a2a_auth_defaults_and_explicit_opt_out() {
     let err = apexe::a2a::A2aServerBuilder::new()
         .url("http://0.0.0.0:8000")
         .agent_card()
@@ -431,8 +431,9 @@ async fn test_every_document_discloses_that_a2a_has_no_authentication() {
         ("README.md", include_str!("../README.md")),
     ] {
         assert!(
-            text.contains("no transport authentication"),
-            "{name} introduces `apexe a2a` without disclosing that it has none"
+            text.contains("A2A requires bearer authentication by default")
+                && text.contains("`--auth none`"),
+            "{name} must disclose A2A token authentication and explicit opt-out"
         );
         assert!(
             text.contains("--allow-unauthenticated-bind"),

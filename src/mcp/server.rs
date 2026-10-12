@@ -293,6 +293,18 @@ impl McpServerBuilder {
         self.build_mcp_server(executor, transport)
     }
 
+    /// Import OpenAPI operations alongside CLI bindings, then build MCP.
+    #[allow(clippy::result_large_err)] // Match the crate-wide ModuleError boundary.
+    pub async fn build_with_openapi(
+        self,
+        openapi: &crate::openapi::OpenApiOptions,
+    ) -> Result<APCoreMCP, ModuleError> {
+        let transport = self.resolve_transport()?;
+        let executor =
+            crate::module::build_executor_with_openapi(&self.executor_options(), openapi).await?;
+        self.build_mcp_server(executor, transport)
+    }
+
     /// Options shared with the A2A builder for assembling a governed `Executor`.
     fn executor_options(&self) -> ExecutorOptions<'_> {
         ExecutorOptions {

@@ -29,7 +29,7 @@ use crate::output::load_modules_from_dir;
 /// lookup path returns `ModuleNotFound`. This is the invariant `module_id`
 /// registration already holds — the surface a server advertises and the surface
 /// it serves are the same set.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModuleFilter {
     /// Keep only modules whose `module_id` starts with this prefix.
     pub prefix: Option<String>,
@@ -144,7 +144,24 @@ pub struct ExecutorOptions<'a> {
 #[allow(clippy::result_large_err)]
 pub fn build_executor(opts: &ExecutorOptions<'_>) -> Result<Arc<Executor>, ModuleError> {
     let modules = load_scanned_modules(opts.bindings_dir, opts.bindings_pattern)?;
+    build_executor_from_modules(opts, modules)
+}
 
+/// Assemble a local executor and preflight from a single binding snapshot.
+#[allow(clippy::result_large_err)] // Match the crate-wide ModuleError boundary.
+pub(crate) fn build_executor_from_modules(
+    opts: &ExecutorOptions<'_>,
+    modules: Vec<ScannedModule>,
+) -> Result<Arc<Executor>, ModuleError> {
+    build_executor_from_modules_with_io(opts, modules, super::ExecutionIo::Captured)
+}
+
+#[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+pub(crate) fn build_executor_from_modules_with_io(
+    opts: &ExecutorOptions<'_>,
+    modules: Vec<ScannedModule>,
+    io: super::ExecutionIo,
+) -> Result<Arc<Executor>, ModuleError> {
     // Governance audit sink (F5 §4.3): shared across all modules and the ACL.
     let audit = opts
         .audit_path
@@ -153,9 +170,41 @@ pub fn build_executor(opts: &ExecutorOptions<'_>) -> Result<Arc<Executor>, Modul
     let admitted = admit_modules(modules, &opts.filter);
     let available = filter_available(admitted);
 
-    let registry = Registry::new();
-    register_modules(&available, &registry, opts.timeout_ms, audit.clone());
+    let registry = Arc::new(Registry::new());
+    register_modules_with_io(&available, &registry, opts.timeout_ms, audit.clone(), io);
     tracing::info!(count = registry.count(), "Registered CLI modules");
+    finish_executor(opts, registry, audit)
+}
+
+/// Import HTTP operations before installing ACL, so both sources are governed.
+#[allow(clippy::result_large_err)] // Match the crate-wide ModuleError boundary.
+pub async fn build_executor_with_openapi(
+    opts: &ExecutorOptions<'_>,
+    openapi: &crate::openapi::OpenApiOptions,
+) -> Result<Arc<Executor>, ModuleError> {
+    let modules = load_scanned_modules(opts.bindings_dir, opts.bindings_pattern)?;
+    let audit = opts
+        .audit_path
+        .map(|path| Arc::new(crate::governance::AuditManager::new(path)));
+    // The import may supply the entire matching surface; a CLI-only empty
+    // filter warning would incorrectly claim that no tools remain callable.
+    let admitted = modules
+        .into_iter()
+        .filter(|module| opts.filter.admits(module))
+        .collect();
+    let available = filter_available(admitted);
+    let registry = Arc::new(Registry::new());
+    register_modules(&available, &registry, opts.timeout_ms, audit.clone());
+    crate::openapi::register_operations(&registry, opts, openapi, audit.clone()).await?;
+    finish_executor(opts, registry, audit)
+}
+
+#[allow(clippy::result_large_err)] // Match the crate-wide ModuleError boundary.
+fn finish_executor(
+    opts: &ExecutorOptions<'_>,
+    registry: Arc<Registry>,
+    audit: Option<Arc<crate::governance::AuditManager>>,
+) -> Result<Arc<Executor>, ModuleError> {
     // Snapshot the ids that survived registration (a module whose `CliModule`
     // failed to build is logged and skipped), taken before the registry moves
     // into the `Executor`. `include_hidden` is true because a module annotated
@@ -507,9 +556,29 @@ fn register_modules(
     timeout_ms: u64,
     audit: Option<Arc<crate::governance::AuditManager>>,
 ) {
+    register_modules_with_io(
+        modules,
+        registry,
+        timeout_ms,
+        audit,
+        super::ExecutionIo::Captured,
+    );
+}
+
+fn register_modules_with_io(
+    modules: &[ScannedModule],
+    registry: &Registry,
+    timeout_ms: u64,
+    audit: Option<Arc<crate::governance::AuditManager>>,
+    io: super::ExecutionIo,
+) {
     for scanned in modules {
+        if !crate::output::has_current_scan_format(scanned) {
+            tracing::warn!(module_id = %scanned.module_id,
+                "Binding uses a missing or incompatible apexe scan format; governance markers may be stale. Re-run apexe scan for this tool.");
+        }
         let cli_module = match CliModule::from_scanned(scanned, timeout_ms) {
-            Ok(cli_module) => cli_module.with_audit(audit.clone()),
+            Ok(cli_module) => cli_module.with_audit(audit.clone()).with_execution_io(io),
             Err(e) => {
                 tracing::warn!(
                     module_id = scanned.module_id,
@@ -520,7 +589,8 @@ fn register_modules(
             }
         };
         let module_id = scanned.module_id.clone();
-        let descriptor = build_descriptor(scanned);
+        let mut descriptor = build_descriptor(scanned);
+        descriptor.output_schema = apcore::Module::output_schema(&cli_module);
         if let Err(e) = registry.register(&module_id, Box::new(cli_module), descriptor) {
             tracing::warn!(module_id, error = %e, "Failed to register module");
         }

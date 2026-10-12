@@ -1,0 +1,33 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "Local pet API example", "version": "1.0.0"},
+  "paths": {
+    "/pets/{id}": {
+      "get": {
+        "operationId": "getPet",
+        "description": "Read one in-memory pet.",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}},
+          {"name": "q", "in": "query", "schema": {"type": "string"}}
+        ],
+        "responses": {"200": {"description": "Pet", "content": {"application/json": {"schema": {"type": "object"}}}}}
+      },
+      "delete": {
+        "operationId": "deletePet",
+        "description": "Delete an in-memory pet; denied by the example policy.",
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Deletion status", "content": {"application/json": {"schema": {"type": "object"}}}}}
+      }
+    },
+    "/pets": {
+      "post": {
+        "operationId": "createPet",
+        "description": "Create one in-memory pet from a JSON body.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"], "additionalProperties": false
+        }}}},
+        "responses": {"201": {"description": "Created pet", "content": {"application/json": {"schema": {"type": "object"}}}}}
+      }
+    }
+  }
+}

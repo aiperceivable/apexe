@@ -20,12 +20,24 @@ impl ToolResolver {
     ///
     /// Returns `Err(ToolNotFound)` if tool is not on PATH.
     pub fn resolve(&self, tool_name: &str, timeout: Duration) -> Result<ResolvedTool, ApexeError> {
-        let binary_path = which::which(tool_name)
-            .map_err(|_| ApexeError::ToolNotFound {
-                tool_name: tool_name.to_string(),
-            })?
-            .to_string_lossy()
-            .to_string();
+        let binary_path = which::which_in(
+            tool_name,
+            Some(crate::runtime_path::search_path()),
+            std::env::current_dir().unwrap_or_default(),
+        )
+        .map_err(|_| ApexeError::ToolNotFound {
+            tool_name: tool_name.to_string(),
+        })?
+        .to_string_lossy()
+        .to_string();
+        if std::path::Path::new(&binary_path)
+            .parent()
+            .is_some_and(crate::runtime_path::is_shim_directory)
+        {
+            return Err(ApexeError::ToolNotFound {
+                tool_name: tool_name.into(),
+            });
+        }
 
         let version = self.get_version(&binary_path, tool_name, timeout);
 
@@ -81,7 +93,12 @@ pub fn binary_is_reachable(binary_path: &str) -> bool {
     if binary_path.contains(std::path::MAIN_SEPARATOR) {
         std::path::Path::new(binary_path).is_file()
     } else {
-        which::which(binary_path).is_ok()
+        which::which_in(
+            binary_path,
+            Some(crate::runtime_path::search_path()),
+            std::env::current_dir().unwrap_or_default(),
+        )
+        .is_ok()
     }
 }
 

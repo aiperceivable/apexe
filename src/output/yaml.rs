@@ -3,6 +3,17 @@ use std::path::Path;
 use apcore::{ErrorCode, ModuleError};
 use apcore_toolkit::{ScannedModule, Verifier, WriteResult, YAMLVerifier, YAMLWriter};
 
+/// Version of apexe's argv and governance schema contract.
+pub(crate) const SCAN_FORMAT_VERSION: u64 = 3;
+
+pub(crate) fn has_current_scan_format(module: &ScannedModule) -> bool {
+    module
+        .metadata
+        .get("apexe_scan_format")
+        .and_then(serde_json::Value::as_u64)
+        == Some(SCAN_FORMAT_VERSION)
+}
+
 /// Wraps apcore-toolkit's YAMLWriter to write ScannedModules as `.binding.yaml` files.
 pub struct YamlOutput {
     writer: YAMLWriter,
@@ -61,9 +72,15 @@ impl YamlOutput {
             vec![]
         };
 
+        let mut stamped = modules.to_vec();
+        for module in &mut stamped {
+            module
+                .metadata
+                .insert("apexe_scan_format".into(), SCAN_FORMAT_VERSION.into());
+        }
         self.writer
             .write(
-                modules,
+                &stamped,
                 &output_dir_str,
                 dry_run,
                 self.verify,
@@ -115,6 +132,19 @@ mod tests {
             std::path::Path::new(path).exists(),
             "binding file should exist"
         );
+    }
+
+    #[test]
+    fn test_yaml_output_scan_format_round_trips_without_mutating_input() {
+        let dir = TempDir::new().unwrap();
+        let module = make_test_module("stamp");
+        assert!(!has_current_scan_format(&module));
+        YamlOutput::new()
+            .write(std::slice::from_ref(&module), dir.path(), false)
+            .unwrap();
+        let loaded = crate::output::load_modules_from_dir(dir.path(), None).unwrap();
+        assert!(has_current_scan_format(&loaded[0]));
+        assert!(!has_current_scan_format(&module));
     }
 
     #[test]

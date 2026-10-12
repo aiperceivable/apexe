@@ -263,6 +263,15 @@ fn apply_flag_risk(schema: &mut JsonValue, flag: &ScannedFlag) {
 }
 
 fn apply_flag_literal(schema: &mut JsonValue, flag: &ScannedFlag) {
+    let aliases: Vec<&str> = flag
+        .short_name
+        .iter()
+        .chain(flag.long_name.iter())
+        .map(String::as_str)
+        .collect();
+    if !aliases.is_empty() {
+        schema["x-apexe-flag-aliases"] = json!(aliases);
+    }
     if let Some(literal) = flag.long_name.as_deref().or(flag.short_name.as_deref()) {
         schema["x-apexe-flag"] = json!(literal);
     }

@@ -6,7 +6,69 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
-## [Unreleased]
+## [0.9.0] - 2026-10-12
+
+### Changed
+
+- **BREAKING:** `apexe env` removes the legacy `--load`, `--unload`, `--install`,
+  `--init` and `--uninstall` options. Use `--enable`, `--reload` and `--disable`;
+  calling `apexe env` without an operation still prints shell activation.
+
+### Added
+
+- `apexe env --enable` installs shims and configures automatic activation for new
+  terminals in one step, with shell detection, startup-file overrides and
+  idempotent managed blocks. `--reload` refreshes the command set while retaining
+  installed binding/ACL/filter settings, or automatically enables when no
+  installation exists. `--disable` removes owned shims and startup blocks,
+  preserving other configuration and succeeding when already disabled.
+- `apexe verify` compares fresh pre-overlay source contracts with stored binding
+  baselines, classifies drift, and never overwrites the baseline. Explicit
+  readonly behavioral cases for system cat/head/ls run in temporary HOME/work
+  directories through governed execution. Reports record binding, executable
+  and case SHA-256 digests, separating earned case evidence from overlay claims.
+- A2A token/JWT authentication uses the existing transport credential policy.
+  The CLI defaults to token auth; explicit unauthenticated public binds still
+  require acknowledgement. Authenticated refusal reasons remain masked.
+
+### Fixed
+
+- A2A JSON-RPC notifications execute without replies; explicit null IDs still
+  receive responses. A2A 1.0 stream and agent-card spellings remain unchanged.
+
+### Added
+
+- Stage 2 local execution: `apexe env --enable` creates governed external-command
+  links and configures automatic shell activation. The strict native argv resolver
+  supports declared aliases, bundles, attached values, typed scalars, arrays and
+  subcommand routing through `command_path`; unresolved arguments never bypass
+  governance. Missing or ineligible modules refuse without a native fallback.
+- Passthrough output with an explicit null/inherited stdin capability, distinct
+  status-only results, exact child exit codes and restored POSIX SIGPIPE. Both
+  scanning and children strip managed shim directories from PATH.
+- Overlay format 1.1 declares stdin, bundling and cross-flag ordering. Format 1.0
+  remains scan-compatible; shim admission requires explicit order independence.
+  The companion corpus adds locally verified BSD cat/head/ls capabilities and
+  corrects 16 missing ls conflict pairs found by native order probes.
+
+### Added
+
+- `apexe run <MODULE_ID> --input <JSON>`: governed local execution with captured
+  JSON output, the `local` ACL caller, automatic default ACL loading and a
+  non-executing `--dry-run`. `--as` is restricted to simulation. Schema, ACL,
+  approval and path-guard checks remain active; refused preflights print JSON.
+- MCP and A2A accept `--openapi` JSON/YAML files or specification URLs alongside
+  CLI modules. Imported HTTP operations default to `api.*`, share schema/ACL/
+  approval/audit controls and honor surface filters. Specification headers and
+  upstream API bearer tokens are kept separate from transport credentials.
+- Bindings record an apexe scan-format version; loading a missing or incompatible
+  version warns per module and asks for a rescan.
+
+### Fixed
+
+- Correct #42's stale attribution: apcore-a2a provides an `Authenticator`;
+  apexe currently does not wire it. The existing unauthenticated bind guard
+  remains in force. Agent Card version comments now describe the current SDK.
 
 ### Changed
 

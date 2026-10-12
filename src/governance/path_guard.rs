@@ -453,6 +453,13 @@ impl PathGuard {
         &self.root
     }
 
+    /// Inspect a path using the same resolution and policy as execution.
+    pub(crate) fn inspect(&self, value: &str, mode: AccessMode) -> (PathBuf, bool) {
+        let resolved = resolve(Path::new(value), &self.root);
+        let allowed = self.denial_reason(&resolved, mode).is_none();
+        (resolved, allowed)
+    }
+
     /// Compiled-in system locations, refused to [`AccessMode::Write`] only.
     /// For introspection (`apexe policy`); enforcement reads [`applicable`](Self::applicable).
     pub fn system_baseline(&self) -> &[PathBuf] {

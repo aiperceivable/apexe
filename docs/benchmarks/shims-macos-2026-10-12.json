@@ -1,0 +1,592 @@
+{
+  "platform": "macOS-26.3-arm64-arm-64bit",
+  "machine": "arm64",
+  "bindings": 3,
+  "acl": "generated readonly allowlist",
+  "audit": "enabled",
+  "supported_cases_passed": 6,
+  "undeclared_refusal_passed": true,
+  "measurements": [
+    {
+      "case": "cat file",
+      "samples": 25,
+      "native_median_ms": 2.153,
+      "shim_median_ms": 17.649,
+      "shim_p95_ms": 19.069
+    },
+    {
+      "case": "cat stdin",
+      "samples": 25,
+      "native_median_ms": 2.301,
+      "shim_median_ms": 17.446,
+      "shim_p95_ms": 20.969
+    },
+    {
+      "case": "cat bundle",
+      "samples": 25,
+      "native_median_ms": 2.215,
+      "shim_median_ms": 18.032,
+      "shim_p95_ms": 19.686
+    },
+    {
+      "case": "head file",
+      "samples": 25,
+      "native_median_ms": 2.225,
+      "shim_median_ms": 17.731,
+      "shim_p95_ms": 21.112
+    },
+    {
+      "case": "head stdin",
+      "samples": 25,
+      "native_median_ms": 2.189,
+      "shim_median_ms": 17.185,
+      "shim_p95_ms": 19.279
+    },
+    {
+      "case": "ls bundle",
+      "samples": 25,
+      "native_median_ms": 4.205,
+      "shim_median_ms": 20.605,
+      "shim_p95_ms": 25.28
+    }
+  ],
+  "refusal_pilot": {
+    "sampling": "47 equally weighted synthetic cases; no real-user frequency claim",
+    "native_valid": 47,
+    "refused": 12,
+    "refusal_rate": 0.2553,
+    "ordinary_native_valid": 35,
+    "ordinary_refused": 0,
+    "cases": [
+      {
+        "tool": "cat",
+        "argv": [
+          "sample.txt"
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "cat",
+        "argv": [
+          "-n",
+          "sample.txt"
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "cat",
+        "argv": [
+          "-b",
+          "sample.txt"
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "cat",
+        "argv": [
+          "-e",
+          "sample.txt"
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "cat",
+        "argv": [
+          "-s",
+          "sample.txt"
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "cat",
+        "argv": [
+          "-t",
+          "sample.txt"
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "cat",
+        "argv": [
+          "-u",
+          "sample.txt"
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "cat",
+        "argv": [
+          "-v",
+          "sample.txt"
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "cat",
+        "argv": [
+          "-ns",
+          "sample.txt"
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "cat",
+        "argv": [
+          "-vet",
+          "sample.txt"
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "head",
+        "argv": [
+          "-n1",
+          "sample.txt"
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "head",
+        "argv": [
+          "-n",
+          "2",
+          "sample.txt"
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "head",
+        "argv": [
+          "-c2",
+          "sample.txt"
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "head",
+        "argv": [
+          "-c",
+          "5",
+          "sample.txt"
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "head",
+        "argv": [
+          "sample.txt"
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-a",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-A",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-l",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-la",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-1",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-C",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-F",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-p",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-R",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-t",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-r",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-S",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-n",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-h",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-i",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-s",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-d",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-m",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-o",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-k",
+          "."
+        ],
+        "category": "ordinary",
+        "native_exit": 0,
+        "shim_exit": 0,
+        "refused": false
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-B",
+          "-b",
+          "."
+        ],
+        "category": "order_conflict",
+        "native_exit": 0,
+        "shim_exit": 1,
+        "refused": true
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-b",
+          "-B",
+          "."
+        ],
+        "category": "order_conflict",
+        "native_exit": 0,
+        "shim_exit": 1,
+        "refused": true
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-C",
+          "-g",
+          "."
+        ],
+        "category": "order_conflict",
+        "native_exit": 0,
+        "shim_exit": 1,
+        "refused": true
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-g",
+          "-C",
+          "."
+        ],
+        "category": "order_conflict",
+        "native_exit": 0,
+        "shim_exit": 1,
+        "refused": true
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-F",
+          "-p",
+          "."
+        ],
+        "category": "order_conflict",
+        "native_exit": 0,
+        "shim_exit": 1,
+        "refused": true
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-p",
+          "-F",
+          "."
+        ],
+        "category": "order_conflict",
+        "native_exit": 0,
+        "shim_exit": 1,
+        "refused": true
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-g",
+          "-m",
+          "."
+        ],
+        "category": "order_conflict",
+        "native_exit": 0,
+        "shim_exit": 1,
+        "refused": true
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-m",
+          "-g",
+          "."
+        ],
+        "category": "order_conflict",
+        "native_exit": 0,
+        "shim_exit": 1,
+        "refused": true
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-m",
+          "-n",
+          "."
+        ],
+        "category": "order_conflict",
+        "native_exit": 0,
+        "shim_exit": 1,
+        "refused": true
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-n",
+          "-m",
+          "."
+        ],
+        "category": "order_conflict",
+        "native_exit": 0,
+        "shim_exit": 1,
+        "refused": true
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-o",
+          "-1",
+          "."
+        ],
+        "category": "order_conflict",
+        "native_exit": 0,
+        "shim_exit": 1,
+        "refused": true
+      },
+      {
+        "tool": "ls",
+        "argv": [
+          "-1",
+          "-o",
+          "."
+        ],
+        "category": "order_conflict",
+        "native_exit": 0,
+        "shim_exit": 1,
+        "refused": true
+      }
+    ]
+  }
+}

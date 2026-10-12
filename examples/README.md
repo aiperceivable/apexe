@@ -1,4 +1,4 @@
-# apexe 0.8.0 Examples
+# apexe 0.9.0 Examples
 
 Choose an example based on whether you are operating the `apexe` command or
 developing against its Rust library.
@@ -9,6 +9,8 @@ developing against its Rust library.
 | --- | --- | --- |
 | [basic](basic/) | Scan real CLI tools, review the generated ACL, print client configuration, and start a governed Explorer server | `cd examples/basic && ./run.sh` |
 | [cli_permissions](cli_permissions/) | Scan commands using the verified external cli-permissions corpus, review the resulting ACL, and print a governed MCP configuration | `CLI_PERMISSIONS_DIR=/path/to/cli-permissions ./examples/cli_permissions/run.sh` |
+| [local_execution](local_execution/) | Run captured governance and optionally install, exercise and remove native PATH shims in a temporary home | `python3 examples/local_execution/demo.py` |
+| [openapi_import](openapi_import/) | Import a disposable authenticated HTTP API through MCP/A2A and prove ACL and credential separation | `python3 examples/openapi_import/demo.py` |
 | [path_guard](path_guard/) | Inspect the always-on filesystem boundary and its read/write behaviour | `cargo run --example path_guard` |
 
 Start with the [basic walkthrough](basic/README.md). It is the supported user
@@ -25,8 +27,9 @@ narrowly change the policy for the use case instead.
 
 These are library examples. In particular, `acl_demo` supplies caller roles
 directly to the Executor. The built-in `apexe serve` and `apexe a2a` commands
-do not currently populate distinct roles for remote callers, so this is not a
-copy-and-paste network RBAC deployment. See the
+can populate remote identities and roles through JWT authentication. The library
+example supplies them directly; a network deployment also needs JWT credential
+configuration and transport ACL conditions. See the
 [Developer Guide](../docs/developer-guide.md) for the full boundary.
 
 ## Prerequisites
@@ -39,5 +42,7 @@ cargo install --path .
 apexe --version
 ```
 
-The basic example requires `ls`, `jq`, and `curl` on `PATH`. The exact set of
+The basic example requires `ls`, `jq`, and `curl` on `PATH`. The local execution
+and OpenAPI examples require Python 3; their own READMEs show how to pass the
+repository-built executable without installing it. The exact set of
 generated modules can vary by operating system and installed CLI version.

@@ -1,4 +1,16 @@
 mod config_gen;
+mod env;
+mod local;
+mod overlays;
+mod run;
+mod shell;
+mod shell_init;
+mod shim;
+mod verify;
+pub use env::EnvArgs;
+pub use overlays::OverlaysArgs;
+pub use run::RunArgs;
+pub use verify::VerifyArgs;
 
 use std::path::PathBuf;
 
@@ -6,6 +18,16 @@ use clap::{Parser, Subcommand};
 use tracing::info;
 
 use crate::config::{load_config, ApexeConfig};
+
+pub fn is_shim_invocation(raw: &[std::ffi::OsString]) -> bool {
+    raw.first()
+        .and_then(|value| std::path::Path::new(value).file_name())
+        .is_some_and(|name| name != "apexe" && name != "apexe.exe")
+}
+
+pub fn run_shim(raw: &[std::ffi::OsString]) -> anyhow::Result<i32> {
+    shim::try_execute(raw).ok_or_else(|| anyhow::anyhow!("Not a shim invocation"))?
+}
 
 /// apexe -- Outside-In CLI-to-Agent Bridge.
 ///
@@ -36,6 +58,14 @@ pub enum Commands {
     Serve(ServeArgs),
     /// Start A2A agent server for scanned CLI tools.
     A2a(A2aArgs),
+    /// Execute a scanned module locally with JSON input and captured output.
+    Run(RunArgs),
+    /// Enable, reload or disable governed command shims, or print shell activation.
+    Env(EnvArgs),
+    /// Re-check source contracts and optionally run admitted readonly cases.
+    Verify(VerifyArgs),
+    /// Install and manage Git-hosted overlay corpora.
+    Overlays(OverlaysArgs),
     /// List previously scanned CLI tools and their modules.
     List(ListArgs),
     /// Show or initialize apexe configuration.
@@ -64,6 +94,10 @@ impl Cli {
             Commands::Scan(args) => args.execute(&config),
             Commands::Serve(args) => args.execute(&config),
             Commands::A2a(args) => args.execute(&config),
+            Commands::Run(args) => args.execute(&config),
+            Commands::Env(args) => args.execute(&config),
+            Commands::Verify(args) => args.execute(&config),
+            Commands::Overlays(args) => args.execute(&config),
             Commands::List(args) => args.execute(&config),
             Commands::Config(args) => args.execute(&config),
             Commands::Policy(args) => args.execute(&config),
@@ -426,6 +460,8 @@ impl ScanArgs {
 /// Start MCP server for scanned CLI tools.
 #[derive(Debug, clap::Args)]
 pub struct ServeArgs {
+    #[command(flatten)]
+    pub openapi: crate::openapi::OpenApiArgs,
     /// MCP transport type. `sse` still works but is deprecated upstream --
     /// prefer `http` (streamable HTTP) for anything new.
     #[arg(long, default_value = "stdio", value_parser = ["stdio", "http", "sse"])]
@@ -571,6 +607,9 @@ impl ServeArgs {
             tags: self.tags.clone(),
             prefix: self.prefix.clone(),
             acl: self.acl.clone(),
+            openapi_source: self.openapi.source.clone(),
+            openapi_base_url: self.openapi.openapi_base_url.clone(),
+            openapi_prefix: self.openapi.openapi_prefix.clone(),
             enable_approval: self.enable_approval,
             no_logging: self.no_logging,
             no_log_arguments: self.no_log_arguments,
@@ -615,7 +654,12 @@ impl ServeArgs {
             builder = builder.prefix(prefix);
         }
 
-        builder.build().map_err(|e| anyhow::anyhow!("{e}"))
+        match self.openapi.options()? {
+            Some(options) => tokio::runtime::Runtime::new()?
+                .block_on(builder.build_with_openapi(&options))
+                .map_err(Into::into),
+            None => builder.build().map_err(Into::into),
+        }
     }
 
     /// Translate the `--auth*` flags into [`AuthOptions`].
@@ -684,6 +728,15 @@ fn parse_tag_list(raw: &str) -> anyhow::Result<Vec<String>> {
 /// Start A2A agent server for scanned CLI tools.
 #[derive(Debug, clap::Args)]
 pub struct A2aArgs {
+    /// A2A credential mode: token (default), jwt or none.
+    #[arg(long, value_parser = ["token", "jwt", "none"])]
+    pub auth: Option<String>,
+    #[arg(long, env = "APEXE_AUTH_TOKEN", hide_env_values = true)]
+    pub auth_token: Option<String>,
+    #[arg(long, env = "APEXE_JWT_SECRET", hide_env_values = true)]
+    pub jwt_secret: Option<String>,
+    #[command(flatten)]
+    pub openapi: crate::openapi::OpenApiArgs,
     /// Base URL to bind the A2A server to
     #[arg(long, default_value = "http://127.0.0.1:8000")]
     pub url: String,
@@ -750,11 +803,7 @@ pub struct A2aArgs {
     #[arg(long)]
     pub cors_origin: Vec<String>,
 
-    /// Acknowledge binding A2A to a non-loopback address. A2A has no
-    /// authenticator at all, so every wrapped binary is reachable from the
-    /// network with no credential -- there is no `--auth token` to opt back
-    /// into, which is why the acknowledgement is mandatory rather than a
-    /// warning.
+    /// Acknowledge --auth none on a non-loopback A2A address.
     #[arg(long)]
     pub allow_unauthenticated_bind: bool,
 }
@@ -763,9 +812,12 @@ impl A2aArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
         let server = self.build_server(config)?;
         let runtime = tokio::runtime::Runtime::new()?;
-        runtime
-            .block_on(server.serve())
-            .map_err(|e| anyhow::anyhow!("{e}"))
+        match self.openapi.options()? {
+            Some(options) => runtime
+                .block_on(server.serve_with_openapi(&options))
+                .map_err(Into::into),
+            None => runtime.block_on(server.serve()).map_err(Into::into),
+        }
     }
 
     fn build_server(&self, config: &ApexeConfig) -> anyhow::Result<crate::a2a::A2aServerBuilder> {
@@ -785,7 +837,19 @@ impl A2aArgs {
             .enable_retry(!self.no_retry)
             .execution_timeout(self.execution_timeout)
             .cors_origins(self.cors_origin.clone())
-            .allow_unauthenticated_bind(self.allow_unauthenticated_bind)
+            .auth(crate::auth::AuthOptions {
+                mode: self
+                    .auth
+                    .as_deref()
+                    .map(|mode| {
+                        crate::auth::AuthMode::parse(mode)
+                            .ok_or_else(|| anyhow::anyhow!("Unknown A2A authentication mode"))
+                    })
+                    .transpose()?,
+                token: self.auth_token.clone(),
+                jwt_secret: self.jwt_secret.clone(),
+                allow_unauthenticated_bind: self.allow_unauthenticated_bind,
+            })
             .audit_path(config.audit_log.clone());
 
         if let Some(ref tags_str) = self.tags {
@@ -1628,6 +1692,25 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_a2a_cli_auth_flags_reach_the_live_authenticator() {
+        let cli = Cli::try_parse_from(["apexe", "a2a", "--auth-token", "cli-auth-test"]).unwrap();
+        let Commands::A2a(args) = cli.command else {
+            panic!("expected A2A command");
+        };
+        let builder = args.build_server(&ApexeConfig::default()).unwrap();
+        let auth = builder.transport_auth().unwrap().unwrap();
+        let headers = std::collections::HashMap::from([(
+            "authorization".into(),
+            "Bearer cli-auth-test".into(),
+        )]);
+        assert_eq!(
+            auth.authenticate(&headers).await.unwrap().id(),
+            "apexe-token"
+        );
+        assert!(!builder.config().unwrap().disclose_refusal_reason);
+    }
+
     // A2aArgs validation tests
     #[test]
     fn test_a2a_rejects_enable_approval_flag() {
@@ -1644,8 +1727,8 @@ mod tests {
         // the CLI-to-builder wiring was unguarded: dropping either `if let` arm
         // left every test green while `apexe a2a --prefix` served the whole
         // scanned surface. That matters more here than on `apexe serve` —
-        // A2A has no authenticator, so narrowing the registered surface is the
-        // only limiting mechanism available.
+        // Authentication and filtering both restrict the registered surface, which also
+        // limits what an anonymous caller can reach.
         let cli =
             Cli::try_parse_from(["apexe", "a2a", "--prefix", "cli.git.", "--tags", "readonly"])
                 .unwrap();

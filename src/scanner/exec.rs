@@ -65,6 +65,7 @@ fn drain_pipe(mut pipe: impl io::Read + Send + 'static) -> std::thread::JoinHand
 pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> io::Result<Output> {
     let mut child = Command::new(program)
         .args(args)
+        .env("PATH", crate::runtime_path::search_path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

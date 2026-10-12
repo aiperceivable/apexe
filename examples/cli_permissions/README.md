@@ -11,6 +11,44 @@ and facts such as `tail -f` being potentially long-running available to the
 generated bindings. The command binaries still run directly through apexe's
 normal execution path when an MCP or A2A client calls them.
 
+## Managed corpus installation
+
+With apexe's Git corpus manager, no environment variable is needed:
+
+```bash
+apexe overlays install https://github.com/aiperceivable/cli-permissions
+apexe overlays list
+apexe scan ls grep sort tail --no-cache
+# Refresh an installed corpus, then rescan the affected bindings.
+apexe overlays update cli-permissions
+apexe scan ls grep sort tail --no-cache
+# Refresh enabled native shims after rescanning.
+apexe env --reload
+# Unregister the corpus when it is no longer needed.
+apexe overlays remove cli-permissions
+```
+
+The optional root `manifest.json` supplies corpus metadata and its overlay
+directory. Use `install --ref <REF>` to pin a reviewed branch, tag or commit;
+`update` preserves that reference unless explicitly overridden. Git and the CLI
+binaries must be installed separately. Review the generated ACL before execution.
+The scripted walkthrough below uses an explicit checkout for reproducibility.
+
+## Local overlay development
+
+From the apexe checkout, use a sibling working directory directly while editing
+overlays:
+
+```bash
+APEXE_OVERLAY_DIRS=../cli-permissions/overlays apexe scan ls --no-cache
+```
+
+This includes uncommitted edits and requires no corpus installation or update.
+The variable applies only to this scan. Repeat the scan after changing an
+overlay, then use `apexe env --reload` if enabled shims need refreshing.
+`apexe overlays install ../cli-permissions` serves a different purpose: it
+installs a managed snapshot of the local Git repository's committed content.
+
 ## Prerequisites
 
 Install apexe and clone a reviewed revision of the corpus. The revision below
@@ -41,17 +79,12 @@ binding more precise; it does not grant permission. Keep the generated
 default-deny policy and add only the module-level allowances your environment
 needs.
 
-## Important: this is not shell pipeline support
+## Execution surfaces and pipelines
 
-The following is **not** a supported apexe invocation:
-
-```text
-ls | grep report
-```
-
-apexe executes one scanned binary per module by direct argv and supplies no
-stdin stream. The `|` character is ordinary argument data, never a shell
-operator. An agent can call two tools in sequence today, but that is not a
-byte-stream pipeline. A real pipeline mode must be implemented as a
-declarative no-shell composition that enforces ACL, path guard, timeouts,
-output caps, and audit logging independently for every stage.
+MCP/A2A captured execution supplies no stdin stream. In a module argument, `|`
+is ordinary data and cannot start a shell pipeline. Native PATH shims support
+shell pipelines when every stage has a matching authoritative overlay declaring
+reviewed native capabilities. The current corpus pilot covers BSD `cat`, `head`
+and `ls` on the reviewed macOS build; it does not enable every command above.
+See [the native example](../local_execution/README.md) and
+[the shell command reference](../../docs/user-manual.md#48-apexe-env).

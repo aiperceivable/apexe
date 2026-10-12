@@ -112,7 +112,15 @@ impl ScanOrchestrator {
                 }
             }
         }
-        for dir in &config.overlay_dirs {
+        let mut installed = match crate::corpus::installed_overlay_dirs(&config.config_dir) {
+            Ok(directories) => directories,
+            Err(error) => {
+                warn!(%error, "Could not load installed overlay corpora");
+                Vec::new()
+            }
+        };
+        installed.extend(config.overlay_dirs.iter().cloned());
+        for dir in &installed {
             if !dir.is_dir() {
                 // Distinguished from the personal directory below, whose
                 // absence is the normal case: a path an operator typed and
@@ -267,6 +275,21 @@ impl ScanOrchestrator {
         command_name: &str,
         detected: &DetectedVariant,
     ) {
+        tool.source_contracts = crate::adapter::CliToolConverter::new()
+            .convert(tool)
+            .into_iter()
+            .map(|module| {
+                let source = serde_json::json!({
+                    "input_schema": module.input_schema,
+                    "output_schema": module.output_schema,
+                    "annotations": module.annotations,
+                    "documentation": module.documentation,
+                    "tool_version": tool.version,
+                    "variant": tool.variant,
+                });
+                (module.module_id, source)
+            })
+            .collect();
         self.apply_matching_overlay(tool, detected);
 
         if tool.global_flags.is_empty() && tool.subcommands.is_empty() {

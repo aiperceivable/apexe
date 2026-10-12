@@ -38,7 +38,7 @@
 >   `--auth token|jwt|none`, `--auth-token`, `--jwt-secret`, and
 >   `--allow-unauthenticated-bind`; required by default on the HTTP-family MCP
 >   transports, and a non-loopback bind with no credential refuses to start.
->   `apexe a2a` has no authenticator and binds loopback by default. See F4 §4.1
+>   `apexe a2a` uses token/JWT authentication and binds loopback by default. See F4 §4.1
 >   and user-manual §10.
 > - **`governance` holds three modules, not two.** `acl`, `audit`, and
 >   `path_guard` — the last added in 0.7.0, always-on with no flag, checking

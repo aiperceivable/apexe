@@ -172,8 +172,8 @@ fn write_true_binding(dir: &Path) {
 /// `apexe serve` gained registration-level filtering in #28; `apexe a2a` was
 /// left with `ModuleFilter::default()` hardcoded, so the A2A surface could not
 /// be narrowed at all. That gap matters more here than on MCP: `apexe a2a` has
-/// no authenticator, so choosing which wrapped binaries the surface exposes is
-/// the only limiting mechanism available.
+/// no authenticator wired, so choosing the exposed binaries limits what an
+/// anonymous caller can reach.
 #[tokio::test]
 async fn test_a2a_prefix_filter_excludes_a_module_from_the_card() {
     let dir = TempDir::new().unwrap();
@@ -364,15 +364,7 @@ async fn post_jsonrpc(builder: A2aServerBuilder, request: serde_json::Value) -> 
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    let executor = builder.executor().expect("executor should build");
-    let config = apcore_a2a::APCoreA2AConfig {
-        name: "apexe-test".to_string(),
-        ..builder.config().expect("config should build")
-    };
-    let (router, _card) =
-        apcore_a2a::build_app(apcore_a2a::BackendSource::Executor(executor), config)
-            .await
-            .expect("A2A app should build");
+    let (router, _card) = builder.app(None).await.expect("A2A app should build");
 
     let response = router
         .oneshot(
@@ -552,4 +544,266 @@ async fn test_a2a_agent_card_carries_the_url_and_protocol_version() {
         interface["protocolVersion"].is_string(),
         "each interface must state the protocol version it speaks: {interface}"
     );
+}
+
+#[tokio::test]
+async fn test_a2a_notifications_do_not_reply_but_explicit_null_ids_do() {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let (router, _) = A2aServerBuilder::new()
+        .bindings_dir(dir.path())
+        .app(None)
+        .await
+        .unwrap();
+    for id in [None, Some(serde_json::Value::Null)] {
+        let mut request = json!({"jsonrpc":"2.0","method":"tasks/get","params":{"id":"missing"}});
+        if let Some(id) = id {
+            request["id"] = id;
+        }
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        if request.get("id").is_none() {
+            assert_eq!(status, 204);
+            assert!(body.is_empty());
+        } else {
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()["id"],
+                serde_json::Value::Null
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_a2a_token_auth_rejects_missing_and_wrong_credentials_and_sets_identity() {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let audit = dir.path().join("audit.jsonl");
+    let (router, card) = A2aServerBuilder::new()
+        .bindings_dir(dir.path())
+        .audit_path(&audit)
+        .auth(apexe::auth::AuthOptions {
+            token: Some("test-token".into()),
+            ..Default::default()
+        })
+        .app(None)
+        .await
+        .unwrap();
+    assert_eq!(
+        card["securitySchemes"]["bearerAuth"]["httpAuthSecurityScheme"]["scheme"], "bearer",
+        "{card}"
+    );
+    for token in [None, Some("wrong"), Some("test-token")] {
+        let mut request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        let response = router
+            .clone()
+            .oneshot(
+                request
+                    .body(axum::body::Body::from(send_request("cli.echo").to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        if token != Some("test-token") {
+            assert_eq!(response.status(), 401);
+        } else {
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()["result"]["status"]
+                    ["state"],
+                "TASK_STATE_COMPLETED"
+            );
+        }
+    }
+    assert!(std::fs::read_to_string(audit)
+        .unwrap()
+        .contains("apexe-token"));
+}
+
+#[tokio::test]
+async fn test_a2a_jwt_invalid_credentials_are_refused_and_missing_secret_fails_startup() {
+    use tower::ServiceExt;
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let options = apexe::auth::AuthOptions {
+        mode: Some(apexe::auth::AuthMode::Jwt),
+        ..Default::default()
+    };
+    assert!(A2aServerBuilder::new()
+        .bindings_dir(dir.path())
+        .auth(options.clone())
+        .app(None)
+        .await
+        .is_err());
+    let (router, _) = A2aServerBuilder::new()
+        .bindings_dir(dir.path())
+        .auth(apexe::auth::AuthOptions {
+            jwt_secret: Some("test-signing-key-for-regression".into()),
+            ..options
+        })
+        .app(None)
+        .await
+        .unwrap();
+    let response = router
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/")
+                .header("authorization", "Bearer not-a-jwt")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(send_request("cli.echo").to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 401);
+}
+
+#[tokio::test]
+async fn test_a2a_authenticated_public_bind_is_allowed_but_none_needs_acknowledgement() {
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let options = apexe::auth::AuthOptions {
+        token: Some("public-bind-test".into()),
+        ..Default::default()
+    };
+    let (_, card) = A2aServerBuilder::new()
+        .bindings_dir(dir.path())
+        .url("http://0.0.0.0:9876")
+        .auth(options)
+        .app(None)
+        .await
+        .unwrap();
+    assert!(card["securitySchemes"]["bearerAuth"].is_object());
+    assert!(A2aServerBuilder::new()
+        .bindings_dir(dir.path())
+        .url("http://0.0.0.0:9876")
+        .auth(apexe::auth::AuthOptions {
+            mode: Some(apexe::auth::AuthMode::None),
+            ..Default::default()
+        })
+        .app(None)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn test_a2a_streaming_uses_v1_wrapper_without_legacy_kind_discriminator() {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let (router, _) = A2aServerBuilder::new()
+        .bindings_dir(dir.path())
+        .app(None)
+        .await
+        .unwrap();
+    let mut request = send_request("cli.echo");
+    request["method"] = json!("message/stream");
+    let response = router
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let text = std::str::from_utf8(&body).unwrap();
+    let events: Vec<serde_json::Value> = text
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("data: ")
+                .or_else(|| line.strip_prefix("data:"))
+        })
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(!events.is_empty(), "{text}");
+    assert!(events
+        .iter()
+        .any(|event| event["result"].get("statusUpdate").is_some()));
+    assert!(events
+        .iter()
+        .all(|event| event["jsonrpc"] == "2.0" && event["result"].get("kind").is_none()));
+}
+
+#[tokio::test]
+async fn test_a2a_jwt_preserves_subject_and_roles_for_acl_and_audit() {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let secret = "jwt-regression-signing-key";
+    let acl = dir.path().join("jwt-acl.yaml");
+    std::fs::write(&acl, "version: '1.0'\ndefault_effect: deny\nrules:\n  - callers: [\"@external\"]\n    targets: [cli.echo]\n    effect: allow\n    conditions: {roles: [ops]}\n").unwrap();
+    let audit = dir.path().join("jwt-audit.jsonl");
+    let (router, _) = A2aServerBuilder::new()
+        .bindings_dir(dir.path())
+        .acl_path(&acl)
+        .audit_path(&audit)
+        .auth(apexe::auth::AuthOptions {
+            mode: Some(apexe::auth::AuthMode::Jwt),
+            jwt_secret: Some(secret.into()),
+            ..Default::default()
+        })
+        .app(None)
+        .await
+        .unwrap();
+    for expiry in [1_u64, 4_102_444_800] {
+        let token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::default(),
+            &json!({"sub":"alice","roles":["ops"],"exp":expiry}),
+            &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(send_request("cli.echo").to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        if expiry == 1 {
+            assert_eq!(response.status(), 401);
+        } else {
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()["result"]["status"]
+                    ["state"],
+                "TASK_STATE_COMPLETED"
+            );
+        }
+    }
+    assert!(std::fs::read_to_string(audit).unwrap().contains("alice"));
 }

@@ -1,6 +1,6 @@
 [package]
 name = "apexe"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 description = "Outside-In CLI-to-Agent Bridge"
 license = "Apache-2.0"
@@ -14,12 +14,13 @@ categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anyhow = "1"
+axum = "0.8"
 async-trait = "0.1"
 apcore = "0.32.0"
 apcore-a2a = "0.8.2"
 apcore-cli = "0.12.3"
 apcore-mcp = "0.22.3"
-apcore-toolkit = { version = "0.14.0", default-features = false }
+apcore-toolkit = { version = "0.14.0", default-features = false, features = ["http-proxy"] }
 # RFC 3339 timestamps for the governance audit records apexe writes itself
 # (see `governance::audit`). Already in the graph via apcore; declared here so
 # the format the audit trail promises has an owner in this manifest.
@@ -27,32 +28,42 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 clap = { version = "4", features = ["derive"] }
 dirs = "5"
 regex = "1"
+# Validate corpus release versions; already in the dependency graph.
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+sha2 = "0.10"
+tempfile = "3"
 shell-words = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Parse and validate corpus repository URLs; already in the dependency graph.
+url = "2"
 # v4 only, for minting bearer tokens from the OS CSPRNG (see `crate::auth`).
 uuid = { version = "1", features = ["v4"] }
 which = "7"
+
+[target.'cfg(unix)'.dependencies]
+# Restore SIGPIPE in passthrough children; libc is already in the dependency graph.
+libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 openssl = { version = "0.10.76", features = ["vendored"] }
 
 [dev-dependencies]
+# Sign valid and expired credentials for A2A request-path tests.
+jsonwebtoken = "9"
 assert_cmd = "2"
 # Drive the apcore-a2a axum Router in-process (`tests/a2a_integration.rs`), so
 # what a refused caller is actually told is asserted over the real request path
 # rather than through the error mapper alone. Already in the graph via
 # apcore-a2a; declared here because the tests call them directly.
-axum = "0.8"
 http-body-util = "0.1"
 predicates = "3"
 rstest = "0.23"
-tempfile = "3"
 tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
 

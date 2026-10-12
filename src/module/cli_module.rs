@@ -33,6 +33,7 @@ pub struct CliModuleConfig {
 /// structured output.
 #[derive(Debug)]
 pub struct CliModule {
+    execution_io: super::ExecutionIo,
     module_id: String,
     description: String,
     input_schema: Value,
@@ -50,6 +51,7 @@ pub struct CliModule {
 impl CliModule {
     pub fn new(config: CliModuleConfig) -> Self {
         Self {
+            execution_io: super::ExecutionIo::Captured,
             module_id: config.module_id,
             description: config.description,
             input_schema: config.input_schema,
@@ -70,6 +72,31 @@ impl CliModule {
     pub fn with_audit(mut self, audit: Option<Arc<AuditManager>>) -> Self {
         self.audit = audit;
         self
+    }
+
+    pub fn with_execution_io(mut self, io: super::ExecutionIo) -> Self {
+        self.execution_io = io;
+        self
+    }
+
+    #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    fn validate_stdin(&self) -> Result<(), ModuleError> {
+        if self.execution_io
+            == (super::ExecutionIo::Passthrough {
+                stdin: super::StdinMode::Inherit,
+            })
+            && self
+                .input_schema
+                .get("x-apexe-streaming-stdin-safe")
+                .and_then(Value::as_bool)
+                != Some(true)
+        {
+            return Err(ModuleError::new(
+                ErrorCode::GeneralInvalidInput,
+                "Inherited stdin requires an explicit streaming_stdin_safe overlay assertion",
+            ));
+        }
+        Ok(())
     }
 
     /// Create from a `ScannedModule` by parsing the target field.
@@ -128,6 +155,27 @@ impl CliModule {
 
     pub fn module_id(&self) -> &str {
         &self.module_id
+    }
+
+    /// Resolve the exact subprocess argv without starting a process.
+    #[allow(clippy::result_large_err)] // Match the crate-wide ModuleError boundary.
+    pub(crate) fn planned_argv(&self, inputs: &Value) -> Result<Vec<String>, ModuleError> {
+        let kwargs = inputs.as_object().ok_or_else(|| {
+            ModuleError::new(
+                ErrorCode::GeneralInvalidInput,
+                "Input must be a JSON object",
+            )
+        })?;
+        let rendered = executor::build_argv(kwargs, Some(&self.input_schema), self.access_mode())?;
+        let mut args = self.assemble_arguments(rendered);
+        if let Some(flag) = &self.json_flag {
+            args.extend(shell_words::split(flag).unwrap_or_default());
+        }
+        Ok(args)
+    }
+
+    pub(crate) fn binary_path(&self) -> &str {
+        &self.binary_path
     }
 
     /// Interleave the rendered arguments with this module's subcommand tokens.
@@ -254,6 +302,38 @@ impl CliModule {
     fn access_mode(&self) -> AccessMode {
         AccessMode::from_readonly(self.annotations.readonly)
     }
+
+    async fn finish_execution(
+        &self,
+        output: super::io::ExecutionOutput,
+        ctx: &Context<Value>,
+        duration_ms: u64,
+    ) -> Value {
+        let (result, exit_code) = match output {
+            super::io::ExecutionOutput::Captured(output) => (
+                Value::Object(self.build_result(&output, ctx, duration_ms)),
+                output.exit_code,
+            ),
+            super::io::ExecutionOutput::Passthrough(output) => (
+                serde_json::json!({"io":"passthrough", "exit_code":output.exit_code, "trace_id":ctx.trace_id,"duration_ms":duration_ms}),
+                output.exit_code,
+            ),
+        };
+
+        tracing::info!(
+            module_id = %self.module_id,
+            trace_id = %ctx.trace_id,
+            exit_code,
+            duration_ms,
+            "CLI module execution completed"
+        );
+
+        let status = if exit_code == 0 { "success" } else { "error" };
+        self.audit_execution(ctx, status, exit_code, duration_ms)
+            .await;
+
+        result
+    }
 }
 
 #[async_trait]
@@ -263,6 +343,9 @@ impl Module for CliModule {
     }
 
     fn output_schema(&self) -> Value {
+        if self.execution_io != super::ExecutionIo::Captured {
+            return serde_json::json!({"type":"object","properties":{"io":{"const":"passthrough"},"exit_code":{"type":"integer"},"trace_id":{"type":"string"},"duration_ms":{"type":"integer"}},"required":["io","exit_code"]});
+        }
         self.output_schema.clone()
     }
 
@@ -329,6 +412,7 @@ impl Module for CliModule {
     }
 
     async fn execute(&self, inputs: Value, ctx: &Context<Value>) -> Result<Value, ModuleError> {
+        self.validate_stdin()?;
         let kwargs = inputs.as_object().ok_or_else(|| {
             ModuleError::new(
                 ErrorCode::GeneralInvalidInput,
@@ -347,12 +431,13 @@ impl Module for CliModule {
         let user_args = executor::build_argv(kwargs, Some(&self.input_schema), self.access_mode())?;
         let args: Vec<String> = self.assemble_arguments(user_args);
 
-        let output = match executor::execute_subprocess(
+        let output = match super::io::execute(
             &self.binary_path,
             &args,
             self.json_flag.as_deref(),
             self.timeout_ms,
             self.max_output_bytes,
+            self.execution_io,
         )
         .await
         {
@@ -364,25 +449,7 @@ impl Module for CliModule {
         };
 
         let duration_ms = start.elapsed().as_millis() as u64;
-        let result = self.build_result(&output, ctx, duration_ms);
-
-        tracing::info!(
-            module_id = %self.module_id,
-            trace_id = %ctx.trace_id,
-            exit_code = output.exit_code,
-            duration_ms,
-            "CLI module execution completed"
-        );
-
-        let status = if output.exit_code == 0 {
-            "success"
-        } else {
-            "error"
-        };
-        self.audit_execution(ctx, status, output.exit_code, duration_ms)
-            .await;
-
-        Ok(Value::Object(result))
+        Ok(self.finish_execution(output, ctx, duration_ms).await)
     }
 }
 

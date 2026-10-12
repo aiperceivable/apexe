@@ -714,3 +714,33 @@ fn test_explorer_on_stdio_warns_that_it_does_nothing() {
         "the flag must say it does nothing here: {log}"
     );
 }
+#[test]
+fn test_openapi_show_config_preserves_source_and_omits_credentials() {
+    let output = apexe()
+        .args([
+            "serve",
+            "--openapi",
+            "./openapi.yaml",
+            "--openapi-base-url",
+            "https://api.example.com",
+            "--openapi-prefix",
+            "api.inventory",
+            "--openapi-header",
+            "Authorization: spec-secret",
+            "--openapi-token",
+            "api-secret",
+            "--show-config",
+            "claude-desktop",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let rendered = String::from_utf8(output.stdout).unwrap();
+    assert!(rendered.contains("--openapi"));
+    assert!(rendered.contains("openapi.yaml"));
+    assert!(rendered.contains("https://api.example.com"));
+    assert!(rendered.contains("api.inventory"));
+    assert!(!rendered.contains("spec-secret"));
+    assert!(!rendered.contains("api-secret"));
+}

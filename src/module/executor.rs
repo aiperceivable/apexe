@@ -349,7 +349,7 @@ fn value_must_be_attached(input_schema: Option<&Value>, key: &str) -> bool {
 /// is left to [`validate_argument_value`] alone. The guard cannot invent the
 /// type information; what it must not do is guess, and silently treating every
 /// string as a path would refuse `grep` patterns that happen to start with `/`.
-fn value_is_path(input_schema: Option<&Value>, key: &str) -> bool {
+pub(crate) fn value_is_path(input_schema: Option<&Value>, key: &str) -> bool {
     let property = input_schema
         .and_then(|s| s.get("properties"))
         .and_then(|p| p.get(key));
@@ -945,6 +945,15 @@ fn spawn_isolated(
     binary_path: &str,
     args: &[String],
 ) -> Result<tokio::process::Child, ModuleError> {
+    spawn_with_io(binary_path, args, super::ExecutionIo::Captured)
+}
+
+#[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+pub(super) fn spawn_with_io(
+    binary_path: &str,
+    args: &[String],
+    io: super::ExecutionIo,
+) -> Result<tokio::process::Child, ModuleError> {
     let mut command = Command::new(binary_path);
     command
         .args(args)
@@ -960,15 +969,49 @@ fn spawn_isolated(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    if let super::ExecutionIo::Passthrough { stdin } = io {
+        command
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit());
+        if stdin == super::StdinMode::Inherit {
+            command.stdin(std::process::Stdio::inherit());
+        }
+        restore_sigpipe(&mut command);
+    }
     for (key, value) in std::env::vars() {
         if is_allowed_env(&key) {
-            command.env(key, value);
+            if key == "PATH" {
+                command.env(
+                    key,
+                    crate::runtime_path::clean_path(std::ffi::OsStr::new(&value)),
+                );
+            } else {
+                command.env(key, value);
+            }
         }
     }
     command
         .spawn()
         .map_err(|e| execute_error(binary_path, "execute", e))
 }
+
+#[cfg(unix)]
+fn restore_sigpipe(command: &mut Command) {
+    // SAFETY: the child hook only calls async-signal-safe libc functions and
+    // resets a disposition; it takes no locks and allocates no memory.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::signal(libc::SIGPIPE, libc::SIG_DFL) == libc::SIG_ERR {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_sigpipe(_command: &mut Command) {}
 
 /// Drain both pipes and the exit status, capping each stream.
 ///

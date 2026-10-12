@@ -1,0 +1,7 @@
+version: '1.0'
+default_effect: deny
+rules:
+  - callers: ['*']
+    targets: [api.get_pet, api.create_pet]
+    effect: allow
+    description: Allow only the example read and in-memory creation operations.

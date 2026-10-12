@@ -19,11 +19,11 @@ instead.
 ## Scope boundary for library examples
 
 The library API can construct an apcore `Context` carrying an explicit
-identity, so the ACL example demonstrates role-based policy with `Executor`
-calls. The `apexe serve` and `apexe a2a` commands do not currently populate a
-distinct identity or role set for every remote caller. Do not present the
-library example as ready-made network RBAC for those commands; see the
-[user-manual limitation](user-manual.md#911-wrap-a-cli-and-enforce-its-acl).
+identity, so the ACL example supplies roles directly to `Executor` calls.
+The CLI token mode shares one principal; JWT can establish distinct subjects
+and role sets. A network deployment needs transport credentials and ACL
+identity/role conditions in addition to the library example. See
+[authenticated caller identities](user-manual.md#authenticated-caller-identities).
 
 ## Architecture and feature records
 
@@ -39,3 +39,8 @@ language:
 For current runtime behaviour, prefer the [User Manual](user-manual.md),
 [Threat Model](threat-model.md), and [Changelog](../CHANGELOG.md) over an older
 feature specification.
+
+The runnable local execution and OpenAPI example smoke tests require Python 3
+on Unix. They use its standard library, isolate HOME, and terminate their child
+servers. The macOS native example test is opt-in and requires the reviewed
+cli-permissions corpus; see `examples/local_execution/README.md`.

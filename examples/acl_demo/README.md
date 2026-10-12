@@ -90,17 +90,9 @@ exercises that engine directly (like `axum-apcore/examples/acl_demo`'s own
 test does), which is also exactly what embedding apexe as a library looks
 like (see [`examples/programmatic.rs`](../programmatic.rs)).
 
-**Caveat:** unlike `axum-apcore`'s demo — which injects `Identity.roles` from
-an `X-Roles` header via Axum middleware — apexe's `apexe serve` / `apexe a2a`
-transports do not yet populate per-caller `Identity` from an HTTP header or
-JWT claim. Every module call served over MCP/A2A today runs as a single
-implicit anonymous caller (no roles). That means a role-gated rule like the
-`admin`-only one above would currently always deny when served over the
-wire — `--acl` today is most useful for apexe's own readonly-allow /
-destructive-deny default policy (see
-[`AclManager::generate_default`](../../src/governance/acl.rs)) and the
-`--enable-approval` human-in-the-loop gate, not per-caller RBAC. Wiring a
-JWT/session identity into `McpServerBuilder`/`A2aServerBuilder` (mirroring
-`apcore-mcp`'s and `apcore-a2a`'s own auth support) would be a natural
-extension to make this demo's `admin`/`user` distinction reachable over
-`apexe serve --acl acl.yaml` too.
+The CLI also supports token/JWT transport authentication. Token mode shares
+one principal; JWT supplies subjects and roles to the executor. To apply this
+role policy over MCP/A2A, configure JWT credentials and role-based ACL conditions;
+`callers` matches the module call chain rather than JWT subjects. The library
+example supplies its context directly and does not configure that transport.
+See [authenticated caller identities](../../docs/user-manual.md#authenticated-caller-identities).
