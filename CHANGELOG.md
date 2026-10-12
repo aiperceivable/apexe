@@ -5,6 +5,30 @@ All notable changes to apexe are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
+
+## [Unreleased]
+
+### Changed
+
+- Upgrade SDK requirements to apcore 0.32.0, apcore-toolkit 0.14.0,
+  apcore-cli 0.12.3, apcore-mcp 0.22.3, and apcore-a2a 0.8.2, all from
+  published crates.io packages.
+- Binding loading inherits toolkit 0.14.0's stricter validation: unknown
+  document/entry keys, unpaired inline schemas, and non-list tags fail loading.
+  Custom entry fields belong in `metadata`; runtime-only `auto_schema` and
+  `schema_ref` remain unsupported. Generated bindings already use paired
+  schemas and list-valued tags.
+- Core governance gate binding, cancellation, logging redaction, and registry
+  fixes are inherited through existing APIs. No executor or protocol routing
+  changes are required. Schema validation diagnostics now retain canonical
+  JSON Pointers through both MCP and A2A error adapters.
+
+### Added
+
+- Compatibility regressions for strict binding validation, custom metadata
+  round trips, and native validation diagnostics (root, nested array, and
+  escaped JSON Pointer paths) through the shared executor and both adapters.
+
 ## [0.8.0] - 2026-09-29
 
 ### Added

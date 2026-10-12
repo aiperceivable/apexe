@@ -6,10 +6,11 @@ use apcore_toolkit::{BindingLoadError, BindingLoader, ScannedModule};
 /// Load `ScannedModule`s from the binding files in a directory.
 ///
 /// Delegates to apcore-toolkit's [`BindingLoader`] (non-recursive, strict
-/// mode — `module_id`, `description`, `input_schema`, `output_schema`,
-/// `tags`, and `target` are all required, matching what `YAMLWriter` always
-/// emits), which additionally enforces a 16 MiB per-file cap and a 10,000
-/// file per-directory cap that the previous hand-rolled parser did not.
+/// mode — `module_id`, `input_schema`, `output_schema`, and `target` are
+/// required, matching what `YAMLWriter` always emits). Unknown document or
+/// entry keys, unpaired inline schemas, and non-list `tags` are rejected;
+/// application-specific entry fields belong in `metadata`. The loader also
+/// enforces a 16 MiB per-file cap and a 10,000 file per-directory cap.
 ///
 /// `pattern` is apcore's `bindings.pattern` when a configuration declares one,
 /// and `None` otherwise — which selects the toolkit's own `*.binding.yaml`,
@@ -318,6 +319,81 @@ mod tests {
 
         let result = load_modules_from_dir(dir.path(), None);
         assert!(result.is_err(), "incomplete binding should be rejected");
+    }
+
+    #[test]
+    fn test_loader_rejects_unsupported_binding_fields() {
+        for (at_document_root, key) in [
+            (true, "custom"),
+            (false, "custom"),
+            (false, "auto_schema"),
+            (false, "schema_ref"),
+        ] {
+            let dir = TempDir::new().unwrap();
+            YamlOutput::without_verification()
+                .write(&[make_test_module("cli.demo")], dir.path(), false)
+                .unwrap();
+            let path = dir.path().join("cli.demo.binding.yaml");
+            let mut document: serde_json::Value =
+                serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let object = if at_document_root {
+                &mut document
+            } else {
+                &mut document["bindings"][0]
+            };
+            object[key] = json!(true);
+            std::fs::write(&path, serde_yaml::to_string(&document).unwrap()).unwrap();
+
+            let error = load_modules_from_dir(dir.path(), None).unwrap_err();
+            assert!(error.message.contains("unknown"), "{error}");
+            assert!(error.message.contains(key), "{error}");
+            assert!(error.message.contains(path.to_str().unwrap()), "{error}");
+        }
+    }
+
+    #[test]
+    fn test_loader_rejects_unpaired_schemas_and_non_list_tags() {
+        for field in ["input_schema", "output_schema", "tags"] {
+            let dir = TempDir::new().unwrap();
+            YamlOutput::without_verification()
+                .write(&[make_test_module("cli.demo")], dir.path(), false)
+                .unwrap();
+            let path = dir.path().join("cli.demo.binding.yaml");
+            let mut document: serde_json::Value =
+                serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            if field == "tags" {
+                document["bindings"][0][field] = json!("cli");
+            } else {
+                document["bindings"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(field);
+            }
+            std::fs::write(&path, serde_yaml::to_string(&document).unwrap()).unwrap();
+
+            let error = load_modules_from_dir(dir.path(), None).unwrap_err();
+            let diagnostic = if field == "tags" {
+                "tags"
+            } else {
+                "input_schema and output_schema"
+            };
+            assert!(error.message.contains(diagnostic), "{error}");
+        }
+    }
+
+    #[test]
+    fn test_loader_preserves_application_metadata() {
+        let dir = TempDir::new().unwrap();
+        let mut module = make_test_module("cli.demo");
+        module
+            .metadata
+            .insert("custom".to_string(), json!({"owner": "ops"}));
+        YamlOutput::new()
+            .write(&[module], dir.path(), false)
+            .unwrap();
+
+        let loaded = load_modules_from_dir(dir.path(), None).unwrap();
+        assert_eq!(loaded[0].metadata["custom"], json!({"owner": "ops"}));
     }
 
     /// A declared pattern selects by it, not by the default suffix.

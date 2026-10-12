@@ -63,6 +63,67 @@ fn build_test_executor(dir: &Path) -> Arc<Executor> {
     build_executor(&exec_opts(dir)).expect("executor should build from bindings")
 }
 
+fn write_structured_echo_binding(dir: &Path) {
+    let module = ScannedModule::new(
+        "cli.echo".to_string(),
+        "Echo structured inputs".to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "items": {"type": "array", "items": {
+                    "type": "object", "properties": {"count": {"type": "integer"}}
+                }},
+                "a/b~c": {"type": "integer"}
+            }
+        }),
+        json!({"type": "object"}),
+        vec!["cli".to_string()],
+        "exec:///bin/echo".to_string(),
+    );
+    YamlOutput::new().write(&[module], dir, false).unwrap();
+}
+
+/// Both protocol adapters receive errors from this shared executor. Exercise
+/// native validation rather than manufacturing the upstream diagnostic shape.
+#[tokio::test]
+async fn test_validation_diagnostics_reach_both_protocol_adapters() {
+    let dir = TempDir::new().unwrap();
+    write_structured_echo_binding(dir.path());
+    let executor = build_test_executor(dir.path());
+
+    for (input, pointer) in [
+        (json!(42), ""),
+        (json!({"items": [{"count": "bad"}]}), "/items/0/count"),
+        (json!({"a/b~c": "bad"}), "/a~1b~0c"),
+    ] {
+        let error = executor
+            .call("cli.echo", input, None, None)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, apcore::ErrorCode::SchemaValidationError);
+        let diagnostics = &error.details["errors"];
+        assert!(
+            diagnostics
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| { entry["path"] == pointer && entry["keyword"] == "type" }),
+            "{error:?}"
+        );
+        let label = if pointer.is_empty() {
+            "<root>"
+        } else {
+            pointer
+        };
+        let mcp = apcore_mcp::ErrorMapper::to_mcp_error(&error);
+        assert!(mcp.message.contains(label), "{mcp:?}");
+        assert_eq!(mcp.details.as_ref().unwrap()["errors"], *diagnostics);
+        let a2a = apcore_a2a::ErrorMapper::to_jsonrpc_error_with(&error, true);
+        assert_eq!(a2a.code, -32602);
+        assert!(a2a.message.contains(label), "{a2a:?}");
+    }
+}
+
 /// Write a binding the way `apexe scan` actually produces one — through
 /// `CliToolConverter`, which runs the `DisplayResolver` that computes
 /// `metadata["display"]` (including the MCP alias).

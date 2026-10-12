@@ -19,6 +19,9 @@ fn apexe() -> Command {
     let home = tempfile::tempdir().unwrap().keep();
     let mut cmd = Command::cargo_bin("apexe").unwrap();
     cmd.env("HOME", home);
+    // Progress assertions exercise the default level, not the developer's
+    // terminal filter (for example RUST_LOG=warn hides dry-run deliverables).
+    cmd.env_remove("RUST_LOG");
     cmd
 }
 
