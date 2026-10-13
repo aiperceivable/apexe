@@ -105,7 +105,7 @@ pub(crate) fn warn_if_no_bindings(dir: &Path, loaded: usize) {
         ),
         None => tracing::warn!(
             dir = %dir.display(),
-            "No bindings found, so there are NO callable tools. Run `apexe scan <tool>` first."
+            "No bindings found, so there are NO callable tools. Run `apexe init` first, or `apexe scan <tool>` for a custom tool."
         ),
     }
 }

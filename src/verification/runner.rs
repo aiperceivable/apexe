@@ -148,7 +148,7 @@ fn case_command(
         |plan| plan.command(&executable),
     );
     command
-        .args(["run", &case.module_id, "--bindings-dir"])
+        .args(["exec", &case.module_id, "--bindings-dir"])
         .arg(&prepared.bindings)
         .arg("--input")
         .arg(serde_json::to_string(&prepared.input)?)

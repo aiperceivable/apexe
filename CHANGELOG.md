@@ -9,6 +9,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 ## [0.9.0] - 2026-10-13
 
 ### Added
+- `apexe init` initializes matching installed CLI tools from the configured
+  rules source. `--overlays` selects a Git source, `--ref` pins a revision,
+  `--refresh` updates rules and unchanged init-owned bindings, and `--offline`
+  uses cached/local rules. Reports distinguish missing tools, unmatched variants,
+  preserved bindings and degraded fallback coverage. Manual ACL/configuration
+  and custom or edited bindings are preserved.
+- Native `apexe exec -- <command> [args...]` reuses shim route resolution and
+  the common executor without shell activation. Reviewed calls preserve streams
+  and exit status, check executable identity and never fall back after refusal.
+  `--unmanaged deny|allow|approval` defaults to deny; explicit opt-ins retain
+  ACL/audit/timeout with literal argv, null stdin and no typed path guard.
 - `apexe verify` supports digest-pinned `dry_run` and `isolated` cases. Dry-run
   execution requires explicit `--allow-dry-run`, a true reviewed switch and
   operating-system isolation. macOS uses `sandbox-exec`; Linux uses optional
@@ -46,7 +57,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   remains scan-compatible; shim admission requires explicit order independence.
   The companion corpus adds locally verified BSD cat/head/ls capabilities and
   corrects 16 missing ls conflict pairs found by native order probes.
-- `apexe run <MODULE_ID> --input <JSON>`: governed local execution with captured
+- `apexe exec <MODULE_ID> --input <JSON>`: governed local execution with captured
   JSON output, the `local` ACL caller, automatic default ACL loading and a
   non-executing `--dry-run`. `--as` is restricted to simulation. Schema, ACL,
   approval and path-guard checks remain active; refused preflights print JSON.
@@ -61,13 +72,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   escaped JSON Pointer paths) through the shared executor and both adapters.
 
 ### Fixed
+- Docker scanning recognizes common, management and swarm command groups,
+  plugin markers, typed option sections and inline usage. Repeated commands are
+  discovered once, including nested management commands such as `container ls`.
+- Cached rules are matched by repository identity rather than the reserved
+  default corpus name, so changing the configured source cannot refresh the
+  previous repository by mistake.
+- Initialization preserves custom bindings excluded by `bindings.pattern` and
+  refuses newly generated filenames that the configured loader cannot read.
+- Unix diagnostic log directories restrict access to their owner, including
+  existing directories with broader permissions.
+- Published documentation includes the example guides and rebases internal,
+  source and asset links. Strict publication also checks heading anchors.
+- The Makefile, pre-commit hook and CI enforce formatting, lint, characters,
+  a full build and the complete test suite consistently.
 - A2A JSON-RPC notifications execute without replies; explicit null IDs still
   receive responses. A2A 1.0 stream and agent-card spellings remain unchanged.
-- Correct #42's stale attribution: apcore-a2a provides an `Authenticator`;
-  apexe currently does not wire it. The existing unauthenticated bind guard
-  remains in force. Agent Card version comments now describe the current SDK.
+- Correct #42's earlier attribution: apcore-a2a provides an `Authenticator`;
+  apexe now wires it for token/JWT identities. Unauthenticated public binds
+  still require acknowledgement. Agent Card version comments describe the SDK.
 
 ### Changed
+- **BREAKING:** remove `apexe overlays`; source installation, pinning and refresh
+  move to `apexe init` options. README and quickstart now lead with initialization,
+  followed by list, exec, env and serve; custom scanning is an advanced workflow.
+- **BREAKING:** rename `apexe run` to `apexe exec` with no compatibility alias.
+  Module JSON execution now preserves the exact child exit status as well.
 - **BREAKING:** source-derived flag confidence is capped at `high`; the corpus's
   legacy `verified` label remains a provenance-backed author assertion.
   `Confidence::Verified` is reserved for earned, explicitly scoped runtime case
@@ -260,7 +290,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 - **A curated overlay can state what a flag *does*, for the two things no scan can infer.** Help text does not distinguish `git --exec-path=<path>`, which sets a search path, from `git --upload-pack=<cmd>`, which runs one — both read as "takes a value" to every parser apexe has, and guessing would produce exactly the plausible-but-wrong assertion the overlay rules exist to prevent. `ScannedFlag.risk` (`FlagRisk`) defaults to absent and only a human raises it. **`escalates`** puts the call to the approval gate, and reaches the flags no name list generalizes — nothing about the string `--privileged` suggests danger; it emits `x-apexe-escalates: true`. **`benign`** goes the other way, because the name list matches on spelling and spelling is sometimes a coincidence: `bsdtar -y` is bzip2, `sort -f` folds case, `cut -f` selects fields, and before this the only way to stop the prompt was to assert `requires_approval: false` for the whole command, which also said `tar` may overwrite files unattended. It emits an explicit `x-apexe-escalates: false`, so the keyword is three-state — absent means the name list decides. **`executes`** is not a severity notch above `escalates` but a different claim: apexe's central guarantee is that argv reaches `execve` with no shell on the path, and a flag whose value *becomes* a command hands that guarantee straight back, with no JSON Schema constraining what the string turns into. Such a parameter is therefore **refused outright** by `executor::reject_exec_parameters` (`ACL_DENIED`, effective values only, so `{"upload_pack": false}` is not sending one) rather than gated — an approval prompt would ask a human to predict what an arbitrary string will do, which is the judgement least likely to survive a stream of prompts. It emits `x-apexe-exec`. Known members of that class, none of which look dangerous in a help listing, are listed in `docs/overlays.md`: `git --upload-pack`/`--receive-pack`, `tar --use-compress-program`, `rsync -e`/`--rsync-path`, `find -exec`/`-ok`. This is a floor and a small one — a flag of this class in an un-overlaid tool is not caught, and each assertion must be verified against a real installation before it ships. Documented in `docs/user-manual.md` §8 and `docs/threat-model.md` §4.9.
 
-- **`docs/features/v2-f8-local-execution.md`** — a design for giving the local terminal the same governed path MCP and A2A callers already get. `Executor::call` is reachable only over a transport today, so a shell script, a CI step or a human wanting to see what the ACL would decide has no way in. Two stages, and only the first is ready to build: `apexe run <module_id> --input <JSON>` with a preflight that reports every governance decision (ACL verdict, path-guard verdict per path argument, whether approval would fire) and stops before spawning. Stage 2 — PATH shims, so a wrapped tool is invoked by its own name and its own argv — is blocked on two contracts the spec insists on settling first: an `ExecutionIo` mode for passthrough I/O, and a `streaming_stdin_safe` per-module allowlist, since an inherited stdin is not schema-validated, not path-checked and not recorded. The spec is unusually explicit about what the mechanism cannot do (shell builtins are never intercepted and the gap is invisible at the point of use; an absolute path bypasses any shim), and those four limitations are reserved as `docs/threat-model.md` §5.10 so they land with the feature rather than after it. Design only — nothing here is implemented.
+- **`docs/features/v2-f8-local-execution.md`** — a design for giving the local terminal the same governed path MCP and A2A callers already get. `Executor::call` is reachable only over a transport today, so a shell script, a CI step or a human wanting to see what the ACL would decide has no way in. Two stages, and only the first is ready to build: `apexe exec <module_id> --input <JSON>` with a preflight that reports every governance decision (ACL verdict, path-guard verdict per path argument, whether approval would fire) and stops before spawning. Stage 2 — PATH shims, so a wrapped tool is invoked by its own name and its own argv — is blocked on two contracts the spec insists on settling first: an `ExecutionIo` mode for passthrough I/O, and a `streaming_stdin_safe` per-module allowlist, since an inherited stdin is not schema-validated, not path-checked and not recorded. The spec is unusually explicit about what the mechanism cannot do (shell builtins are never intercepted and the gap is invisible at the point of use; an absolute path bypasses any shim), and those four limitations are reserved as `docs/threat-model.md` §5.10 so they land with the feature rather than after it. Design only — nothing here is implemented.
 
 ### Changed
 

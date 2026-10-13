@@ -39,7 +39,7 @@ def run(apexe, corpus, shims):
         scanned = invoke(apexe, ["scan", "cat", "head", "--offline", "--no-cache", "--format", "json"], environment, work)
         report = json.loads(scanned.stdout)
         schema = next(command["input_schema"] for command in report["commands"] if command["id"] == "cli.cat")
-        arguments = ["run", "cli.cat", "--input", json.dumps(file_input(schema, "sample.txt"))]
+        arguments = ["exec", "cli.cat", "--input", json.dumps(file_input(schema, "sample.txt"))]
         preflight = json.loads(invoke(apexe, [*arguments, "--dry-run", "--as", "ci"], environment, work).stdout)
         if not preflight["valid"] or not preflight["caller_asserted"]:
             raise RuntimeError("Expected an allowed, non-executing caller simulation")
@@ -50,7 +50,7 @@ def run(apexe, corpus, shims):
         paths_declared = any(value.get("x-apexe-path") or value.get("items", {}).get("x-apexe-path")
                              for value in schema.get("properties", {}).values() if "x-apexe-positional" in value)
         if paths_declared:
-            probe = invoke(apexe, ["run", "cli.cat", "--input", json.dumps(file_input(schema, str(home / ".ssh/id_rsa"))), "--dry-run"], environment, work, False)
+            probe = invoke(apexe, ["exec", "cli.cat", "--input", json.dumps(file_input(schema, str(home / ".ssh/id_rsa"))), "--dry-run"], environment, work, False)
             verdict = json.loads(probe.stdout)
             if not any(not item["allowed"] for item in verdict["path_guard"]):
                 raise RuntimeError("Preflight did not identify the protected path")

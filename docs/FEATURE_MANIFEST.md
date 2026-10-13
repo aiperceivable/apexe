@@ -30,13 +30,15 @@ CLI Tool Binary
       └──→ [SkillOutput] ──→ .claude/skills/<id>/SKILL.md  (with --skills-dir)
 ```
 
-Call path — every surface shares one `build_executor`, so the controls below
-apply identically to MCP, A2A and the library API:
+Call path — MCP, A2A, local execution and the library use shared executor
+construction. Servers enable ACL and approval explicitly; local execution
+loads the default ACL when present and always installs the approval gate.
+Local execution disables retry and circuit breaking and suppresses argument logs:
 
 ```
-MCP client                A2A client
-     |                         |
-     └───────────┬─────────────┘
+MCP client          A2A client          exec / PATH shims
+     |                   |                     |
+     └───────────────────┼─────────────────────┘
                  v
         [apcore Executor]
                  |
@@ -57,8 +59,9 @@ MCP client                A2A client
                  [executor::build_argv]  option-injection +
                                 |        control-char + exec-param guards
                                 v
-              [execute_subprocess]  env-scrubbed, no shell,
-                                |   output-capped, timeout + kill_on_drop
+              [module::io::execute]  env-scrubbed, no shell,
+                                |   timeout + kill_on_drop; output cap
+                                |   for captured I/O, inherited native streams
                                 v
                           wrapped binary
                                 |
@@ -82,11 +85,16 @@ src/
 │   └── overlay      ToolOverlay: curated flag/arg descriptions, apply_overlay
 ├── auth             Transport authentication for the HTTP-family MCP/A2A
 │                    transports (token/JWT, loopback-bind detection)
-├── cli/             clap CLI entry point (scan/serve/a2a/run/env/verify/list/config/policy)
+├── cli/             clap CLI entry point (scan/serve/a2a/exec/env/verify/init/list/config/policy)
+│   ├── init         Reviewed source bootstrap, binding ownership and starter ACL
+│   ├── exec         Module JSON and native argv through shared governance
+│   ├── config_set   Persistent log-level updates preserving other settings
 │   ├── config_gen   Claude Desktop / Cursor config snippet generation
 │   ├── env          Governed shim enable/reload/disable and activation output
 │   └── shell_init   Managed startup blocks for automatic terminal activation
 ├── config           ApexeConfig + apcore CoreConfig integration
+├── corpus/          Managed Git snapshots, validated catalog and source acquisition
+├── logging          Binary diagnostic file logging with daily rotation
 ├── errors           ApexeError + From<ApexeError> for ModuleError
 ├── governance/      Access control, audit, filesystem boundary
 │   ├── acl          AclManager wrapping apcore::ACL
@@ -110,6 +118,9 @@ src/
 │   ├── yaml         YamlOutput wrapping apcore_toolkit::YAMLWriter
 │   ├── loader       load_modules_from_dir (reads .binding.yaml)
 │   └── skill        SkillOutput: writes a Claude Skill (SKILL.md) per module
+├── openapi          HTTP operation import shared by MCP and A2A
+├── runtime_path     Clean PATH resolution excluding governed shim directories
+├── verification/    Source drift, isolated cases and digest-bound evidence
 └── scanner/         Deterministic CLI scanner engine (tiers 1-3 + overlay)
     ├── orchestrator    ScanOrchestrator (top-level coordinator)
     ├── pipeline        ParserPipeline (priority-based parser selection)
@@ -205,12 +216,19 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 | `uuid` | UUID v4 for trace IDs |
 | `shell-words` | Shell argument splitting |
 
+## Initialization
+
+`apexe init` bootstraps reviewed command coverage using the shared scanner and
+ACL writer. Source selection, pinning and refresh use `--overlays`, `--ref` and
+`--refresh`; the old `overlays` command is removed. Initialization preserves
+existing policy and custom/edited bindings, and reports fallback coverage.
+
 ## Open Items
 
 1. **A2A protocol** -- Implemented in 0.3.0 (`apexe a2a`, `A2aServerBuilder`).
 2. **CLI rewiring completion** -- `apexe scan` fully rewired; `apexe serve` uses McpServerBuilder.
 3. **Tool overlays & variant detection** -- Implemented in 0.4.0; man page examples and `open_world` inference added in 0.5.0.
-4. **F8 local execution** -- Implemented: captured `apexe run` and native PATH shims through `apexe env --enable`, `--reload` and `--disable`. Reload retains installed settings and automatically enables when absent. stdin and bundling require explicit overlay capabilities; order-dependent or unasserted grammar is excluded. The verified BSD pilot covers cat/head/ls. See [`features/v2-f8-local-execution.md`](features/v2-f8-local-execution.md) for measurements and remaining daemon work.
+4. **F8 local execution** -- Implemented: module JSON and native argv `apexe exec` (default-deny unmanaged policy with explicit allow/approval), and native PATH shims through `apexe env --enable`, `--reload` and `--disable`. Reload retains installed settings and automatically enables when absent. stdin and bundling require explicit overlay capabilities; order-dependent or unasserted grammar is excluded. The verified BSD pilot covers cat/head/ls. See [`features/v2-f8-local-execution.md`](features/v2-f8-local-execution.md) for measurements and remaining daemon work.
 5. **Per-caller identity over the wire** -- Implemented: token/JWT authentication establishes identities; JWT roles are available to ACL conditions and subjects reach audit records. `callers` still matches module-chain IDs. See user-manual §11.
 6. **OS-level sandboxing** -- seccomp/landlock, namespaces and cgroup limits remain roadmap. v0.x relies on the governance stack plus process hygiene; see [`threat-model.md`](threat-model.md) §1.
 7. **`apexe evo`** -- Deferred. Depends on apevo product maturity.

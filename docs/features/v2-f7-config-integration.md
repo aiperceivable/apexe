@@ -223,6 +223,8 @@ pub struct ScanArgs {
 }
 ```
 
+Current diagnostic logging behavior is documented in [the user manual](../user-manual.md#15-global-flags-logging-and-debugging), including file output, `config set log.level` and CLI precedence.
+
 ### 4.2 Global flag additions
 
 ```rust
@@ -230,7 +232,7 @@ pub struct ScanArgs {
 #[command(name = "apexe", version, about)]
 pub struct Cli {
     /// Log level (trace, debug, info, warn, error)
-    #[arg(long, global = true, default_value = "info")]
+    #[arg(long, global = true, default_value = "warn")]
     pub log_level: String,
 
     /// Override default timeout (seconds)
@@ -263,7 +265,7 @@ pub struct Cli {
 |---|---|---|---|
 | `APEXE_BINDINGS_DIR` | `bindings_dir` | PathBuf | `~/.apexe/bindings` |
 | `APEXE_CACHE_DIR` | `cache_dir` | PathBuf | `~/.apexe/cache` |
-| `APEXE_LOG_LEVEL` | `log_level` | String | `"info"` |
+| `APEXE_LOG_LEVEL` | `log_level` | String | `"warn"` |
 | `APEXE_TIMEOUT` | `default_timeout` | u64 | `30` |
 | `APEXE_SCAN_DEPTH` | `scan_depth` | u32 | `2` |
 
@@ -278,7 +280,7 @@ The 14 existing config tests are modified to account for the new `core_config` f
 | Test Name | Change |
 |---|---|
 | `test_default_bindings_dir_ends_with_apexe_modules` | No change |
-| `test_default_log_level_is_info` | No change |
+| `test_default_log_level_is_warn` | No change |
 | `test_default_timeout_is_30` | No change |
 | `test_default_scan_depth_is_2` | No change |
 | `test_default_json_output_preference_is_true` | No change |

@@ -197,7 +197,7 @@ struct RouteRefusal {
     module_id: String,
 }
 
-fn resolve_route<'a>(
+pub(super) fn resolve_route<'a>(
     name: &str,
     args: &[String],
     manifest: &Manifest,
@@ -305,7 +305,7 @@ fn execute(
         .ok_or_else(|| anyhow::anyhow!("Passthrough returned no exit status"))
 }
 
-fn stdin_mode(selected: &ScannedModule) -> StdinMode {
+pub(super) fn stdin_mode(selected: &ScannedModule) -> StdinMode {
     if selected.input_schema["x-apexe-streaming-stdin-safe"] == true {
         StdinMode::Inherit
     } else {
@@ -336,7 +336,7 @@ fn build_executor(
     )
 }
 
-async fn audit_resolution_refusal(
+pub(super) async fn audit_resolution_refusal(
     name: &str,
     manifest: &Manifest,
     modules: &[ScannedModule],
@@ -363,7 +363,7 @@ async fn audit_resolution_refusal(
         .log_refusal(
             module.map_or("<shim-route>", |module| module.module_id.as_str()),
             &context.trace_id,
-            Some("local"),
+            context.caller_id.as_deref(),
             None,
             if module.is_some() {
                 apcore::ErrorCode::GeneralInvalidInput

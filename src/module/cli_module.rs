@@ -34,6 +34,7 @@ pub struct CliModuleConfig {
 #[derive(Debug)]
 pub struct CliModule {
     execution_io: super::ExecutionIo,
+    fixed_argv: Option<Vec<String>>,
     module_id: String,
     description: String,
     input_schema: Value,
@@ -52,6 +53,7 @@ impl CliModule {
     pub fn new(config: CliModuleConfig) -> Self {
         Self {
             execution_io: super::ExecutionIo::Captured,
+            fixed_argv: None,
             module_id: config.module_id,
             description: config.description,
             input_schema: config.input_schema,
@@ -157,9 +159,30 @@ impl CliModule {
         &self.module_id
     }
 
-    /// Resolve the exact subprocess argv without starting a process.
-    #[allow(clippy::result_large_err)] // Match the crate-wide ModuleError boundary.
-    pub(crate) fn planned_argv(&self, inputs: &Value) -> Result<Vec<String>, ModuleError> {
+    /// Bind caller-supplied argv only on an explicitly admitted unmanaged call.
+    /// This cannot be enabled by serialized binding metadata.
+    #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    pub(crate) fn with_fixed_argv(mut self, args: Vec<String>) -> Result<Self, ModuleError> {
+        for (index, value) in args.iter().enumerate() {
+            executor::validate_argument_value(
+                executor::ValueLocation {
+                    param_name: "argv",
+                    index: Some(index),
+                },
+                value,
+                false,
+                true,
+            )?;
+        }
+        self.fixed_argv = Some(args);
+        Ok(self)
+    }
+
+    #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    fn execution_argv(&self, inputs: &Value) -> Result<Vec<String>, ModuleError> {
+        if let Some(args) = &self.fixed_argv {
+            return Ok(args.clone());
+        }
         let kwargs = inputs.as_object().ok_or_else(|| {
             ModuleError::new(
                 ErrorCode::GeneralInvalidInput,
@@ -167,9 +190,17 @@ impl CliModule {
             )
         })?;
         let rendered = executor::build_argv(kwargs, Some(&self.input_schema), self.access_mode())?;
-        let mut args = self.assemble_arguments(rendered);
-        if let Some(flag) = &self.json_flag {
-            args.extend(shell_words::split(flag).unwrap_or_default());
+        Ok(self.assemble_arguments(rendered))
+    }
+
+    /// Resolve the exact subprocess argv without starting a process.
+    #[allow(clippy::result_large_err)] // Match the crate-wide ModuleError boundary.
+    pub(crate) fn planned_argv(&self, inputs: &Value) -> Result<Vec<String>, ModuleError> {
+        let mut args = self.execution_argv(inputs)?;
+        if self.execution_io == super::ExecutionIo::Captured {
+            if let Some(flag) = &self.json_flag {
+                args.extend(shell_words::split(flag).unwrap_or_default());
+            }
         }
         Ok(args)
     }
@@ -388,21 +419,12 @@ impl Module for CliModule {
         let mut change = Change::default();
         change.action = "execute".to_string();
         change.target = self.binary_path.clone();
-        change.summary = match inputs.as_object() {
-            None => "Cannot preview: input must be a JSON object.".to_string(),
-            Some(kwargs) => {
-                match executor::build_argv(kwargs, Some(&self.input_schema), self.access_mode()) {
-                    Err(e) => format!("Cannot preview: invalid arguments ({}).", e.message),
-                    Ok(user_args) => {
-                        let mut full_command = vec![self.binary_path.clone()];
-                        full_command.extend(self.assemble_arguments(user_args));
-                        format!(
-                            "This will run: {}. Destructive command — apexe cannot statically \
-                         predict the exact effects of an arbitrary CLI tool.",
-                            full_command.join(" ")
-                        )
-                    }
-                }
+        change.summary = match self.planned_argv(inputs) {
+            Err(error) => format!("Cannot preview: invalid arguments ({}).", error.message),
+            Ok(args) => {
+                let mut command = vec![self.binary_path.clone()];
+                command.extend(args);
+                format!("This will run: {}. Destructive command — apexe cannot statically predict the exact effects of an arbitrary CLI tool.", command.join(" "))
             }
         };
 
@@ -413,12 +435,12 @@ impl Module for CliModule {
 
     async fn execute(&self, inputs: Value, ctx: &Context<Value>) -> Result<Value, ModuleError> {
         self.validate_stdin()?;
-        let kwargs = inputs.as_object().ok_or_else(|| {
-            ModuleError::new(
+        if !inputs.is_object() {
+            return Err(ModuleError::new(
                 ErrorCode::GeneralInvalidInput,
-                "Input must be a JSON object".to_string(),
-            )
-        })?;
+                "Input must be a JSON object",
+            ));
+        }
 
         tracing::info!(
             module_id = %self.module_id,
@@ -428,8 +450,7 @@ impl Module for CliModule {
         );
 
         let start = std::time::Instant::now();
-        let user_args = executor::build_argv(kwargs, Some(&self.input_schema), self.access_mode())?;
-        let args: Vec<String> = self.assemble_arguments(user_args);
+        let args = self.execution_argv(&inputs)?;
 
         let output = match super::io::execute(
             &self.binary_path,

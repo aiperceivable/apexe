@@ -176,6 +176,24 @@ pub(crate) fn build_executor_from_modules_with_io(
     finish_executor(opts, registry, audit)
 }
 
+/// Register an ephemeral unmanaged invocation with the same governance stack.
+#[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+pub(crate) fn build_executor_for_unmanaged(
+    opts: &ExecutorOptions<'_>,
+    scanned: &ScannedModule,
+    module: CliModule,
+) -> Result<Arc<Executor>, ModuleError> {
+    let audit = opts
+        .audit_path
+        .map(|path| Arc::new(crate::governance::AuditManager::new(path)));
+    let registry = Arc::new(Registry::new());
+    let module = module.with_audit(audit.clone());
+    let mut descriptor = build_descriptor(scanned);
+    descriptor.output_schema = apcore::Module::output_schema(&module);
+    registry.register(&scanned.module_id, Box::new(module), descriptor)?;
+    finish_executor(opts, registry, audit)
+}
+
 /// Import HTTP operations before installing ACL, so both sources are governed.
 #[allow(clippy::result_large_err)] // Match the crate-wide ModuleError boundary.
 pub async fn build_executor_with_openapi(

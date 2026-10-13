@@ -8,13 +8,18 @@ use crate::scanner::protocol::{CliParser, ParsedHelp};
 // Precompiled once: the scan hot path parses help per subcommand recursively, so
 // recompiling these on every call is wasteful. INVARIANT: every pattern is a
 // compile-time constant valid regex, so `Regex::new` never fails.
-static AVAILABLE_COMMANDS_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^Available Commands:").expect("valid static regex"));
-static CMD_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^\s{2,}([a-z][\w-]*)\s+\S").expect("valid static regex"));
+static COMMAND_SECTION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?m)^(Available Commands|Common Commands|Management Commands|Swarm Commands|Commands):",
+    )
+    .expect("valid static regex")
+});
+static CMD_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^[ \t]{2,}([a-z][\w-]*)\*?[ \t]+\S").expect("valid static regex")
+});
 static FLAG_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?m)^\s{2,}(-([a-zA-Z]),?\s+)?(--([a-z][\w-]*))\s+(string|int|uint|float|bool|duration|stringSlice|stringArray)?\s*(.+)",
+        r"(?m)^[ \t]{2,}(-([a-zA-Z]),?[ \t]+)?(--([a-z][\w-]*))[ \t]+(?:(stringSlice|stringArray|string|int|uint|float|bool|duration|list|bytes)[ \t]{2,})?(.+)",
     )
     .expect("valid static regex")
 });
@@ -26,8 +31,8 @@ static DEFAULT_RE: LazyLock<Regex> =
 /// Handles Go tools like kubectl, docker, gh:
 /// - Description paragraph first
 /// - 'Usage:\n  tool [command]' format
-/// - 'Available Commands:' section
-/// - 'Flags:' section with '  -f, --flag type   Description'
+/// - 'Available Commands:' or Docker's grouped command sections
+/// - 'Flags:' / 'Options:' sections with '  -f, --flag type   Description'
 pub struct CobraHelpParser;
 
 impl CliParser for CobraHelpParser {
@@ -42,14 +47,21 @@ impl CliParser for CobraHelpParser {
     fn can_parse(&self, help_text: &str, _tool_name: &str) -> bool {
         help_text.contains("Available Commands:")
             || (help_text.contains("Flags:") && !help_text.contains("Options:"))
+            || help_text.contains("Management Commands:")
+            || (COMMAND_SECTION_RE.is_match(help_text) && !help_text.contains("Options:"))
+            || (help_text.contains("Options:")
+                && FLAG_RE
+                    .captures_iter(help_text)
+                    .any(|flag| flag.get(5).is_some()))
     }
 
     fn parse(&self, help_text: &str, _tool_name: &str) -> anyhow::Result<ParsedHelp> {
         let description = extract_cobra_description(help_text);
         let subcommand_names = extract_available_commands(help_text);
-        let mut flags = extract_cobra_flags(help_text, "Flags:");
-        let global_flags = extract_cobra_flags(help_text, "Global Flags:");
-        flags.extend(global_flags);
+        let mut flags = Vec::new();
+        for section in ["Flags:", "Global Flags:", "Options:", "Global Options:"] {
+            flags.extend(extract_cobra_flags(help_text, section));
+        }
         let positional_args = extract_cobra_args(help_text);
         let structured_output =
             super::structured_output::StructuredOutputDetector.detect(&flags, help_text);
@@ -88,17 +100,25 @@ fn extract_cobra_description(help_text: &str) -> String {
 fn extract_available_commands(help_text: &str) -> Vec<String> {
     let mut names = Vec::new();
 
-    if let Some(section_match) = AVAILABLE_COMMANDS_RE.find(help_text) {
+    for section_match in COMMAND_SECTION_RE.find_iter(help_text) {
         let after_section = &help_text[section_match.end()..];
+        let mut has_commands = false;
         for line in after_section.lines() {
-            if line.trim().is_empty() || (!line.starts_with(' ') && !line.is_empty()) {
-                if !names.is_empty() {
+            if line.trim().is_empty() {
+                if has_commands {
                     break;
                 }
                 continue;
             }
+            if !line.starts_with(char::is_whitespace) {
+                break;
+            }
             if let Some(cap) = CMD_RE.captures(line) {
-                names.push(cap[1].to_string());
+                has_commands = true;
+                let name = cap[1].to_string();
+                if !names.contains(&name) {
+                    names.push(name);
+                }
             }
         }
     }
@@ -149,7 +169,7 @@ fn cobra_section_content<'a>(help_text: &'a str, section_header: &str) -> Option
 /// it takes a value, and apexe does not have to know its shape to pass it on.
 fn cobra_value_type(type_str: Option<&str>) -> ValueType {
     match type_str {
-        Some("string") | Some("stringSlice") | Some("stringArray") => ValueType::String,
+        Some("string" | "stringSlice" | "stringArray" | "list" | "bytes") => ValueType::String,
         Some("int") | Some("uint") => ValueType::Integer,
         Some("float") => ValueType::Float,
         Some("bool") => ValueType::Boolean,
@@ -188,7 +208,7 @@ fn extract_cobra_flags(help_text: &str, section_header: &str) -> Vec<ScannedFlag
             required: false,
             default,
             enum_values: None,
-            repeatable: false,
+            repeatable: matches!(type_str, Some("stringSlice" | "stringArray" | "list")),
             value_name: type_str.map(|s| s.to_string()),
             ..Default::default()
         });
@@ -210,7 +230,10 @@ fn extract_cobra_args(help_text: &str) -> Vec<ScannedArg> {
 
     // Skip everything up to and including the "Usage:" header line.
     for line in lines.by_ref() {
-        if line.trim().starts_with("Usage:") {
+        if let Some(inline) = line.trim().strip_prefix("Usage:") {
+            if !inline.trim().is_empty() {
+                return super::positional_args::extract_args_from_usage_line(inline.trim());
+            }
             break;
         }
     }
@@ -282,6 +305,62 @@ Global Flags:
         assert!(result.subcommand_names.contains(&"get".to_string()));
         assert!(result.subcommand_names.contains(&"describe".to_string()));
         assert!(result.subcommand_names.len() >= 5);
+    }
+
+    #[test]
+    fn test_cobra_parses_grouped_commands_and_global_options() {
+        let help = "Usage:  docker [OPTIONS] COMMAND\n\nCommon Commands:\n  run         Run a container\n\nManagement Commands:\n  container   Manage containers\n  buildx*     Build plugin\n\nSwarm Commands:\n  service     Manage services\n\nCommands:\n  run         Run a container\n  wait        Wait for a container\n\nGlobal Options:\n  -c, --context string  Daemon context\n  -D, --debug           Debug mode\n\nMore information:\n  unrelated   This is not a command\n";
+        let parsed = crate::scanner::ParserPipeline::new(None).parse(help, "docker");
+        assert_eq!(parsed.help_format, crate::models::HelpFormat::Cobra);
+        assert_eq!(
+            parsed.subcommand_names,
+            vec!["run", "container", "buildx", "service", "wait"]
+        );
+        let context = parsed
+            .flags
+            .iter()
+            .find(|flag| flag.long_name.as_deref() == Some("--context"))
+            .unwrap();
+        assert_eq!(context.value_type, ValueType::String);
+        assert_eq!(context.short_name.as_deref(), Some("-c"));
+    }
+
+    #[test]
+    fn test_cobra_parses_typed_options_and_inline_usage() {
+        let help = "Usage:  docker container run [OPTIONS] IMAGE [COMMAND] [ARG...]\n\nRun a container\n\nOptions:\n  -e, --env list       Environment values\n  -m, --memory bytes   Memory limit\n      --name string   Container name\n";
+        let parsed = crate::scanner::ParserPipeline::new(None).parse(help, "docker");
+        assert_eq!(parsed.help_format, crate::models::HelpFormat::Cobra);
+        assert!(parsed
+            .positional_args
+            .iter()
+            .any(|arg| arg.name == "IMAGE" || arg.name == "image"));
+        let name = parsed
+            .flags
+            .iter()
+            .find(|flag| flag.long_name.as_deref() == Some("--name"))
+            .unwrap();
+        assert_eq!(name.value_type, ValueType::String);
+        let env = parsed
+            .flags
+            .iter()
+            .find(|flag| flag.long_name.as_deref() == Some("--env"))
+            .unwrap();
+        assert_eq!(env.value_type, ValueType::String);
+        assert!(env.repeatable);
+        let memory = parsed
+            .flags
+            .iter()
+            .find(|flag| flag.long_name.as_deref() == Some("--memory"))
+            .unwrap();
+        assert_eq!(memory.value_type, ValueType::String);
+    }
+
+    #[test]
+    fn test_cobra_parses_commands_only_management_help() {
+        let help = "Usage:  docker container COMMAND\n\nManage containers\n\nCommands:\n  ls      List containers\n  prune   Remove stopped containers\n\nRun 'docker container COMMAND --help' for more information.\n";
+        let parsed = crate::scanner::ParserPipeline::new(None).parse(help, "docker");
+        assert_eq!(parsed.help_format, crate::models::HelpFormat::Cobra);
+        assert_eq!(parsed.subcommand_names, vec!["ls", "prune"]);
     }
 
     #[test]

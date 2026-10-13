@@ -2,7 +2,8 @@
 
 > **Where a new entry goes.** apexe ships no overlays; the corpus is the
 > [cli-permissions](https://github.com/aiperceivable/cli-permissions)
-> repository, obtained automatically on the first online scan and cached locally.
+> repository, obtained during `apexe init` and cached locally. A first online
+> custom scan can also acquire it automatically.
 > Write and verify an entry there. This document is the procedure
 > for doing so, and it applies wherever the file ends up — including
 > `~/.apexe/overlays/`, which needs no repository at all.
@@ -22,34 +23,37 @@ There is deliberately **no `apexe overlay verify` command**. See [What cannot be
 
 ---
 
-## Installing and packaging a corpus
+## Initializing from a corpus and packaging it
 
 ```bash
-apexe overlays install https://github.com/aiperceivable/cli-permissions
-apexe overlays list
-apexe scan ls --no-cache
-apexe overlays update cli-permissions
+apexe init
+apexe init --format json
+# Update rules and refresh unchanged bindings originally created by init.
+apexe init --refresh
+# Use a specific local Git source or reviewed revision.
+apexe init --overlays ../cli-permissions --ref <COMMIT>
 ```
 
-`--ref <REF>` selects a branch, tag or commit on install or update. The resolved
-commit is recorded; a commit-pinned installation stays pinned until its reference
-is explicitly changed. `apexe overlays remove <NAME>` unregisters only the owned
-corpus. Managed corpora are loaded after packaged sources and before configured
-`overlay_dirs`, personal overlays and `--overlay`. Existing bindings require a
-rescan after a corpus update; enabled shims then require `apexe env --reload`.
-See the [command reference](user-manual.md#410-apexe-overlays) for overrides.
+`--ref <REF>` selects a branch, tag or commit. The resolved commit is recorded;
+a pinned installation stays pinned until its reference is explicitly changed.
+The JSON initialization report includes installed source metadata and commits.
+Managed corpora are loaded after packaged sources and before configured
+`overlay_dirs`, personal overlays and a scan's explicit `--overlay`.
+`init --refresh` regenerates unchanged init-owned bindings; custom or edited
+bindings need an explicit targeted rescan. Enabled shims then need
+`apexe env --reload`. The old `apexe overlays` command is removed. See the
+[init reference](user-manual.md#410-apexe-init).
 
-During local overlay development, prefer reading the checkout directly:
+During local overlay development, read the checkout directly:
 
 ```bash
-# From the apexe checkout, with a sibling cli-permissions working directory.
 APEXE_OVERLAY_DIRS=../cli-permissions/overlays apexe scan ls --no-cache
 ```
 
-This reads uncommitted edits without installing a snapshot. The environment
-variable affects only that command; rescan after each overlay change. To install
-a managed snapshot of the local repository's committed content instead, use
-`apexe overlays install ../cli-permissions`.
+This reads uncommitted edits without installing a snapshot. The variable affects
+only that command; rescan after each overlay change. `apexe init --overlays
+../cli-permissions` instead initializes from the local Git repository's committed
+snapshot and checks rules against installed tools.
 
 A repository may publish a root `manifest.json`:
 

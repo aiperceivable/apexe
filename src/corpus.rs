@@ -1,4 +1,5 @@
 mod automatic;
+pub(crate) mod bootstrap;
 mod catalog;
 mod git;
 mod manifest;
@@ -136,8 +137,8 @@ impl CorpusStore {
             .any(|installed| installed.name == corpus.name)
         {
             return Err(CorpusError::State(format!(
-                "Corpus '{}' is installed; use apexe overlays update {}",
-                corpus.name, corpus.name
+                "Corpus '{}' is installed; use apexe init --overlays {} --refresh",
+                corpus.name, corpus.repository
             )));
         }
         self.register_installation(catalog, corpus, staging)
@@ -191,6 +192,7 @@ impl CorpusStore {
         Ok(corpus)
     }
 
+    #[cfg(test)]
     pub(crate) fn remove(&self, name: &str) -> Result<(), CorpusError> {
         source::validate_name(name)?;
         let _lock = catalog::Lock::acquire(&self.root)?;
@@ -342,3 +344,6 @@ pub(crate) fn installed_overlay_dirs(config_dir: &Path) -> Result<Vec<PathBuf>, 
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests;

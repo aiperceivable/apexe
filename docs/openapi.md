@@ -98,7 +98,7 @@ A body method declaring query parameters fails startup because the SDK would
 encode them in the body. Missing origins, malformed documents and registration
 collisions also fail startup. Multipart uploads, per-input header/cookie
 parameters and non-JSON responses are outside this initial import surface.
-OpenAPI import is available to MCP/A2A; `apexe run` and PATH shims remain CLI
+OpenAPI import is available to MCP/A2A; `apexe exec` and PATH shims remain CLI
 execution surfaces.
 
 ## Test coverage

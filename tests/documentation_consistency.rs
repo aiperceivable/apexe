@@ -643,6 +643,32 @@ fn test_user_manual_documents_every_subcommand() {
     }
 }
 
+#[test]
+fn test_feature_manifest_cli_inventory_matches_current_subcommands() {
+    use clap::CommandFactory;
+    let manifest = include_str!("../docs/FEATURE_MANIFEST.md");
+    let inventory = manifest
+        .lines()
+        .find(|line| line.contains("clap CLI entry point"))
+        .expect("feature manifest must describe the CLI module");
+    let names = inventory.split_once('(').unwrap().1.trim_end_matches(')');
+    let names: Vec<&str> = names.split('/').collect();
+    let command = apexe::cli::Cli::command();
+    for subcommand in command.get_subcommands() {
+        assert!(
+            names.contains(&subcommand.get_name()),
+            "Feature manifest CLI inventory omits {}",
+            subcommand.get_name()
+        );
+    }
+    for name in names {
+        assert!(
+            command.find_subcommand(name).is_some(),
+            "Feature manifest advertises a removed command: {name}"
+        );
+    }
+}
+
 /// Every flag a user can see must appear in the manual.
 ///
 /// Hidden flags are exempt by definition -- `--allow-deprecated-sse` is
@@ -875,7 +901,12 @@ fn test_every_mkdocs_nav_entry_resolves() {
 
     // Copied into docs/ by .github/workflows/deploy-docs.yml at build time, so
     // they are absent from a checkout by design.
-    const GENERATED_AT_DEPLOY: &[&str] = &["index.md", "changelog.md", "examples.md"];
+    const GENERATED_AT_DEPLOY: &[&str] = &[
+        "index.md",
+        "changelog.md",
+        "examples.md",
+        "documentation.md",
+    ];
 
     let mut missing: Vec<&str> = Vec::new();
     let mut checked = 0usize;
@@ -893,7 +924,13 @@ fn test_every_mkdocs_nav_entry_resolves() {
         if GENERATED_AT_DEPLOY.contains(&target) {
             continue;
         }
-        if !std::path::Path::new("docs").join(target).exists() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let source = if target.starts_with("examples/") {
+            root.join(target)
+        } else {
+            root.join("docs").join(target)
+        };
+        if !source.exists() {
             missing.push(target);
         }
     }

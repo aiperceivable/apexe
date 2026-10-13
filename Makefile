@@ -1,4 +1,4 @@
-.PHONY: setup check test lint fmt clean
+.PHONY: setup check check-chars fmt-check build test lint fmt clean
 
 # One-time dev environment setup
 setup:
@@ -11,7 +11,10 @@ setup:
 	@echo "Done! Development environment is ready."
 
 # Run all checks (same as pre-commit hook)
-check: fmt-check lint check-chars test
+check: fmt-check lint check-chars build test
+
+build:
+	cargo build --all-features
 
 check-chars:
 	apdev-rs check-chars src/

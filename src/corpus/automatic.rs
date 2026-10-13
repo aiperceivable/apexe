@@ -1,4 +1,4 @@
-use super::{catalog, source, CorpusError, CorpusStore, InstalledCorpus};
+use super::{bootstrap, catalog, CorpusError, CorpusStore, InstalledCorpus};
 use crate::config::ApexeConfig;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -61,11 +61,13 @@ fn find_cached(
     store: &CorpusStore,
     repository: &str,
 ) -> Result<Option<InstalledCorpus>, CorpusError> {
-    let location = source::parse_repository(repository)
+    let location = bootstrap::parse_repository(repository)
         .ok()
         .map(|value| value.location);
     for corpus in store.list()? {
-        if corpus.name != DEFAULT_NAME && !same_repository(&corpus.repository, location.as_deref())
+        if !location
+            .as_deref()
+            .is_some_and(|requested| bootstrap::same_repository(&corpus.repository, requested))
         {
             continue;
         }
@@ -77,16 +79,6 @@ fn find_cached(
         return Ok(Some(corpus));
     }
     Ok(None)
-}
-
-fn same_repository(installed: &str, requested: Option<&str>) -> bool {
-    let normalize = |value: &str| {
-        value
-            .trim_end_matches('/')
-            .trim_end_matches(".git")
-            .to_string()
-    };
-    requested.is_some_and(|requested| normalize(installed) == normalize(requested))
 }
 
 #[cfg(test)]
@@ -193,6 +185,18 @@ mod tests {
         };
         assert_eq!(found.commit, cached.commit);
         assert_eq!(found.name, "operator-alias");
+    }
+
+    #[test]
+    fn test_changed_repository_does_not_reuse_a_named_default_cache() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = config(root.path());
+        cache(&config, DEFAULT_NAME);
+        config.default_overlay_repository = "https://example.invalid/new-rules".into();
+        let result = resolve_default(&config, true, |_| {
+            Err(CorpusError::Git("new source".into()))
+        });
+        assert!(matches!(result, Err(CorpusError::Git(message)) if message == "new source"));
     }
 
     #[test]

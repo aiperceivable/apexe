@@ -46,10 +46,10 @@ impl CliParser for ClickHelpParser {
         110
     }
 
-    fn can_parse(&self, help_text: &str, _tool_name: &str) -> bool {
+    fn can_parse(&self, help_text: &str, tool_name: &str) -> bool {
         help_text.contains("[OPTIONS]")
             && help_text.contains("Options:")
-            && !help_text.contains("Available Commands:")
+            && !super::cobra::CobraHelpParser.can_parse(help_text, tool_name)
             && !help_text.contains("SUBCOMMANDS:")
     }
 

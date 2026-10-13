@@ -426,7 +426,7 @@ fn test_env_check_rejects_mutating_or_ignored_options() {
 }
 
 #[test]
-fn test_env_check_missing_installation_does_not_create_directories() {
+fn test_env_check_missing_installation_creates_only_diagnostic_logs() {
     let home = TempDir::new().unwrap();
     Command::cargo_bin("apexe")
         .unwrap()
@@ -438,7 +438,10 @@ fn test_env_check_missing_installation_does_not_create_directories() {
         .assert()
         .code(1)
         .stdout(contains("[FAIL] MANIFEST"));
-    assert!(!home.path().join(".apexe").exists());
+    for name in ["bindings", "cache", "bin", "config.yaml", "audit.jsonl"] {
+        assert!(!home.path().join(".apexe").join(name).exists());
+    }
+    assert!(home.path().join(".apexe/log").is_dir());
 }
 
 #[test]

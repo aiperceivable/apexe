@@ -12,7 +12,7 @@ instead.
 | Embed apexe and export generated tool definitions | [Programmatic example](../examples/programmatic/README.md) |
 | Test ACL behaviour with an explicit caller identity | [ACL library example](../examples/acl_demo/README.md) |
 | Understand the repository’s current modules and dependencies | [Feature Manifest](FEATURE_MANIFEST.md) |
-| Add or change a scanner parser | [README extension guidance](../README.md#adding-a-parser) |
+| Add or change a scanner parser | [README extension guidance](../README.md#adding-a-custom-parser) |
 | Author a verified CLI overlay | [Authoring Tool Overlays](overlays.md) |
 | Consume overlays outside apexe | [Overlay Consumers](overlay-consumers.md) |
 
@@ -44,3 +44,15 @@ The runnable local execution and OpenAPI example smoke tests require Python 3
 on Unix. They use its standard library, isolate HOME, and terminate their child
 servers. The macOS native example test is opt-in and requires the reviewed
 cli-permissions corpus; see `examples/local_execution/README.md`.
+
+Run `make check` for the formatting, lint, character, build and full-test gates.
+The pre-commit hook uses this same command. Documentation publication rebases
+repository links and publishes the example guides in a separate build tree:
+
+```bash
+python3 scripts/prepare_docs.py --output /tmp/apexe-docs
+mkdocs build --strict --config-file /tmp/apexe-docs/mkdocs.yml
+```
+
+The documentation build requires `mkdocs-material`. It leaves the source docs
+unchanged and checks links and heading anchors before publication.

@@ -81,6 +81,7 @@ impl Fixture {
             .env_remove("APEXE_SHIM_DIR")
             .env_remove("APCORE_CONFIG")
             .env("RUST_LOG", "info")
+            .arg("--log-stderr")
             .current_dir(self.home.path());
         command
     }

@@ -34,6 +34,7 @@ fn command(home: &TempDir) -> Command {
         .env_remove("APEXE_BINDINGS_DIR")
         .env_remove("APCORE_CONFIG")
         .env("RUST_LOG", "info")
+        .arg("--log-stderr")
         .current_dir(home.path());
     cmd
 }
@@ -43,10 +44,10 @@ fn write_acl(home: &TempDir, content: &str) {
 }
 
 #[test]
-fn test_run_returns_captured_json_and_warns_without_acl() {
+fn test_exec_returns_captured_json_and_warns_without_acl() {
     let home = fixture();
     let output = command(&home)
-        .args(["run", "cli.echo", "--input", r#"{"message":"hello"}"#])
+        .args(["exec", "cli.echo", "--input", r#"{"message":"hello"}"#])
         .assert()
         .success()
         .get_output()
@@ -61,28 +62,28 @@ fn test_run_returns_captured_json_and_warns_without_acl() {
 }
 
 #[test]
-fn test_run_rejects_unknown_module_and_invalid_schema() {
+fn test_exec_rejects_unknown_module_and_invalid_schema() {
     let home = fixture();
     command(&home)
-        .args(["run", "cli.missing"])
+        .args(["exec", "cli.missing"])
         .assert()
         .failure();
     command(&home)
-        .args(["run", "cli.echo", "--input", r#"{"message":5}"#])
+        .args(["exec", "cli.echo", "--input", r#"{"message":5}"#])
         .assert()
         .failure();
     command(&home)
-        .args(["run", "cli.echo", "--input", "[]"])
+        .args(["exec", "cli.echo", "--input", "[]"])
         .assert()
         .failure();
 }
 
 #[test]
-fn test_run_dry_run_reports_argv_without_execution() {
+fn test_exec_dry_run_reports_argv_without_execution() {
     let home = fixture();
     let output = command(&home)
         .args([
-            "run",
+            "exec",
             "cli.echo",
             "--dry-run",
             "--input",
@@ -106,16 +107,16 @@ fn test_run_dry_run_reports_argv_without_execution() {
 }
 
 #[test]
-fn test_run_loads_default_acl_and_simulates_caller() {
+fn test_exec_loads_default_acl_and_simulates_caller() {
     let home = fixture();
     write_acl(&home, "version: '1.0'\ndefault_effect: deny\nrules:\n  - callers: [local]\n    targets: [cli.echo]\n    effect: allow\n");
     command(&home)
-        .args(["run", "cli.echo", "--input", r#"{"message":"ok"}"#])
+        .args(["exec", "cli.echo", "--input", r#"{"message":"ok"}"#])
         .assert()
         .success();
     let output = command(&home)
         .args([
-            "run",
+            "exec",
             "cli.echo",
             "--dry-run",
             "--as",
@@ -131,32 +132,32 @@ fn test_run_loads_default_acl_and_simulates_caller() {
     assert_eq!(result["acl_decision"], "denied");
     assert_eq!(result["caller_asserted"], true);
     command(&home)
-        .args(["run", "cli.echo", "--as", "ci"])
+        .args(["exec", "cli.echo", "--as", "ci"])
         .assert()
         .failure()
         .code(2);
 }
 
 #[test]
-fn test_run_fails_closed_on_malformed_or_missing_requested_acl() {
+fn test_exec_fails_closed_on_malformed_or_missing_requested_acl() {
     let home = fixture();
     write_acl(&home, "rules: [broken");
     command(&home)
-        .args(["run", "cli.echo", "--input", r#"{"message":"ok"}"#])
+        .args(["exec", "cli.echo", "--input", r#"{"message":"ok"}"#])
         .assert()
         .failure();
     command(&home)
-        .args(["run", "cli.echo", "--acl", "/missing/acl.yaml"])
+        .args(["exec", "cli.echo", "--acl", "/missing/acl.yaml"])
         .assert()
         .failure();
 }
 
 #[test]
-fn test_run_dry_run_reports_path_guard_verdict() {
+fn test_exec_dry_run_reports_path_guard_verdict() {
     let home = fixture();
     let input = json!({"message":"ok", "file": home.path().join(".ssh/id_rsa")}).to_string();
     let output = command(&home)
-        .args(["run", "cli.echo", "--dry-run", "--input", &input])
+        .args(["exec", "cli.echo", "--dry-run", "--input", &input])
         .assert()
         .failure()
         .get_output()
@@ -165,13 +166,13 @@ fn test_run_dry_run_reports_path_guard_verdict() {
     assert_eq!(result["path_guard"][0]["allowed"], false);
     assert_eq!(result["valid"], false);
     command(&home)
-        .args(["run", "cli.echo", "--input", &input])
+        .args(["exec", "cli.echo", "--input", &input])
         .assert()
         .failure();
 }
 
 #[test]
-fn test_run_dry_run_does_not_start_a_side_effecting_process() {
+fn test_exec_dry_run_does_not_start_a_side_effecting_process() {
     let home = fixture();
     let path = home.path().join("created");
     let module = ScannedModule::new(
@@ -187,19 +188,19 @@ fn test_run_dry_run_does_not_start_a_side_effecting_process() {
         .unwrap();
     let input = json!({"file":path}).to_string();
     command(&home)
-        .args(["run", "cli.touch", "--dry-run", "--input", &input])
+        .args(["exec", "cli.touch", "--dry-run", "--input", &input])
         .assert()
         .success();
     assert!(!path.exists());
     command(&home)
-        .args(["run", "cli.touch", "--input", &input])
+        .args(["exec", "cli.touch", "--input", &input])
         .assert()
         .success();
     assert!(path.exists());
 }
 
 #[test]
-fn test_run_requires_approval_without_an_interactive_client() {
+fn test_exec_requires_approval_without_an_interactive_client() {
     let home = fixture();
     let mut module = ScannedModule::new(
         "cli.approval".into(),
@@ -218,7 +219,7 @@ fn test_run_requires_approval_without_an_interactive_client() {
         .write(&[module], &home.path().join(".apexe/bindings"), false)
         .unwrap();
     let output = command(&home)
-        .args(["run", "cli.approval", "--dry-run"])
+        .args(["exec", "cli.approval", "--dry-run"])
         .assert()
         .success()
         .get_output()
@@ -226,13 +227,13 @@ fn test_run_requires_approval_without_an_interactive_client() {
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["approval_required"], true);
     command(&home)
-        .args(["run", "cli.approval"])
+        .args(["exec", "cli.approval"])
         .assert()
         .failure();
 }
 
 #[test]
-fn test_run_reports_a_child_failure_as_nonzero() {
+fn test_exec_reports_a_child_failure_as_nonzero() {
     let home = fixture();
     let module = ScannedModule::new(
         "cli.false".into(),
@@ -246,7 +247,7 @@ fn test_run_reports_a_child_failure_as_nonzero() {
         .write(&[module], &home.path().join(".apexe/bindings"), false)
         .unwrap();
     let output = command(&home)
-        .args(["run", "cli.false"])
+        .args(["exec", "cli.false"])
         .assert()
         .failure()
         .get_output()
@@ -256,7 +257,7 @@ fn test_run_reports_a_child_failure_as_nonzero() {
 }
 
 #[test]
-fn test_run_warns_about_bindings_with_no_scan_format() {
+fn test_exec_warns_about_bindings_with_no_scan_format() {
     let home = fixture();
     let bindings = home.path().join(".apexe/bindings");
     for entry in std::fs::read_dir(bindings).unwrap() {
@@ -270,7 +271,7 @@ fn test_run_warns_about_bindings_with_no_scan_format() {
         std::fs::write(path, serde_yaml::to_string(&document).unwrap()).unwrap();
     }
     command(&home)
-        .args(["run", "cli.echo", "--input", r#"{"message":"ok"}"#])
+        .args(["exec", "cli.echo", "--input", r#"{"message":"ok"}"#])
         .assert()
         .success()
         .stderr(predicates::str::contains("governance markers may be stale"));
@@ -278,22 +279,22 @@ fn test_run_warns_about_bindings_with_no_scan_format() {
 
 #[cfg(unix)]
 #[test]
-fn test_run_fails_closed_on_a_dangling_default_acl_symlink() {
+fn test_exec_fails_closed_on_a_dangling_default_acl_symlink() {
     let home = fixture();
     std::os::unix::fs::symlink("missing.yaml", home.path().join(".apexe/acl.yaml")).unwrap();
     command(&home)
-        .args(["run", "cli.echo", "--input", r#"{"message":"ok"}"#])
+        .args(["exec", "cli.echo", "--input", r#"{"message":"ok"}"#])
         .assert()
         .failure();
 }
 
 #[test]
-fn test_run_denied_preflight_omits_command_details() {
+fn test_exec_denied_preflight_omits_command_details() {
     let home = fixture();
     write_acl(&home, "version: '1.0'\ndefault_effect: deny\nrules: []\n");
     let output = command(&home)
         .args([
-            "run",
+            "exec",
             "cli.echo",
             "--dry-run",
             "--input",
@@ -311,11 +312,11 @@ fn test_run_denied_preflight_omits_command_details() {
 }
 
 #[test]
-fn test_run_unknown_module_does_not_report_an_acl_allow() {
+fn test_exec_unknown_module_does_not_report_an_acl_allow() {
     let home = fixture();
     write_acl(&home, "version: '1.0'\ndefault_effect: allow\nrules: []\n");
     let output = command(&home)
-        .args(["run", "cli.missing", "--dry-run"])
+        .args(["exec", "cli.missing", "--dry-run"])
         .assert()
         .failure()
         .get_output()

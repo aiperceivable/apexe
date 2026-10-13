@@ -1,17 +1,19 @@
 mod activation;
 mod config_gen;
+mod config_set;
 mod env;
+mod exec;
+mod init;
 mod local;
-mod overlays;
-mod run;
 mod shell;
 mod shell_init;
 mod shim;
 mod source_scripts;
 mod verify;
+pub use config_set::ConfigAction;
 pub use env::EnvArgs;
-pub use overlays::OverlaysArgs;
-pub use run::RunArgs;
+pub use exec::{ExecArgs, UnmanagedPolicy};
+pub use init::{InitArgs, ReportFormat};
 pub use verify::VerifyArgs;
 
 use std::path::PathBuf;
@@ -37,10 +39,14 @@ pub fn run_shim(raw: &[std::ffi::OsString]) -> anyhow::Result<i32> {
 #[derive(Debug, Parser)]
 #[command(name = "apexe", version, about, long_about = None)]
 pub struct Cli {
-    /// Log level (trace, debug, info, warn, error). When omitted, the level
-    /// resolves from RUST_LOG, then APEXE_LOG_LEVEL / config.yaml, then "info".
-    #[arg(long, global = true)]
+    /// File log level (off, error, warn, info, debug, trace), overriding
+    /// RUST_LOG, APEXE_LOG_LEVEL and config.yaml. Defaults to warn.
+    #[arg(long, global = true, value_parser = crate::config::parse_log_level)]
     pub log_level: Option<String>,
+
+    /// Also display diagnostic logs on stderr; the terminal is quiet by default.
+    #[arg(long, global = true)]
+    pub log_stderr: bool,
 
     /// Per-call timeout in seconds, overriding `default_timeout` from
     /// `config.yaml`. Applies to every subcommand that runs a wrapped binary
@@ -60,17 +66,17 @@ pub enum Commands {
     Serve(ServeArgs),
     /// Start A2A agent server for scanned CLI tools.
     A2a(A2aArgs),
-    /// Execute a scanned module locally with JSON input and captured output.
-    Run(RunArgs),
+    /// Execute governed CLI commands with native argv or module JSON input.
+    Exec(ExecArgs),
     /// Enable, reload, disable or check governed shims, or print shell activation.
     Env(EnvArgs),
     /// Re-check source contracts and optionally run admitted readonly cases.
     Verify(VerifyArgs),
-    /// Install and manage Git-hosted overlay corpora.
-    Overlays(OverlaysArgs),
+    /// Initialize this machine with reviewed CLI rules, bindings and ACL.
+    Init(InitArgs),
     /// List previously scanned CLI tools and their modules.
     List(ListArgs),
-    /// Show or initialize apexe configuration.
+    /// Show, initialize or update apexe configuration.
     Config(ConfigArgs),
     /// Show the filesystem access boundary wrapped tools are checked
     /// against, or check one path against it.
@@ -78,8 +84,8 @@ pub enum Commands {
 }
 
 impl Cli {
-    /// Resolve the log-level fallback used when `RUST_LOG` is unset: an explicit
-    /// `--log-level` wins, otherwise the resolved `config_level` (which already
+    /// Resolve the log level: an explicit `--log-level` wins over environment
+    /// filters, otherwise use the resolved `config_level` (which already
     /// folds in `APEXE_LOG_LEVEL` and `config.yaml`).
     pub fn effective_log_level(&self, config_level: &str) -> String {
         self.log_level
@@ -87,7 +93,7 @@ impl Cli {
             .unwrap_or_else(|| config_level.to_string())
     }
 
-    pub fn run(self) -> anyhow::Result<()> {
+    pub fn run(self) -> anyhow::Result<i32> {
         let config = load_config(None)?.with_timeout_override(self.timeout);
         if !matches!(&self.command, Commands::Env(args) if args.check) {
             config.ensure_dirs()?;
@@ -98,14 +104,15 @@ impl Cli {
             Commands::Scan(args) => args.execute(&config),
             Commands::Serve(args) => args.execute(&config),
             Commands::A2a(args) => args.execute(&config),
-            Commands::Run(args) => args.execute(&config),
+            Commands::Exec(args) => return args.execute(&config),
             Commands::Env(args) => args.execute(&config),
             Commands::Verify(args) => args.execute(&config),
-            Commands::Overlays(args) => args.execute(&config),
+            Commands::Init(args) => args.execute(&config),
             Commands::List(args) => args.execute(&config),
             Commands::Config(args) => args.execute(&config),
             Commands::Policy(args) => args.execute(&config),
         }
+        .map(|()| 0)
     }
 }
 
@@ -293,7 +300,7 @@ impl ScanArgs {
             .join("\n")
     }
 
-    fn write_bindings(
+    pub(super) fn write_bindings(
         &self,
         modules: &[apcore_toolkit::ScannedModule],
         output_dir: &std::path::Path,
@@ -368,7 +375,7 @@ impl ScanArgs {
     /// this command line, so overwriting would discard every earlier scan's
     /// rules (and any the operator hand-authored). See
     /// [`AclManager::merge_default`](crate::governance::AclManager::merge_default).
-    fn write_acl(
+    pub(super) fn write_acl(
         &self,
         modules: &[apcore_toolkit::ScannedModule],
         config: &ApexeConfig,
@@ -931,7 +938,7 @@ impl ListArgs {
 
         let mut modules = self.load_modules(bindings_dir, config.bindings_pattern.as_deref())?;
         if modules.is_empty() {
-            println!("No modules found. Run 'apexe scan <tool>' first.");
+            println!("No modules found. Run 'apexe init' first, or 'apexe scan <tool>' for a custom tool.");
             return Ok(());
         }
 
@@ -1115,11 +1122,15 @@ impl ListArgs {
     }
 }
 
-/// Show or initialize apexe configuration.
+/// Show, initialize or update apexe configuration.
 #[derive(Debug, clap::Args)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct ConfigArgs {
+    #[command(subcommand)]
+    pub action: Option<ConfigAction>,
+
     /// Show current configuration
-    #[arg(long)]
+    #[arg(long, conflicts_with = "init")]
     pub show: bool,
 
     /// Initialize default config file
@@ -1129,6 +1140,9 @@ pub struct ConfigArgs {
 
 impl ConfigArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
+        if let Some(action) = self.action {
+            return action.execute(config);
+        }
         if self.show {
             let yaml = serde_yaml::to_string(config)?;
             println!("{yaml}");
@@ -2181,6 +2195,7 @@ mod tests {
     fn test_config_no_flags_is_noop() {
         let config = ApexeConfig::default();
         let args = ConfigArgs {
+            action: None,
             show: false,
             init: false,
         };
@@ -2226,6 +2241,7 @@ mod tests {
         };
 
         let args = ConfigArgs {
+            action: None,
             show: false,
             init: true,
         };
@@ -2237,7 +2253,7 @@ mod tests {
         // Verify the written file is valid YAML
         let contents = std::fs::read_to_string(&config_path).unwrap();
         let parsed: ApexeConfig = serde_yaml::from_str(&contents).unwrap();
-        assert_eq!(parsed.log_level, "info");
+        assert_eq!(parsed.log_level, "warn");
     }
 
     #[test]
@@ -2259,6 +2275,7 @@ mod tests {
         };
 
         let args = ConfigArgs {
+            action: None,
             show: false,
             init: true,
         };

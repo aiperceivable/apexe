@@ -4,10 +4,10 @@
 |---|---|
 | **Feature ID** | F8 |
 | **Priority** | P1 (Surface) |
-| **Status** | Stages 1 and 2 implemented. Captured execution, governance preflight and native PATH shims share the executor. The bounded BSD pilot covers cat/head/ls; broader overlay eligibility requires explicit verification. |
+| **Status** | Stages 1 and 2 implemented. Module JSON, native `exec`, governance preflight and PATH shims share the executor. The bounded BSD pilot covers cat/head/ls; broader overlay eligibility requires explicit verification. |
 | **Dependencies** | F2 (Module Executor), F5 (Governance) |
 | **Depended On By** | None yet |
-| **New Files** | `src/cli/run.rs`, `src/cli/local.rs`, `src/cli/env.rs`, `src/cli/shim.rs`, `src/adapter/argv.rs`, `src/module/io.rs`, `src/runtime_path.rs` |
+| **New Files** | `src/cli/exec.rs`, `src/cli/exec/native.rs`, `src/cli/local.rs`, `src/cli/env.rs`, `src/cli/shim.rs`, `src/adapter/argv.rs`, `src/module/io.rs`, `src/runtime_path.rs` |
 | **Modified Files** | `src/cli/mod.rs`, `src/module/executor.rs`, `src/module/cli_module.rs`, `src/module/registry.rs` |
 
 ---
@@ -15,22 +15,23 @@
 ## 1. Purpose
 
 Give the local terminal the same governed execution path that MCP and A2A
-callers already get. `apexe run`, `apexe serve` and `apexe a2a` share
+callers already get. `apexe exec`, `apexe serve` and `apexe a2a` share
 [`build_executor`](../../src/module/registry.rs). Stage 1 supplies a local entry
 for shell scripts, CI steps, Claude Code hooks and humans inspecting an ACL
 decision.
 
 Two surfaces, in order:
 
-1. **`apexe run <module_id>`** -- structured input, one module per invocation,
-   captured output. The minimal base.
+1. **`apexe exec`** -- native argv with passthrough I/O, or a module ID with
+   structured input and captured output. Native mode needs no shim installation.
 2. **`apexe env` + PATH shims** -- the wrapped tool invoked by its own name and
    its own argv syntax, so composition (pipes, `&&`, existing scripts) comes
    from the user's shell.
 
 Stage 2 adds passthrough I/O, clean PATH resolution and explicit per-module
-native grammar capabilities. Both surfaces retain the same ACL, approval,
-path guard, schema validation, environment scrubbing and audit chain.
+native grammar capabilities. Both reviewed surfaces retain the same ACL, approval,
+path guard, schema validation, environment scrubbing and audit chain. Explicit
+unmanaged execution has no schema-based path typing (§3.4).
 Installation includes only eligible modules (§5).
 
 ---
@@ -43,11 +44,13 @@ The structured surface accepts typed JSON, so a purely structured
 local surface reads like this:
 
 ```bash
-apexe run cli.ls --input '{"long":true,"paths":["/tmp"]}' \
-  | apexe run cli.cat --input '{}'
+apexe exec cli.ls --input '{"long":true,"paths":["/tmp"]}' \
+  | apexe exec cli.cat --input '{}'
 ```
 
-Nobody will type that when `ls -l /tmp | cat` exists. A control more expensive
+Captured results are JSON objects and cannot feed native stdin directly. Use
+`apexe exec -- ls -l /tmp | apexe exec -- cat` for passthrough composition, or
+activate shims for `ls -l /tmp | cat`. A control more expensive
 than the thing it governs gets switched off -- the failure mode
 `docs/threat-model.md` §3 already describes for approval prompts. For any
 surface whose audience is a human or a pre-existing script, native syntax is not
@@ -96,16 +99,20 @@ The honest reading:
 
 ---
 
-## 3. Stage 1 -- `apexe run`
+## 3. Stage 1 -- `apexe exec`
 
 ```
-apexe run <MODULE_ID> --input <JSON> [--dry-run] [--acl <PATH>] [--as <CALLER_ID>]
+apexe exec <MODULE_ID> [--input <JSON>] [--dry-run] [--acl <PATH>] [--as <CALLER_ID>]
+apexe exec [--dry-run] [--acl <PATH>] [--as <CALLER_ID>] [--unmanaged deny|allow|approval] -- <COMMAND> [ARGS...]
 ```
 
-Captured output, JSON result, one module per invocation. Deliberately excluded
-from Stage 1: raw/passthrough I/O (§7), stdin (§8.1), and `--param k=v` sugar
-(its type coercion against array, boolean and nested schema shapes is a separate
-small design, and `--input` covers every case meanwhile).
+Module mode returns captured JSON and uses null stdin. Native mode shares the
+shim resolver and passes through stdout/stderr with reviewed stdin capabilities.
+Both preserve child exit status; Unix signals return 128 + signal. The former
+`run` command is removed with no alias. The `--` separator is mandatory for
+native mode; every token after it belongs to the child, including `--man` and
+`--help`. The calling shell owns pipes and redirections. `--param k=v` remains
+out of scope.
 
 ### 3.1 Preflight, not `Module::preview()`
 
@@ -119,10 +126,10 @@ Stage 1 introduces a distinct preflight path returning a `PreflightResult`:
 
 | Field | Source |
 |---|---|
-| `module_id`, `binary_path` | registry |
+| `mode`, `module_id`, `binary_path` | selected execution mode and registry |
 | `argv` | `executor::build_argv` + `assemble_arguments` |
 | `annotations` | `ModuleAnnotations` |
-| `acl_decision` | the ACL, evaluated for the effective caller -- `allowed`, `denied`, or `no_acl_loaded` |
+| `acl_decision` | effective caller ACL -- `allowed`, `denied`, `no_acl_loaded`, or `not_evaluated` |
 | `path_guard` | per path-typed argument: requested path, resolved path, verdict |
 | `approval_required` | annotation plus gate configuration |
 
@@ -134,14 +141,14 @@ governance decision inspectable from a terminal, without standing up a server an
 
 [`install_acl`](../../src/module/registry.rs) attaches nothing when
 `opts.acl_path` is `None`, so a local `local` principal has no effect unless an
-ACL is actually loaded. The rule for `run`:
+ACL is actually loaded. The rule for `exec`:
 
 | Situation | Behaviour |
 |---|---|
 | `--acl <PATH>` given | Load it. Missing or malformed is a hard failure (existing `install_acl` semantics). |
 | No flag, `<config_dir>/acl.yaml` exists | **Load it and enforce it.** |
 | No flag, that file is malformed | **Fail closed.** A policy that exists and cannot be read is not the same as no policy. |
-| No flag, that file is absent | Run without access control, and emit a `warn` to stderr saying so. |
+| No flag, that file is absent | Run without access control and record a warning; `--log-stderr` also displays it. |
 
 Requiring an explicit `--acl` was rejected: shims are generated, so the path
 would be baked into them, which is implicit loading with extra steps. Better to
@@ -158,6 +165,31 @@ it an entry point for asserting a principal the caller does not hold. Its
 purpose is answering "what would CI's principal be allowed to do", and preflight
 is where that question belongs. Audit records from a preflight mark the
 principal as asserted, not authenticated.
+
+### 3.4 Native and unmanaged execution
+
+Native `exec` resolves the program on a PATH with shim directories removed,
+checks canonical executable identity against the binding, and then reuses the
+strict shim route resolver. Absolute paths and symlink aliases to the same binary
+can enter this governed path. Unknown arguments, ineligible contracts, stale
+installed routes and ACL denials never trigger a fallback. This makes `exec`
+usable before shell activation, while preserving reviewed argument semantics.
+
+Commands absent from registered bindings are refused by default. The native-only
+`--unmanaged` option admits `allow` or `approval` as explicit opt-ins. An ephemeral
+`CliModule` named `unmanaged.<executable-basename>` holds fixed argv in memory;
+serialized binding metadata cannot turn on this raw execution path. It is
+registered with the same executor construction, ACL and audit stack. `allow`
+still requires ACL permission. `approval` enters the existing handler and
+refuses when no interactive client can provide approval.
+
+Unmanaged arguments have no typed path guard or grammar constraints. They are
+passed as literal argv, with null stdin, timeout and environment scrubbing.
+Dry-run reports `path_guard_available: false`. Audit stores module identity,
+caller, result and duration, never raw argument values. Explicit unmanaged
+execution needs external containment for agents; the option does not classify
+an unknown tool as safe. PATH activation does not change its behavior for
+commands that have no installed shim.
 
 ---
 
@@ -256,8 +288,9 @@ source ~/.apexe/bin/apexe-deactivate.sh
 
 `apexe env` prints activation for an existing installation. `--shell sh` serves
 sh/bash/zsh; fish and powershell syntax are available too. Repeated activation
-keeps one copy of the chosen shim directory. Diagnostics go to stderr so shell
-evaluation receives only activation syntax.
+keeps one copy of the chosen shim directory. Diagnostics go to log files by
+default and are mirrored to stderr with `--log-stderr`, so shell evaluation
+receives only activation syntax on stdout.
 
 `apexe env --enable` installs shims and adds an idempotent managed startup block, detecting the shell
 from `SHELL` unless `--shell` is explicit. zsh uses `$ZDOTDIR/.zshrc` or
@@ -319,7 +352,7 @@ scrubbing remains active for both captured and passthrough execution.
 ## 6. Governance and caller identity
 
 Shims use the fixed local caller chain `local`. They load an explicit manifest
-ACL override or the current default ACL using the same rules as `apexe run`.
+ACL override or the current default ACL using the same rules as `apexe exec`.
 A present but unreadable or malformed policy fails closed; an absent policy
 produces a warning. Prefix/tag filters gate execution as well as installation.
 
@@ -344,7 +377,7 @@ pub enum StdinMode {
 }
 ```
 
-Captured remains the default for MCP, A2A and `apexe run`. Passthrough inherits
+Captured remains the default for MCP, A2A and module-mode `apexe exec`. Passthrough inherits
 stdout and stderr; stdin inherits only with the positive streaming capability.
 It neither buffers nor emits a JSON envelope. The internal module result records
 `io`, `exit_code`, `trace_id` and `duration_ms`; it has no captured stdout/stderr

@@ -3,7 +3,7 @@
 Shows how apcore **Access Control Lists (ACL)** gate calls to apexe's
 `CliModule`-wrapped commands — the same `orders.delete` (admins only) /
 `orders.list` (public read) contract used across the apcore framework
-integrations (see [`axum-apcore/examples/acl_demo`](../../../axum-apcore/examples/acl_demo)).
+integrations (see [`axum-apcore/examples/acl_demo`](https://github.com/aiperceivable/axum-apcore/tree/main/examples/acl_demo)).
 
 ## What it shows
 

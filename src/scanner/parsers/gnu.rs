@@ -55,13 +55,13 @@ impl CliParser for GnuHelpParser {
         100
     }
 
-    fn can_parse(&self, help_text: &str, _tool_name: &str) -> bool {
+    fn can_parse(&self, help_text: &str, tool_name: &str) -> bool {
         if help_text.trim().is_empty() {
             return false;
         }
         let has_usage = help_text.contains("Usage:") || help_text.contains("usage:");
         let has_gnu_opts = HAS_GNU_OPTS_RE.is_match(help_text);
-        let not_cobra = !help_text.contains("Available Commands:");
+        let not_cobra = !super::cobra::CobraHelpParser.can_parse(help_text, tool_name);
         let not_clap = !help_text.contains("SUBCOMMANDS:");
         has_usage && (has_gnu_opts || !help_text.contains("Commands:")) && not_cobra && not_clap
     }

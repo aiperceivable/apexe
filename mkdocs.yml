@@ -5,6 +5,11 @@ site_url: https://aiperceivable.github.io/apexe/
 repo_name: aiperceivable/apexe
 repo_url: https://github.com/aiperceivable/apexe
 
+validation:
+  links:
+    anchors: warn
+    unrecognized_links: warn
+
 theme:
   name: material
   logo: assets/apexe-logo.svg
@@ -46,12 +51,15 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Guide Index: documentation.md
   - Quick Start: quickstart.md
   - User Manual: user-manual.md
   - Contract Verification: verification.md
   - OpenAPI Import: openapi.md
   - Threat Model: threat-model.md
   - Authoring Overlays: overlays.md
+  - Overlay Consumers: overlay-consumers.md
+  - Developer Guide: developer-guide.md
   - Changelog: changelog.md
   - Architecture:
       - Feature Manifest: FEATURE_MANIFEST.md
@@ -66,4 +74,13 @@ nav:
       - F6 - Error Migration: features/v2-f6-error-migration.md
       - F7 - Config Integration: features/v2-f7-config-integration.md
       - F8 - Local Execution: features/v2-f8-local-execution.md
-  - Examples: examples.md
+  - Examples:
+      - Overview: examples.md
+      - Basic: examples/basic/README.md
+      - CLI Permissions: examples/cli_permissions/README.md
+      - Local Execution: examples/local_execution/README.md
+      - Verification: examples/verification/README.md
+      - OpenAPI Import: examples/openapi_import/README.md
+      - Path Guard: examples/path_guard/README.md
+      - Programmatic: examples/programmatic/README.md
+      - ACL Library: examples/acl_demo/README.md

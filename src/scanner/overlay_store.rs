@@ -194,6 +194,15 @@ impl OverlayStore {
             .map(|strength| (strength, prefer_user, &entry.overlay))
     }
 
+    pub(crate) fn command_names(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .map(|entry| entry.overlay.command.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
     /// Number of loaded overlays.
     pub fn len(&self) -> usize {
         self.entries.len()

@@ -4,7 +4,7 @@
 |---|---|
 | **Parent Document** | `docs/apcore-integration/tech-design.md` |
 | **Created** | 2026-03-27 |
-| **Last reviewed** | 2026-09-03, against apexe 0.7.0 |
+| **Last reviewed** | 2026-10-13, against apexe 0.9.0 |
 
 > **What these documents are.** F1–F7 were written before implementation, in
 > March 2026, and describe the apcore-integration work that shipped across
@@ -15,7 +15,8 @@
 > [`docs/FEATURE_MANIFEST.md`](../FEATURE_MANIFEST.md), which describe the code
 > as it stands.
 >
-> F8 is different: it is an *active* design for work not yet built.
+> F8 records the implemented local execution and PATH shim surfaces, their
+> bounded reviewed-overlay pilot, and the deferred session daemon.
 
 ---
 
@@ -56,7 +57,7 @@ graph TD
     F4["F4: MCP Server<br/>(depends: F2, F3)"]
     F5["F5: Governance<br/>(depends: F2)"]
     F7["F7: Config Integration<br/>(depends: F4, F5)"]
-    F8["F8: Local Execution<br/>(depends: F2, F5)<br/>DESIGN"]
+    F8["F8: Local Execution<br/>(depends: F2, F5)<br/>Stages 1 and 2 implemented"]
 
     F6 --> F1
     F1 --> F2
@@ -91,10 +92,11 @@ F4 (MCP Server) required both F2 and F3. F5 (Governance) required F2.
 F7 (Config Integration) was the last of the original set, requiring F4 and F5.
 
 ### Phase 5: Local execution (F8)
-Stage 1 (`apexe run` plus a preflight that reports every governance decision)
-reuses the executor. Stage 2 (PATH shims) is implemented with explicit native
-grammar and stdin
-capabilities, PATH isolation, passthrough output, SIGPIPE restoration and status
+Stage 1 (`apexe exec` plus a preflight that reports every governance decision)
+reuses the executor for both module JSON and native argv. Native exec requires
+no activation and defaults to denying unregistered commands; explicit unmanaged
+policies retain ACL and audit with no schema-based path guard. Stage 2 (PATH
+shims) is implemented with explicit native grammar and stdin capabilities, PATH isolation, passthrough output, SIGPIPE restoration and status
 propagation. The current verified BSD pilot covers cat/head/ls; other overlays
 need an order-independence review before admission.
 

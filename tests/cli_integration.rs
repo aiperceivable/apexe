@@ -19,8 +19,7 @@ fn apexe() -> Command {
     let home = tempfile::tempdir().unwrap().keep();
     let mut cmd = Command::cargo_bin("apexe").unwrap();
     cmd.env("HOME", home).env("APEXE_OFFLINE", "true");
-    // Progress assertions exercise the default level, not the developer's
-    // terminal filter (for example RUST_LOG=warn hides dry-run deliverables).
+    // Isolate the filter from the developer's terminal configuration.
     cmd.env_remove("RUST_LOG");
     cmd
 }
@@ -585,6 +584,7 @@ fn test_scan_dry_run_writes_nothing() {
     // test_dry_run_progress_messages_do_not_pollute_json_stdout below for why
     // that matters.
     let output = apexe()
+        .args(["--log-level", "info", "--log-stderr"])
         .args([
             "scan",
             "ls",
@@ -701,6 +701,7 @@ fn test_explorer_on_stdio_warns_that_it_does_nothing() {
         "\n",
     );
     let stderr = apexe()
+        .arg("--log-stderr")
         .args(["serve", "--transport", "stdio", "--explorer"])
         .write_stdin(session)
         .assert()

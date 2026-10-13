@@ -96,7 +96,7 @@ pub struct ApexeConfig {
     /// empty directory.
     pub overlay_dirs: Vec<PathBuf>,
 
-    /// Git repository used to obtain the default corpus on the first online scan.
+    /// Git repository used by initialization and automatic scan acquisition.
     pub default_overlay_repository: String,
 
     /// apcore core configuration for ecosystem integration.
@@ -114,7 +114,7 @@ impl Default for ApexeConfig {
             cache_dir: apexe_dir.join("cache"),
             config_dir: apexe_dir.clone(),
             audit_log: apexe_dir.join("audit.jsonl"),
-            log_level: "info".to_string(),
+            log_level: "warn".to_string(),
             default_timeout: 30,
             scan_depth: 2,
             json_output_preference: true,
@@ -196,7 +196,19 @@ pub fn load_config(config_path: Option<&Path>) -> anyhow::Result<ApexeConfig> {
     apply_core_bindings(&mut config);
     apply_env_overrides(&mut config);
 
+    parse_log_level(&config.log_level).map_err(anyhow::Error::msg)?;
+
     Ok(config)
+}
+
+/// Validate the levels shared by configuration and global CLI arguments.
+pub(crate) fn parse_log_level(value: &str) -> Result<String, String> {
+    match value {
+        "off" | "error" | "warn" | "info" | "debug" | "trace" => Ok(value.to_string()),
+        _ => Err(format!(
+            "Invalid log level '{value}'; expected off, error, warn, info, debug or trace"
+        )),
+    }
 }
 
 /// Let apcore's canonical `bindings.dir` decide where binding files live.
@@ -696,9 +708,9 @@ mod tests {
     }
 
     #[test]
-    fn test_default_log_level_is_info() {
+    fn test_default_log_level_is_warn() {
         let config = ApexeConfig::default();
-        assert_eq!(config.log_level, "info");
+        assert_eq!(config.log_level, "warn");
     }
 
     #[test]
@@ -725,7 +737,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("nonexistent.yaml");
         let config = load_config(Some(config_path.as_path())).unwrap();
-        assert_eq!(config.log_level, "info");
+        assert_eq!(config.log_level, "warn");
         assert_eq!(config.default_timeout, 30);
     }
 
@@ -788,7 +800,7 @@ mod tests {
 
         let config = load_config(Some(config_path.as_path())).unwrap();
         // Should fall back to defaults
-        assert_eq!(config.log_level, "info");
+        assert_eq!(config.log_level, "warn");
         assert_eq!(config.default_timeout, 30);
     }
 

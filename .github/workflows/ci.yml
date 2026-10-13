@@ -42,11 +42,9 @@ jobs:
 
       - name: Install apdev-rs
         run: cargo install apdev-rs
-        continue-on-error: true
 
       - name: Check characters
         run: apdev-rs check-chars src/
-        continue-on-error: true
 
       - name: Check formatting
         run: cargo fmt --all -- --check

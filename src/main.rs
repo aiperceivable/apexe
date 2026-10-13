@@ -1,6 +1,7 @@
 use apcore::ModuleError;
 use clap::{CommandFactory, Parser};
-use tracing_subscriber::EnvFilter;
+
+mod logging;
 
 use apexe::cli::Cli;
 use apexe::errors::ApexeError;
@@ -9,7 +10,12 @@ use apexe::errors::ApexeError;
 ///
 /// Handled before clap parses, because `--man` is not one of its arguments.
 fn print_man_page_if_requested(raw_args: &[String]) -> bool {
-    if !apcore_cli::has_man_flag(raw_args) {
+    let options: Vec<String> = raw_args
+        .iter()
+        .take_while(|arg| arg.as_str() != "--")
+        .cloned()
+        .collect();
+    if !apcore_cli::has_man_flag(&options) {
         return false;
     }
     let cmd = Cli::command();
@@ -22,33 +28,6 @@ fn print_man_page_if_requested(raw_args: &[String]) -> bool {
     );
     println!("{man}");
     true
-}
-
-/// Start the tracing subscriber.
-///
-/// Precedence: `RUST_LOG` > `--log-level` (explicit) > `config.log_level` >
-/// "info". Config is resolved here rather than in `Cli::run` so a level set in
-/// `config.yaml` governs the startup path too.
-///
-/// Logs go to stderr so stdout stays a clean machine-readable channel:
-/// `scan --format json` is consumed by other processes (e.g. AP Studio's
-/// importer does `JSON.parse(stdout)`), and interleaved log lines would make
-/// every such parse fail.
-fn init_logging(cli: &Cli) {
-    let config_level = apexe::config::load_config(None)
-        .map(|c| c.log_level)
-        .unwrap_or_else(|_| "info".to_string());
-    let fallback_level = cli.effective_log_level(&config_level);
-    init_logging_level(&fallback_level);
-}
-
-fn init_logging_level(fallback_level: &str) {
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(fallback_level)),
-        )
-        .init();
 }
 
 /// Render the `Error: ...` / `Suggestion: ...` lines for a failed run.
@@ -88,36 +67,46 @@ fn report_error(error: anyhow::Error) {
 }
 
 fn main() {
+    let code = match run() {
+        Ok(code) => code,
+        Err(error) => {
+            report_error(error);
+            1
+        }
+    };
+    // The logging worker guard has dropped inside run, flushing queued records.
+    std::process::exit(code);
+}
+
+fn run() -> anyhow::Result<i32> {
     apcore_cli::set_docs_url(Some("https://github.com/aiperceivable/apexe".to_string()));
 
     let raw_os_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     if apexe::cli::is_shim_invocation(&raw_os_args) {
-        let level = apexe::config::load_config(None)
-            .map(|config| config.log_level)
-            .unwrap_or_else(|_| "info".into());
-        init_logging_level(&level);
-        match apexe::cli::run_shim(&raw_os_args) {
-            Ok(code) => std::process::exit(code),
-            Err(error) => {
-                report_error(error);
-                std::process::exit(1);
-            }
-        }
+        let _logging_guard = logging::init(None, false)?;
+        return run_with_logging(|| apexe::cli::run_shim(&raw_os_args));
     }
     let raw_args: Vec<String> = raw_os_args
         .iter()
         .map(|value| value.to_string_lossy().into_owned())
         .collect();
     if print_man_page_if_requested(&raw_args) {
-        return;
+        return Ok(0);
     }
 
     let cli = Cli::parse();
-    init_logging(&cli);
+    let _logging_guard = logging::init(cli.log_level.as_deref(), cli.log_stderr)?;
+    run_with_logging(|| cli.run())
+}
 
-    if let Err(e) = cli.run() {
-        report_error(e);
-        std::process::exit(1);
+fn run_with_logging(command: impl FnOnce() -> anyhow::Result<i32>) -> anyhow::Result<i32> {
+    match command() {
+        Ok(code) => Ok(code),
+        Err(error) => {
+            tracing::error!(%error, "Command failed");
+            report_error(error);
+            Ok(1)
+        }
     }
 }
 

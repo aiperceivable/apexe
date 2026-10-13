@@ -10,7 +10,7 @@ boundaries you must review.
 
 | Goal | Guide |
 | --- | --- |
-| Scan a CLI, review its ACL, and connect an MCP client | [Quick Start](quickstart.md) |
+| Initialize CLI coverage, review its ACL, and connect an MCP client | [Quick Start](quickstart.md) |
 | Execute locally with captured output and native shims | [Local execution example](../examples/local_execution/README.md) |
 | Check source drift, explicit dry-runs and earned case evidence | [Verification guide](verification.md) and [runnable example](../examples/verification/README.md) |
 | Import an HTTP API and call it through MCP/A2A | [OpenAPI guide](openapi.md) and [runnable example](../examples/openapi_import/README.md) |
@@ -24,7 +24,7 @@ boundaries you must review.
 The normal user path is:
 
 ```text
-scan a small CLI → review bindings and ACL → serve with --acl → connect an agent
+init → list and review bindings/ACL → exec, env, or serve with --acl
 ```
 
 `apexe` is not a sandbox. Read the threat model and run exposed tools inside

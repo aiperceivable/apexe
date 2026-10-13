@@ -164,6 +164,11 @@ impl ScanOrchestrator {
         self.overlays.len()
     }
 
+    /// Candidate commands declared by the loaded rules, in stable order.
+    pub(crate) fn covered_commands(&self) -> Vec<String> {
+        self.overlays.command_names()
+    }
+
     /// Scan one or more CLI tools.
     ///
     /// For each tool:

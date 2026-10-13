@@ -39,6 +39,8 @@ shell-words = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
+# Buffered file logging keeps filesystem writes off the async executor.
+tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Parse and validate corpus repository URLs; already in the dependency graph.
 url = "2"

@@ -11,6 +11,7 @@ on:
       - "CHANGELOG.md"
       - "examples/**"
       - "apexe-logo.svg"
+      - "scripts/prepare_docs.py"
       - ".github/workflows/deploy-docs.yml"
 
 permissions:
@@ -35,41 +36,13 @@ jobs:
       - run: pip install mkdocs-material
 
       - name: Prepare docs for MkDocs
-        run: |
-          # Copy README as index page
-          cp README.md docs/index.md
+        run: python3 scripts/prepare_docs.py --output "$RUNNER_TEMP/apexe-docs"
 
-          # Copy CHANGELOG into docs/
-          cp CHANGELOG.md docs/changelog.md
-
-          # Copy examples README into docs/
-          cp examples/README.md docs/examples.md
-
-          # Copy logo into docs assets
-          mkdir -p docs/assets
-          cp apexe-logo.svg docs/assets/
-
-          # Fix links in index.md: docs/X → X (since we're now inside docs/)
-          sed -i 's|\./docs/|./|g' docs/index.md
-          sed -i 's|(docs/|(|g' docs/index.md
-
-          # Fix logo reference in index.md (both local and GitHub raw URL)
-          sed -i 's|\./apexe-logo\.svg|./assets/apexe-logo.svg|g' docs/index.md
-          sed -i 's|https://raw.githubusercontent.com/aiperceivable/apexe/main/apexe-logo.svg|./assets/apexe-logo.svg|g' docs/index.md
-
-          # Fix examples link in index.md
-          sed -i 's|(examples/README.md)|(examples.md)|g' docs/index.md
-          sed -i 's|(examples/basic/)|(https://github.com/aiperceivable/apexe/tree/main/examples/basic)|g' docs/index.md
-          sed -i 's|(examples/programmatic.rs)|(https://github.com/aiperceivable/apexe/blob/main/examples/programmatic.rs)|g' docs/index.md
-
-          # Fix CHANGELOG link in index.md
-          sed -i 's|(CHANGELOG.md)|(changelog.md)|g' docs/index.md
-
-      - run: mkdocs build
+      - run: mkdocs build --strict --config-file "$RUNNER_TEMP/apexe-docs/mkdocs.yml"
 
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
         with:
-          path: site
+          path: ${{ runner.temp }}/apexe-docs/site
 
   deploy:
     needs: build

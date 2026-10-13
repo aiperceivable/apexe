@@ -594,15 +594,24 @@ that a tool still matches its schema. Re-run `apexe scan` after a format warning
 
 ### 5.11 Local execution and the remaining Stage 2 boundaries
 
-Stage 1 (`apexe run`) executes only declared modules with captured output and
-null stdin. Stage 2 installs reviewed external-command shims that inherit output
-streams and receive stdin only under an explicit overlay capability. It uses the fixed `local` ACL caller; `--as` is accepted only for
+Module-mode `apexe exec` executes declared modules with captured output and
+null stdin. Native `apexe exec -- <command>` and Stage 2 shims share reviewed
+argument resolution, passthrough output and explicit stdin capabilities. Native
+exec works without activation and checks executable identity, including absolute
+paths; it does not restrict commands invoked outside that entry point. It uses the fixed `local` ACL caller; `--as` is accepted only for
 a non-executing simulation and marks that identity as asserted. It loads the
 default ACL when present and fails closed on an unreadable or malformed policy.
 These limitations remain present even with the implemented PATH shims.
 [`docs/features/v2-f8-local-execution.md`](features/v2-f8-local-execution.md) §8
 describes the shipped stdin and shim boundaries:
 
+- **Explicit unmanaged execution lacks argument path typing.** Native exec
+  defaults to refusing unknown commands. `--unmanaged allow|approval` opts into
+  literal argv under an `unmanaged.<basename>` ACL target; the loaded ACL still
+  applies. Timeout, environment scrubbing and audit remain, but schema-derived
+  path checks cannot run. stdin is null. Arbitrary programs can start subprocesses
+  or access files directly, so this option requires external containment for
+  agents. `approval` refuses local calls without a connected approval client.
 - **stdin is an ungoverned input channel.** Every control in §4 acts on
   argv. An inherited stdin is not schema-validated, not path-checked and not
   recorded — and for any tool that reads a program from stdin (`python -`,

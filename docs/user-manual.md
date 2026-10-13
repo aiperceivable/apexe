@@ -71,9 +71,10 @@ apexe --version
 See [Quick Start Guide](quickstart.md) for the fastest path to a working setup.
 
 ```bash
-apexe scan git curl grep         # scan tools
-apexe list                       # verify modules
-apexe serve                      # start MCP server (stdio)
+apexe init                         # prepare matching installed CLI tools
+apexe list --verbose               # inspect modules and generated policy
+apexe exec -- ls -la               # execute through reviewed native grammar
+apexe serve --acl ~/.apexe/acl.yaml # optionally serve with the reviewed ACL
 ```
 
 ---
@@ -112,9 +113,10 @@ Failed acquisition, including unavailable Git, produces a warning and falls back
 to local overlays and built-in classification. With `--offline`, no automatic
 installation is attempted; available snapshots are still used. `--dry-run` never
 installs a corpus. Automatic Git operations use the shorter of 10 seconds and
-the global timeout; use an explicit `apexe overlays install` for a longer download.
-Use `apexe overlays list` to inspect sources and commits, and
-`apexe overlays update cli-permissions` followed by a rescan to adopt new facts.
+the global timeout; use `apexe init` for normal setup under the configured timeout.
+Use `apexe init --format json` to inspect sources and commits, and
+`apexe init --refresh` to update rules and bindings owned by initialization.
+Rescan custom tools explicitly to adopt those new facts.
 `--no-cache` refreshes tool discovery rather than updating the corpus.
 
 ```bash
@@ -297,36 +299,88 @@ ALLOW  /etc/passwd  (mode: read)
 
 ---
 
-### 4.7 `apexe run`
+### 4.7 `apexe exec`
 
-Execute one scanned CLI module locally and return its captured output as JSON.
+Execute a native command with passthrough output, or a scanned module with JSON
+input and captured output. `apexe run` has been removed; there is no compatibility
+alias. Native execution does not require activation or installing shims.
 
 ```bash
-apexe run cli.ls --input '{"file":["."]}'
-apexe run cli.ls --input '{"file":["."]}' --dry-run
-apexe run cli.ls --input '{"file":["."]}' --dry-run --as ci
+# Native argv: put apexe options before -- and child arguments after it.
+apexe exec --dry-run -- ls -la
+apexe exec -- ls -la
+printf 'one\ntwo\n' | apexe exec -- cat | apexe exec -- head -n1
+
+# Module JSON: use the property names in your scanned binding schema.
+apexe exec cli.ls --input '{"file":["."]}'
+apexe exec cli.ls --input '{"file":["."]}' --dry-run --as ci
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--input <JSON>` | `{}` | JSON object matching the module's input schema |
+| `--input <JSON>` | `{}` | JSON object for module mode; conflicts with native argv |
 | `--bindings-dir <DIR>` | configured bindings directory | Binding files to load |
-| `--acl <PATH>` | `<config_dir>/acl.yaml` when present | Access policy; a missing explicitly requested file or malformed policy is a hard failure |
-| `--dry-run` | off | Print schema, ACL, approval and path-guard decisions plus the exact argv without starting the wrapped process |
+| `--acl <PATH>` | `<config_dir>/acl.yaml` when present | Missing explicitly requested files and malformed policies fail closed |
+| `--dry-run` | off | Report schema, ACL, approval, path-guard decisions and planned argv without execution |
 | `--as <CALLER>` | `local` | Simulate a caller; accepted only with `--dry-run` |
+| `--unmanaged <deny\|allow\|approval>` | `deny` | Native mode only: policy for commands with no registered CLI binding; loaded ACL still applies |
 
-Real execution uses the fixed `local` caller for ACL `callers` rules. No ACL
-file means no access control, with a warning on stderr. The path guard, timeout,
-environment scrubbing and audit remain active. stdout contains only the JSON
-result; diagnostics go to stderr. A failed child returns its captured result
-with a nonzero apexe exit status. A refused dry-run still prints JSON checks
-and exits nonzero. ACL-denied preflights omit binary and argv details.
+Native mode uses the same reviewed grammar, route selection and argv
+reconstruction as PATH shims. A matching authoritative overlay, current scan
+format and consistent capabilities are required. It checks the executable
+resolved from the clean PATH against the binding; an absolute executable path
+is accepted when it identifies the same binary. Installed shim directories are
+excluded from lookup. Known commands with invalid arguments, unavailable or
+ineligible bindings, ACL denials or removed installed routes never fall back to
+unmanaged execution. Rescan when the executable or its grammar changes.
 
-`approval_required` reports whether the executor would require a human decision.
-Local execution has no MCP client to prompt, so such a real call is refused;
-dry-run can still inspect it. `--as` is an asserted simulation identity, not
-an authenticated principal. Captured execution supplies no stdin. For native argv and passthrough streams,
-use the Stage 2 shims activated by the source helpers described below.
+Native stdout and stderr pass through unchanged; module mode prints the captured
+JSON result. Both modes return the exact child exit status (128 + signal on
+Unix). Diagnostics go to the log files by default; `--log-stderr` mirrors them
+to stderr. Failures remain visible on stderr. Pipes, redirections, wildcards and `&&` are
+handled by the calling shell, not interpreted by `exec`. Use one `exec` call per
+pipeline stage that needs governance. Child flags such as `--help`, `--man` or
+`--timeout` belong after the separator.
+
+Real execution uses the fixed `local` ACL caller. No ACL file means no access
+control, with a warning. Timeout, environment scrubbing and audit remain active.
+Dry-run prints `mode` (`module`, `native`, or `unmanaged`) and governance checks;
+ACL-denied plans omit binary and argv details. Invalid governance checks produce
+nonzero exit status. Command lookup and native grammar errors are reported on
+stderr before a plan can be produced.
+
+`approval_required` reports whether approval would be required. Local execution
+has no MCP client to prompt, so calls requiring approval are refused; dry-run
+can inspect them. `--as` is an asserted simulation identity. Module mode supplies
+no stdin; reviewed native commands inherit stdin only when their overlay declares
+`streaming_stdin_safe`. PTY sessions remain unsupported.
+
+#### Explicit unmanaged execution
+
+By default, commands absent from the bindings are refused. Opt in per call:
+
+```bash
+# Requires ACL permission for unmanaged.my-tool when an ACL is loaded.
+apexe exec --unmanaged allow -- my-tool --version
+apexe exec --unmanaged approval --dry-run -- my-tool --version
+```
+
+Unmanaged calls use module ID `unmanaged.<executable-basename>` and the same
+executor, local caller, ACL, approval gate, timeout, environment scrubbing and
+audit. `allow` does not override an ACL denial. Review and add a rule for that
+module ID when your ACL defaults to deny. `approval` requires a human decision
+and therefore refuses actual local execution with the current noninteractive
+approval handler.
+
+Unmanaged argv is passed literally without schema reconstruction. No argument
+path typing is available, so schema-based path checks do not apply; dry-run
+reports `path_guard_available: false`. stdin is null. This mode can run arbitrary
+programs, including ones that launch other commands, and needs an external
+sandbox when used by an agent. It does not certify an unknown command as safe.
+
+These policies apply to calls through `apexe exec`. Activating PATH shims still
+leaves uninstalled commands, builtins and shell functions outside apexe; use an
+external execution boundary to require agents to enter through `exec`.
 
 ### 4.8 `apexe env`
 
@@ -485,8 +539,9 @@ is refused because an owned file or block was modified, it returns failure and
 keeps the current terminal environment active. Other open terminals retain their
 existing environments; reopen them to load the cleaned startup configuration.
 
-`--enable` and `--reload` emit diagnostics on stderr without printing activation
-scripts. A direct `--disable` call cannot restore the parent shell; source
+`--enable` and `--reload` write diagnostics to the log files without printing
+activation scripts; use `--log-stderr` to mirror those diagnostics. A direct
+`--disable` call cannot restore the parent shell; source
 `~/.apexe/bin/apexe-deactivate.sh` (or the printed custom helper) to restore
 its saved environment, even after uninstall.
 With `--shim-dir`, use the same directory for enabling, reloading and disabling.
@@ -510,7 +565,7 @@ directory entries, and validates owned links, executable permissions, compatibil
 helpers and persistent namespaced scripts with their ownership record. Legacy
 installations without source scripts receive a warning
 to reload; recorded scripts that are missing or modified fail the check.
-The installed executable must match the apexe running the check; when multiple
+The installed executable must match the apexe execning the check; when multiple
 installations exist, run the recorded executable or reload using the intended one.
 The manifest must contain valid absolute paths and unambiguous command routes.
 Bindings are loaded using the manifest's directory, pattern and filters, then
@@ -620,7 +675,7 @@ recorded as `unverifiable`. String inputs are restricted to fixture paths, selec
 option spellings, and system cat/head/ls do not accept appended JSON-output
 flags. Every path operand must reference `$WORKDIR` or
 `$FIXTURE/name`; real paths and long-running options are refused. Each case uses
-an isolated temporary HOME/work directory and a governed `apexe run` child,
+an isolated temporary HOME/work directory and a governed `apexe exec` child,
 with a scrubbed environment, a temporary default-deny ACL allowing only the
 selected readonly module, and bounded timeout. Expected stdout and exit zero
 must match. A failed case is `failed`, an inadmissible case `unverifiable`.
@@ -725,75 +780,99 @@ are outside this initial import surface. The local subprocess path guard does
 not govern paths on a remote API. Review the imported API's permissions and
 write operations when authoring its ACL.
 
-### 4.10 `apexe overlays`
+### 4.10 `apexe init`
 
-Install a Git-hosted overlay corpus and make it available to subsequent scans.
-Git must be installed. Repository sources may be GitHub `OWNER/REPO`, an HTTPS
-Git URL without embedded credentials, or a local Git repository path.
+Initialize this machine with matching command rules, bindings and a starter ACL.
+This is the normal first step after installation. `config --init` only writes a
+configuration template, and `scan <TOOLS>` remains the custom scanning entry.
+The old `overlays` subcommand has been removed.
 
 ```bash
-apexe overlays install https://github.com/aiperceivable/cli-permissions
-apexe overlays list
-apexe scan cat head ls --no-cache
-# Review the generated ACL before enabling eligible native commands.
+apexe init
+apexe list --verbose
+# Review ~/.apexe/acl.yaml before execution.
+apexe exec cli.ls
+# Optional native argv and shims: require modules in native_ready.
+apexe exec --dry-run -- ls -la
+# Optional shell integration or MCP service.
 apexe env --enable
-# Fetch a new snapshot, rescan bindings, then refresh enabled shims.
-apexe overlays update cli-permissions
-apexe scan cat head ls --no-cache
+source ~/.apexe/bin/apexe-activate.sh
+apexe serve --acl ~/.apexe/acl.yaml
+```
+
+| Option | Default | Behavior |
+|---|---|---|
+| `--overlays <SOURCE>` | `default_overlay_repository` | HTTPS/GitHub `OWNER/REPO` source or local Git repository for this invocation |
+| `--ref <REF>` | stored reference, initially `HEAD` | Select a branch, tag or commit; a changed explicit reference fetches that revision |
+| `--refresh` | off | Update the selected rules snapshot and regenerate unchanged init-owned bindings |
+| `--offline` | off | Disable network downloads; cached snapshots and local Git sources remain available. Also accepts `APEXE_OFFLINE=true` |
+| `--format <table\|json>` | `table` | Print initialization results; JSON includes `corpora`, `degraded`, `warnings`, `tools`, `written`, `preserved`, `native_ready`, binding directory and ACL path |
+
+Table output shows progress while preparing rules, scanning each candidate
+tool and saving bindings and ACL. Each progress line is flushed immediately,
+even with logging disabled. JSON output contains only the final report.
+
+The initializer resolves the configured source, normally cli-permissions, and
+loads candidate command names from available rules. It checks executables on a
+PATH with shim directories removed, then uses the shared scanner to detect
+variants and match platform, version and probes. Absent commands and unmatched
+variants are skipped. It does not scan the entire PATH or install programs.
+Native exec and env still require reviewed native capabilities; a binding alone
+does not imply native support.
+
+Git snapshots are validated and stored under `<config_dir>/corpora/`. Reports
+include repository, recorded commit and corpus metadata. An optional root
+`manifest.json` defines the name, SemVer release and overlay directory; legacy
+repositories use their basename and `overlays/`. Repository scripts, Git hooks
+and submodules are not run by the data installer. Tool help/version/probe calls
+remain part of scanning.
+
+Normal initialization reuses the recorded snapshot, discovers newly installed
+covered tools and preserves existing bindings. Refresh only replaces bindings
+that still match the fingerprint recorded by init; custom scans and edited
+bindings are preserved. No bindings are deleted when a tool or rule disappears.
+Manual ACL rules, existing defaults and config files are preserved. An invalid
+existing ACL fails before binding generation. A missing ACL is recreated from
+available initialized bindings. A new policy defaults to deny. Initialization
+also leaves shell startup and server enforcement unchanged.
+
+```bash
+apexe init --overlays ../cli-permissions --ref <COMMIT>
+apexe init --overlays ../cli-permissions --refresh
+apexe init --offline --format json
+# Refresh active shim links after binding changes.
 apexe env --reload
-apexe overlays remove cli-permissions
+# Deliberately regenerate a custom or edited binding when wanted.
+apexe scan my-tool --no-cache
 ```
 
-| Command or option | Behavior |
-|---|---|
-| `install <REPOSITORY>` | Fetch and validate a new corpus; refuse an existing installation name |
-| `install --name <NAME>` | Override the manifest name or repository basename |
-| `install --ref <REF>` | Pin a branch, tag or commit; default is remote HEAD |
-| `install --subdir <PATH>` | Override the manifest overlay directory; default without a manifest is `overlays` |
-| `update <NAME> [--ref <REF>]` | Fetch the stored source/reference, or override its reference explicitly |
-| `list` | Print installed metadata, resolved commit and overlay count as JSON |
-| `remove <NAME>` | Unregister the corpus and remove its owned snapshots |
+`--overlays` does not rewrite configuration. To make a mirror or source the
+standing default, set `default_overlay_repository` in `config.yaml` or
+`APEXE_DEFAULT_OVERLAY_REPOSITORY`. A commit-pinned source stays pinned until its
+reference is explicitly changed. Older validated snapshots remain available for
+concurrent readers. Refresh updates the selected source, not every installed
+corpus.
+Cached sources match by repository identity, including installations under an
+alias; a corpus name alone never substitutes for a newly configured source.
 
-An optional root `manifest.json` supplies `schema_version`, `name`,
-`description`, SemVer `version`, `overlay_directory`, and optional HTTPS
-`homepage` and `license`. The manifest format, corpus release and per-overlay
-format have independent versions. Legacy repositories without a manifest work
-with `--name` and `--subdir` overrides. Every installation records a resolved
-Git commit; updating a commit-pinned source keeps that commit unless `--ref`
-is changed. The installer downloads data and does not run repository scripts,
-Git hooks or submodules. It does not install the CLI binaries or grant access.
-After removing the default corpus, the next online scan can install it again;
-use `--offline` or `APEXE_OFFLINE=true` to prevent that acquisition.
+Initialization writes canonical `*.binding.yaml` filenames. A configured
+apcore `bindings.pattern` must include new filenames, or initialization fails
+before writing bindings or ACL. Existing bindings excluded by the pattern are
+preserved; the report marks degraded coverage and warns that they are unavailable
+to execution.
 
-Local Git installation uses committed content and records the resolved commit:
+If the default source is unavailable, available local rules are still used. With
+no usable rules, init reports degraded fallback coverage and scans only cat,
+head, ls and wc using built-in classification. These bindings have no reviewed
+native shim contract. Any explicit-source acquisition/validation failure, failed refresh, scan failure
+or run with no applicable initialized/preserved modules exits nonzero. JSON
+reports are emitted for completed discovery runs, including partial failures;
+source/configuration failures can stop earlier with diagnostics on stderr.
 
-```bash
-apexe overlays install ../cli-permissions
-```
-
-For local overlay development, direct working-directory loading is recommended:
-
-```bash
-# Include uncommitted overlay edits without installing a snapshot.
-APEXE_OVERLAY_DIRS=../cli-permissions/overlays apexe scan ls --no-cache
-```
-
-`APEXE_OVERLAY_DIRS` applies to this scan and replaces configured `overlay_dirs`
-for that command; it does not register or update a managed corpus. Rescan after
-editing overlays. Refresh enabled shims with `apexe env --reload` when the
-eligible command set changes.
-
-Managed corpora live under the configured apexe directory's `corpora/` and are
-discovered automatically without editing `config.yaml`. A failed download or
-validation leaves the active snapshot unchanged. Older snapshots remain until
-`remove`, allowing concurrent scans to finish. Within equal-strength overlay
-matches, precedence is packaged corpora, the managed `cli-permissions` default,
-other managed corpora in installation order, configured `overlay_dirs`, personal
-overlays, then explicit `--overlay`.
-Updating a corpus preserves its priority. Removing or updating a corpus does
-not rewrite existing bindings or shims: rescan affected commands and use
-`apexe env --reload`. Native eligibility still requires matching authoritative
-overlays with reviewed capabilities. See [the authoring procedure](overlays.md).
+For uncommitted local rule development, use `overlay_dirs` or an invocation-local
+`APEXE_OVERLAY_DIRS` instead of installing a Git snapshot. Selection precedence
+and author verification requirements remain documented in
+[Authoring Tool Overlays](overlays.md).
 
 ## 5. Configuration
 
@@ -852,7 +931,7 @@ Located at `~/.apexe/config.yaml`. Create with `apexe config --init`.
 bindings_dir: ~/.apexe/bindings
 cache_dir: ~/.apexe/cache
 audit_log: ~/.apexe/audit.jsonl
-log_level: info
+log_level: warn
 default_timeout: 30
 scan_depth: 2
 json_output_preference: true
@@ -876,18 +955,18 @@ allowed_paths:
 | `bindings_dir` | path | `~/.apexe/bindings` | Binding file storage |
 | `cache_dir` | path | `~/.apexe/cache` | Scan result cache |
 | `audit_log` | path | `~/.apexe/audit.jsonl` | Audit trail file |
-| `log_level` | string | `info` | Log level: error, warn, info, debug, trace |
+| `log_level` | string | `warn` | Diagnostic file log level: off, error, warn, info, debug, trace |
 | `default_timeout` | integer | `30` | CLI subprocess timeout (seconds) |
 | `scan_depth` | integer | `2` | Default subcommand recursion depth |
 | `json_output_preference` | boolean | `true` | Prefer JSON output from CLI tools when available |
 | `overlay_dirs` | list of paths | `[]` | Explicit local corpus directories; skip automatic downloads and load before personal overlays |
-| `default_overlay_repository` | string | `https://github.com/aiperceivable/cli-permissions` | Default acquisition source; HTTPS mirror or local Git directory supported. Used before the first installation |
+| `default_overlay_repository` | string | `https://github.com/aiperceivable/cli-permissions` | Default initialization and automatic scan source; HTTPS mirror or local Git repository supported |
 | `additional_denied_paths` | list of paths | `[]` | Locations to deny **in addition to** the path-guard baselines (§9.7) |
 | `allowed_paths` | list of paths | `[]` | Carve-outs **out of** the path-guard baselines (§9.7). The only setting that relaxes the guard; you own the consequences |
 
-The key set above is closed. A key apexe does not read is **ignored**, and it
-says so on stderr at startup, naming the key and the one it was probably meant
-to be:
+The key set above is closed. A key apexe does not read is **ignored**, and a
+startup diagnostic names the key and the one it was probably meant to be.
+Read the log files or use `--log-stderr` to display it:
 
 ```
 WARN Ignoring unrecognised config key 'additional_denied_path' -- did you mean
@@ -942,7 +1021,7 @@ Runs `<tool> --help` and auto-detects the help format. Six built-in parsers, tri
 | **BSD Usage** | Single-line bundled usage (BSD/macOS built-ins that reject `--help`) | ls, cat, chmod, sort (macOS) |
 | **GNU** | Standard GNU-style help | ls, grep, curl, git (GNU/Linux) |
 | **Click** | Python Click / argparse | aws, pip |
-| **Cobra** | Go Cobra framework | kubectl, docker, gh |
+| **Cobra** | Go Cobra framework, including grouped Docker command lists and typed `Options`/`Global Options` | kubectl, docker, gh |
 | **Clap** | Rust Clap framework | ripgrep, fd, bat |
 
 Extracts: subcommands, flags (long/short), positional args, types, defaults, enum values, descriptions. Each extracted flag records source confidence (`high` > `medium` > `low`); `verified` is earned module evidence for explicit cases through `apexe verify --record`, rather than a scan-source label.
@@ -1002,7 +1081,7 @@ An overlay is a curated, human-reviewed description of one tool variant, keyed b
 - Overlays can also override behavioral annotations (`readonly`/`destructive`/`idempotent`/`requires_approval`/`open_world`) for a specific command. `open_world` is the one inference reads off a *name list* rather than the command's own surface, so it is the one an overlay most often has to correct: GNU sed runs `s///e` as a shell command while BSD sed rejects the flag, and the name `sed` cannot tell them apart.
 
 The default corpus needs no separate install step. Install another managed corpus
-with `apexe overlays install <REPOSITORY>`, load one explicit overlay with `apexe scan <tool> --overlay <PATH>` (JSON or YAML), add a corpus directory through `overlay_dirs` or `APEXE_OVERLAY_DIRS`, or place a local correction under `~/.apexe/overlays/`. The format is defined by [`tool-overlay.schema.json`](https://github.com/aiperceivable/cli-permissions/blob/main/schemas/tool-overlay.schema.json), which ships with
+with `apexe init --overlays <REPOSITORY>`, load one explicit overlay with `apexe scan <tool> --overlay <PATH>` (JSON or YAML), add a corpus directory through `overlay_dirs` or `APEXE_OVERLAY_DIRS`, or place a local correction under `~/.apexe/overlays/`. The format is defined by [`tool-overlay.schema.json`](https://github.com/aiperceivable/cli-permissions/blob/main/schemas/tool-overlay.schema.json), which ships with
 the corpus rather than with apexe. See the [cli-permissions example](../examples/cli_permissions/README.md) for an operator walkthrough, [`docs/overlay-consumers.md`](overlay-consumers.md) for reading overlays from
 outside apexe, and [`docs/overlays.md`](overlays.md) for the full authoring and verification procedure — writing a `verified` overlay from memory instead of a real installation is exactly what it warns against.
 
@@ -2224,35 +2303,39 @@ the command run", not "did it succeed".
 
 | Path | Purpose | Created by |
 |------|---------|------------|
-| `~/.apexe/config.yaml` | Configuration | `apexe config --init` |
-| `~/.apexe/bindings/*.binding.yaml` | Tool binding files | `apexe scan` |
-| `~/.apexe/cache/` | Scan result cache | `apexe scan` |
-| `~/.apexe/acl.yaml` | Access control rules | `apexe scan` |
+| `~/.apexe/config.yaml` | Configuration | `apexe config --init` or `config set` |
+| `~/.apexe/bindings/*.binding.yaml` | Tool binding files | `apexe init` or `scan` |
+| `~/.apexe/cache/` | Scan result cache | `apexe init` or `scan` |
+| `~/.apexe/acl.yaml` | Access control rules | `apexe init` or `scan` |
+| `~/.apexe/corpora/` | Validated rules snapshots and ownership catalog | `apexe init` or automatic scan acquisition |
+| `~/.apexe/log/apexe.log.YYYY-MM-DD` | Rotating diagnostic logs | Commands and governed shims |
 | `~/.apexe/bin/.apexe-shims.json` | Owned shim routes | `apexe env --enable` |
 | `~/.apexe/bin/.apexe-shell-init.json` | Owned shell startup blocks | `apexe env --enable` |
 | `~/.apexe/bin/apexe-activate.sh` | Persistent activation helper for sh/bash/zsh | `apexe env --enable` or `--reload` |
 | `~/.apexe/bin/apexe-deactivate.sh` | Persistent uninstall and environment restoration helper | `apexe env --enable` or `--reload` |
 | `~/.apexe/bin/.apexe-source-scripts.json` | Ownership record retained after disable | `apexe env --enable` or `--reload` |
 | `~/.apexe/bin/activate`, `~/.apexe/bin/deactivate` | Compatibility helpers removed by disable | `apexe env --enable` or `--reload` |
-| `~/.apexe/audit.jsonl` | Audit trail | `apexe serve` (runtime) |
+| `~/.apexe/audit.jsonl` | Audit trail | MCP/A2A and local governed execution |
 | `~/.apexe/apcore.yaml` | apcore ecosystem config (optional) | Manual |
 
 These are default paths; configured directories and `--shim-dir` can override
 them. The namespaced shell helpers and their ownership record remain after
 disable; compatibility helpers in the shim directory are removed.
 Commands create their required directories automatically; `env --check` is
-read-only and does not create missing directories.
+read-only for installation state; it may create or append diagnostic logs in
+`~/.apexe/log/`.
 
 ---
 
 ## 15. Global Flags, Logging and Debugging
 
-Two flags are global — they parse before or after the subcommand, whichever is
+Three flags are global — they parse before or after the subcommand, whichever is
 more natural to type:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--log-level <LEVEL>` | `RUST_LOG` → `APEXE_LOG_LEVEL` / `config.yaml` → `info` | Verbosity for the `tracing` stream |
+| `--log-level <LEVEL>` | `warn` unless configured or overridden by the environment | Diagnostic log level; overrides `RUST_LOG`, `APEXE_LOG_LEVEL` and `config.yaml` |
+| `--log-stderr` | Off | Also mirror diagnostic logs to stderr |
 | `--timeout <SECS>` | `default_timeout` from `config.yaml` (30) | Per-call timeout override, applied to every subcommand that runs or probes a wrapped binary. Refuses `0`, which would kill every call before it started |
 
 ```bash
@@ -2260,7 +2343,17 @@ apexe --timeout 120 scan ffmpeg     # a slow tool needs longer than the default
 apexe scan ffmpeg --timeout 120     # identical; both positions parse
 ```
 
-apexe uses structured logging via the `tracing` crate.
+All commands and governed shims use structured logging via `tracing`.
+Diagnostics go to `~/.apexe/log/apexe.log.YYYY-MM-DD`, with daily UTC rotation
+and retention of the latest 14 files. The terminal does not show diagnostic
+logs unless `--log-stderr` is supplied. Command results, failures, child process
+output and necessary operator notices still appear normally. The governance
+audit trail is independent of this log level.
+On Unix, the diagnostic log directory is restricted to its owner (mode `0700`),
+including when a previous installation created it with broader permissions.
+
+Precedence: `--log-level` > `RUST_LOG` > `APEXE_LOG_LEVEL` > `config.yaml`
+(`log_level`) > `warn`. Existing saved levels remain effective.
 
 ```bash
 # Via CLI flag (global)
@@ -2269,12 +2362,16 @@ apexe --log-level debug scan git
 # Via environment variable
 RUST_LOG=debug apexe scan git
 
-# Via config file
-# log_level: debug
+# Persist the level (updates log_level in config.yaml)
+apexe config set log.level debug
+
+# Also display logs in the terminal
+apexe --log-level debug --log-stderr scan git
 ```
 
-| Level | Shows |
-|-------|-------|
+| Level | Records |
+|-------|---------|
+| `off` | No diagnostics |
 | `error` | Failures only |
 | `warn` | Warnings (e.g., failed to write ACL, cache miss) |
 | `info` | Normal operation: tool loaded, modules registered, server started |
@@ -2378,5 +2475,5 @@ rm -rf ~/.apexe/cache/
 
 - **Authenticated identities**: MCP and A2A token/JWT modes carry identities into execution. JWT roles gate ACL conditions; module-chain `callers` and authenticated subjects are separate — see [§11](#11-a2a-server).
 - **Windows**: Not supported.
-- **Interactive CLI tools**: PTY-based interactive sessions (e.g., `vim`) remain unsupported. Captured `apexe run` supplies no stdin; native shims inherit stdin only with an explicit reviewed capability.
+- **Interactive CLI tools**: PTY-based interactive sessions (e.g., `vim`) remain unsupported. Module-mode `apexe exec` supplies no stdin; native exec and shims inherit stdin only with an explicit reviewed capability.
 - **Streaming output**: Captured execution buffers output; native shims pass stdout and stderr through directly, including in pipelines.

@@ -11,28 +11,25 @@ and facts such as `tail -f` being potentially long-running available to the
 generated bindings. The command binaries still run directly through apexe's
 normal execution path when an MCP or A2A client calls them.
 
-## Managed corpus installation
-
-With apexe's Git corpus manager, no environment variable is needed:
+## Initialize from managed rules
 
 ```bash
-apexe overlays install https://github.com/aiperceivable/cli-permissions
-apexe overlays list
-apexe scan ls grep sort tail --no-cache
-# Refresh an installed corpus, then rescan the affected bindings.
-apexe overlays update cli-permissions
-apexe scan ls grep sort tail --no-cache
-# Refresh enabled native shims after rescanning.
+apexe init
+apexe list --verbose
+# Refresh rules and unchanged bindings owned by initialization.
+apexe init --refresh
+# Refresh an active native shim installation after binding changes.
 apexe env --reload
-# Unregister the corpus when it is no longer needed.
-apexe overlays remove cli-permissions
 ```
 
-The optional root `manifest.json` supplies corpus metadata and its overlay
-directory. Use `install --ref <REF>` to pin a reviewed branch, tag or commit;
-`update` preserves that reference unless explicitly overridden. Git and the CLI
-binaries must be installed separately. Review the generated ACL before execution.
-The scripted walkthrough below uses an explicit checkout for reproducibility.
+Use `init --overlays <SOURCE>` to override the configured source for that
+invocation, and `init --ref <REF>` to pin a reviewed branch, tag or commit. The
+JSON report (`init --format json`) includes corpus metadata and resolved commits.
+Git and CLI binaries must be installed separately. Review the generated ACL
+before execution. Custom scans and edited bindings are preserved during init;
+use a targeted `scan` when you deliberately want to regenerate them. The
+scripted walkthrough below remains a custom scan with an explicit checkout for
+reproducibility.
 
 ## Local overlay development
 
@@ -46,8 +43,8 @@ APEXE_OVERLAY_DIRS=../cli-permissions/overlays apexe scan ls --no-cache
 This includes uncommitted edits and requires no corpus installation or update.
 The variable applies only to this scan. Repeat the scan after changing an
 overlay, then use `apexe env --reload` if enabled shims need refreshing.
-`apexe overlays install ../cli-permissions` serves a different purpose: it
-installs a managed snapshot of the local Git repository's committed content.
+`apexe init --overlays ../cli-permissions` initializes from a managed snapshot
+of the local Git repository's committed content.
 
 ## Prerequisites
 

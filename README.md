@@ -22,7 +22,7 @@ prompting off entirely. The premise this tool starts from is narrower than it
 sounds: a constraint expressed in an instruction is a request; only a constraint
 enforced where the process is spawned is a fact.
 
-`apexe` never parses a command line. It scans a CLI deterministically
+`apexe` executes argument vectors directly, without a shell. It scans a CLI deterministically
 (`--help` → man pages → shell completions, no LLM) and turns it into a governed
 [apcore](https://github.com/aiperceivable) module with a real JSON Schema. Every
 call is then validated against that schema, and argv goes straight to `execve`
@@ -30,12 +30,16 @@ with no shell anywhere on the path — so shell metacharacters are inert bytes
 rather than something to blacklist.
 
 On top of that contract you opt into policy keyed on what an operation **is**,
-not on how it is spelled. The scan annotates each command `readonly`,
-`destructive` or `idempotent`; `apexe scan` generates an ACL from those
-annotations with `default_effect: deny`, so anything it could not classify is
+not on how it is spelled. Initialize with `apexe init` to prepare command
+bindings and a starter ACL from reviewed rules for tools on your machine.
+Commands are annotated `readonly`, `destructive` or `idempotent`; the ACL is
+generated from these annotations with `default_effect: deny`, so anything it could not classify is
 refused rather than allowed:
 
 ```bash
+apexe init
+apexe list --verbose
+# Review ~/.apexe/acl.yaml before serving commands.
 apexe serve --acl ~/.apexe/acl.yaml --enable-approval
 ```
 
@@ -53,12 +57,13 @@ generated for you — reviewing and enabling it is yours.**
 
 ### Key capabilities
 
+- **Init** — Fetch reviewed cli-permissions rules, match installed tools and their variants, and prepare local bindings and a starter ACL; repeat initialization to discover new tools or use `--refresh` to update rules
 - **Scan** — Three-tier deterministic engine (--help → man pages → shell completions) with 6 built-in parsers (Man, BSD Usage, GNU, Click, Cobra, Clap), plus a fourth tier that applies a curated, human-verified overlay when one matches the detected tool variant
 - **Schema** — Generates JSON Schema with type mapping, format hints (`path`, `uri`), defaults, enums, and required fields
 - **Serve** — MCP server via [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) (stdio / streamable-http / SSE) with an Explorer UI, plus an A2A agent server via [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust). Transport authentication is a first-class CLI surface (`--auth token|jwt|none`) required by default on the HTTP-family transports; a non-loopback bind with no credential refuses to start unless explicitly acknowledged
 - **Govern** — Behavioral annotations (readonly/destructive/idempotent/open-world), a generated **fail-closed** default-deny ACL (enforced when passed via `--acl`; see the [threat model](docs/threat-model.md)), an approval gate that weighs the arguments a call actually sent rather than the flags a command merely accepts, a JSONL audit trail of executions, refusals **and** ACL allow/deny decisions (no input values, hashed or otherwise; log `0600`), `Module::preview()` dry-run for destructive commands
 - **Bound** — an always-on path guard resolves every argument the schema types as a filesystem path — symlinks followed, `..` folded, compared against what the kernel would act on — and refuses a writer pointed at a system directory or anyone pointed at a credential store. No flag, no off switch; `apexe policy` prints the boundary and checks a path against it
-- **Isolate** — every wrapped subprocess runs with the environment **scrubbed** to a base allowlist (secrets don't leak to tools), no shell (argv goes straight to `execve`, so shell metacharacters are inert data — the actual guard rejects a value that would be parsed as an option), output capped at 64 MiB, and a hard timeout that actually kills the process (`kill_on_drop`); circuit breaker + retry middleware on by default, optional `/metrics` + `/usage`
+- **Isolate** — every wrapped subprocess runs with the environment **scrubbed** to a base allowlist (secrets don't leak to tools), no shell (argv goes straight to `execve`, so shell metacharacters are inert data — the actual guard rejects a value that would be parsed as an option), captured output capped at 64 MiB, and a hard timeout that actually kills the process (`kill_on_drop`); circuit breaker + retry middleware on by default, optional `/metrics` + `/usage`
 - **AI Guidance** — Every error includes `ai_guidance` to help agents self-correct; non-zero exit codes return stderr context
 
 ### Built on the apcore ecosystem
@@ -133,33 +138,58 @@ and a `/?` parser, and is not implemented.
 
 ## Quick Start
 
+Initialize once, inspect the available commands, then choose local execution,
+shell activation or an agent server:
+
 ```bash
-# Scan git — extracts commands, flags, types, annotations
-apexe scan git
+# Fetch cli-permissions and prepare bindings for matching tools on this machine.
+apexe init
+# Inspect module IDs, annotations and the generated ACL decisions.
+apexe list --verbose
+# Review ~/.apexe/acl.yaml before executing or serving commands.
+apexe exec cli.ls
 
-# Review the generated module-level ACL decision
-apexe list --verbose --acl ~/.apexe/acl.yaml
+# Optional native argv: only for modules reported under native_ready.
+apexe exec --dry-run -- ls -la
+apexe exec -- ls -la
 
-# Start MCP server with the reviewed ACL enforced
+# Optional shell shims: require matching reviewed native grammar.
+apexe env --enable
+source ~/.apexe/bin/apexe-activate.sh
+apexe env --check
+
+# Optional: expose initialized commands to an MCP client with the reviewed ACL.
 apexe serve --acl ~/.apexe/acl.yaml
-
-# Or HTTP with browser-based tool explorer
-apexe serve --transport http --port 8000 --explorer --acl ~/.apexe/acl.yaml
 ```
 
-For a new policy, `scan` writes a starter `~/.apexe/acl.yaml` with
-`default_effect: deny`; rescans preserve the existing default.
-Read-only local modules are allowed by default; destructive, network-reaching,
-and unknown modules are denied. Generating that file does **not** enable it:
-pass `--acl` to `serve` or `a2a` after reviewing and editing it for the tools
-you intend to expose. See [Wrap a CLI and enforce its ACL](docs/user-manual.md#911-wrap-a-cli-and-enforce-its-acl).
+`init` uses the configured `default_overlay_repository`, normally
+[cli-permissions](https://github.com/aiperceivable/cli-permissions). It discovers
+commands declared by the loaded rules, checks the installed binaries and their
+variants, and generates local bindings and a starter ACL. It does not install
+CLI binaries, activate your shell or start a server. Native exec and shims
+require reviewed native grammar; initialized modules without it remain usable
+through module JSON when their ACL and approval checks permit.
+
+Repeat `apexe init` to discover newly installed covered tools while preserving
+existing bindings. Use `apexe init --refresh` to update the selected rules and
+regenerate unchanged bindings owned by init. The report identifies skipped
+commands, fallback coverage, preserved bindings and resolved Git commits.
+`config --show` displays configured values; a repository URL there does not
+mean initialization has completed.
+
+For a new ACL, unknown, destructive and network-reaching modules default to
+deny. Existing manual rules and policy defaults are preserved. Local exec/env
+load the default ACL when present; `serve` and `a2a` still need an explicit
+`--acl`. The current native pilot covers BSD cat/head/ls; GNU scanning support
+does not imply native eligibility. On other installations start with module JSON
+and the server, then check `native_ready` before using native exec/env. See the [Quick Start guide](docs/quickstart.md) for the full workflow.
 
 ### Claude Desktop integration
 
 ```bash
-apexe serve --show-config claude-desktop
+apexe serve --show-config claude-desktop --acl ~/.apexe/acl.yaml
 # Copy output to ~/Library/Application Support/Claude/claude_desktop_config.json
-# Restart Claude Desktop — git commands appear as MCP tools
+# Restart Claude Desktop — initialized commands appear as MCP tools
 ```
 
 The snippet carries the rest of the command line (`--bindings-dir`, `--prefix`,
@@ -170,13 +200,164 @@ included.
 ### Cursor integration
 
 ```bash
-apexe serve --show-config cursor
+apexe serve --show-config cursor --acl ~/.apexe/acl.yaml
 # Add to Cursor's MCP settings
 ```
 
 ---
 
 ## Commands
+
+### `apexe init`
+
+Prepare this machine's bindings and starter ACL from reviewed rules:
+
+```bash
+apexe init
+apexe init --overlays https://github.com/aiperceivable/cli-permissions
+apexe init --overlays ../cli-permissions --ref <COMMIT>
+apexe init --offline
+apexe init --refresh
+```
+
+The default table output shows initialization stages and the tool being scanned
+as work proceeds, independently of the log level. `--format json` outputs only
+the final report.
+
+The former `overlays` command has been removed. Rules installation, pinning and
+refresh are part of initialization. `config --init` only creates a configuration
+template; it does not prepare command bindings.
+
+### `apexe list`
+
+List registered modules.
+
+```bash
+apexe list                     # Table format
+apexe list --format json       # JSON format
+apexe list --available-only    # Only binaries reachable on this machine
+```
+
+### `apexe exec`
+
+Execute reviewed native argv without activation, or a module with JSON input:
+
+```bash
+apexe exec -- ls -la
+apexe exec --dry-run -- ls -la
+apexe exec cli.ls --input '{"file":["."]}'
+```
+
+Native mode preserves streams and child status. The JSON property names depend
+on the binding. Unknown commands default to denial; explicit unmanaged policies
+are described in the [exec reference](docs/user-manual.md#47-apexe-exec).
+
+### `apexe env`
+
+Install and activate eligible external-command shims:
+
+```bash
+apexe env --enable
+source ~/.apexe/bin/apexe-activate.sh
+apexe env --check
+source ~/.apexe/bin/apexe-deactivate.sh
+```
+
+The namespaced helpers are installed with apexe; no source checkout is needed.
+See the [env reference](docs/user-manual.md#48-apexe-env) for shell support and
+activation boundaries.
+
+### `apexe serve`
+
+Start MCP server for scanned tools.
+
+```bash
+apexe serve --acl ~/.apexe/acl.yaml # stdio (default)
+apexe serve --transport http --port 8000 --acl ~/.apexe/acl.yaml # HTTP
+apexe serve --transport http --port 8000 --explorer --acl ~/.apexe/acl.yaml # HTTP + browser UI
+apexe serve --transport sse --port 8000 --acl ~/.apexe/acl.yaml # Server-Sent Events (deprecated upstream; prefer http)
+apexe serve --show-config claude-desktop --acl ~/.apexe/acl.yaml # Print integration config (carries the other flags; never a credential)
+apexe serve --name my-tools --acl ~/.apexe/acl.yaml # Custom server name
+apexe serve --transport http --metrics --acl ~/.apexe/acl.yaml # + /metrics (Prometheus) and /usage
+apexe serve --no-circuit-breaker --no-retry --acl ~/.apexe/acl.yaml # Disable resilience middleware
+apexe serve --transport http --auth-token "$TOKEN" --acl ~/.apexe/acl.yaml # Pin the bearer token (else one is generated)
+apexe serve --prefix cli.git --acl ~/.apexe/acl.yaml # Serve only git tools (not listed AND not callable)
+apexe serve --no-log-arguments --acl ~/.apexe/acl.yaml # Drop argument payloads from every log event, errors included
+```
+
+> HTTP/SSE transports require a bearer token by default; a token is generated
+> and written to stderr at startup on a loopback bind (not through the log
+> pipeline, so `--log-level warn` still shows it). `--auth none` on a non-loopback
+> bind refuses to start without `--allow-unauthenticated-bind`. stdio is
+> unaffected. See [`docs/user-manual.md`](docs/user-manual.md).
+
+
+### `apexe a2a`
+
+Start an A2A agent server for scanned tools. Shares governance (ACL, logging, audit) with `apexe serve` via the same `Executor`.
+
+```bash
+apexe a2a --acl ~/.apexe/acl.yaml # http://127.0.0.1:8000 (default)
+apexe a2a --url http://127.0.0.1:9000 --explorer --acl ~/.apexe/acl.yaml # Custom port + browser UI
+apexe a2a --acl ~/.apexe/acl.yaml               # Governed by an ACL policy
+apexe a2a --cors-origin https://example.com --acl ~/.apexe/acl.yaml # Allow a browser origin
+```
+
+> **A2A requires bearer authentication by default.** apcore-a2a provides an
+> `Authenticator`; apexe wires it through token/JWT modes. Use `APEXE_AUTH_TOKEN`
+> or the generated startup token. `--auth none` off loopback requires
+> `--allow-unauthenticated-bind`. JWT subjects and roles reach ACL and audit.
+
+> A2A has no interactive elicitation transport, so there is **no `--enable-approval`
+> flag** on `apexe a2a` (it's available on `apexe serve`, and on A2A only via the
+> library `ApprovalStore` API). See [`docs/user-manual.md`](docs/user-manual.md).
+
+
+### `apexe verify`
+
+Compare fresh source contracts with the recorded pre-overlay baseline, without
+replacing bindings. Breaking drift, unclassified source changes and missing
+baselines fail the command. Optional readonly behavioral cases run only for
+explicitly allowlisted system cat/head/ls binaries against temporary fixtures.
+The report records actual case outcomes and binding/binary/case hashes;
+overlay confidence remains a separate human assertion.
+
+```bash
+apexe verify --report verification.json
+apexe verify --cases readonly-cases.json --report verification.json
+```
+
+See the [verification reference](docs/user-manual.md#49-apexe-verify).
+
+### `apexe config`
+
+Show, initialize or update configuration.
+
+```bash
+apexe config --show     # Print resolved config (YAML)
+apexe config --init     # Create ~/.apexe/config.yaml
+apexe config set log.level debug  # Update the saved diagnostic log level
+```
+
+### `apexe policy`
+
+Show the filesystem boundary every wrapped tool is checked against, or check one
+path against it. The summary is read off the **installed** guard rather than
+re-derived from config, so it always describes the policy actually in force.
+
+```bash
+apexe policy                                   # The whole boundary
+apexe policy --format json                     # Machine-readable
+apexe policy --path /etc/passwd                # Refused to a writer
+apexe policy --path /etc/passwd --mode read    # Allowed to a readonly module
+apexe policy --path ~/.ssh/id_rsa --mode read  # Refused: credentials bind readers
+```
+
+`--path` calls the guard's own check — the same call a wrapped tool's argument
+goes through — so its verdict cannot drift from a real invocation's. See
+[user manual §4.6](docs/user-manual.md) and §9.7.
+
+---
 
 ### `apexe scan <TOOLS>...`
 
@@ -246,47 +427,36 @@ subcommands entirely; in `merge` mode it overrides matching flags and adds
 missing ones. Overlays are the only source that can state `conflicts_with`,
 because no help or man page format expresses mutual exclusion machine-readably.
 
-**The corpus is fetched automatically on the first online scan.** Reviewed facts
-come from [cli-permissions](https://github.com/aiperceivable/cli-permissions);
-apexe does not embed a second copy. The validated Git snapshot is cached under
-`~/.apexe/corpora/`, so later scans use the same recorded commit without a network
-request. Selection checks the actual binary's variant, platform, declared
-version constraints and probes; the operating system alone is not enough.
+**Initialize command coverage with `apexe init`.** Reviewed facts come from
+[cli-permissions](https://github.com/aiperceivable/cli-permissions); apexe does
+not embed a second copy. Validated Git snapshots are cached under
+`~/.apexe/corpora/`. Normal initialization reuses the recorded commit. Selection
+checks the actual tool variant, platform, version constraints and probes.
 
 ```bash
-# Automatically obtain matching command facts, then generate bindings and ACL.
-apexe scan cat head wc --no-cache
-apexe overlays list
-# After reviewing the ACL, enable eligible commands in new terminals.
-apexe env --enable
-# Refresh corpus facts, bindings and the shim list when needed.
-apexe overlays update cli-permissions
-apexe scan cat head wc --no-cache
+apexe init
+apexe init --format json
+# Refresh rules and bindings originally generated by init.
+apexe init --refresh
+# Refresh an active shim installation after binding changes.
 apexe env --reload
 ```
 
-If acquisition fails or Git is unavailable, the scan warns and continues with
-local overlays and built-in classification. Unknown modules remain denied in a
-new ACL. `apexe scan --offline <TOOLS>` (or `APEXE_OFFLINE=true`) prevents automatic
-downloads while still using installed snapshots. `--dry-run`, `--overlay`, and
-configured `overlay_dirs` also skip automatic downloads. No matching overlay
-for a tool means that tool uses fallback inference even when the corpus is cached.
-Git operations for automatic acquisition are limited to 10 seconds or the shorter
-global `--timeout`; manual installation can use a longer timeout.
+Use `init --overlays <SOURCE>` to select an HTTPS/GitHub source or local Git
+repository for that invocation; use `init --ref <REF>` to pin a revision. For a
+standing mirror, set `default_overlay_repository` in `config.yaml` or
+`APEXE_DEFAULT_OVERLAY_REPOSITORY`. `init --offline` uses cached or local rules
+without network access. An unavailable default source reports degraded fallback
+coverage; an explicit source or refresh failure exits nonzero.
 
-For a mirror or a local Git source, set `default_overlay_repository` in
-`config.yaml` or `APEXE_DEFAULT_OVERLAY_REPOSITORY` before the first installation.
-You can also install explicitly with
-`apexe overlays install https://github.com/aiperceivable/cli-permissions`.
-The generated ACL covers scanned modules and preserves separate hand-authored
-rules and the existing `default_effect`; review the policy before enforcing it.
-
-Use `--ref <branch|tag|commit>` to pin the source, `apexe overlays list` to
-inspect installed metadata and Git commits, and `apexe overlays remove <name>`
-to unregister it. An optional root `manifest.json` names the corpus, its SemVer
-release and overlay directory; legacy repositories also work. See the
-[command reference](docs/user-manual.md#410-apexe-overlays) for overrides and
-update behavior. Git and the wrapped CLI binaries must be installed separately.
+`scan` remains available for custom tools and targeted rescans. Its first online
+use can also obtain the default corpus automatically, and `scan --offline`
+prevents that download. Automatic scan acquisition is limited to 10 seconds or
+the shorter global timeout. Initialization uses the configured Git timeout.
+See the [init reference](docs/user-manual.md#410-apexe-init) for preservation,
+source selection and fallback behavior. Git and CLI binaries are separate
+prerequisites. An optional corpus `manifest.json` defines its name, release and
+overlay directory; legacy repositories use an `overlays` directory.
 
 For local overlay development, read the working directory directly:
 
@@ -299,7 +469,7 @@ This includes uncommitted edits without installing a new corpus snapshot. The
 variable applies only to this scan. Rescan after editing overlays; use
 `apexe env --reload` afterward if the eligible native command set changes.
 For a managed installation from a local Git repository instead, use
-`apexe overlays install ../cli-permissions`: it installs committed Git content.
+`apexe init --overlays ../cli-permissions`: it initializes from committed Git content.
 
 For equally strong matches, overlays are loaded in increasing precedence: a packaged corpus in a
 well-known location (`$XDG_DATA_HOME/cli-permissions/overlays`,
@@ -356,104 +526,6 @@ including how to cross-check a draft against a reference installation and the
 traps already hit in practice (of the 38 flags `ls` shares between its BSD and
 GNU variants, **zero** have identical descriptions — never copy one across).
 
-### `apexe serve`
-
-Start MCP server for scanned tools.
-
-```bash
-apexe serve                                         # stdio (default)
-apexe serve --transport http --port 8000             # HTTP
-apexe serve --transport http --port 8000 --explorer  # HTTP + browser UI
-apexe serve --transport sse --port 8000              # Server-Sent Events (deprecated upstream; prefer http)
-apexe serve --show-config claude-desktop             # Print integration config (carries the other flags; never a credential)
-apexe serve --name my-tools                          # Custom server name
-apexe serve --transport http --metrics                # + /metrics (Prometheus) and /usage
-apexe serve --no-circuit-breaker --no-retry           # Disable resilience middleware
-apexe serve --transport http --auth-token "$TOKEN"    # Pin the bearer token (else one is generated)
-apexe serve --prefix cli.git                          # Serve only git tools (not listed AND not callable)
-apexe serve --no-log-arguments                        # Drop argument payloads from every log event, errors included
-```
-
-> HTTP/SSE transports require a bearer token by default; a token is generated
-> and written to stderr at startup on a loopback bind (not through the log
-> pipeline, so `--log-level warn` still shows it). `--auth none` on a non-loopback
-> bind refuses to start without `--allow-unauthenticated-bind`. stdio is
-> unaffected. See [`docs/user-manual.md`](docs/user-manual.md).
-
-### `apexe a2a`
-
-Start an A2A agent server for scanned tools. Shares governance (ACL, logging, audit) with `apexe serve` via the same `Executor`.
-
-```bash
-apexe a2a                                       # http://127.0.0.1:8000 (default)
-apexe a2a --url http://127.0.0.1:9000 --explorer  # Custom port + browser UI
-apexe a2a --acl ~/.apexe/acl.yaml               # Governed by an ACL policy
-apexe a2a --cors-origin https://example.com     # Allow a browser origin
-```
-
-> **A2A requires bearer authentication by default.** apcore-a2a provides an
-> `Authenticator`; apexe wires it through token/JWT modes. Use `APEXE_AUTH_TOKEN`
-> or the generated startup token. `--auth none` off loopback requires
-> `--allow-unauthenticated-bind`. JWT subjects and roles reach ACL and audit.
-
-> A2A has no interactive elicitation transport, so there is **no `--enable-approval`
-> flag** on `apexe a2a` (it's available on `apexe serve`, and on A2A only via the
-> library `ApprovalStore` API). See [`docs/user-manual.md`](docs/user-manual.md).
-
-### `apexe verify`
-
-Compare fresh source contracts with the recorded pre-overlay baseline, without
-replacing bindings. Breaking drift, unclassified source changes and missing
-baselines fail the command. Optional readonly behavioral cases run only for
-explicitly allowlisted system cat/head/ls binaries against temporary fixtures.
-The report records actual case outcomes and binding/binary/case hashes;
-overlay confidence remains a separate human assertion.
-
-```bash
-apexe verify --report verification.json
-apexe verify --cases readonly-cases.json --report verification.json
-```
-
-See the [verification reference](docs/user-manual.md#49-apexe-verify).
-
-### `apexe list`
-
-List registered modules.
-
-```bash
-apexe list                     # Table format
-apexe list --format json       # JSON format
-apexe list --available-only    # Only binaries reachable on this machine
-```
-
-### `apexe config`
-
-Show or initialize configuration.
-
-```bash
-apexe config --show     # Print resolved config (YAML)
-apexe config --init     # Create ~/.apexe/config.yaml
-```
-
-### `apexe policy`
-
-Show the filesystem boundary every wrapped tool is checked against, or check one
-path against it. The summary is read off the **installed** guard rather than
-re-derived from config, so it always describes the policy actually in force.
-
-```bash
-apexe policy                                   # The whole boundary
-apexe policy --format json                     # Machine-readable
-apexe policy --path /etc/passwd                # Refused to a writer
-apexe policy --path /etc/passwd --mode read    # Allowed to a readonly module
-apexe policy --path ~/.ssh/id_rsa --mode read  # Refused: credentials bind readers
-```
-
-`--path` calls the guard's own check — the same call a wrapped tool's argument
-goes through — so its verdict cannot drift from a real invocation's. See
-[user manual §4.6](docs/user-manual.md) and §9.7.
-
----
 
 ## How It Works
 
@@ -462,9 +534,10 @@ CLI Tool Binary
       |
       v
 +--------------------+
-|   Scanner Engine   |  <-- Tier 1: --help (GNU/Click/Cobra/Clap)
+|   Scanner Engine   |  <-- Tier 1: --help (Man/BSD Usage/GNU/Click/Cobra/Clap)
 |                    |  <-- Tier 2: man pages (DESCRIPTION + OPTIONS)
 |                    |  <-- Tier 3: shell completions (subcommand discovery)
+|                    |  <-- Tier 4: matching curated overlay
 +---------+----------+
           |  ScannedCLITool
           v
@@ -524,7 +597,7 @@ apexe config --init    # Creates ~/.apexe/config.yaml
 |-------------|---------|-------------|
 | `APEXE_BINDINGS_DIR` | `~/.apexe/bindings` | Binding file storage |
 | `APEXE_CACHE_DIR` | `~/.apexe/cache` | Scan cache |
-| `APEXE_LOG_LEVEL` | `info` | Log level |
+| `APEXE_LOG_LEVEL` | `warn` | Diagnostic file log level |
 | `APEXE_TIMEOUT` | `30` | CLI subprocess timeout (seconds) |
 | `APEXE_SCAN_DEPTH` | `2` | Subcommand recursion depth |
 
@@ -539,6 +612,7 @@ apexe config --init    # Creates ~/.apexe/config.yaml
 | `~/.apexe/cache/` | Scan result cache |
 | `~/.apexe/acl.yaml` | Access control rules |
 | `~/.apexe/audit.jsonl` | Audit trail |
+| `~/.apexe/log/apexe.log.YYYY-MM-DD` | Daily diagnostic logs (UTC; latest 14 files retained) |
 
 ---
 
@@ -583,10 +657,22 @@ pub trait CliParser: Send + Sync {
 
 ### Logging
 
+All commands and governed shims write diagnostics to `~/.apexe/log/`, with a
+`warn` default and no diagnostic logs on the terminal. Files rotate daily in
+UTC; the latest 14 files are retained. Command results, errors and necessary
+operator notices remain visible. Logging does not change the governance audit
+trail.
+On Unix, the log directory is private to its owner (mode `0700`).
+
 ```bash
-RUST_LOG=debug apexe scan git
-apexe --log-level trace scan git
+apexe config set log.level info          # Persist the level in config.yaml
+apexe --log-level debug scan git         # Override for this invocation
+apexe --log-level debug --log-stderr scan git  # Also mirror logs to stderr
 ```
+
+Level precedence: `--log-level` > `RUST_LOG` > `APEXE_LOG_LEVEL` >
+`config.yaml` (`log_level`) > `warn`. `off` disables diagnostic records.
+Existing configurations keep their saved level until explicitly changed.
 
 ### Releasing
 
@@ -608,9 +694,13 @@ gh workflow run release.yml -f tag=rust/vX.Y.Z
 ## Local execution and OpenAPI import
 
 ```bash
-# Inspect governance without running a process, then execute locally.
-apexe run cli.ls --input '{"file":["."]}' --dry-run
-apexe run cli.ls --input '{"file":["."]}'
+# Use native argv without activating PATH shims.
+apexe exec --dry-run -- ls -la
+apexe exec -- ls -la
+
+# Inspect a module with JSON input, then execute with captured JSON output.
+apexe exec cli.ls --input '{"file":["."]}' --dry-run
+apexe exec cli.ls --input '{"file":["."]}'
 
 # Import an HTTP API alongside scanned CLI tools.
 apexe serve --openapi ./openapi.yaml --openapi-base-url https://api.example.com --acl ./acl.yaml
@@ -618,16 +708,20 @@ apexe a2a --openapi ./openapi.yaml --openapi-base-url https://api.example.com --
 ```
 
 Local execution defaults to the `local` caller and loads `~/.apexe/acl.yaml`
-when present; a malformed policy fails closed. `--as` is available only for
-`--dry-run`. OpenAPI 3.0/3.1 JSON/YAML sources may be local files or HTTP(S)
+when present; a malformed policy fails closed. Native mode requires the same
+reviewed grammar as shims and preserves child streams and exit status. Unknown
+commands default to refusal; `--unmanaged allow|approval` opts in without
+overriding the ACL. Unmanaged argv has no schema-based path checks and receives
+null stdin. `run` has been replaced by `exec`, with no alias. `--as` is available
+only for `--dry-run`. OpenAPI 3.0/3.1 JSON/YAML sources may be local files or HTTP(S)
 URLs. Operations default to the `api.*` namespace and share schema validation,
 ACL and auditing with CLI modules. Set `APEXE_OPENAPI_TOKEN` for the upstream
 API credential; `--openapi-header` is only for fetching the specification.
-See the [command reference](docs/user-manual.md#47-apexe-run),
+See the [command reference](docs/user-manual.md#47-apexe-exec),
 [OpenAPI guide](docs/openapi.md), and [runnable API example](examples/openapi_import/README.md)
 for flags, proxy limits and tested setup.
 
-After scanning with overlays that declare reviewed native grammar, install the
+After initialization with rules that declare reviewed native grammar, install the
 shell helpers once, then source them in bash or zsh. No source checkout is needed:
 
 ```bash
@@ -702,14 +796,14 @@ The local demo checks preflight, execution, ACL denial and audit in a temporary
 HOME; `--shims` also checks a native pipeline and owned uninstall. The OpenAPI
 demo starts its own local HTTP API and exercises both MCP and A2A, including
 JSON requests, ACL denial and separate specification/API credentials. See the
-[Quick Start](docs/quickstart.md#next-steps) for the walkthrough.
+[Quick Start](docs/quickstart.md#7-customize-and-maintain) for the walkthrough.
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
 | **[Documentation hub](docs/README.md)** | Choose the user or developer documentation path |
-| **[Quick Start](docs/quickstart.md)** | Scan a CLI, review its ACL, and connect an agent |
+| **[Quick Start](docs/quickstart.md)** | Initialize command coverage, review the ACL, and connect an agent |
 | **[User Manual](docs/user-manual.md)** | Operator reference — commands, configuration, governance, transports, and troubleshooting |
 | **[Threat Model](docs/threat-model.md)** | What apexe enforces and what still requires sandboxing or host policy |
 | **[Security Policy](SECURITY.md)** | How to report a vulnerability privately, and what counts as one |

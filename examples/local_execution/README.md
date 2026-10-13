@@ -32,12 +32,12 @@ executes `cat sample.txt | head -n1`, and uninstalls the owned links and startup
 block. Expected native output is `one\n`. The final JSON summary reports the
 checks that actually succeeded; a failed check exits nonzero.
 
-For your own shell, scan with reviewed overlays and inspect the generated ACL
+For your own shell, initialize with reviewed rules and inspect the generated ACL
 before activating shims:
 
 ```bash
-APEXE_OVERLAY_DIRS=/path/to/cli-permissions/overlays apexe scan cat head --no-cache
-apexe run cli.cat --input '{"file":["README.md"]}' --dry-run
+apexe init --overlays /path/to/cli-permissions
+apexe exec cli.cat --input '{"file":["README.md"]}' --dry-run
 # Install the helpers once, then activate this terminal.
 apexe env --enable
 source ~/.apexe/bin/apexe-activate.sh
@@ -66,7 +66,7 @@ Read the scanned schema rather than assuming a property name across variants.
 Only explicitly marked modules inherit stdin. Builtins, aliases, functions,
 absolute paths and `command -p` can bypass shims; plain `command cat` still
 uses the activated PATH. See the [F8 specification](../../docs/features/v2-f8-local-execution.md)
-and [command reference](../../docs/user-manual.md#47-apexe-run).
+and [command reference](../../docs/user-manual.md#47-apexe-exec).
 
 ## Automated checks
 
