@@ -75,3 +75,25 @@ fn test_openapi_example_keeps_remote_spec_credentials_separate() {
     assert_eq!(result["surfaces"]["mcp"]["read"], true);
     assert_eq!(result["surfaces"]["a2a"]["read"], true);
 }
+
+#[test]
+fn test_verification_example_checks_scoped_evidence_and_invalidation() {
+    let result = summary(&mut example("verification"));
+    assert_eq!(result["bindings_preserved"], true);
+    if result["supported"] == false {
+        assert!(result["reason"]
+            .as_str()
+            .unwrap()
+            .contains("isolation unavailable"));
+    } else {
+        for field in [
+            "dry_run",
+            "isolated_effects",
+            "case_file_invalidation",
+            "binary_invalidation",
+        ] {
+            assert_eq!(result[field], true);
+        }
+        assert!(!result["backends"].as_array().unwrap().is_empty());
+    }
+}

@@ -10,6 +10,7 @@ developing against its Rust library.
 | [basic](basic/) | Scan real CLI tools, review the generated ACL, print client configuration, and start a governed Explorer server | `cd examples/basic && ./run.sh` |
 | [cli_permissions](cli_permissions/) | Scan commands using the verified external cli-permissions corpus, review the resulting ACL, and print a governed MCP configuration | `CLI_PERMISSIONS_DIR=/path/to/cli-permissions ./examples/cli_permissions/run.sh` |
 | [local_execution](local_execution/) | Run captured governance and optionally install, exercise and remove native PATH shims in a temporary home | `python3 examples/local_execution/demo.py` |
+| [verification](verification/) | Verify isolated dry-run/fixture cases and invalidate stale confidence in a disposable corpus | `python3 examples/verification/demo.py` |
 | [openapi_import](openapi_import/) | Import a disposable authenticated HTTP API through MCP/A2A and prove ACL and credential separation | `python3 examples/openapi_import/demo.py` |
 | [path_guard](path_guard/) | Inspect the always-on filesystem boundary and its read/write behaviour | `cargo run --example path_guard` |
 

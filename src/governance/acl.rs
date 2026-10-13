@@ -213,7 +213,7 @@ impl AclManager {
             .filter(|m| {
                 m.annotations
                     .as_ref()
-                    .is_some_and(|a| a.readonly && !a.open_world)
+                    .is_some_and(|a| a.readonly && !a.destructive && !a.open_world)
             })
             .map(|m| m.module_id.clone())
             .collect()
@@ -755,6 +755,14 @@ mod tests {
             ..Default::default()
         });
         module
+    }
+
+    #[test]
+    fn test_generated_acl_destructive_overrides_readonly_annotation() {
+        let module = make_module_with_annotations("cli.conflicting", true, true);
+        let policy = AclManager::generate_default(&[module]);
+        assert_eq!(policy.explain("cli.conflicting").effect, "deny");
+        assert_eq!(policy.acl.rules().len(), 1);
     }
 
     #[test]

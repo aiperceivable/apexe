@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// Enable, reload or disable governed command shims, or print shell activation.
+mod check;
+
+/// Enable, reload, disable or check governed shims, or print shell activation.
 #[derive(Debug, clap::Args, Serialize, Deserialize)]
 pub struct EnvArgs {
     /// Install or update shims and configure automatic activation in new terminals.
@@ -20,6 +22,10 @@ pub struct EnvArgs {
     #[arg(long, group = "startup_config", conflicts_with_all = ["enable", "disable"])]
     #[serde(default)]
     pub reload: bool,
+    /// Check the installed shim environment without executing commands.
+    #[arg(long, conflicts_with_all = ["enable", "reload", "disable", "bindings_dir", "acl", "tags", "prefix", "shell"])]
+    #[serde(default)]
+    pub check: bool,
     /// Shell startup file to configure instead of the detected default.
     #[arg(long, requires = "startup_config")]
     pub rc_file: Option<PathBuf>,
@@ -41,6 +47,13 @@ pub struct EnvArgs {
 
 impl EnvArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
+        if self.check {
+            let directory = self
+                .shim_dir
+                .or_else(|| std::env::var_os("APEXE_SHIM_DIR").map(PathBuf::from))
+                .unwrap_or_else(|| config.config_dir.join("bin"));
+            return check::execute(&std::path::absolute(directory)?, config);
+        }
         let directory = std::path::absolute(
             self.shim_dir
                 .as_deref()
@@ -121,6 +134,9 @@ impl EnvArgs {
             acl: self.acl.as_deref().map(std::path::absolute).transpose()?,
             filter,
             commands,
+            activation_script: None,
+            deactivation_script: None,
+            source_scripts_dir: None,
         })
     }
 }
@@ -199,12 +215,43 @@ impl Drop for StagingDirectory {
 }
 
 fn install(directory: &Path, mut manifest: Manifest) -> anyhow::Result<()> {
+    let persistent = super::source_scripts::prepare(directory, &manifest.executable)?;
+    manifest.source_scripts_dir = Some(persistent.directory().to_path_buf());
+    let script = super::activation::generate(directory, &manifest.executable)?;
+    manifest.activation_script = Some(script.clone());
+    let deactivation = super::activation::generate_deactivation(directory, &manifest.executable)?;
+    manifest.deactivation_script = Some(deactivation.clone());
     let old = if directory.join(MANIFEST_NAME).try_exists()? {
         Some(super::shim::read_manifest(directory)?)
     } else {
         None
     };
-    if let Some(old) = &old {
+    retain_removed_routes(&mut manifest, old.as_ref());
+    verify_destinations(directory, &manifest, old.as_ref())?;
+    std::fs::create_dir_all(directory)?;
+    let stage = StagingDirectory(directory.join(format!(".install-{}", uuid::Uuid::new_v4())));
+    std::fs::create_dir(&stage.0)?;
+    for name in manifest.commands.keys() {
+        create_entry(&manifest.executable, &entry_path(&stage.0, name))?;
+    }
+    std::fs::write(stage.0.join(super::activation::NAME), script)?;
+    std::fs::write(
+        stage.0.join(super::activation::DEACTIVATE_NAME),
+        deactivation,
+    )?;
+    std::fs::write(
+        stage.0.join(MANIFEST_NAME),
+        serde_json::to_vec_pretty(&manifest)?,
+    )?;
+    persistent.publish()?;
+    publish_entries(directory, &stage.0, &manifest)?;
+    tracing::info!(directory = %directory.display(), count = manifest.commands.len(), "Installed governed command shims");
+    persistent.log_paths();
+    Ok(())
+}
+
+fn retain_removed_routes(manifest: &mut Manifest, old: Option<&Manifest>) {
+    if let Some(old) = old {
         // Retain each missing command path as a tombstone, including removed
         // subcommands of a binary that still has other registered routes.
         for (name, routes) in &old.commands {
@@ -219,28 +266,33 @@ fn install(directory: &Path, mut manifest: Manifest) -> anyhow::Result<()> {
             }
         }
     }
-    verify_destinations(directory, &manifest, old.as_ref())?;
-    std::fs::create_dir_all(directory)?;
-    let stage = StagingDirectory(directory.join(format!(".install-{}", uuid::Uuid::new_v4())));
-    std::fs::create_dir(&stage.0)?;
-    for name in manifest.commands.keys() {
-        create_entry(&manifest.executable, &entry_path(&stage.0, name))?;
-    }
-    std::fs::write(
-        stage.0.join(MANIFEST_NAME),
-        serde_json::to_vec_pretty(&manifest)?,
-    )?;
+}
+
+fn publish_entries(directory: &Path, stage: &Path, manifest: &Manifest) -> anyhow::Result<()> {
     for name in manifest.commands.keys() {
         let destination = entry_path(directory, name);
         #[cfg(windows)]
         if destination.exists() {
             std::fs::remove_file(&destination)?;
         }
-        std::fs::rename(entry_path(&stage.0, name), destination)?;
+        std::fs::rename(entry_path(stage, name), destination)?;
     }
-    std::fs::rename(stage.0.join(MANIFEST_NAME), directory.join(MANIFEST_NAME))?;
-    tracing::info!(directory = %directory.display(), count = manifest.commands.len(), "Installed governed command shims");
+    std::fs::rename(
+        stage.join(super::activation::NAME),
+        directory.join(super::activation::NAME),
+    )?;
+    std::fs::rename(
+        stage.join(super::activation::DEACTIVATE_NAME),
+        directory.join(super::activation::DEACTIVATE_NAME),
+    )?;
+    std::fs::rename(stage.join(MANIFEST_NAME), directory.join(MANIFEST_NAME))?;
     Ok(())
+}
+
+fn reserved_shim_name(name: &str) -> bool {
+    name == super::activation::NAME
+        || name == super::activation::DEACTIVATE_NAME
+        || super::source_scripts::reserved_name(name)
 }
 
 fn verify_destinations(
@@ -248,6 +300,23 @@ fn verify_destinations(
     manifest: &Manifest,
     old: Option<&Manifest>,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !manifest
+            .commands
+            .keys()
+            .any(|name| reserved_shim_name(name)),
+        "Shim names used for activation scripts and their ownership record are reserved"
+    );
+    super::activation::verify_existing(
+        directory,
+        super::activation::NAME,
+        old.and_then(|manifest| manifest.activation_script.as_deref()),
+    )?;
+    super::activation::verify_existing(
+        directory,
+        super::activation::DEACTIVATE_NAME,
+        old.and_then(|manifest| manifest.deactivation_script.as_deref()),
+    )?;
     for name in manifest.commands.keys() {
         anyhow::ensure!(
             super::shim::valid_name(name),
@@ -269,9 +338,14 @@ fn verify_destinations(
 
 fn uninstall(directory: &Path) -> anyhow::Result<()> {
     let manifest = super::shim::read_manifest(directory)?;
+    for (name, script) in manifest_scripts(&manifest) {
+        if let Some(script) = script {
+            super::activation::verify_existing(directory, name, Some(script))?;
+        }
+    }
     for name in manifest.commands.keys() {
         anyhow::ensure!(
-            super::shim::valid_name(name),
+            super::shim::valid_name(name) && !reserved_shim_name(name),
             "Invalid command name in manifest"
         );
         let path = entry_path(directory, name);
@@ -289,8 +363,26 @@ fn uninstall(directory: &Path) -> anyhow::Result<()> {
             std::fs::remove_file(path)?;
         }
     }
+    for (name, script) in manifest_scripts(&manifest) {
+        if script.is_some() && directory.join(name).try_exists()? {
+            std::fs::remove_file(directory.join(name))?;
+        }
+    }
     std::fs::remove_file(directory.join(MANIFEST_NAME))?;
     Ok(())
+}
+
+fn manifest_scripts(manifest: &Manifest) -> [(&str, Option<&str>); 2] {
+    [
+        (
+            super::activation::NAME,
+            manifest.activation_script.as_deref(),
+        ),
+        (
+            super::activation::DEACTIVATE_NAME,
+            manifest.deactivation_script.as_deref(),
+        ),
+    ]
 }
 
 fn print_activation(directory: &Path, shell: Shell) -> anyhow::Result<()> {
@@ -308,7 +400,8 @@ fn print_activation(directory: &Path, shell: Shell) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Shim directory must be valid UTF-8"))?;
     let output = match shell {
         Shell::Sh | Shell::Bash | Shell::Zsh => format!(
-            "export APEXE_SHIM_DIR={};\nexport PATH={};",
+            "{}export APEXE_SHIM_DIR={};\nexport PATH={};\n_APEXE_ACTIVE_SHIM_DIR=\"$APEXE_SHIM_DIR\";",
+            super::activation::SAVE_ENVIRONMENT,
             shell_words::quote(directory),
             shell_words::quote(path)
         ),

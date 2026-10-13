@@ -2,13 +2,21 @@
 
 > **Where a new entry goes.** apexe ships no overlays; the corpus is the
 > [cli-permissions](https://github.com/aiperceivable/cli-permissions)
-> repository. Write and verify an entry there. This document is the procedure
+> repository, obtained automatically on the first online scan and cached locally.
+> Write and verify an entry there. This document is the procedure
 > for doing so, and it applies wherever the file ends up — including
 > `~/.apexe/overlays/`, which needs no repository at all.
 
 An overlay is a hand-written, reviewed description of **one variant of one command** — BSD `ls` as shipped by macOS, GNU coreutils `ls`, BusyBox `ls`. When one matches, it can replace the scanner's heuristic output entirely.
 
-That power is the reason this document exists. A wrong overlay is worse than no overlay: `mode: authoritative` discards the scan result, so a flag you got wrong becomes authoritative fact that an agent will act on, carrying the highest confidence label in the system.
+That power is the reason this document exists. A wrong overlay is worse than no overlay: `mode: authoritative` discards the scan result, so a flag you got wrong becomes authoritative fact that an agent will act on, carrying a reviewed source assertion that requires evidence.
+
+The corpus's legacy `confidence: verified` field records an author claim and
+requires provenance. apexe caps resulting source-derived flag confidence at
+`high`. Runtime `verified` confidence is earned through explicit cases and
+matching digests with `apexe verify --record`; see [verification](verification.md).
+A bounded case certifies its declared inputs/outputs, so the authoring procedure
+still establishes full flag coverage, conflicts and native capabilities.
 
 There is deliberately **no `apexe overlay verify` command**. See [What cannot be automated](#what-cannot-be-automated) for why. The verification described here is a procedure a human follows, and its reliability comes from the human.
 

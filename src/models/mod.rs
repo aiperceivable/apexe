@@ -44,21 +44,19 @@ pub enum Confidence {
     Low,
     /// Two or more independent heuristic sources agree.
     Medium,
-    /// A machine-generated completion spec, which the tool itself ships.
+    /// A completion specification or an author-reviewed overlay assertion.
     High,
-    /// A curated overlay, reviewed against the tool's own documentation.
+    /// Earned runtime evidence for explicitly checked cases and matching digests.
     Verified,
 }
 
 impl Confidence {
     /// Derive a confidence level from the sources backing a flag.
     ///
-    /// Overlay outranks completion, which outranks any number of heuristic
-    /// sources; two agreeing heuristic sources outrank one.
+    /// Reviewed overlays and completions outrank heuristic sources. Source
+    /// provenance alone never earns runtime verification.
     pub fn from_sources(sources: &[FlagSource]) -> Self {
-        if sources.contains(&FlagSource::Overlay) {
-            Confidence::Verified
-        } else if sources.contains(&FlagSource::Completion) {
+        if sources.contains(&FlagSource::Overlay) || sources.contains(&FlagSource::Completion) {
             Confidence::High
         } else if sources.len() >= 2 {
             Confidence::Medium
@@ -545,7 +543,7 @@ mod tests {
     fn test_confidence_from_sources_ranks_overlay_highest() {
         assert_eq!(
             Confidence::from_sources(&[FlagSource::Help, FlagSource::Overlay]),
-            Confidence::Verified
+            Confidence::High
         );
         assert_eq!(
             Confidence::from_sources(&[FlagSource::Help, FlagSource::Completion]),

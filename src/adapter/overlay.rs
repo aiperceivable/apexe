@@ -814,7 +814,8 @@ pub fn apply_overlay(tool: &mut ScannedCLITool, overlay: &ToolOverlay) {
         streaming_stdin_safe: overlay.streaming_stdin_safe,
         cross_flag_ordering: overlay.cross_flag_ordering,
     });
-    let confidence = overlay.confidence;
+    // Legacy corpus "verified" is an author assertion, not earned runtime evidence.
+    let confidence = overlay.confidence.min(Confidence::High);
     let curated: Vec<ScannedFlag> = overlay
         .flags
         .iter()
@@ -1182,7 +1183,7 @@ mod tests {
 
         assert_eq!(tool.global_flags.len(), 1);
         assert_eq!(tool.global_flags[0].short_name.as_deref(), Some("-l"));
-        assert_eq!(tool.global_flags[0].confidence, Confidence::Verified);
+        assert_eq!(tool.global_flags[0].confidence, Confidence::High);
         assert_eq!(tool.global_flags[0].sources, vec![FlagSource::Overlay]);
         assert_eq!(tool.global_flags[0].conflicts_with, vec!["-1".to_string()]);
         assert_eq!(tool.positional_args.len(), 1);
@@ -1226,7 +1227,7 @@ mod tests {
             Some("--long"),
             "an alias the overlay did not restate must be kept"
         );
-        assert_eq!(flag.confidence, Confidence::Verified);
+        assert_eq!(flag.confidence, Confidence::High);
         assert_eq!(flag.sources, vec![FlagSource::Help, FlagSource::Overlay]);
     }
 

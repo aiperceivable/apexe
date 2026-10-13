@@ -807,8 +807,8 @@ mod tests {
             assert!(
                 tool.global_flags
                     .iter()
-                    .all(|f| f.confidence == crate::models::Confidence::Verified),
-                "an authoritative overlay must leave only verified flags"
+                    .all(|f| f.confidence == crate::models::Confidence::High),
+                "an author-reviewed overlay cannot earn runtime confidence"
             );
             assert!(
                 tool.positional_args.iter().any(|arg| arg.variadic),

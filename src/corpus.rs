@@ -1,7 +1,10 @@
+mod automatic;
 mod catalog;
 mod git;
 mod manifest;
 mod source;
+
+pub(crate) use automatic::prepare_default;
 
 use crate::adapter::overlay::{validate_overlay, ToolOverlay};
 use serde::{Deserialize, Serialize};
@@ -326,8 +329,10 @@ fn validate_document(path: &Path) -> Result<(), CorpusError> {
 
 pub(crate) fn installed_overlay_dirs(config_dir: &Path) -> Result<Vec<PathBuf>, CorpusError> {
     let root = config_dir.join("corpora");
-    catalog::read(&root)?
-        .corpora
+    let mut corpora = catalog::read(&root)?.corpora;
+    // Load the automatic default before corpora explicitly installed by the operator.
+    corpora.sort_by_key(|corpus| corpus.name != automatic::DEFAULT_NAME);
+    corpora
         .iter()
         .map(|corpus| {
             checked_directory(

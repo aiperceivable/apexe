@@ -4,6 +4,9 @@ use apcore::{Config as CoreConfig, ModuleError};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+pub(crate) const DEFAULT_OVERLAY_REPOSITORY: &str =
+    "https://github.com/aiperceivable/cli-permissions";
+
 /// Global apexe configuration.
 ///
 /// Resolution priority: CLI flags > env vars > config file > defaults.
@@ -93,6 +96,9 @@ pub struct ApexeConfig {
     /// empty directory.
     pub overlay_dirs: Vec<PathBuf>,
 
+    /// Git repository used to obtain the default corpus on the first online scan.
+    pub default_overlay_repository: String,
+
     /// apcore core configuration for ecosystem integration.
     #[serde(skip)]
     pub core_config: Option<CoreConfig>,
@@ -115,6 +121,7 @@ impl Default for ApexeConfig {
             additional_denied_paths: Vec::new(),
             allowed_paths: Vec::new(),
             overlay_dirs: Vec::new(),
+            default_overlay_repository: DEFAULT_OVERLAY_REPOSITORY.to_string(),
             core_config: None,
         }
     }
@@ -393,6 +400,9 @@ fn apply_file_config(config: &mut ApexeConfig, file_path: &Path) -> anyhow::Resu
 
 /// Override `config` from `APEXE_*` environment variables, when set and valid.
 fn apply_env_overrides(config: &mut ApexeConfig) {
+    if let Ok(repository) = std::env::var("APEXE_DEFAULT_OVERLAY_REPOSITORY") {
+        config.default_overlay_repository = repository;
+    }
     if let Ok(val) = std::env::var("APEXE_BINDINGS_DIR") {
         config.bindings_dir = PathBuf::from(val);
     }
@@ -592,6 +602,45 @@ mod tests {
         assert!(
             known_config_keys().iter().any(|k| k == "overlay_dirs"),
             "an unrecognised key is warned about as a typo, which would be wrong here"
+        );
+    }
+
+    #[test]
+    fn test_default_overlay_repository_defaults_and_round_trips() {
+        let defaults: ApexeConfig = serde_yaml::from_str("log_level: info\n").unwrap();
+        assert_eq!(
+            defaults.default_overlay_repository,
+            DEFAULT_OVERLAY_REPOSITORY
+        );
+        let configured: ApexeConfig =
+            serde_yaml::from_str("default_overlay_repository: https://example.invalid/corpus\n")
+                .unwrap();
+        assert_eq!(
+            configured.default_overlay_repository,
+            "https://example.invalid/corpus"
+        );
+        assert!(known_config_keys().contains(&"default_overlay_repository".to_string()));
+    }
+
+    #[test]
+    fn test_default_overlay_repository_environment_overrides_config() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let previous = std::env::var_os("APEXE_DEFAULT_OVERLAY_REPOSITORY");
+        unsafe {
+            std::env::set_var(
+                "APEXE_DEFAULT_OVERLAY_REPOSITORY",
+                "https://example.invalid/mirror",
+            )
+        };
+        let mut config = ApexeConfig::default();
+        apply_env_overrides(&mut config);
+        match previous {
+            Some(value) => unsafe { std::env::set_var("APEXE_DEFAULT_OVERLAY_REPOSITORY", value) },
+            None => unsafe { std::env::remove_var("APEXE_DEFAULT_OVERLAY_REPOSITORY") },
+        }
+        assert_eq!(
+            config.default_overlay_repository,
+            "https://example.invalid/mirror"
         );
     }
 

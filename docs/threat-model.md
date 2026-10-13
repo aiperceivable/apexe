@@ -387,29 +387,39 @@ This is the single most important limitation on this page.
 
 ### 5.2 Annotations are name-based heuristics, and can be wrong
 
-`src/adapter/annotations.rs` classifies commands by matching their names against
-fixed pattern lists (`READONLY_PATTERNS`, `DESTRUCTIVE_PATTERNS`), with flag
-escalation (`APPROVAL_FLAGS`: `--force`, `-f`, `--hard`, `--recursive`, …).
+Matching cli-permissions overlays supply reviewed behavioral assertions for
+specific command variants. The first online scan can download the default corpus;
+later scans use the recorded snapshot until explicitly updated. Repository data
+is validated before installation, and selection checks declared platform,
+variant, version and probe constraints. This establishes a source and a match,
+not a guarantee that the author's behavioral assertion is correct.
+
+Without matching facts, `src/adapter/annotations.rs` classifies commands by
+matching names against fixed pattern lists (`READONLY_PATTERNS`,
+`DESTRUCTIVE_PATTERNS`), with invocation-based flag escalation. Offline scans
+still use matching cached and local overlays; only tools without matching facts
+use the fallback. Failed acquisition likewise retains available local sources.
 
 The two error directions are not symmetric:
 
 - **Missed destructive** (a destructive command whose name matches nothing) →
-  falls through to `default_effect: deny`. Safe direction.
+  falls through to `default_effect: deny` in a newly generated ACL. Safe
+  direction for that default; an existing operator-selected default is preserved.
 - **False readonly** (a command whose name matches a readonly pattern but which
   has side effects) → gets an **explicit allow rule**. **Unsafe direction.**
 
-Concrete example: `find` matches `READONLY_PATTERNS`, but `find … -delete` is
-destructive. Any tool whose subcommand name understates its effect is in this
-class. (The shipped `find` overlay corrects it to `destructive: true`, which is
-what overlays are for.) The sharpest instance is §5.9: `env` matched the same
-list while being a general-purpose command executor.
+The built-in fallback marks `find` and command-execution wrappers such as `env`
+as destructive, because their invocable surface can execute a caller-selected
+program. Arbitrary tools or subcommands with harmless-sounding names can still
+be misclassified. Destructive and open-world annotations both disqualify a
+module from the generated readonly allow rule, even if readonly is also set.
 
 The classification also feeds §4.8. A false readonly gets the *weaker* of the
 path guard's two treatments as well as an ACL allow, so one wrong annotation
 now moves two boundaries.
 
 **Review the generated ACL before serving it.** It is a starting point produced
-by a heuristic, not a policy you have approved. Use overlays to correct
+from corpus assertions and fallback inference, not a policy you have approved. Use overlays to correct
 classifications for tools you rely on.
 
 ### 5.3 Access control and approval are both opt-in

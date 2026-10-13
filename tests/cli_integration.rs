@@ -18,7 +18,7 @@ use predicates::prelude::*;
 fn apexe() -> Command {
     let home = tempfile::tempdir().unwrap().keep();
     let mut cmd = Command::cargo_bin("apexe").unwrap();
-    cmd.env("HOME", home);
+    cmd.env("HOME", home).env("APEXE_OFFLINE", "true");
     // Progress assertions exercise the default level, not the developer's
     // terminal filter (for example RUST_LOG=warn hides dry-run deliverables).
     cmd.env_remove("RUST_LOG");
@@ -57,6 +57,7 @@ fn test_scan_help_shows_expected_flags() {
         .stdout(predicate::str::contains("--output-dir"))
         .stdout(predicate::str::contains("--depth"))
         .stdout(predicate::str::contains("--no-cache"))
+        .stdout(predicate::str::contains("--offline"))
         .stdout(predicate::str::contains("--format"));
 }
 

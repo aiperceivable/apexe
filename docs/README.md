@@ -12,6 +12,7 @@ boundaries you must review.
 | --- | --- |
 | Scan a CLI, review its ACL, and connect an MCP client | [Quick Start](quickstart.md) |
 | Execute locally with captured output and native shims | [Local execution example](../examples/local_execution/README.md) |
+| Check source drift, explicit dry-runs and earned case evidence | [Verification guide](verification.md) and [runnable example](../examples/verification/README.md) |
 | Import an HTTP API and call it through MCP/A2A | [OpenAPI guide](openapi.md) and [runnable example](../examples/openapi_import/README.md) |
 | Find every command, configuration key, transport, and troubleshooting step | [User Manual](user-manual.md) |
 | Understand what apexe protects and what still needs a sandbox or host policy | [Threat Model](threat-model.md) |

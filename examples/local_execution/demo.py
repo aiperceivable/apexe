@@ -36,7 +36,7 @@ def run(apexe, corpus, shims):
         environment = {"HOME":str(home), "PATH":os.defpath, "LC_ALL":"C", "RUST_LOG":"error"}
         if corpus:
             environment["APEXE_OVERLAY_DIRS"] = str(corpus.resolve())
-        scanned = invoke(apexe, ["scan", "cat", "head", "--no-cache", "--format", "json"], environment, work)
+        scanned = invoke(apexe, ["scan", "cat", "head", "--offline", "--no-cache", "--format", "json"], environment, work)
         report = json.loads(scanned.stdout)
         schema = next(command["input_schema"] for command in report["commands"] if command["id"] == "cli.cat")
         arguments = ["run", "cli.cat", "--input", json.dumps(file_input(schema, "sample.txt"))]

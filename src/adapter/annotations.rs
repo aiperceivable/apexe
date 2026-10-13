@@ -28,11 +28,11 @@ const OPEN_WORLD_TOOLS: &[&str] = &[
     "httpie", "wscat",
 ];
 
-/// Executables whose argument list *is* another command to run.
+/// Executables that accept a caller-selected command to run.
 ///
-/// These are not tools that happen to be dangerous; they are tools whose entire
-/// function is to execute something else, which makes every name-based
-/// classification downstream of them meaningless. `env` was classified
+/// An execution interface can run anything its caller selects, even when the
+/// tool also offers harmless operations. `find` searches by default but accepts
+/// `-exec` and `-delete`, so its whole surface cannot be readonly. `env` was classified
 /// `readonly` — its name is in [`READONLY_PATTERNS`] — and BSD `env` accepts
 /// `-S "rm -rf /etc"`, which splits the string into argv and runs it. That
 /// combination produced an explicit ACL *allow* on a general-purpose command
@@ -45,11 +45,11 @@ const OPEN_WORLD_TOOLS: &[&str] = &[
 /// Nothing can statically decide what argv a caller-supplied string will become
 /// — see `docs/threat-model.md` §5.9, which recommends denying these outright.
 ///
-/// Matched on the executable, like [`OPEN_WORLD_TOOLS`]: for these there is no
-/// benign invocation to distinguish, because passing a command is the interface.
+/// Matched on the executable, like [`OPEN_WORLD_TOOLS`], because an annotation
+/// covers the command's full surface rather than one harmless invocation.
 const EXEC_WRAPPER_TOOLS: &[&str] = &[
     "env", "xargs", "nice", "ionice", "nohup", "timeout", "chroot", "setsid", "stdbuf", "script",
-    "watch", "time", "sudo", "doas", "su",
+    "watch", "time", "sudo", "doas", "su", "find",
 ];
 
 /// Subcommands that reach the network on an otherwise local tool.
@@ -458,6 +458,14 @@ mod tests {
             !annotations.cacheable,
             "a command executor's output is not cacheable"
         );
+    }
+
+    #[test]
+    fn test_infer_classifies_find_as_destructive_without_overlay() {
+        let annotations = infer(&make_root_command("find"));
+        assert!(!annotations.readonly);
+        assert!(annotations.destructive);
+        assert!(annotations.requires_approval);
     }
 
     #[test]

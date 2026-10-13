@@ -31,6 +31,7 @@ impl Fixture {
     fn command(&self) -> Command {
         let mut command = Command::cargo_bin("apexe").unwrap();
         command
+            .env("APEXE_OFFLINE", "true")
             .env("HOME", &self.home)
             .env_remove("APEXE_OVERLAY_DIRS")
             .env_remove("APEXE_BINDINGS_DIR")
@@ -115,6 +116,21 @@ impl Fixture {
 
     fn root(&self) -> PathBuf {
         self.home.join(".apexe/corpora")
+    }
+
+    #[cfg(unix)]
+    fn automatic_scan(&self) -> Command {
+        let binary = self.directory.path().join("fixture");
+        write_executable(&binary, "case \"$1\" in --version) echo 'fixture 1.0';; *) printf 'Usage: fixture [OPTIONS]\\nOptions:\\n  --ready  Test operation\\n';; esac");
+        let mut command = self.command();
+        command
+            .env("APEXE_OFFLINE", "false")
+            .env("APEXE_DEFAULT_OVERLAY_REPOSITORY", &self.repository)
+            .env("RUST_LOG", "info")
+            .args(["scan"])
+            .arg(binary)
+            .args(["--format", "json"]);
+        command
     }
 }
 
@@ -469,4 +485,238 @@ fn test_install_invalid_reference_preserves_empty_catalog_and_releases_lock() {
     assert_eq!(fixture.list(), json!([]));
     assert!(!fixture.root().join(".lock").exists());
     fixture.install(&[]);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_scan_automatically_installs_default_corpus_and_generates_acl() {
+    let fixture = Fixture::new();
+    fixture.automatic_scan().assert().success();
+    let installed = fixture.list();
+    assert_eq!(installed[0]["name"], "cli-permissions");
+    assert_eq!(installed[0]["commit"], fixture.git(&["rev-parse", "HEAD"]));
+    let policy =
+        apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml")).unwrap();
+    assert_eq!(policy.explain("cli.fixture").effect, "allow");
+    assert_eq!(policy.explain("cli.unscanned").effect, "deny");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_scan_uses_cached_default_corpus_offline_without_fetching_updates() {
+    let fixture = Fixture::new();
+    fixture.automatic_scan().assert().success();
+    let installed = fixture.list();
+    fixture.write_overlay("overlays", "fixture", "--changed");
+    fixture.commit();
+    std::fs::remove_dir_all(&fixture.repository).unwrap();
+    let scan = result(fixture.automatic_scan().arg("--offline").arg("--no-cache"));
+    assert!(scan["commands"][0]["input_schema"]["properties"]
+        .get("ready")
+        .is_some());
+    assert!(scan["commands"][0]["input_schema"]["properties"]
+        .get("changed")
+        .is_none());
+    assert_eq!(fixture.list(), installed);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_scan_unavailable_default_corpus_falls_back_and_denies_unknown_module() {
+    let fixture = Fixture::new();
+    fixture
+        .automatic_scan()
+        .env(
+            "APEXE_DEFAULT_OVERLAY_REPOSITORY",
+            "file:///nonexistent/apexe-corpus",
+        )
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("built-in classification"));
+    assert_eq!(fixture.list(), json!([]));
+    let policy =
+        apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml")).unwrap();
+    assert_eq!(policy.explain("cli.fixture").effect, "deny");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_scan_offline_without_cache_does_not_install_corpus() {
+    let fixture = Fixture::new();
+    fixture.automatic_scan().arg("--offline").assert().success();
+    assert!(!fixture.root().exists());
+    let policy =
+        apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml")).unwrap();
+    assert_eq!(policy.explain("cli.fixture").effect, "deny");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_scan_offline_environment_prevents_default_download() {
+    let fixture = Fixture::new();
+    fixture
+        .automatic_scan()
+        .env("APEXE_OFFLINE", "true")
+        .assert()
+        .success();
+    assert!(!fixture.root().exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_scan_configured_local_corpus_skips_download_and_supplies_annotations() {
+    let fixture = Fixture::new();
+    fixture
+        .automatic_scan()
+        .env("APEXE_OVERLAY_DIRS", fixture.repository.join("overlays"))
+        .assert()
+        .success();
+    assert!(!fixture.root().exists());
+    let policy =
+        apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml")).unwrap();
+    assert_eq!(policy.explain("cli.fixture").effect, "allow");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_scan_automatic_corpus_preserves_operator_default_allow() {
+    let fixture = Fixture::new();
+    std::fs::create_dir_all(fixture.home.join(".apexe")).unwrap();
+    std::fs::write(
+        fixture.home.join(".apexe/acl.yaml"),
+        "default_effect: allow\nrules: []\n",
+    )
+    .unwrap();
+    fixture.automatic_scan().assert().success();
+    let policy =
+        apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml")).unwrap();
+    assert_eq!(policy.default_effect(), "allow");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_scan_automatic_corpus_respects_platform_and_variant() {
+    for mismatch in ["platform", "variant", "version", "probe"] {
+        let fixture = Fixture::new();
+        let path = fixture.repository.join("overlays/fixture.json");
+        let mut overlay: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        if mismatch == "platform" {
+            overlay["match"] =
+                json!({"platform": [if cfg!(target_os = "macos") { "linux" } else { "macos" }]});
+        } else if mismatch == "variant" {
+            overlay["variant"] = json!("gnu");
+        } else if mismatch == "version" {
+            overlay["match"] = json!({"version_range": ">=9.0"});
+        } else {
+            overlay["match"] = json!({"probe": {"args": ["--version"], "expect": "success", "output_contains": "GNU fixture"}});
+        }
+        std::fs::write(path, serde_json::to_vec(&overlay).unwrap()).unwrap();
+        fixture.commit();
+        fixture.automatic_scan().assert().success();
+        let policy =
+            apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml"))
+                .unwrap();
+        assert_eq!(
+            policy.explain("cli.fixture").effect,
+            "deny",
+            "{mismatch} mismatch must not grant access"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_scan_automatic_corpus_preserves_manual_rules_and_default_effect() {
+    let fixture = Fixture::new();
+    std::fs::create_dir_all(fixture.home.join(".apexe")).unwrap();
+    std::fs::write(fixture.home.join(".apexe/acl.yaml"), "default_effect: deny\nrules:\n  - callers: ['*']\n    targets: ['cli.fixture']\n    effect: deny\n    description: Operator restriction\n").unwrap();
+    fixture.automatic_scan().assert().success();
+    let policy =
+        apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml")).unwrap();
+    assert_eq!(policy.explain("cli.fixture").effect, "deny");
+    assert_eq!(policy.explain("cli.unscanned").effect, "deny");
+    assert!(
+        std::fs::read_to_string(fixture.home.join(".apexe/acl.yaml"))
+            .unwrap()
+            .contains("Operator restriction")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_scan_dry_run_and_explicit_overlay_skip_automatic_installation() {
+    for operation in ["dry-run", "explicit"] {
+        let fixture = Fixture::new();
+        let mut command = fixture.automatic_scan();
+        if operation == "dry-run" {
+            command.arg("--dry-run");
+        } else {
+            command
+                .arg("--overlay")
+                .arg(fixture.repository.join("overlays/fixture.json"));
+        }
+        command.assert().success();
+        assert!(!fixture.root().exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_scan_automatic_corpus_does_not_overwrite_named_user_installation() {
+    let fixture = Fixture::new();
+    fixture.install(&["--name", "cli-permissions"]);
+    let installed = fixture.list();
+    fixture
+        .automatic_scan()
+        .env(
+            "APEXE_DEFAULT_OVERLAY_REPOSITORY",
+            "file:///nonexistent/apexe-corpus",
+        )
+        .assert()
+        .success();
+    assert_eq!(fixture.list(), installed);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_scan_default_corpus_does_not_override_installed_team_corpus() {
+    let fixture = Fixture::new();
+    let path = fixture.repository.join("overlays/fixture.json");
+    let mut overlay: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    overlay["annotations"]["readonly"] = json!(false);
+    overlay["annotations"]["destructive"] = json!(true);
+    std::fs::write(path, serde_json::to_vec(&overlay).unwrap()).unwrap();
+    fixture.commit();
+    fixture.install(&["--name", "team-policy"]);
+    let defaults = Fixture::new();
+    fixture
+        .automatic_scan()
+        .env("APEXE_DEFAULT_OVERLAY_REPOSITORY", &defaults.repository)
+        .assert()
+        .success();
+    let policy =
+        apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml")).unwrap();
+    assert_eq!(policy.explain("cli.fixture").effect, "deny");
+    assert_eq!(fixture.list().as_array().unwrap().len(), 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_scan_automatic_corpus_rejects_invalid_downloaded_rules() {
+    let fixture = Fixture::new();
+    std::fs::write(
+        fixture.repository.join("overlays/fixture.json"),
+        "invalid data",
+    )
+    .unwrap();
+    fixture.commit();
+    fixture
+        .automatic_scan()
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("built-in classification"));
+    assert_eq!(fixture.list(), json!([]));
+    let policy =
+        apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml")).unwrap();
+    assert_eq!(policy.explain("cli.fixture").effect, "deny");
 }

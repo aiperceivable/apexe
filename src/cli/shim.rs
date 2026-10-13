@@ -26,6 +26,12 @@ pub(super) struct Manifest {
     pub acl: Option<PathBuf>,
     pub filter: ModuleFilter,
     pub commands: BTreeMap<String, Vec<Route>>,
+    #[serde(default)]
+    pub activation_script: Option<String>,
+    #[serde(default)]
+    pub deactivation_script: Option<String>,
+    #[serde(default)]
+    pub source_scripts_dir: Option<PathBuf>,
 }
 
 pub(super) fn read_manifest(directory: &Path) -> anyhow::Result<Manifest> {

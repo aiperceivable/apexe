@@ -1,3 +1,4 @@
+mod activation;
 mod config_gen;
 mod env;
 mod local;
@@ -6,6 +7,7 @@ mod run;
 mod shell;
 mod shell_init;
 mod shim;
+mod source_scripts;
 mod verify;
 pub use env::EnvArgs;
 pub use overlays::OverlaysArgs;
@@ -60,7 +62,7 @@ pub enum Commands {
     A2a(A2aArgs),
     /// Execute a scanned module locally with JSON input and captured output.
     Run(RunArgs),
-    /// Enable, reload or disable governed command shims, or print shell activation.
+    /// Enable, reload, disable or check governed shims, or print shell activation.
     Env(EnvArgs),
     /// Re-check source contracts and optionally run admitted readonly cases.
     Verify(VerifyArgs),
@@ -87,7 +89,9 @@ impl Cli {
 
     pub fn run(self) -> anyhow::Result<()> {
         let config = load_config(None)?.with_timeout_override(self.timeout);
-        config.ensure_dirs()?;
+        if !matches!(&self.command, Commands::Env(args) if args.check) {
+            config.ensure_dirs()?;
+        }
         install_path_guard(&config)?;
 
         match self.command {
@@ -165,6 +169,10 @@ pub struct ScanArgs {
     #[arg(long)]
     pub no_cache: bool,
 
+    /// Use local overlays and built-in classification without downloading a corpus.
+    #[arg(long, env = "APEXE_OFFLINE")]
+    pub offline: bool,
+
     /// Output format for scan results
     #[arg(long, default_value = "table", value_parser = ["json", "yaml", "table"])]
     pub format: String,
@@ -203,6 +211,9 @@ pub struct ScanArgs {
 
 impl ScanArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
+        if !self.dry_run && self.overlay.is_none() {
+            crate::corpus::prepare_default(config, !self.offline);
+        }
         let mut orchestrator = crate::scanner::ScanOrchestrator::new(config.clone());
         if let Some(ref overlay_path) = self.overlay {
             orchestrator
@@ -1378,6 +1389,15 @@ mod tests {
     }
 
     #[test]
+    fn test_scan_offline_flag_disables_automatic_downloads() {
+        let cli = Cli::try_parse_from(["apexe", "scan", "ls", "--offline"]).unwrap();
+        let Commands::Scan(args) = cli.command else {
+            panic!("expected scan");
+        };
+        assert!(args.offline);
+    }
+
+    #[test]
     fn test_scan_skills_dir_default_none() {
         let cli = Cli::try_parse_from(["apexe", "scan", "git"]).unwrap();
         if let Commands::Scan(args) = cli.command {
@@ -1412,6 +1432,7 @@ mod tests {
         // fall back to heuristics under an authoritative-looking banner.
         let config = ApexeConfig::default();
         let args = ScanArgs {
+            offline: true,
             verify: false,
             dry_run: false,
             tools: vec!["echo".to_string()],
@@ -2252,6 +2273,7 @@ mod tests {
     fn test_scan_execute_nonexistent_tool_errors() {
         let config = ApexeConfig::default();
         let args = ScanArgs {
+            offline: true,
             verify: false,
             dry_run: false,
             tools: vec!["nonexistent_tool_xyz_12345".to_string()],
@@ -2281,6 +2303,7 @@ mod tests {
         let bad_output = file_path.join("nested");
 
         let args = ScanArgs {
+            offline: true,
             verify: false,
             dry_run: false,
             tools: vec!["echo".to_string()],
@@ -2319,6 +2342,7 @@ mod tests {
             ..ApexeConfig::default()
         };
         let args = ScanArgs {
+            offline: true,
             verify: false,
             dry_run: false,
             tools: vec!["ls".to_string()],

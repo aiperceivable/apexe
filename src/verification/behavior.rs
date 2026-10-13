@@ -1,4 +1,4 @@
-use super::{result, ModuleVerification, VerificationStatus};
+use super::{result, IsolationMode, ModuleVerification};
 use apcore_toolkit::ScannedModule;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,15 +10,42 @@ use std::path::Path;
 pub(crate) struct Cases {
     allowlist: BTreeSet<String>,
     cases: Vec<Case>,
+    #[serde(skip)]
+    pub source: Option<super::CaseSource>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Case {
-    module_id: String,
-    input: Value,
-    fixtures: BTreeMap<String, String>,
-    expected_stdout: String,
+pub(super) struct Case {
+    pub(super) module_id: String,
+    pub(super) input: Value,
+    pub(super) fixtures: BTreeMap<String, String>,
+    pub(super) expected_stdout: String,
+    #[serde(default)]
+    pub(super) expected_stderr: String,
+    #[serde(default)]
+    pub(super) mode: CaseMode,
+    #[serde(default)]
+    pub(super) binary_digest: Option<String>,
+    #[serde(default)]
+    pub(super) dry_run_parameter: Option<String>,
+    #[serde(default)]
+    pub(super) expected_files: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum CaseMode {
+    #[default]
+    Readonly,
+    DryRun,
+    Isolated,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(crate) struct BehaviorOptions {
+    pub allow_dry_run: bool,
+    pub isolation: IsolationMode,
 }
 
 pub(crate) fn read_cases(path: &Path) -> anyhow::Result<Cases> {
@@ -26,7 +53,13 @@ pub(crate) fn read_cases(path: &Path) -> anyhow::Result<Cases> {
         std::fs::metadata(path)?.len() <= 1024 * 1024,
         "Behavioral cases exceed 1 MiB"
     );
-    let cases: Cases = serde_json::from_slice(&std::fs::read(path)?)?;
+    let bytes = std::fs::read(path)?;
+    let mut cases: Cases = serde_json::from_slice(&bytes)?;
+    use sha2::{Digest, Sha256};
+    cases.source = Some(super::CaseSource {
+        path: std::path::absolute(path)?,
+        digest: format!("{:x}", Sha256::digest(&bytes)),
+    });
     anyhow::ensure!(
         !cases.cases.is_empty() && cases.cases.len() <= 100,
         "Provide 1 to 100 cases"
@@ -39,6 +72,7 @@ pub(crate) async fn run_cases(
     modules: &[ScannedModule],
     bindings: &Path,
     timeout: u64,
+    options: BehaviorOptions,
 ) -> anyhow::Result<Vec<ModuleVerification>> {
     let mut entries = Vec::new();
     for case in cases.cases {
@@ -49,21 +83,28 @@ pub(crate) async fn run_cases(
         let owned_case = case.clone();
         let owned_module = module.clone();
         let allowlist = cases.allowlist.clone();
-        let admitted =
-            tokio::task::spawn_blocking(move || admit(&owned_case, &allowlist, &owned_module))
-                .await?;
-        let (status, reason) = match admitted {
-            Err(error) => (VerificationStatus::Unverifiable, Some(error.to_string())),
-            Ok(()) => match run_case(&case, module, bindings, timeout).await {
-                Ok(()) => (VerificationStatus::Passed, None),
-                Err(error) => (VerificationStatus::Failed, Some(error.to_string())),
-            },
+        let admitted = tokio::task::spawn_blocking(move || {
+            admit(&owned_case, &allowlist, &owned_module, options)
+        })
+        .await?;
+        let outcome = match admitted {
+            Err(error) => super::runner::CaseOutcome::unverifiable(error.to_string()),
+            Ok(()) => super::runner::run_case(&case, module, bindings, timeout, options).await,
         };
         let module = module.clone();
         entries.push(
             tokio::task::spawn_blocking(move || {
-                let mut entry = result(&module, status, reason)?;
+                let mut entry = result(&module, outcome.status, outcome.reason)?;
                 entry.case_digest = Some(super::digest(&case)?);
+                entry.mode = Some(
+                    match case.mode {
+                        CaseMode::Readonly => "readonly",
+                        CaseMode::DryRun => "dry_run",
+                        CaseMode::Isolated => "isolated",
+                    }
+                    .into(),
+                );
+                entry.isolation = outcome.isolation;
                 Ok::<_, anyhow::Error>(entry)
             })
             .await??,
@@ -72,7 +113,12 @@ pub(crate) async fn run_cases(
     Ok(entries)
 }
 
-fn admit(case: &Case, allowlist: &BTreeSet<String>, module: &ScannedModule) -> anyhow::Result<()> {
+fn admit(
+    case: &Case,
+    allowlist: &BTreeSet<String>,
+    module: &ScannedModule,
+    options: BehaviorOptions,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         allowlist.contains(&case.module_id),
         "Module is not explicitly allowlisted"
@@ -82,21 +128,134 @@ fn admit(case: &Case, allowlist: &BTreeSet<String>, module: &ScannedModule) -> a
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("No behavioral annotations"))?;
     anyhow::ensure!(
-        (annotations.readonly || annotations.idempotent)
-            && !annotations.destructive
-            && !annotations.requires_approval
-            && !annotations.open_world,
-        "Behavioral verification refuses destructive, approval-required or networked modules"
+        !annotations.open_world,
+        "Networked modules are never behaviorally verified"
     );
+    anyhow::ensure!(
+        !annotations.readonly
+            || case
+                .expected_files
+                .iter()
+                .all(|(name, contents)| case.fixtures.get(name) == Some(contents)),
+        "Readonly annotations conflict with expected fixture writes"
+    );
+    if case.mode == CaseMode::DryRun {
+        admit_dry_run(case, module, options)?;
+    } else {
+        anyhow::ensure!(
+            (annotations.readonly || annotations.idempotent)
+                && !annotations.destructive
+                && !annotations.requires_approval,
+            "Behavioral verification refuses destructive or approval-required modules"
+        );
+    }
+    let target = validate_target(module, case.mode)?;
+    if case.mode == CaseMode::Readonly {
+        admit_readonly_binary(&target)?;
+    } else {
+        anyhow::ensure!(
+            case.binary_digest.as_ref() == Some(&super::binary_digest(module)?),
+            "An explicit matching binary_digest is required for this case mode"
+        );
+    }
+    validate_case_shape(case, module)
+}
+
+pub(super) fn validate_target(
+    module: &ScannedModule,
+    mode: CaseMode,
+) -> anyhow::Result<std::path::PathBuf> {
     let target = module
         .target
         .strip_prefix("exec://")
         .ok_or_else(|| anyhow::anyhow!("Not a CLI target"))?;
+    let words = shell_words::split(target)?;
+    let binary = words
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("Missing CLI binary"))?;
     anyhow::ensure!(
-        target.split_whitespace().count() == 1,
-        "Only reviewed root binaries are admitted"
+        Path::new(binary).is_absolute(),
+        "Verification requires an absolute binary"
     );
-    let binary = Path::new(target).canonicalize()?;
+    if words.len() > 1 {
+        anyhow::ensure!(
+            mode != CaseMode::Readonly,
+            "Readonly admission covers root binaries only"
+        );
+        let declared = module
+            .metadata
+            .get("command_path")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("Subcommand targets require command_path metadata"))?;
+        let declared: Vec<_> = declared.iter().skip(1).filter_map(Value::as_str).collect();
+        anyhow::ensure!(
+            words[1..].iter().map(String::as_str).eq(declared),
+            "Fixed subcommands must match command_path"
+        );
+        anyhow::ensure!(
+            words[1..].iter().all(|word| !word.starts_with('-')
+                && word.chars().all(
+                    |character| character.is_ascii_alphanumeric() || "-_ .".contains(character)
+                )
+                && !word.contains(' ')),
+            "Only literal subcommand names are admitted; execution wrappers are refused"
+        );
+    }
+    Ok(binary.into())
+}
+
+fn validate_case_shape(case: &Case, module: &ScannedModule) -> anyhow::Result<()> {
+    anyhow::ensure!(case.input.is_object(), "Case input must be an object");
+    anyhow::ensure!(
+        !module.metadata.contains_key("json_flag"),
+        "Verification refuses implicit JSON-output flags"
+    );
+    anyhow::ensure!(
+        case.expected_stdout.len() <= 1024 * 1024,
+        "Expected output exceeds 1 MiB"
+    );
+    anyhow::ensure!(
+        case.expected_stderr.len() <= 1024 * 1024,
+        "Expected stderr exceeds 1 MiB"
+    );
+    anyhow::ensure!(case.expected_files.len() <= 32, "Too many expected files");
+    Ok(())
+}
+
+fn admit_dry_run(
+    case: &Case,
+    module: &ScannedModule,
+    options: BehaviorOptions,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        options.allow_dry_run,
+        "Dry-run cases require --allow-dry-run"
+    );
+    anyhow::ensure!(
+        !matches!(options.isolation, IsolationMode::None),
+        "Dry-run cases require operating-system isolation"
+    );
+    let parameter = case
+        .dry_run_parameter
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("Declare the reviewed dry_run_parameter"))?;
+    anyhow::ensure!(
+        case.input[parameter] == true
+            && module.input_schema["properties"][parameter]["type"] == "boolean",
+        "The declared dry-run boolean parameter must be true"
+    );
+    let flag = module.input_schema["properties"][parameter]["x-apexe-flag"]
+        .as_str()
+        .unwrap_or_default();
+    anyhow::ensure!(
+        ["--dry-run", "--check", "--noop", "--plan", "--whatif"].contains(&flag),
+        "The parameter must declare a supported literal dry-run switch"
+    );
+    Ok(())
+}
+
+fn admit_readonly_binary(target: &Path) -> anyhow::Result<()> {
+    let binary = target.canonicalize()?;
     let allowed = [
         "/bin/cat",
         "/usr/bin/cat",
@@ -112,35 +271,40 @@ fn admit(case: &Case, allowlist: &BTreeSet<String>, module: &ScannedModule) -> a
             .any(|path| path == binary),
         "Binary is outside the independently reviewed readonly allowlist"
     );
-    anyhow::ensure!(case.input.is_object(), "Case input must be an object");
-    anyhow::ensure!(
-        !module.metadata.contains_key("json_flag"),
-        "Reviewed readonly tools have no JSON-output flag"
-    );
-    anyhow::ensure!(
-        case.expected_stdout.len() <= 1024 * 1024,
-        "Expected output exceeds 1 MiB"
-    );
     Ok(())
 }
 
-struct PreparedCase {
-    _temporary: tempfile::TempDir,
-    work: std::path::PathBuf,
-    home: std::path::PathBuf,
-    input: Value,
-    acl: std::path::PathBuf,
-    binary_digest: String,
+#[derive(Debug)]
+pub(super) struct PreparedCase {
+    pub(super) temporary: tempfile::TempDir,
+    pub(super) bindings: std::path::PathBuf,
+    pub(super) work: std::path::PathBuf,
+    pub(super) home: std::path::PathBuf,
+    pub(super) input: Value,
+    pub(super) acl: std::path::PathBuf,
+    pub(super) binary_digest: String,
 }
 
-fn prepare_case(case: &Case, module: &ScannedModule) -> anyhow::Result<PreparedCase> {
+pub(super) fn prepare_case(case: &Case, module: &ScannedModule) -> anyhow::Result<PreparedCase> {
+    let binary_digest = super::binary_digest(module)?;
+    anyhow::ensure!(
+        case.binary_digest
+            .as_ref()
+            .is_none_or(|digest| digest == &binary_digest),
+        "Reviewed binary changed after admission"
+    );
     let temporary = tempfile::tempdir()?;
     let work = temporary.path().join("work");
     let home = temporary.path().join("home");
     std::fs::create_dir(&work)?;
     std::fs::create_dir(&home)?;
     write_fixtures(case, &work)?;
-    let input = resolve_input(&case.input, &module.input_schema, &work)?;
+    let input = resolve_input(
+        &case.input,
+        &module.input_schema,
+        &work,
+        case.mode == CaseMode::Readonly,
+    )?;
     let acl = temporary.path().join("verification-acl.yaml");
     std::fs::write(
         &acl,
@@ -150,60 +314,37 @@ fn prepare_case(case: &Case, module: &ScannedModule) -> anyhow::Result<PreparedC
             }]
         }))?,
     )?;
+    let bindings = write_scoped_binding(case, module, temporary.path())?;
     Ok(PreparedCase {
         acl,
-        _temporary: temporary,
+        bindings,
+        temporary,
         work,
         home,
         input,
-        binary_digest: super::binary_digest(module)?,
+        binary_digest,
     })
 }
 
-async fn run_case(
+fn write_scoped_binding(
     case: &Case,
     module: &ScannedModule,
-    bindings: &Path,
-    timeout: u64,
-) -> anyhow::Result<()> {
-    let owned_case = case.clone();
-    let owned_module = module.clone();
-    let prepared =
-        tokio::task::spawn_blocking(move || prepare_case(&owned_case, &owned_module)).await??;
-    let mut command = tokio::process::Command::new(std::env::current_exe()?);
-    command
-        .args(["run", &case.module_id, "--bindings-dir"])
-        .arg(std::path::absolute(bindings)?)
-        .arg("--input")
-        .arg(serde_json::to_string(&prepared.input)?)
-        .arg("--acl")
-        .arg(&prepared.acl)
-        .current_dir(&prepared.work)
-        .env_clear()
-        .env("HOME", &prepared.home)
-        .env("PATH", crate::runtime_path::search_path())
-        .env("LC_ALL", "C")
-        .env("RUST_LOG", "error")
-        .env("APEXE_TIMEOUT", timeout.to_string())
-        .kill_on_drop(true);
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout.saturating_add(2)),
-        command.output(),
-    )
-    .await??;
-    anyhow::ensure!(output.status.success(), "Governed behavioral call failed");
-    let output: Value = serde_json::from_slice(&output.stdout)?;
-    anyhow::ensure!(
-        output["exit_code"] == 0 && output["stdout"] == case.expected_stdout,
-        "Behavioral output did not match the explicit expectation"
-    );
-    let owned_module = module.clone();
-    let after = tokio::task::spawn_blocking(move || super::binary_digest(&owned_module)).await??;
-    anyhow::ensure!(
-        prepared.binary_digest == after,
-        "Binary changed during verification"
-    );
-    Ok(())
+    directory: &Path,
+) -> anyhow::Result<std::path::PathBuf> {
+    let bindings = directory.join("bindings");
+    let mut scoped = module.clone();
+    if case.mode == CaseMode::DryRun {
+        let annotations = scoped
+            .annotations
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Missing annotations"))?;
+        // This invocation is explicitly opted in, digest-pinned and sandboxed read-only.
+        annotations.requires_approval = false;
+        annotations.destructive = false;
+        annotations.readonly = true;
+    }
+    crate::output::YamlOutput::without_verification().write(&[scoped], &bindings, false)?;
+    Ok(bindings)
 }
 
 fn write_fixtures(case: &Case, work: &Path) -> anyhow::Result<()> {
@@ -221,7 +362,12 @@ fn write_fixtures(case: &Case, work: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn resolve_input(input: &Value, schema: &Value, work: &Path) -> anyhow::Result<Value> {
+fn resolve_input(
+    input: &Value,
+    schema: &Value,
+    work: &Path,
+    require_paths: bool,
+) -> anyhow::Result<Value> {
     let mut input = input.clone();
     let mut paths = 0;
     for (name, value) in input
@@ -261,7 +407,7 @@ fn resolve_input(input: &Value, schema: &Value, work: &Path) -> anyhow::Result<V
         }
     }
     anyhow::ensure!(
-        paths > 0,
+        paths > 0 || !require_paths,
         "Cases must supply fixture path operands; ambient paths are never sampled"
     );
     Ok(input)
@@ -288,4 +434,55 @@ fn resolve_path(value: &mut Value, work: &Path) -> anyhow::Result<()> {
     anyhow::ensure!(path.exists(), "Fixture does not exist");
     *value = serde_json::json!(path);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn module() -> ScannedModule {
+        ScannedModule::new(
+            "cli.fixture".into(),
+            "Fixture".into(),
+            json!({"type":"object","properties":{"file":{"type":"string","x-apexe-path":true,"x-apexe-positional":0}}}),
+            json!({"type":"object"}),
+            vec![],
+            "exec:///bin/cat".into(),
+        )
+    }
+
+    #[test]
+    fn test_subcommand_targets_require_exact_literal_command_paths() {
+        let mut module = module();
+        module.target = "exec:///bin/cat inspect-file".into();
+        module
+            .metadata
+            .insert("command_path".into(), json!(["cat", "inspect-file"]));
+        assert!(validate_target(&module, CaseMode::Isolated).is_ok());
+        assert!(validate_target(&module, CaseMode::Readonly).is_err());
+        module
+            .metadata
+            .insert("command_path".into(), json!(["cat", "different"]));
+        assert!(validate_target(&module, CaseMode::DryRun).is_err());
+        module.target = "exec:///bin/sh -c".into();
+        module
+            .metadata
+            .insert("command_path".into(), json!(["sh", "-c"]));
+        assert!(validate_target(&module, CaseMode::Isolated).is_err());
+    }
+
+    #[test]
+    fn test_preparation_rechecks_the_admitted_binary_digest() {
+        let module = module();
+        let case: Case =
+            serde_json::from_value(json!({"module_id":"cli.fixture","mode":"isolated",
+            "binary_digest":"0".repeat(64),"input":{"file":"$FIXTURE/a"},"fixtures":{"a":"data"},
+            "expected_stdout":"data"}))
+            .unwrap();
+        assert!(prepare_case(&case, &module)
+            .unwrap_err()
+            .to_string()
+            .contains("changed after admission"));
+    }
 }

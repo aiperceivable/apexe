@@ -87,6 +87,11 @@ Four levels, describing the **evidence** rather than the author's certainty:
 | `medium` | Two independent sources agree. |
 | `low` | One unconfirmed source. |
 
+These corpus levels describe author-provided source evidence. apexe caps source
+confidence at `high`; module-level runtime `verified` requires matching
+case-scoped evidence from `apexe verify --record`. See [verification](verification.md).
+The corpus format and its provenance requirement remain compatible.
+
 `provenance` is the part worth reading:
 
 ```json

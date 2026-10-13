@@ -6,16 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
-## [0.9.0] - 2026-10-12
-
-### Changed
-
-- **BREAKING:** `apexe env` removes the legacy `--load`, `--unload`, `--install`,
-  `--init` and `--uninstall` options. Use `--enable`, `--reload` and `--disable`;
-  calling `apexe env` without an operation still prints shell activation.
+## [0.9.0] - 2026-10-13
 
 ### Added
-
+- `apexe verify` supports digest-pinned `dry_run` and `isolated` cases. Dry-run
+  execution requires explicit `--allow-dry-run`, a true reviewed switch and
+  operating-system isolation. macOS uses `sandbox-exec`; Linux uses optional
+  `bwrap` with private namespaces and read-only system mounts. Unavailable
+  required isolation is reported as unverifiable without case execution.
+- `--record` persists case-scoped evidence. Binding loads validate binding,
+  executable, case-file and verifier fingerprints before attaching runtime confidence. Failed,
+  missing or stale evidence cannot retain an earned verdict. Existing binding
+  documents and ordinary approval annotations are preserved.
+- Verification guide, runnable disposable CLI example, and regressions for
+  filesystem/network boundaries, dry-run admission and evidence invalidation.
 - `apexe env --enable` installs shims and configures automatic activation for new
   terminals in one step, with shell detection, startup-file overrides and
   idempotent managed blocks. `--reload` refreshes the command set while retaining
@@ -30,14 +34,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 - A2A token/JWT authentication uses the existing transport credential policy.
   The CLI defaults to token auth; explicit unauthenticated public binds still
   require acknowledgement. Authenticated refusal reasons remain masked.
-
-### Fixed
-
-- A2A JSON-RPC notifications execute without replies; explicit null IDs still
-  receive responses. A2A 1.0 stream and agent-card spellings remain unchanged.
-
-### Added
-
 - Stage 2 local execution: `apexe env --enable` creates governed external-command
   links and configures automatic shell activation. The strict native argv resolver
   supports declared aliases, bundles, attached values, typed scalars, arrays and
@@ -50,9 +46,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   remains scan-compatible; shim admission requires explicit order independence.
   The companion corpus adds locally verified BSD cat/head/ls capabilities and
   corrects 16 missing ls conflict pairs found by native order probes.
-
-### Added
-
 - `apexe run <MODULE_ID> --input <JSON>`: governed local execution with captured
   JSON output, the `local` ACL caller, automatic default ACL loading and a
   non-executing `--dry-run`. `--as` is restricted to simulation. Schema, ACL,
@@ -63,15 +56,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   upstream API bearer tokens are kept separate from transport credentials.
 - Bindings record an apexe scan-format version; loading a missing or incompatible
   version warns per module and asks for a rescan.
+- Compatibility regressions for strict binding validation, custom metadata
+  round trips, and native validation diagnostics (root, nested array, and
+  escaped JSON Pointer paths) through the shared executor and both adapters.
 
 ### Fixed
-
+- A2A JSON-RPC notifications execute without replies; explicit null IDs still
+  receive responses. A2A 1.0 stream and agent-card spellings remain unchanged.
 - Correct #42's stale attribution: apcore-a2a provides an `Authenticator`;
   apexe currently does not wire it. The existing unauthenticated bind guard
   remains in force. Agent Card version comments now describe the current SDK.
 
 ### Changed
-
+- **BREAKING:** source-derived flag confidence is capped at `high`; the corpus's
+  legacy `verified` label remains a provenance-backed author assertion.
+  `Confidence::Verified` is reserved for earned, explicitly scoped runtime case
+  evidence with matching digests.
+- **BREAKING:** `apexe env` removes the legacy `--load`, `--unload`, `--install`,
+  `--init` and `--uninstall` options. Use `--enable`, `--reload` and `--disable`;
+  calling `apexe env` without an operation still prints shell activation.
 - Upgrade SDK requirements to apcore 0.32.0, apcore-toolkit 0.14.0,
   apcore-cli 0.12.3, apcore-mcp 0.22.3, and apcore-a2a 0.8.2, all from
   published crates.io packages.
@@ -85,11 +88,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   changes are required. Schema validation diagnostics now retain canonical
   JSON Pointers through both MCP and A2A error adapters.
 
-### Added
-
-- Compatibility regressions for strict binding validation, custom metadata
-  round trips, and native validation diagnostics (root, nested array, and
-  escaped JSON Pointer paths) through the shared executor and both adapters.
 
 ## [0.8.0] - 2026-09-29
 

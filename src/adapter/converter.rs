@@ -127,6 +127,10 @@ impl CliToolConverter {
         module.annotations = Some(fields.annotations);
         module.documentation = fields.documentation;
         module.metadata = self.build_metadata(tool, path, help_format_name);
+        module.metadata.insert(
+            "confidence".into(),
+            json!(Self::source_confidence(tool, command_opt)),
+        );
         if let Some(source) = tool.source_contracts.get(&module.module_id) {
             module
                 .metadata
@@ -135,6 +139,18 @@ impl CliToolConverter {
         module.warnings = tool.warnings.clone();
         module.examples = Self::build_examples(fields.examples);
         module
+    }
+
+    fn source_confidence(
+        tool: &ScannedCLITool,
+        command: Option<&&ScannedCommand>,
+    ) -> crate::models::Confidence {
+        tool.global_flags
+            .iter()
+            .chain(command.into_iter().flat_map(|command| command.flags.iter()))
+            .map(|flag| flag.confidence.min(crate::models::Confidence::High))
+            .max()
+            .unwrap_or_default()
     }
 
     /// Build metadata HashMap for a module.

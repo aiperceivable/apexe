@@ -6,6 +6,7 @@ use tempfile::TempDir;
 fn command(home: &TempDir) -> Command {
     let mut command = Command::cargo_bin("apexe").unwrap();
     command
+        .env("APEXE_OFFLINE", "true")
         .env("HOME", home.path())
         .env_remove("APEXE_BINDINGS_DIR")
         .env_remove("APCORE_CONFIG")

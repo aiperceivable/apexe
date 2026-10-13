@@ -26,6 +26,7 @@ impl Fixture {
     fn command(&self) -> Command {
         let mut command = Command::cargo_bin("apexe").unwrap();
         command
+            .env("APEXE_OFFLINE", "true")
             .env("HOME", self.home.path())
             .env("SHELL", "/bin/sh")
             .env_remove("APEXE_BINDINGS_DIR")
@@ -86,6 +87,445 @@ fn file_schema() -> Value {
         "file":{"type":"array","items":{"type":"string","x-apexe-path":true},"x-apexe-positional":0},
         "n":{"type":"boolean","x-apexe-flag":"-n"}, "s":{"type":"boolean","x-apexe-flag":"-s"}
     }, "additionalProperties":false})
+}
+
+#[test]
+fn test_activation_script_sources_current_shell_idempotently_without_rehash() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    fixture.enable();
+    #[cfg(target_os = "macos")]
+    let shells = ["/bin/sh", "/bin/bash", "/bin/zsh"];
+    #[cfg(not(target_os = "macos"))]
+    let shells = ["/bin/sh", "/bin/bash"];
+    for shell in shells {
+        Command::new(shell).env("HOME", fixture.home.path())
+            .env("PATH", "/opt/added-at-runtime:/usr/bin:/bin")
+            .env_remove("APEXE_SHIM_DIR").current_dir(fixture.home.path())
+            .args(["-c", "cat /dev/null; . \"$1\" || exit; . \"$1\" || exit; command -v cat; printf '%s\\n' \"$PATH\"; printf 'sourced\\n' | cat", "shell"])
+            .arg(fixture.shims().join("activate")).assert().success()
+            .stdout(format!("{}/cat\n{}:/opt/added-at-runtime:/usr/bin:/bin\nsourced\n", fixture.shims().display(), fixture.shims().display()));
+    }
+}
+
+#[test]
+fn test_activation_script_refuses_invalid_manifest_without_changing_path() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    fixture.enable();
+    std::fs::write(fixture.shims().join(".apexe-shims.json"), "invalid").unwrap();
+    Command::new("/bin/sh").env("HOME", fixture.home.path()).env("PATH", "/usr/bin:/bin")
+        .env_remove("APEXE_SHIM_DIR").current_dir(fixture.home.path())
+        .args(["-c", "if . \"$1\"; then exit 99; fi; test \"$PATH\" = /usr/bin:/bin && test -z \"$APEXE_SHIM_DIR\"", "shell"])
+        .arg(fixture.shims().join("activate")).assert().success();
+}
+
+#[test]
+fn test_activation_script_installation_refuses_unowned_file_without_mutation() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    std::fs::create_dir_all(fixture.shims()).unwrap();
+    std::fs::write(fixture.shims().join("activate"), "keep user script").unwrap();
+    fixture
+        .command()
+        .args(["env", "--enable"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("activation script"));
+    assert_eq!(
+        std::fs::read_to_string(fixture.shims().join("activate")).unwrap(),
+        "keep user script"
+    );
+    assert!(!fixture.shims().join("cat").exists());
+    assert!(!fixture.home.path().join(".profile").exists());
+}
+
+#[test]
+fn test_activation_script_changes_prevent_reload_and_uninstall() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    fixture.enable();
+    let startup = std::fs::read(fixture.home.path().join(".profile")).unwrap();
+    std::fs::write(fixture.shims().join("activate"), "modified script").unwrap();
+    for operation in ["--enable", "--reload", "--disable"] {
+        fixture
+            .command()
+            .args(["env", operation])
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains("activation script"));
+        assert!(fixture.shims().join("cat").exists());
+        assert_eq!(
+            std::fs::read(fixture.home.path().join(".profile")).unwrap(),
+            startup
+        );
+    }
+}
+
+#[test]
+fn test_activation_script_symlinks_are_never_replaced() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    fixture.enable();
+    let script = fixture.shims().join("activate");
+    let target = fixture.home.path().join("keep-script");
+    std::fs::rename(&script, &target).unwrap();
+    let original = std::fs::read(&target).unwrap();
+    std::os::unix::fs::symlink(&target, &script).unwrap();
+    for operation in ["--reload", "--disable"] {
+        fixture
+            .command()
+            .args(["env", operation])
+            .assert()
+            .failure();
+        assert_eq!(std::fs::read(&target).unwrap(), original);
+        assert_eq!(std::fs::read_link(&script).unwrap(), target);
+    }
+}
+
+#[test]
+fn test_activation_script_reload_upgrades_legacy_manifest_and_disable_cleans_up() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    fixture.enable();
+    let manifest_path = fixture.shims().join(".apexe-shims.json");
+    let mut manifest: Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest
+        .as_object_mut()
+        .unwrap()
+        .remove("activation_script");
+    std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    std::fs::remove_file(fixture.shims().join("activate")).unwrap();
+    fixture
+        .command()
+        .args(["env", "--reload"])
+        .assert()
+        .success();
+    assert!(fixture.shims().join("activate").is_file());
+    fixture
+        .command()
+        .args(["env", "--disable"])
+        .assert()
+        .success();
+    assert!(!fixture.shims().join("activate").exists());
+}
+
+#[test]
+fn test_activation_script_name_is_reserved_from_shim_routes() {
+    for name in [
+        "activate",
+        "deactivate",
+        "apexe-activate.sh",
+        "apexe-deactivate.sh",
+        ".apexe-source-scripts.json",
+    ] {
+        let fixture = Fixture::new();
+        fixture.write("cli.reserved", name, "/bin/cat", file_schema(), true);
+        fixture
+            .command()
+            .args(["env", "--enable"])
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains("reserved"));
+        assert!(!fixture.shims().join(".apexe-shims.json").exists());
+    }
+}
+
+#[test]
+fn test_deactivation_script_disables_shims_and_restores_original_environment() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    fixture.enable();
+    Command::new("/bin/sh").env("HOME", fixture.home.path()).env("PATH", "/usr/bin:/bin")
+        .env("APEXE_SHIM_DIR", "previous-value").current_dir(fixture.home.path())
+        .args(["-c", ". \"$1\" || exit; . \"$1\" || exit; . \"$2\" || exit; test \"$PATH\" = /usr/bin:/bin && test \"$APEXE_SHIM_DIR\" = previous-value && test -z \"${_APEXE_ACTIVE_SHIM_DIR+x}\"", "shell"])
+        .arg(fixture.shims().join("activate")).arg(fixture.shims().join("deactivate"))
+        .assert().success();
+    assert!(!fixture.shims().join("cat").exists());
+    assert!(!fixture.shims().join("activate").exists());
+    assert!(!fixture.shims().join("deactivate").exists());
+}
+
+#[test]
+fn test_deactivation_restores_unset_and_empty_environment_variables() {
+    for original in [
+        "unset PATH APEXE_SHIM_DIR",
+        "export PATH='' APEXE_SHIM_DIR=''",
+    ] {
+        let fixture = Fixture::new();
+        fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+        fixture.enable();
+        let expected = if original.starts_with("unset") {
+            "test -z \"${PATH+x}\" && test -z \"${APEXE_SHIM_DIR+x}\""
+        } else {
+            "test \"${PATH+x}\" = x && test -z \"$PATH\" && test \"${APEXE_SHIM_DIR+x}\" = x && test -z \"$APEXE_SHIM_DIR\""
+        };
+        Command::new("/bin/sh")
+            .env("HOME", fixture.home.path())
+            .current_dir(fixture.home.path())
+            .args([
+                "-c",
+                &format!("{original}; . \"$1\" || exit; . \"$2\" || exit; {expected}"),
+                "shell",
+            ])
+            .arg(fixture.shims().join("activate"))
+            .arg(fixture.shims().join("deactivate"))
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+fn test_deactivation_handles_automatic_startup_activation() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    fixture.enable();
+    Command::new("/bin/sh").env("HOME", fixture.home.path()).env("PATH", "/usr/bin:/bin")
+        .env_remove("APEXE_SHIM_DIR").current_dir(fixture.home.path())
+        .args(["-c", ". \"$1\" || exit; test \"$_APEXE_ACTIVE_SHIM_DIR\" = \"$APEXE_SHIM_DIR\" || exit 99; . \"$2\" || exit; test \"$PATH\" = /usr/bin:/bin && test -z \"${APEXE_SHIM_DIR+x}\"", "shell"])
+        .arg(fixture.home.path().join(".profile")).arg(fixture.shims().join("deactivate"))
+        .assert().success();
+}
+
+#[test]
+fn test_deactivation_keeps_current_environment_when_uninstall_is_refused() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    fixture.enable();
+    let startup = fixture.home.path().join(".profile");
+    let text = std::fs::read_to_string(&startup)
+        .unwrap()
+        .replace("# >>> apexe shims", "# >>> changed");
+    std::fs::write(startup, text).unwrap();
+    Command::new("/bin/sh").env("HOME", fixture.home.path()).env("PATH", "/usr/bin:/bin")
+        .env_remove("APEXE_SHIM_DIR").current_dir(fixture.home.path())
+        .args(["-c", ". \"$1\" || exit; if . \"$2\"; then exit 99; fi; test \"$APEXE_SHIM_DIR\" = \"$3\" && test \"$_APEXE_ACTIVE_SHIM_DIR\" = \"$3\"", "shell"])
+        .arg(fixture.shims().join("activate")).arg(fixture.shims().join("deactivate")).arg(fixture.shims())
+        .assert().success();
+    assert!(fixture.shims().join("cat").exists());
+}
+
+#[test]
+fn test_activation_bootstrap_enables_disables_and_reenables_from_source() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    let executable = assert_cmd::cargo::cargo_bin("apexe");
+    let path = std::env::join_paths([
+        executable.parent().unwrap(),
+        Path::new("/usr/bin"),
+        Path::new("/bin"),
+    ])
+    .unwrap();
+    let startup = fixture.home.path().join(".profile");
+    std::fs::write(&startup, "# Keep startup text\n").unwrap();
+    Command::new("/bin/sh").env("HOME", fixture.home.path()).env("SHELL", "/bin/sh")
+        .env("PATH", &path).env_remove("APEXE_SHIM_DIR").current_dir(fixture.home.path())
+        .args(["-c", "original=$PATH; . \"$1\" || exit; . \"$1\" || exit; printf 'bootstrapped\\n' | cat; . \"$2\" || exit; . \"$2\" || exit; test \"$PATH\" = \"$original\" && test -z \"${APEXE_SHIM_DIR+x}\" || exit 99; . \"$1\" || exit; . \"$2\"", "shell"])
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/activate.sh"))
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/deactivate.sh"))
+        .assert().success().stdout("bootstrapped\n");
+    assert!(!fixture.shims().join(".apexe-shims.json").exists());
+    assert_eq!(
+        std::fs::read_to_string(startup).unwrap(),
+        "# Keep startup text\n"
+    );
+}
+
+#[test]
+fn test_deactivation_bootstrap_restores_environment_after_manual_disable() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    let executable = assert_cmd::cargo::cargo_bin("apexe");
+    let path = std::env::join_paths([
+        executable.parent().unwrap(),
+        Path::new("/usr/bin"),
+        Path::new("/bin"),
+    ])
+    .unwrap();
+    Command::new("/bin/sh").env("HOME", fixture.home.path()).env("SHELL", "/bin/sh")
+        .env("PATH", &path).env_remove("APEXE_SHIM_DIR").current_dir(fixture.home.path())
+        .args(["-c", "original=$PATH; . \"$1\" || exit; command apexe env --disable || exit; . \"$2\" || exit; test \"$PATH\" = \"$original\" && test -z \"${APEXE_SHIM_DIR+x}\" && test -z \"${_APEXE_ACTIVE_SHIM_DIR+x}\"", "shell"])
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/activate.sh"))
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/deactivate.sh"))
+        .assert().success();
+}
+
+#[test]
+fn test_persistent_source_scripts_reenable_after_uninstall_without_checkout() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    fixture.enable();
+    let directory = fixture.home.path().join(".apexe/bin");
+    let activate = directory.join("apexe-activate.sh");
+    let deactivate = directory.join("apexe-deactivate.sh");
+    assert!(activate.is_file());
+    assert!(deactivate.is_file());
+    Command::new("/bin/sh").env("HOME", fixture.home.path()).env("SHELL", "/bin/sh")
+        .env("PATH", "/usr/bin:/bin").env_remove("APEXE_SHIM_DIR").current_dir(fixture.home.path())
+        .args(["-c", "original=$PATH; . \"$1\" || exit; . \"$2\" || exit; test \"$PATH\" = \"$original\" || exit 99; . \"$1\" || exit; printf 'persistent\\n' | cat; . \"$2\" || exit; . \"$2\" || exit; test \"$PATH\" = \"$original\" && test -z \"${APEXE_SHIM_DIR+x}\"", "shell"])
+        .arg(&activate).arg(&deactivate).assert().success().stdout("persistent\n");
+    assert!(activate.is_file());
+    assert!(deactivate.is_file());
+    assert!(directory.join(".apexe-source-scripts.json").is_file());
+    assert!(!fixture.shims().join(".apexe-shims.json").exists());
+}
+
+#[test]
+fn test_persistent_source_scripts_preserve_python_venv_function_and_environment() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    fixture.enable();
+    Command::new("/bin/sh").env("HOME", fixture.home.path()).env("SHELL", "/bin/sh")
+        .env("PATH", "/venv/bin:/usr/bin:/bin").env("VIRTUAL_ENV", "/venv")
+        .env_remove("APEXE_SHIM_DIR").current_dir(fixture.home.path())
+        .args(["-c", "deactivate() { printf 'venv function\\n'; }; . \"$1\" || exit; . \"$2\" || exit; test \"$VIRTUAL_ENV\" = /venv && test \"$PATH\" = /venv/bin:/usr/bin:/bin || exit 99; deactivate", "shell"])
+        .arg(fixture.home.path().join(".apexe/bin/apexe-activate.sh"))
+        .arg(fixture.home.path().join(".apexe/bin/apexe-deactivate.sh"))
+        .assert().success().stdout("venv function\n");
+}
+
+#[test]
+fn test_persistent_source_script_changes_refuse_reload_before_mutating_shims() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    fixture.enable();
+    let manifest = std::fs::read(fixture.shims().join(".apexe-shims.json")).unwrap();
+    let script = fixture.home.path().join(".apexe/bin/apexe-activate.sh");
+    std::fs::write(script, "modified").unwrap();
+    fixture
+        .command()
+        .args(["env", "--reload"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("activation script"));
+    assert_eq!(
+        std::fs::read(fixture.shims().join(".apexe-shims.json")).unwrap(),
+        manifest
+    );
+}
+
+#[test]
+fn test_persistent_source_script_installation_preserves_unowned_files() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    let directory = fixture.home.path().join(".apexe/bin");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("apexe-activate.sh"), "user file").unwrap();
+    fixture
+        .command()
+        .args(["env", "--enable"])
+        .assert()
+        .failure();
+    assert_eq!(
+        std::fs::read_to_string(directory.join("apexe-activate.sh")).unwrap(),
+        "user file"
+    );
+    assert!(!fixture.shims().join("cat").exists());
+    assert!(!fixture.home.path().join(".profile").exists());
+}
+
+#[test]
+fn test_persistent_source_scripts_reload_upgrades_old_helper_directory() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    fixture.enable();
+    let legacy = fixture.home.path().join("legacy-source-scripts");
+    std::fs::create_dir(&legacy).unwrap();
+    let names = [
+        "apexe-activate.sh",
+        "apexe-deactivate.sh",
+        ".apexe-source-scripts.json",
+    ];
+    for name in names {
+        std::fs::rename(fixture.shims().join(name), legacy.join(name)).unwrap();
+    }
+    let path = fixture.shims().join(".apexe-shims.json");
+    let mut manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    manifest["source_scripts_dir"] = json!(legacy);
+    std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    fixture
+        .command()
+        .args(["env", "--reload"])
+        .assert()
+        .success();
+    let manifest: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(manifest["source_scripts_dir"], json!(fixture.shims()));
+    for name in names {
+        assert_eq!(
+            std::fs::read(fixture.shims().join(name)).unwrap(),
+            std::fs::read(legacy.join(name)).unwrap()
+        );
+    }
+}
+
+#[test]
+fn test_persistent_source_scripts_isolate_custom_shim_installations() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    fixture.enable();
+    let original = std::fs::read(fixture.home.path().join(".apexe/bin/apexe-activate.sh")).unwrap();
+    let custom = fixture.home.path().join("custom-shims");
+    fixture
+        .command()
+        .args(["env", "--enable", "--shim-dir"])
+        .arg(&custom)
+        .assert()
+        .success();
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(custom.join(".apexe-shims.json")).unwrap()).unwrap();
+    let scripts = PathBuf::from(manifest["source_scripts_dir"].as_str().unwrap());
+    assert_ne!(scripts, fixture.home.path().join(".apexe/bin"));
+    assert_eq!(scripts, custom);
+    assert_eq!(
+        std::fs::read(fixture.home.path().join(".apexe/bin/apexe-activate.sh")).unwrap(),
+        original
+    );
+    Command::new("/bin/sh")
+        .env("HOME", fixture.home.path())
+        .env("SHELL", "/bin/sh")
+        .env("PATH", "/usr/bin:/bin")
+        .env_remove("APEXE_SHIM_DIR")
+        .current_dir(fixture.home.path())
+        .args([
+            "-c",
+            ". \"$1\" || exit; test \"$APEXE_SHIM_DIR\" = \"$3\" || exit 99; . \"$2\"",
+            "shell",
+        ])
+        .arg(scripts.join("apexe-activate.sh"))
+        .arg(scripts.join("apexe-deactivate.sh"))
+        .arg(&custom)
+        .assert()
+        .success();
+    assert!(fixture.shims().join("cat").exists());
+    assert!(!custom.join("cat").exists());
+}
+
+#[test]
+fn test_activation_script_quotes_custom_directory_without_executing_path_text() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    let directory = fixture
+        .home
+        .path()
+        .join("shims' $(touch injected)`touch injected` folder");
+    fixture
+        .command()
+        .args(["env", "--enable", "--shim-dir"])
+        .arg(&directory)
+        .assert()
+        .success();
+    Command::new("/bin/sh")
+        .env("HOME", fixture.home.path())
+        .env("PATH", "/usr/bin:/bin")
+        .env_remove("APEXE_SHIM_DIR")
+        .current_dir(fixture.home.path())
+        .args(["-c", ". \"$1\" || exit; printf 'safe\\n' | cat", "shell"])
+        .arg(directory.join("activate"))
+        .assert()
+        .success()
+        .stdout("safe\n");
+    assert!(!fixture.home.path().join("injected").exists());
 }
 
 #[test]

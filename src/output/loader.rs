@@ -33,7 +33,7 @@ pub fn load_modules_from_dir(
     dir: &Path,
     pattern: Option<&str>,
 ) -> Result<Vec<ScannedModule>, ModuleError> {
-    BindingLoader::new()
+    let mut modules = BindingLoader::new()
         .load_with_pattern(
             dir, /* strict */ true, /* recursive */ false, pattern,
         )
@@ -43,7 +43,14 @@ pub fn load_modules_from_dir(
                 format!("Bindings directory not found: {path}"),
             ),
             other => ModuleError::new(ErrorCode::GeneralInternalError, other.to_string()),
-        })
+        })?;
+    crate::verification::attach_evidence(dir, &mut modules).map_err(|error| {
+        ModuleError::new(
+            ErrorCode::GeneralInternalError,
+            format!("Invalid behavioral evidence: {error}"),
+        )
+    })?;
+    Ok(modules)
 }
 
 /// The pre-0.8.0 default bindings directory, when it still holds bindings.

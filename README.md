@@ -147,7 +147,8 @@ apexe serve --acl ~/.apexe/acl.yaml
 apexe serve --transport http --port 8000 --explorer --acl ~/.apexe/acl.yaml
 ```
 
-`scan` writes a starter `~/.apexe/acl.yaml` with `default_effect: deny`.
+For a new policy, `scan` writes a starter `~/.apexe/acl.yaml` with
+`default_effect: deny`; rescans preserve the existing default.
 Read-only local modules are allowed by default; destructive, network-reaching,
 and unknown modules are denied. Generating that file does **not** enable it:
 pass `--acl` to `serve` or `a2a` after reviewing and editing it for the tools
@@ -191,6 +192,23 @@ apexe scan git --skills-dir ./out      # Also write .claude/skills/<id>/SKILL.md
 apexe scan ls --overlay ./ls.json      # Apply a curated overlay instead of trusting the scan
 ```
 
+#### Verify source drift and explicit cases
+
+```bash
+apexe verify --report ./drift-report.json
+apexe verify --cases ./readonly-cases.json --record --report ./verification.json
+# Explicitly reviewed and digest-pinned dry-run cases require working OS isolation.
+apexe verify --cases ./dry-run-cases.json --allow-dry-run --isolation required --record
+# Self-contained temporary CLI demo: dry-run, fixture effects and evidence invalidation.
+python3 examples/verification/demo.py --apexe target/debug/apexe
+```
+
+Case modes are `readonly`, `dry_run` and `isolated`. macOS uses `sandbox-exec`;
+Linux uses optional `bwrap` and unprivileged namespaces. Required isolation
+failures are reported as `unverifiable` without executing the case. See the
+[verification guide](docs/verification.md) and
+[runnable example](examples/verification/README.md).
+
 #### Tool variants and overlays
 
 A command name does not identify a program: macOS `/bin/ls` is BSD, Linux
@@ -228,24 +246,40 @@ subcommands entirely; in `merge` mode it overrides matching flags and adds
 missing ones. Overlays are the only source that can state `conflicts_with`,
 because no help or man page format expresses mutual exclusion machine-readably.
 
-**apexe ships no overlays.** The corpus lives in
-[cli-permissions](https://github.com/aiperceivable/cli-permissions) and is
-installed separately; without it a scan falls back to heuristics, which recover
-the flag names and not much else — `conflicts_with` and `long_running` have no
-other source.
-
-Install and register the corpus directly from GitHub:
+**The corpus is fetched automatically on the first online scan.** Reviewed facts
+come from [cli-permissions](https://github.com/aiperceivable/cli-permissions);
+apexe does not embed a second copy. The validated Git snapshot is cached under
+`~/.apexe/corpora/`, so later scans use the same recorded commit without a network
+request. Selection checks the actual binary's variant, platform, declared
+version constraints and probes; the operating system alone is not enough.
 
 ```bash
-apexe overlays install https://github.com/aiperceivable/cli-permissions
-apexe scan cat head ls --no-cache
+# Automatically obtain matching command facts, then generate bindings and ACL.
+apexe scan cat head wc --no-cache
+apexe overlays list
 # After reviewing the ACL, enable eligible commands in new terminals.
 apexe env --enable
 # Refresh corpus facts, bindings and the shim list when needed.
 apexe overlays update cli-permissions
-apexe scan cat head ls --no-cache
+apexe scan cat head wc --no-cache
 apexe env --reload
 ```
+
+If acquisition fails or Git is unavailable, the scan warns and continues with
+local overlays and built-in classification. Unknown modules remain denied in a
+new ACL. `apexe scan --offline <TOOLS>` (or `APEXE_OFFLINE=true`) prevents automatic
+downloads while still using installed snapshots. `--dry-run`, `--overlay`, and
+configured `overlay_dirs` also skip automatic downloads. No matching overlay
+for a tool means that tool uses fallback inference even when the corpus is cached.
+Git operations for automatic acquisition are limited to 10 seconds or the shorter
+global `--timeout`; manual installation can use a longer timeout.
+
+For a mirror or a local Git source, set `default_overlay_repository` in
+`config.yaml` or `APEXE_DEFAULT_OVERLAY_REPOSITORY` before the first installation.
+You can also install explicitly with
+`apexe overlays install https://github.com/aiperceivable/cli-permissions`.
+The generated ACL covers scanned modules and preserves separate hand-authored
+rules and the existing `default_effect`; review the policy before enforcing it.
 
 Use `--ref <branch|tag|commit>` to pin the source, `apexe overlays list` to
 inspect installed metadata and Git commits, and `apexe overlays remove <name>`
@@ -267,10 +301,11 @@ variable applies only to this scan. Rescan after editing overlays; use
 For a managed installation from a local Git repository instead, use
 `apexe overlays install ../cli-permissions`: it installs committed Git content.
 
-Overlays are loaded from, in increasing precedence: a packaged corpus in a
+For equally strong matches, overlays are loaded in increasing precedence: a packaged corpus in a
 well-known location (`$XDG_DATA_HOME/cli-permissions/overlays`,
-`/usr/local/share/…`, `/usr/share/…`, and Homebrew's prefix on macOS), managed
-corpora installed with `apexe overlays install`, each directory listed in `overlay_dirs` in the order given,
+`/usr/local/share/…`, `/usr/share/…`, and Homebrew's prefix on macOS),
+the managed default corpus, other installed corpora in installation order,
+each directory listed in `overlay_dirs` in the order given,
 `~/.apexe/overlays/*.{json,yaml}`, and `--overlay <PATH>`. `overlay_dirs` is how
 a corpus someone else maintains — a team policy repository, a plugin that ships
 overlays — is consumed without copying files into the operator's own directory;
@@ -280,9 +315,14 @@ the corpus rather than here — apexe is one consumer of it, not its owner.
 It describes the command rather than apexe, so a second implementation can read
 the same files — see [Reading Overlays Without apexe](docs/overlay-consumers.md).
 
-Every emitted flag carries `sources` and a derived `confidence`:
-`verified` (overlay) > `high` (completion spec) > `medium` (two independent
-heuristic sources agree) > `low` (a single unconfirmed source).
+Every emitted flag carries `sources` and source-derived `confidence`:
+`high` (author-reviewed overlay or completion spec) > `medium` (two independent
+heuristic sources agree) > `low` (a single unconfirmed source). The corpus's
+legacy `verified` declaration remains an author claim; it cannot alone earn
+runtime confidence. `apexe verify --cases <PATH> --record` earns module
+`metadata.confidence: verified` only for passed explicit cases with matching
+binding, executable and case-file digests. Changes invalidate that evidence.
+See [contract verification](docs/verification.md) for its scope and case modes.
 
 An overlay flag may also declare `long_running: true` — "this option may make
 the command never terminate on its own", which is why `tail -f` hangs an agent
@@ -587,17 +627,37 @@ See the [command reference](docs/user-manual.md#47-apexe-run),
 [OpenAPI guide](docs/openapi.md), and [runnable API example](examples/openapi_import/README.md)
 for flags, proxy limits and tested setup.
 
+After scanning with overlays that declare reviewed native grammar, install the
+shell helpers once, then source them in bash or zsh. No source checkout is needed:
+
 ```bash
-# After scanning with overlays that declare reviewed native grammar:
 apexe env --enable
-# Open a new terminal; installed shims load automatically.
-cat sample.txt | head -n1
+source ~/.apexe/bin/apexe-activate.sh
+apexe env --check
+printf 'one\ntwo\n' | cat | head -n1
 ls -la
-# Refresh if subsequent scans change the eligible command set.
-apexe env --reload
-# Remove owned shims and managed shell startup blocks.
-apexe env --disable
+# Uninstall owned shims and restore this terminal's previous environment.
+source ~/.apexe/bin/apexe-deactivate.sh
+# The installed helper remains available and automatically re-enables shims.
+source ~/.apexe/bin/apexe-activate.sh
 ```
+
+The scripts are generated by the installed apexe binary, including an executable
+installed in `~/.cargo/bin`. Activation uses `--reload`, preserving installed
+bindings, ACL and filters; when absent, an installation is enabled automatically.
+Deactivation uses `--disable`, removing owned shims and managed startup blocks,
+then restores the PATH and APEXE_SHIM_DIR saved before the first activation.
+The namespaced helpers remain installed after disable. Repeated activation
+preserves that snapshot. No separate `eval` or `rehash` is needed. POSIX sh uses
+`.` instead of `source`; executing a script changes only its child process.
+
+Like Python's venv activation, sourcing changes the current terminal. apexe
+selects governed external commands; it does not select Python, add a prompt
+prefix or define a `deactivate` function. To combine them, activate the venv first, then apexe;
+deactivate apexe first, then call the venv's `deactivate`.
+For custom shim directories, the helpers are installed directly in `<shim-dir>`;
+enable/reload prints their full paths. See the
+[command reference](docs/user-manual.md#48-apexe-env) for configuration and lifecycle.
 
 `--enable` installs shims and configures startup in one step, detecting the shell
 from `SHELL`; use `--shell` and `--rc-file` for a
@@ -609,8 +669,13 @@ enabled, use native commands directly without repeating setup. `--reload`
 retains the installed binding directory, ACL and filters when refreshing the
 command set. With no installation, it automatically enables shims using current
 settings.
-For immediate activation in the current sh, bash or zsh session, use
-`eval "$(apexe env)"` after installation.
+`apexe env --check` diagnoses the active PATH, owned links, manifest, installed
+bindings, source scripts and ACL without executing wrapped commands. It prints
+`PASS`, `FAIL`, `WARN` and `SKIP` results and a summary; failures return status 1,
+including missing ACLs. Warnings alone return status 0.
+Custom installations can use `--shim-dir`; otherwise the check honors
+`APEXE_SHIM_DIR`. See the [command reference](docs/user-manual.md#48-apexe-env)
+for its scope and exit status.
 
 Shims inherit output streams, preserve exit status and use the same local
 policy. Only matching authoritative overlays declaring order-independent
