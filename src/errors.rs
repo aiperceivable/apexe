@@ -3,6 +3,72 @@ use std::collections::HashMap;
 use apcore::{ErrorCode, ModuleError};
 use thiserror::Error;
 
+/// Presentation of CLI failures on stderr; successful output is unaffected.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    clap::ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+/// Versioned machine-readable CLI failure envelope.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CliErrorEnvelope {
+    pub schema_version: u32,
+    pub error: CliFailure,
+}
+
+/// Domain failure fields shared by CLI callers and AI integrations.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CliFailure {
+    pub code: ErrorCode,
+    pub message: String,
+    pub details: HashMap<String, serde_json::Value>,
+    pub retryable: Option<bool>,
+    pub ai_guidance: Option<String>,
+    pub trace_id: Option<String>,
+}
+
+impl CliErrorEnvelope {
+    pub fn from_error(error: anyhow::Error) -> Self {
+        let domain = match error.downcast::<ModuleError>() {
+            Ok(domain) => domain,
+            Err(error) => match error.downcast::<ApexeError>() {
+                Ok(domain) => domain.into(),
+                Err(error) => ModuleError::new(ErrorCode::GeneralInternalError, error.to_string()),
+            },
+        };
+        Self::from(domain)
+    }
+}
+
+impl From<ModuleError> for CliErrorEnvelope {
+    fn from(error: ModuleError) -> Self {
+        Self {
+            schema_version: 1,
+            error: CliFailure {
+                code: error.code,
+                message: error.message,
+                details: error.details,
+                retryable: error.retryable,
+                ai_guidance: error.ai_guidance,
+                trace_id: error.trace_id,
+            },
+        }
+    }
+}
+
 /// Top-level error type for all apexe operations.
 #[derive(Debug, Error)]
 pub enum ApexeError {
@@ -170,6 +236,39 @@ impl From<ApexeError> for ModuleError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_cli_envelope_preserves_domain_details_recovery_and_trace() {
+        let error = ModuleError::new(ErrorCode::SchemaValidationError, "Invalid input")
+            .with_details(details([(
+                "errors",
+                serde_json::json!([{"path":"/message"}]),
+            )]))
+            .with_ai_guidance("Provide a string")
+            .with_trace_id("trace-1");
+        let envelope =
+            CliErrorEnvelope::from_error(anyhow::Error::new(error).context("Outer context"));
+        let value = serde_json::to_value(envelope).unwrap();
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["error"]["code"], "SCHEMA_VALIDATION_ERROR");
+        assert_eq!(value["error"]["details"]["errors"][0]["path"], "/message");
+        assert_eq!(value["error"]["ai_guidance"], "Provide a string");
+        assert_eq!(value["error"]["trace_id"], "trace-1");
+    }
+
+    #[test]
+    fn test_cli_envelope_maps_generic_and_apexe_errors() {
+        let generic = CliErrorEnvelope::from_error(anyhow::anyhow!("Runtime failure"));
+        assert_eq!(generic.error.code, ErrorCode::GeneralInternalError);
+        let domain = CliErrorEnvelope::from_error(
+            ApexeError::ToolNotFound {
+                tool_name: "missing".into(),
+            }
+            .into(),
+        );
+        assert_eq!(domain.error.code, ErrorCode::ModuleNotFound);
+        assert!(domain.error.ai_guidance.is_some());
+    }
 
     #[test]
     fn test_tool_not_found_display() {

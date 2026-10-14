@@ -11,6 +11,9 @@ mod check;
 
 /// Enable, reload, disable or check governed shims, or print shell activation.
 #[derive(Debug, clap::Args, Serialize, Deserialize)]
+#[command(
+    after_help = "Examples (default paths, bash/zsh):\n  apexe env --enable                         Install reviewed command shims\n  source ~/.apexe/bin/apexe-activate.sh        Activate in this terminal\n  apexe env --check                           Check installation and activation\n  source ~/.apexe/bin/apexe-deactivate.sh      Remove shims and restore this terminal\n\nEnabling cannot change the parent shell; source the activation helper.\nPATH shims cover eligible external commands; builtins and absolute paths can bypass them."
+)]
 pub struct EnvArgs {
     /// Install or update shims and configure automatic activation in new terminals.
     #[arg(long, group = "startup_config", conflicts_with_all = ["reload", "disable"])]
@@ -32,13 +35,17 @@ pub struct EnvArgs {
     /// Directory for command shims (default: <config_dir>/bin).
     #[arg(long)]
     pub shim_dir: Option<PathBuf>,
-    #[arg(long)]
+    /// Directory containing binding files (default: configured bindings directory).
+    #[arg(long, value_name = "DIR")]
     pub bindings_dir: Option<PathBuf>,
-    #[arg(long)]
+    /// ACL policy file; defaults to <config_dir>/acl.yaml when present.
+    #[arg(long, value_name = "PATH")]
     pub acl: Option<PathBuf>,
-    #[arg(long)]
+    /// Include only modules carrying every comma-separated tag.
+    #[arg(long, value_name = "TAGS")]
     pub tags: Option<String>,
-    #[arg(long)]
+    /// Include only modules whose ID starts with this prefix.
+    #[arg(long, value_name = "PREFIX")]
     pub prefix: Option<String>,
     /// Shell syntax (activation: sh; enabling: detected from SHELL).
     #[arg(long, value_enum)]

@@ -30,6 +30,7 @@ fn acl_verdict(preflight: &apcore::PreflightResult, loaded: bool) -> AclVerdict 
     }
 }
 
+mod input;
 mod native;
 
 /// Policy for commands with no registered CLI binding.
@@ -54,20 +55,32 @@ pub enum UnmanagedPolicy {
 
 /// Execute native argv or a module with JSON input through shared governance.
 #[derive(Debug, clap::Args, serde::Serialize, serde::Deserialize)]
+#[command(
+    after_help = "Examples:\n  apexe exec --dry-run -- ls -la             Preview reviewed native arguments\n  apexe exec -- ls -la                       Execute with native output\n  apexe exec cli.ls --input '{}'             Execute a module with JSON input\n  apexe exec cli.ls --input-file request.json  Read a JSON input file\n  cat request.json | apexe exec cli.ls --input-file - --error-format json\n\nUse 'apexe list --verbose --format json' to discover module schemas.\nPut apexe options before '--' and child arguments after it."
+)]
 pub struct ExecArgs {
     /// Scanned module ID for captured JSON execution.
     #[arg(required_unless_present = "native", conflicts_with = "native")]
     pub module_id: Option<String>,
     /// Native command and arguments, following --; output passes through.
-    #[arg(last = true, required_unless_present = "module_id", num_args = 1..)]
+    #[arg(last = true, required_unless_present = "module_id", value_name = "COMMAND", num_args = 1..)]
     pub native: Vec<String>,
     /// JSON object matching the module's input schema.
-    #[arg(long, requires = "module_id", conflicts_with = "native")]
+    #[arg(
+        long,
+        value_name = "JSON",
+        requires = "module_id",
+        conflicts_with = "native"
+    )]
     pub input: Option<String>,
-    #[arg(long)]
+    /// Read a JSON object from PATH; '-' reads stdin (maximum 1048576 bytes).
+    #[arg(long, value_name = "PATH", requires = "module_id", conflicts_with_all = ["input", "native"])]
+    pub input_file: Option<PathBuf>,
+    /// Directory containing binding files (default: configured bindings directory).
+    #[arg(long, value_name = "DIR")]
     pub bindings_dir: Option<PathBuf>,
     /// ACL file; defaults to <config_dir>/acl.yaml when present.
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
     pub acl: Option<PathBuf>,
     /// Report governance decisions and argv without executing.
     #[arg(long)]
@@ -76,7 +89,13 @@ pub struct ExecArgs {
     #[arg(long = "as", requires = "dry_run", value_parser = parse_caller)]
     pub caller: Option<String>,
     /// Policy for unregistered native commands; loaded ACL still applies.
-    #[arg(long, value_enum, default_value = "deny", requires = "native")]
+    #[arg(
+        long,
+        value_name = "POLICY",
+        value_enum,
+        default_value = "deny",
+        requires = "native"
+    )]
     pub unmanaged: UnmanagedPolicy,
 }
 
@@ -107,6 +126,14 @@ fn parse_caller(value: &str) -> Result<String, String> {
 impl ExecArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<i32> {
         self.validate_mode()?;
+        let input = if self.native.is_empty() {
+            Some(input::read(
+                self.input.as_deref(),
+                self.input_file.as_deref(),
+            )?)
+        } else {
+            None
+        };
         let acl = self.acl_path(config)?;
         let dir = self.bindings_dir.as_ref().unwrap_or(&config.bindings_dir);
         let modules =
@@ -115,32 +142,41 @@ impl ExecArgs {
         let options = self.executor_options(config, dir, acl.as_deref());
         tokio::runtime::Runtime::new()?.block_on(async {
             let call = if self.native.is_empty() {
-                self.prepare_module(&options, modules)?
+                self.prepare_module(&options, modules, input.unwrap_or_else(|| json!({})))?
             } else {
                 self.prepare_native(&options, modules, config, dir, &context)
                     .await?
             };
-            if self.dry_run {
-                let result = self.preflight(&call, &context, acl.is_some()).await?;
-                write_json(&result)?;
-                anyhow::ensure!(
-                    result["valid"] == true,
-                    "Preflight refused the call; inspect the JSON checks"
-                );
-                return Ok(0);
-            }
-            let output = call
-                .executor
-                .call(&call.module_id, call.input, Some(&context), None)
-                .await?;
-            if call.mode == ExecutionMode::Module {
-                write_json(&output)?;
-            }
-            output["exit_code"]
-                .as_i64()
-                .and_then(|code| i32::try_from(code).ok())
-                .ok_or_else(|| anyhow::anyhow!("Execution returned no exit status"))
+            self.execute_call(call, &context, acl.is_some()).await
         })
+    }
+
+    async fn execute_call(
+        &self,
+        call: PreparedCall,
+        context: &Context<Value>,
+        acl_loaded: bool,
+    ) -> anyhow::Result<i32> {
+        if self.dry_run {
+            let result = self.preflight(&call, context, acl_loaded).await?;
+            write_json(&result)?;
+            anyhow::ensure!(
+                result["valid"] == true,
+                "Preflight refused the call; inspect the JSON checks"
+            );
+            return Ok(0);
+        }
+        let output = call
+            .executor
+            .call(&call.module_id, call.input, Some(context), None)
+            .await?;
+        if call.mode == ExecutionMode::Module {
+            write_json(&output)?;
+        }
+        output["exit_code"]
+            .as_i64()
+            .and_then(|code| i32::try_from(code).ok())
+            .ok_or_else(|| anyhow::anyhow!("Execution returned no exit status"))
     }
 
     fn validate_mode(&self) -> anyhow::Result<()> {
@@ -150,8 +186,12 @@ impl ExecArgs {
             "Select exactly one module ID or native command after --"
         );
         anyhow::ensure!(
-            !native || self.input.is_none(),
-            "Native argv cannot be combined with --input"
+            !native || (self.input.is_none() && self.input_file.is_none()),
+            "Native argv cannot be combined with JSON input"
+        );
+        anyhow::ensure!(
+            self.input.is_none() || self.input_file.is_none(),
+            "Select only one of --input or --input-file"
         );
         anyhow::ensure!(
             native || self.unmanaged == UnmanagedPolicy::Deny,
@@ -171,13 +211,12 @@ impl ExecArgs {
         &self,
         options: &ExecutorOptions<'_>,
         modules: Vec<apcore_toolkit::ScannedModule>,
+        input: Value,
     ) -> anyhow::Result<PreparedCall> {
         let id = self
             .module_id
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("Module ID is required"))?;
-        let input: Value = serde_json::from_str(self.input.as_deref().unwrap_or("{}"))?;
-        anyhow::ensure!(input.is_object(), "Input must be a JSON object");
         let scanned = modules
             .iter()
             .find(|module| module.module_id == id)
@@ -383,6 +422,7 @@ mod tests {
             module_id: Some("cli.cat".into()),
             native: vec![],
             input: None,
+            input_file: None,
             bindings_dir: None,
             acl: None,
             dry_run: false,

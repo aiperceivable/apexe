@@ -37,21 +37,35 @@ pub fn run_shim(raw: &[std::ffi::OsString]) -> anyhow::Result<i32> {
 ///
 /// Wraps CLI tools into governed apcore modules served via MCP/A2A.
 #[derive(Debug, Parser)]
-#[command(name = "apexe", version, about, long_about = None)]
+#[command(
+    name = "apexe", version,
+    about = "Run existing CLI tools with access controls and audit trails; serve them to AI clients",
+    long_about = None,
+    after_help = "Getting started:\n  apexe init                         Prepare bindings and a starter ACL\n  apexe list --verbose               Inspect schemas and access rules\n  apexe exec --dry-run -- ls -la      Preview a reviewed native command\n\nNative execution requires matching reviewed rules. To expose tools to an AI client:\n  apexe serve --acl ~/.apexe/acl.yaml\n\nUse 'apexe <command> --help' for command-specific options."
+)]
 pub struct Cli {
+    /// Failure output on stderr: text (default) or a versioned JSON envelope.
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        default_value = "text",
+        display_order = 1003
+    )]
+    pub error_format: crate::errors::ErrorFormat,
     /// File log level (off, error, warn, info, debug, trace), overriding
     /// RUST_LOG, APEXE_LOG_LEVEL and config.yaml. Defaults to warn.
-    #[arg(long, global = true, value_parser = crate::config::parse_log_level)]
+    #[arg(long, global = true, value_name = "LEVEL", display_order = 1000, value_parser = crate::config::parse_log_level)]
     pub log_level: Option<String>,
 
     /// Also display diagnostic logs on stderr; the terminal is quiet by default.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, display_order = 1001)]
     pub log_stderr: bool,
 
     /// Per-call timeout in seconds, overriding `default_timeout` from
     /// `config.yaml`. Applies to every subcommand that runs a wrapped binary
     /// or probes one during a scan.
-    #[arg(long, global = true, value_parser = clap::value_parser!(u64).range(1..))]
+    #[arg(long, global = true, value_name = "SECONDS", display_order = 1002, value_parser = clap::value_parser!(u64).range(1..))]
     pub timeout: Option<u64>,
 
     #[command(subcommand)]
@@ -61,25 +75,35 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Scan CLI tools and generate apcore binding files.
+    #[command(display_order = 70)]
     Scan(ScanArgs),
     /// Start MCP server for scanned CLI tools.
+    #[command(display_order = 50)]
     Serve(ServeArgs),
     /// Start A2A agent server for scanned CLI tools.
+    #[command(display_order = 60)]
     A2a(A2aArgs),
     /// Execute governed CLI commands with native argv or module JSON input.
+    #[command(display_order = 30)]
     Exec(ExecArgs),
     /// Enable, reload, disable or check governed shims, or print shell activation.
+    #[command(display_order = 40)]
     Env(EnvArgs),
-    /// Re-check source contracts and optionally run admitted readonly cases.
+    /// Check command drift and optionally run reviewed cases under isolation.
+    #[command(display_order = 80)]
     Verify(VerifyArgs),
     /// Initialize this machine with reviewed CLI rules, bindings and ACL.
+    #[command(display_order = 10)]
     Init(InitArgs),
-    /// List previously scanned CLI tools and their modules.
+    /// Discover command modules, schemas and access rules.
+    #[command(display_order = 20)]
     List(ListArgs),
     /// Show, initialize or update apexe configuration.
+    #[command(display_order = 100)]
     Config(ConfigArgs),
     /// Show the filesystem access boundary wrapped tools are checked
     /// against, or check one path against it.
+    #[command(display_order = 90)]
     Policy(PolicyArgs),
 }
 
@@ -94,7 +118,12 @@ impl Cli {
     }
 
     pub fn run(self) -> anyhow::Result<i32> {
-        let config = load_config(None)?.with_timeout_override(self.timeout);
+        self.run_with_config(load_config(None)?)
+    }
+
+    /// Execute with an already resolved configuration, applying CLI overrides.
+    pub fn run_with_config(self, config: ApexeConfig) -> anyhow::Result<i32> {
+        let config = config.with_timeout_override(self.timeout);
         if !matches!(&self.command, Commands::Env(args) if args.check) {
             config.ensure_dirs()?;
         }
@@ -168,8 +197,8 @@ pub struct ScanArgs {
     #[arg(long)]
     pub output_dir: Option<PathBuf>,
 
-    /// Maximum subcommand recursion depth (1-5)
-    #[arg(long, default_value = "2", value_parser = clap::value_parser!(u32).range(1..=5))]
+    /// Maximum subcommand recursion depth (1-5; default: configured scan_depth, otherwise 2).
+    #[arg(long, default_value = "2", hide_default_value = true, value_parser = clap::value_parser!(u32).range(1..=5))]
     pub depth: u32,
 
     /// Force re-scan, bypassing cache
@@ -243,7 +272,8 @@ impl ScanArgs {
             .clone()
             .unwrap_or_else(|| config.bindings_dir.clone());
 
-        let converter = crate::adapter::CliToolConverter::new();
+        let converter = crate::adapter::CliToolConverter::new()
+            .with_json_output_preference(config.json_output_preference);
         let modules = converter.convert_all(&outcome.tools);
 
         // These are the command's deliverables. A failed write must surface as
@@ -749,8 +779,10 @@ pub struct A2aArgs {
     /// A2A credential mode: token (default), jwt or none.
     #[arg(long, value_parser = ["token", "jwt", "none"])]
     pub auth: Option<String>,
+    /// Bearer token for --auth token; falls back to APEXE_AUTH_TOKEN or generates one.
     #[arg(long, env = "APEXE_AUTH_TOKEN", hide_env_values = true)]
     pub auth_token: Option<String>,
+    /// Signing secret for --auth jwt; falls back to APEXE_JWT_SECRET.
     #[arg(long, env = "APEXE_JWT_SECRET", hide_env_values = true)]
     pub jwt_secret: Option<String>,
     #[command(flatten)]
@@ -938,19 +970,21 @@ impl ListArgs {
 
         let mut modules = self.load_modules(bindings_dir, config.bindings_pattern.as_deref())?;
         if modules.is_empty() {
-            println!("No modules found. Run 'apexe init' first, or 'apexe scan <tool>' for a custom tool.");
-            return Ok(());
+            return self.print_empty(config,
+                "No modules found. Run 'apexe init' first, or 'apexe scan <tool>' for a custom tool.");
         }
 
         if self.available_only {
             let loaded = modules.len();
             modules.retain(|m| crate::scanner::resolver::target_is_available(&m.target));
             if modules.is_empty() {
-                println!(
-                    "No modules found. {loaded} scanned module(s) exist but none of their \
+                return self.print_empty(
+                    config,
+                    &format!(
+                        "No modules found. {loaded} scanned module(s) exist but none of their \
                      binaries are reachable on this machine."
+                    ),
                 );
-                return Ok(());
             }
         }
 
@@ -959,6 +993,17 @@ impl ListArgs {
         } else {
             self.print_modules(&modules)?;
         }
+        Ok(())
+    }
+
+    fn print_empty(&self, config: &ApexeConfig, message: &str) -> anyhow::Result<()> {
+        if self.format == "json" {
+            if self.verbose {
+                return self.print_verbose(&[], config);
+            }
+            return self.print_modules(&[]);
+        }
+        println!("{message}");
         Ok(())
     }
 
@@ -1143,7 +1188,7 @@ impl ConfigArgs {
         if let Some(action) = self.action {
             return action.execute(config);
         }
-        if self.show {
+        if self.show || !self.init {
             let yaml = serde_yaml::to_string(config)?;
             println!("{yaml}");
         }

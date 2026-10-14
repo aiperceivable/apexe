@@ -56,3 +56,32 @@ mkdocs build --strict --config-file /tmp/apexe-docs/mkdocs.yml
 
 The documentation build requires `mkdocs-material`. It leaves the source docs
 unchanged and checks links and heading anchors before publication.
+
+## CLI interface compatibility
+
+Keep command and option names stable: long options use hyphen-separated words,
+and the same concept keeps the same name across commands. Scope matters:
+`scan --output-dir` writes bindings, while `--bindings-dir` reads them. Introduce
+aliases and a documented migration period for future renames.
+
+Treat successful `--format json` output as an API, including empty and filtered
+results. Keep explanatory messages out of JSON stdout. Native execution instead
+preserves the child's streams and status; structured automation uses module JSON
+or the protocol adapters. Every visible argument needs a help description, and
+onboarding help should follow initialization, discovery, preview and execution.
+
+Protocol capability claims must match the negotiated version and actual response
+fields. Structured-output support belongs to the apcore-mcp SDK, not copied sources
+or dependency patches in apexe. The SDK implementation exposes object output
+schemas, validates after redaction and retains legacy text. Stdio/SSE use
+session negotiation; stateless HTTP uses the protocol header per request.
+The integration awaits a published SDK release and a normal dependency update.
+Client-side
+annotations are hints; access control remains an executor decision. See the
+[current MCP result contract](user-manual.md#13-error-handling-and-ai-guidance).
+
+CLI JSON failures use `CliErrorEnvelope` with `schema_version: 1`. Preserve
+domain codes, details and recovery fields instead of classifying messages.
+`--input-file` and `--input` converge before execution and must stay exclusive
+with native argv. The file/stdin size limit protects the input reader and never
+changes the wrapped tool's stdin contract.

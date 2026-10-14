@@ -12,6 +12,7 @@ use super::{annotations, schema};
 /// Converts ScannedCLITool instances into ScannedModule instances.
 pub struct CliToolConverter {
     namespace: String,
+    json_output_preference: bool,
 }
 
 /// Fields extracted from a (real or synthesized) command, used to assemble a module.
@@ -29,6 +30,7 @@ impl CliToolConverter {
     pub fn new() -> Self {
         Self {
             namespace: "cli".to_string(),
+            json_output_preference: true,
         }
     }
 
@@ -36,7 +38,14 @@ impl CliToolConverter {
     pub fn with_namespace(namespace: &str) -> Self {
         Self {
             namespace: namespace.to_string(),
+            json_output_preference: true,
         }
+    }
+
+    /// Prefer the detected JSON output switch for generated captured executions.
+    pub fn with_json_output_preference(mut self, enabled: bool) -> Self {
+        self.json_output_preference = enabled;
+        self
     }
 
     /// Convert a single ScannedCLITool into a list of ScannedModules (one per leaf command).
@@ -127,6 +136,12 @@ impl CliToolConverter {
         module.annotations = Some(fields.annotations);
         module.documentation = fields.documentation;
         module.metadata = self.build_metadata(tool, path, help_format_name);
+        self.set_output_preference(
+            tool,
+            command_opt,
+            &mut module.input_schema,
+            &mut module.metadata,
+        );
         module.metadata.insert(
             "confidence".into(),
             json!(Self::source_confidence(tool, command_opt)),
@@ -139,6 +154,26 @@ impl CliToolConverter {
         module.warnings = tool.warnings.clone();
         module.examples = Self::build_examples(fields.examples);
         module
+    }
+
+    fn set_output_preference(
+        &self,
+        tool: &ScannedCLITool,
+        command: Option<&&ScannedCommand>,
+        input_schema: &mut serde_json::Value,
+        metadata: &mut HashMap<String, serde_json::Value>,
+    ) {
+        let output = command.map_or(&tool.structured_output, |command| {
+            &command.structured_output
+        });
+        if self.json_output_preference && output.supported {
+            if let Some(flag) = &output.flag {
+                if let Some((name, value)) = schema::json_output_argument(input_schema, flag) {
+                    input_schema["properties"][name]["default"] = value;
+                    metadata.insert("json_flag".into(), json!(flag));
+                }
+            }
+        }
     }
 
     fn source_confidence(
@@ -1159,6 +1194,54 @@ mod tests {
         let modules = converter.convert(&tool);
 
         assert!(modules[0].tags.contains(&"structured-output".to_string()));
+    }
+
+    #[test]
+    fn test_converter_json_preference_applies_to_declared_root_and_leaf_switches() {
+        for nested in [false, true] {
+            let flag = crate::models::ScannedFlag {
+                long_name: Some("--json".into()),
+                value_type: crate::models::ValueType::Boolean,
+                ..Default::default()
+            };
+            let output = StructuredOutputInfo {
+                supported: true,
+                flag: Some("--json".into()),
+                format: Some("json".into()),
+            };
+            let mut command = make_command("list", "toy list");
+            command.flags = vec![flag.clone()];
+            command.structured_output = output.clone();
+            let mut tool = make_tool("toy", if nested { vec![command] } else { vec![] });
+            if !nested {
+                tool.global_flags = vec![flag];
+                tool.structured_output = output;
+            }
+            for enabled in [false, true] {
+                let modules = CliToolConverter::new()
+                    .with_json_output_preference(enabled)
+                    .convert(&tool);
+                let expected = enabled.then(|| json!("--json"));
+                assert_eq!(modules[0].metadata.get("json_flag"), expected.as_ref());
+                assert_eq!(
+                    modules[0].input_schema["properties"]["json"]["default"],
+                    enabled
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_converter_does_not_infer_output_switches_from_examples_alone() {
+        let mut tool = make_tool("toy", vec![]);
+        tool.structured_output = StructuredOutputInfo {
+            supported: true,
+            flag: Some("--format json".into()),
+            format: Some("json".into()),
+        };
+        assert!(!CliToolConverter::new().convert(&tool)[0]
+            .metadata
+            .contains_key("json_flag"));
     }
 
     #[test]

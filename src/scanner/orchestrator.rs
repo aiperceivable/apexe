@@ -281,6 +281,7 @@ impl ScanOrchestrator {
         detected: &DetectedVariant,
     ) {
         tool.source_contracts = crate::adapter::CliToolConverter::new()
+            .with_json_output_preference(false)
             .convert(tool)
             .into_iter()
             .map(|module| {

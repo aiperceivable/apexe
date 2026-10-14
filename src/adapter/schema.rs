@@ -2,6 +2,50 @@ use serde_json::{json, Value as JsonValue};
 
 use crate::models::{FlagRisk, ScannedArg, ScannedCommand, ScannedFlag, ValueType};
 
+/// Resolve a declared, non-escalating JSON output switch to a typed input.
+pub(crate) fn json_output_argument(schema: &JsonValue, flag: &str) -> Option<(String, JsonValue)> {
+    let words = shell_words::split(flag).ok()?;
+    let (flag_name, value) = match words.as_slice() {
+        [flag] if flag == "--json" => (flag.as_str(), json!(true)),
+        [flag, value] if value == "json" => (flag.as_str(), json!(value)),
+        _ => return None,
+    };
+    if super::annotations::flag_literal_escalates(flag_name) {
+        return None;
+    }
+    for (name, property) in schema["properties"].as_object()? {
+        if property["x-apexe-flag"] != flag_name
+            || property["x-apexe-path"] == true
+            || property["x-apexe-exec"] == true
+        {
+            continue;
+        }
+        let expected_type = if value.is_boolean() {
+            "boolean"
+        } else {
+            "string"
+        };
+        if property["type"] != expected_type {
+            continue;
+        }
+        let choices = property["enum"].as_array();
+        if choices.is_some_and(|choices| !choices.contains(&value)) {
+            continue;
+        }
+        if !matches!(flag_name, "--json" | "--format" | "--output-format") && choices.is_none() {
+            continue;
+        }
+        if property
+            .get("const")
+            .is_some_and(|constant| constant != &value)
+        {
+            continue;
+        }
+        return Some((name.clone(), value));
+    }
+    None
+}
+
 /// Map a ValueType to the corresponding JSON Schema type string.
 fn value_type_to_json_schema(vt: ValueType) -> &'static str {
     match vt {
@@ -838,6 +882,23 @@ pub fn build_output_schema(command: &ScannedCommand) -> JsonValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_json_output_argument_rejects_undeclared_path_and_incompatible_modes() {
+        let mut schema = json!({"type":"object","properties":{
+            "output":{"type":"string","enum":["json","text"],"x-apexe-flag":"--output"}
+        }});
+        assert_eq!(
+            json_output_argument(&schema, "--output json"),
+            Some(("output".into(), json!("json")))
+        );
+        assert!(json_output_argument(&schema, "--json").is_none());
+        schema["properties"]["output"]["x-apexe-path"] = json!(true);
+        assert!(json_output_argument(&schema, "--output json").is_none());
+        schema["properties"]["output"]["x-apexe-path"] = json!(false);
+        schema["properties"]["output"]["enum"] = json!(["text"]);
+        assert!(json_output_argument(&schema, "--output json").is_none());
+    }
 
     fn flag_with_risk(long: &str, risk: FlagRisk) -> ScannedFlag {
         ScannedFlag {

@@ -9,9 +9,10 @@ use std::path::PathBuf;
 /// Compare fresh source contracts with bindings without replacing the baseline.
 #[derive(Debug, Args, Serialize, Deserialize)]
 pub struct VerifyArgs {
+    /// Directory containing binding files (default: configured bindings directory).
     #[arg(long)]
     pub bindings_dir: Option<PathBuf>,
-    /// Explicit readonly behavioral cases in JSON; no behavioral execution by default.
+    /// Reviewed readonly, dry-run or isolated cases in JSON; no case execution by default.
     #[arg(long)]
     pub cases: Option<PathBuf>,
     /// Allow explicitly reviewed, digest-pinned dry-run cases; isolation is mandatory.
@@ -35,7 +36,8 @@ pub struct VerifyArgs {
     /// Fail on additive and cosmetic drift as well as breaking or unclassified changes.
     #[arg(long)]
     pub strict: bool,
-    #[arg(long, default_value = "2", value_parser = clap::value_parser!(u32).range(1..=5))]
+    /// Source scan depth (1-5; default: configured scan_depth, otherwise 2).
+    #[arg(long, default_value = "2", hide_default_value = true, value_parser = clap::value_parser!(u32).range(1..=5))]
     pub depth: u32,
 }
 
@@ -142,7 +144,9 @@ impl VerifyArgs {
                 }
                 continue;
             }
-            let fresh = crate::adapter::CliToolConverter::new().convert_all(&outcome.tools);
+            let fresh = crate::adapter::CliToolConverter::new()
+                .with_json_output_preference(config.json_output_preference)
+                .convert_all(&outcome.tools);
             report.extend(crate::verification::compare(&previous, &fresh)?);
         }
         Ok(report)

@@ -9,7 +9,7 @@
 | Field | Value |
 |-------|-------|
 | **Version** | 0.9.0 |
-| **Date** | 2026-09-29 |
+| **Date** | 2026-10-14 |
 | **Platform** | macOS / Linux |
 
 ---
@@ -37,11 +37,15 @@
 
 ## 1. Introduction
 
-**apexe** turns any CLI tool on your system into a governed, schema-enforced service that AI agents can invoke safely via the MCP protocol. It works in three steps:
+**apexe** turns supported existing CLI tools into schema-validated operations
+with access rules and audit records for humans and AI agents. Coverage depends
+on the installed tool, its discoverable grammar and available reviewed rules.
+It provides a governed execution entry point; it does not replace a sandbox.
+The normal workflow has three steps:
 
-1. **Scan** — Deterministically extract commands, flags, and arguments from CLI tools (no LLM required).
-2. **Govern** — Classify commands as readonly/destructive/open-world, generate ACL rules, enable audit logging.
-3. **Serve** — Expose tools via MCP (stdio for Claude Desktop/Cursor, HTTP for remote agents).
+1. **Initialize** — Use `apexe init` to prepare matching installed commands. Use `scan` for custom tools or targeted rescans.
+2. **Review** — Inspect schemas, annotations and the generated ACL with `apexe list --verbose`; review access rules before execution.
+3. **Execute or serve** — Use `exec` locally, activate reviewed PATH shims with `env`, or expose modules through MCP/A2A.
 
 apexe is built on the [apcore](https://github.com/aiperceivable/apcore-rust) ecosystem: apcore (core types), apcore-toolkit (output), apcore-mcp (MCP server), apcore-a2a (A2A agent server), apcore-cli (`--man` page generation). The audit trail is apexe's own — see §9.2.
 
@@ -51,7 +55,7 @@ apexe is built on the [apcore](https://github.com/aiperceivable/apcore-rust) eco
 
 ### Prerequisites
 
-- **Rust** 1.75 or later (uses async fn in traits)
+- Current **stable Rust** toolchain; CI tests stable, and no older MSRV is declared or tested
 - **Cargo** (included with Rust)
 - macOS or Linux
 
@@ -93,7 +97,7 @@ apexe scan <TOOLS>... [OPTIONS]
 |-------------------|---------|-------------|
 | `<TOOLS>...` | (required) | CLI tool names to scan (must be on `$PATH`) |
 | `--output-dir <DIR>` | `~/.apexe/bindings/` | Directory to write binding files |
-| `--depth <N>` | `2` | Subcommand recursion depth (1-5). `git remote add` = depth 2 |
+| `--depth <N>` | configured `scan_depth` (normally `2`) | Subcommand recursion depth (1-5). Explicit flags override configuration; `git remote add` = depth 2 |
 | `--no-cache` | off | Force fresh tool scan; does not update the cached overlay corpus |
 | `--offline` | off | Skip automatic corpus download; use installed/local overlays and built-in classification. Also settable with `APEXE_OFFLINE=true` |
 | `--format <FMT>` | `table` | Output format: `json`, `yaml`, or `table` |
@@ -237,9 +241,19 @@ apexe list [OPTIONS]
 | `--acl <PATH>` | `<config_dir>/acl.yaml` if present | ACL policy file to evaluate against in `--verbose` output. Read-only report — does not enable enforcement anywhere |
 | `--available-only` | off | Only list modules whose binary is reachable on this machine right now. `apexe serve`/`apexe a2a` apply this check unconditionally; here it is opt-in so the plain listing still shows everything ever scanned — see [Availability Filtering](#availability-filtering) |
 
+For terminal agents and CI, `apexe list --verbose --format json` returns an
+object with `acl_policy` and `modules`. Each module includes `id`,
+`input_schema`, `output_schema` and available annotations. This is discovery
+information; use `exec --dry-run` to validate a concrete call with its caller.
+Plain `list --format json` returns an array of module IDs and descriptions.
+Successful JSON listings keep these shapes when empty: `[]`, or an envelope
+whose `modules` array is empty. Human onboarding messages are emitted only in
+table mode. `--available-only` follows the same rule when it filters everything.
+
 ### 4.5 `apexe config`
 
-Shows or initializes apexe configuration.
+Shows, initializes or updates apexe configuration. Without an operation or flag,
+`apexe config` prints the same resolved YAML as `apexe config --show`.
 
 ```
 apexe config [OPTIONS]
@@ -314,11 +328,15 @@ printf 'one\ntwo\n' | apexe exec -- cat | apexe exec -- head -n1
 # Module JSON: use the property names in your scanned binding schema.
 apexe exec cli.ls --input '{"file":["."]}'
 apexe exec cli.ls --input '{"file":["."]}' --dry-run --as ci
+# File or stdin JSON; both use the same validation and governance.
+apexe exec cli.ls --input-file request.json --dry-run
+cat request.json | apexe exec cli.ls --input-file - --error-format json
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--input <JSON>` | `{}` | JSON object for module mode; conflicts with native argv |
+| `--input-file <PATH>` | none | Read a JSON object from a file, or stdin when PATH is `-`; conflicts with `--input` and native argv |
 | `--bindings-dir <DIR>` | configured bindings directory | Binding files to load |
 | `--acl <PATH>` | `<config_dir>/acl.yaml` when present | Missing explicitly requested files and malformed policies fail closed |
 | `--dry-run` | off | Report schema, ACL, approval, path-guard decisions and planned argv without execution |
@@ -656,7 +674,7 @@ apexe verify --cases ./readonly-cases.json --report ./verification.json
 | Option | Description |
 |---|---|
 | `--bindings-dir <DIR>` | Binding baseline to compare |
-| `--depth <N>` | Fresh subcommand scan depth (1-5, default 2) |
+| `--depth <N>` | Fresh scan depth (1-5); defaults to configured `scan_depth` (normally 2). Explicit flags take precedence |
 | `--strict` | Fail on every detected change |
 | `--cases <PATH>` | Explicit JSON behavioral cases; none execute by default |
 | `--overlay <PATH>` | Reapply an explicit overlay used by the original scan |
@@ -957,12 +975,21 @@ allowed_paths:
 | `audit_log` | path | `~/.apexe/audit.jsonl` | Audit trail file |
 | `log_level` | string | `warn` | Diagnostic file log level: off, error, warn, info, debug, trace |
 | `default_timeout` | integer | `30` | CLI subprocess timeout (seconds) |
-| `scan_depth` | integer | `2` | Default subcommand recursion depth |
-| `json_output_preference` | boolean | `true` | Prefer JSON output from CLI tools when available |
+| `scan_depth` | integer | `2` | Default depth for init, scan and verify; explicit scan/verify `--depth` overrides it |
+| `json_output_preference` | boolean | `true` | Prefer a detected, schema-declared JSON switch in newly generated captured-execution bindings |
 | `overlay_dirs` | list of paths | `[]` | Explicit local corpus directories; skip automatic downloads and load before personal overlays |
 | `default_overlay_repository` | string | `https://github.com/aiperceivable/cli-permissions` | Default initialization and automatic scan source; HTTPS mirror or local Git repository supported |
 | `additional_denied_paths` | list of paths | `[]` | Locations to deny **in addition to** the path-guard baselines (§9.7) |
 | `allowed_paths` | list of paths | `[]` | Carve-outs **out of** the path-guard baselines (§9.7). The only setting that relaxes the guard; you own the consequences |
+
+`json_output_preference` applies when `scan` or `init` generates bindings. A
+preference records `json_flag` and the corresponding schema default. Execution
+renders that default through the normal argument guards and respects explicit
+inputs, including `json: false`, alternative output modes and declared conflicts.
+It does not infer switches from examples alone or turn an output-file argument
+into a format selector. Native exec and shims keep native output unchanged.
+After changing the setting, rescan the affected tools or use `init --refresh`
+for unchanged init-owned bindings; custom or edited bindings stay preserved.
 
 The key set above is closed. A key apexe does not read is **ignored**, and a
 startup diagnostic names the key and the one it was probably meant to be.
@@ -2200,7 +2227,44 @@ Aliases are auto-sanitized for MCP compatibility (dots replaced with underscores
 
 ## 13. Error Handling and AI Guidance
 
-Every error includes `ai_guidance` to help AI agents self-correct:
+Domain errors attach `ai_guidance` when recovery advice is available:
+
+### Structured CLI failures
+
+Use the global `--error-format json` before or after a subcommand to emit a
+single-line, versioned error envelope on stderr. The default remains human
+text. Help, version, man pages, successful stdout and wrapped child exit codes
+keep their existing behavior. Argument errors exit `2`; runtime failures exit
+`1`. A completed child with exit `1` still returns its captured result on stdout
+without an apexe error envelope.
+
+```bash
+apexe --error-format json exec cli.ls --input-file request.json
+cat request.json | apexe exec cli.ls --input-file - --error-format json
+```
+
+```json
+{"schema_version":1,"error":{"code":"GENERAL_INVALID_INPUT","message":"Input must be a JSON object","details":{},"retryable":false,"ai_guidance":"Provide one JSON object matching the advertised input schema.","trace_id":null}}
+```
+
+`code` uses the existing apcore domain codes; generic failures use
+`GENERAL_INTERNAL_ERROR`. Schema errors retain `details.errors`, and domain
+errors retain available retry advice and trace IDs. Unavailable optional fields
+are `null`. Do not parse `message` to identify the failure. Successful or partial
+command reports may already exist on stdout when a later operation fails.
+`--log-stderr` explicitly adds diagnostic logs; omit it when consuming stderr
+as just an error envelope. Errors inside a running MCP/A2A server retain their
+protocol-specific error contract.
+
+`--input-file` is exclusive with inline `--input` and native argv. File/stdin
+input is limited to 1,048,576 bytes, must contain exactly one UTF-8 JSON object,
+and rejects empty data, arrays, invalid JSON and trailing documents. Stdin must
+be piped or redirected; a terminal is rejected instead of waiting interactively.
+Input is read before entering the execution runtime and follows the same schema,
+ACL, approval and audit path as inline JSON. Malformed-input diagnostics contain
+positions, not the input body. Inline `--input` and its default `{}` are preserved.
+
+### Recovery guidance
 
 | Error | ai_guidance |
 |-------|-------------|
@@ -2234,9 +2298,9 @@ A wrapped command that runs and exits non-zero comes back as an ordinary,
 successful tool result: **`isError: false`**, with `exit_code`, `stdout`,
 `stderr` and `ai_guidance` in the payload.
 
-`exit_code` is **not** a sibling of `isError`. MCP's `tools/call` result has a
-fixed shape — `content` plus `isError` — and apcore-mcp puts the whole payload
-into `content[0].text` as a **JSON string**:
+`exit_code` is **not** a sibling of `isError`. Compatible MCP clients receive
+the payload in `structuredContent`, with serialized JSON also retained in
+`content[0].text`. A legacy client's text response remains:
 
 ```json
 {
@@ -2250,10 +2314,33 @@ into `content[0].text` as a **JSON string**:
 }
 ```
 
-So a client reads `exit_code` by JSON-parsing `content[0].text` first:
+The published `apcore-mcp 0.22.3` dependency currently negotiates **`2025-03-26`**
+and returns JSON text. The structured-result SDK upgrade described below is
+pending publication and an apexe dependency update; it negotiates **`2025-06-18`**,
+retaining `2025-03-26` for legacy clients. On stdio and SSE this decision belongs to the live connection.
+Streamable HTTP remains stateless: after initialization, send
+`MCP-Protocol-Version: 2025-06-18` on each request to receive structured fields.
+Without the header, HTTP keeps the legacy format; unsupported versions return
+HTTP `400`. Request body metadata cannot override the transport's decision.
+
+For compatible clients, `tools/list` exposes an object binding's `outputSchema`,
+and successful calls expose the same redacted object in `structuredContent`
+and serialized text. Advertised output schemas are checked after redaction;
+schema mismatches become payload-free tool errors rather than leaking the
+original output or returning an invalid success. Async task submissions omit
+the final-result schema, and non-object results retain text output. Legacy
+clients receive neither new structured field. Authentication, approval and
+execution governance use the existing pipeline on every transport.
+
+The implementation belongs to the
+[apcore-mcp SDK](https://github.com/aiperceivable/apcore-mcp-rust). apexe uses a
+normal Cargo SDK dependency and does not vendor the SDK source.
+
+A client supports both result formats with:
 
 ```js
-const payload = JSON.parse(result.content[0].text);
+if (result.isError) throw new Error(result.content[0]?.text ?? "Tool call failed");
+const payload = result.structuredContent ?? JSON.parse(result.content[0].text);
 if (payload.exit_code !== 0) { /* the command ran and answered */ }
 ```
 
@@ -2261,7 +2348,7 @@ Reading `result.exit_code` directly yields `undefined`, and a client that then
 falls back to `isError` lands exactly in the trap the rest of this section
 exists to prevent.
 
-This is deliberate and will not change. In a CLI bridge, a non-zero exit is
+This exit-status distinction is deliberate. In a CLI bridge, a non-zero exit is
 frequently the *answer*, not a failure:
 
 | Command | Exit 1 means |
@@ -2274,19 +2361,24 @@ Setting `isError: true` on a non-zero exit would report all three as failed
 tool calls, and an agent would retry or abandon a tool that answered its
 question correctly.
 
-`isError: true` is reserved for **the call never reaching the binary**:
+`isError: true` means the bridge could not return a valid execution result:
 
 - schema validation rejected the arguments,
 - the ACL denied the caller,
 - `--enable-approval` blocked a `requires_approval` module,
 - the circuit breaker was open, the timeout killed the process, or the binary
-  could not be spawned at all.
+  could not be spawned at all,
+- output validation, including validation after redaction, failed.
+
+A timeout or output-validation failure can occur after execution started. Do
+not infer that no side effects occurred, or automatically retry destructive calls.
 
 On that path `content[0].text` is a plain diagnostic sentence rather than a
-JSON payload, so parsing it is only meaningful when `isError` is `false`.
+success payload. Read it as an error diagnostic; do not apply the success schema.
 
 **So: an MCP client must not treat `isError: false` as "the command
-succeeded".** Parse `content[0].text` and read `exit_code` from it (it is
+succeeded".** Read `structuredContent`, falling back to parsed text, and inspect
+`exit_code` (it is
 `required` in every generated output schema, alongside `stdout` and `stderr`),
 then apply the wrapped tool's own convention.
 
@@ -2337,6 +2429,7 @@ more natural to type:
 | `--log-level <LEVEL>` | `warn` unless configured or overridden by the environment | Diagnostic log level; overrides `RUST_LOG`, `APEXE_LOG_LEVEL` and `config.yaml` |
 | `--log-stderr` | Off | Also mirror diagnostic logs to stderr |
 | `--timeout <SECS>` | `default_timeout` from `config.yaml` (30) | Per-call timeout override, applied to every subcommand that runs or probes a wrapped binary. Refuses `0`, which would kill every call before it started |
+| `--error-format <FORMAT>` | `text` | Render CLI failures on stderr as `text` or a versioned `json` envelope; successful output and child status are unchanged |
 
 ```bash
 apexe --timeout 120 scan ffmpeg     # a slow tool needs longer than the default

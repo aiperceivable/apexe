@@ -1,10 +1,10 @@
 use apcore::ModuleError;
-use clap::{CommandFactory, Parser};
+use clap::{ArgMatches, CommandFactory, FromArgMatches};
 
 mod logging;
 
 use apexe::cli::Cli;
-use apexe::errors::ApexeError;
+use apexe::errors::{ApexeError, CliErrorEnvelope, ErrorFormat};
 
 /// Print apexe's man page, when `--man` is present in raw argv.
 ///
@@ -62,15 +62,32 @@ fn render_error(error: anyhow::Error) -> String {
 }
 
 /// Report a failed run to stderr.
-fn report_error(error: anyhow::Error) {
-    eprintln!("{}", render_error(error));
+fn report_error(error: anyhow::Error, format: ErrorFormat) {
+    use std::io::Write;
+    let mut stderr = std::io::stderr().lock();
+    match format {
+        ErrorFormat::Text => {
+            let _ = writeln!(stderr, "{}", render_error(error));
+        }
+        ErrorFormat::Json => {
+            let envelope = CliErrorEnvelope::from_error(error);
+            let _ = serde_json::to_writer(&mut stderr, &envelope);
+            let _ = writeln!(stderr);
+        }
+    }
 }
 
 fn main() {
-    let code = match run() {
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let format = if apexe::cli::is_shim_invocation(&raw) {
+        ErrorFormat::Text
+    } else {
+        error_format_from_args(&raw)
+    };
+    let code = match run(format) {
         Ok(code) => code,
         Err(error) => {
-            report_error(error);
+            report_error(error, format);
             1
         }
     };
@@ -78,13 +95,13 @@ fn main() {
     std::process::exit(code);
 }
 
-fn run() -> anyhow::Result<i32> {
+fn run(format: ErrorFormat) -> anyhow::Result<i32> {
     apcore_cli::set_docs_url(Some("https://github.com/aiperceivable/apexe".to_string()));
 
     let raw_os_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     if apexe::cli::is_shim_invocation(&raw_os_args) {
         let _logging_guard = logging::init(None, false)?;
-        return run_with_logging(|| apexe::cli::run_shim(&raw_os_args));
+        return run_with_logging(ErrorFormat::Text, || apexe::cli::run_shim(&raw_os_args));
     }
     let raw_args: Vec<String> = raw_os_args
         .iter()
@@ -94,17 +111,91 @@ fn run() -> anyhow::Result<i32> {
         return Ok(0);
     }
 
-    let cli = Cli::parse();
+    let matches = match Cli::command().try_get_matches() {
+        Ok(matches) => matches,
+        Err(error) => return report_argument_error(error, format),
+    };
+    let mut cli = Cli::from_arg_matches(&matches)?;
     let _logging_guard = logging::init(cli.log_level.as_deref(), cli.log_stderr)?;
-    run_with_logging(|| cli.run())
+    run_with_logging(cli.error_format, || {
+        let config = apexe::config::load_config(None)?;
+        if matches!(
+            cli.command,
+            apexe::cli::Commands::Scan(_) | apexe::cli::Commands::Verify(_)
+        ) {
+            apply_depth_default(&mut cli, &matches, &config)?;
+        }
+        cli.run_with_config(config)
+    })
 }
 
-fn run_with_logging(command: impl FnOnce() -> anyhow::Result<i32>) -> anyhow::Result<i32> {
+fn error_format_from_args(raw: &[std::ffi::OsString]) -> ErrorFormat {
+    let mut arguments = raw.iter().skip(1).take_while(|value| *value != "--");
+    let mut format = ErrorFormat::Text;
+    while let Some(argument) = arguments.next() {
+        let value = if argument == "--error-format" {
+            arguments.next().and_then(|value| value.to_str())
+        } else {
+            argument
+                .to_str()
+                .and_then(|value| value.strip_prefix("--error-format="))
+        };
+        match value {
+            Some("json") => format = ErrorFormat::Json,
+            Some("text") => format = ErrorFormat::Text,
+            _ => {}
+        }
+    }
+    format
+}
+
+fn report_argument_error(error: clap::Error, format: ErrorFormat) -> anyhow::Result<i32> {
+    let code = error.exit_code();
+    if !error.use_stderr() || format == ErrorFormat::Text {
+        error.print()?;
+    } else {
+        report_error(
+            ModuleError::new(apcore::ErrorCode::GeneralInvalidInput, error.to_string())
+                .with_ai_guidance("Run 'apexe <command> --help' to check arguments.")
+                .into(),
+            format,
+        );
+    }
+    Ok(code)
+}
+
+fn apply_depth_default(
+    cli: &mut Cli,
+    matches: &ArgMatches,
+    config: &apexe::config::ApexeConfig,
+) -> anyhow::Result<()> {
+    let Some((_, arguments)) = matches.subcommand() else {
+        return Ok(());
+    };
+    if arguments.value_source("depth") != Some(clap::parser::ValueSource::DefaultValue) {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        (1..=5).contains(&config.scan_depth),
+        "Configured scan_depth must be between 1 and 5"
+    );
+    match &mut cli.command {
+        apexe::cli::Commands::Scan(args) => args.depth = config.scan_depth,
+        apexe::cli::Commands::Verify(args) => args.depth = config.scan_depth,
+        _ => {}
+    }
+    Ok(())
+}
+
+fn run_with_logging(
+    format: ErrorFormat,
+    command: impl FnOnce() -> anyhow::Result<i32>,
+) -> anyhow::Result<i32> {
     match command() {
         Ok(code) => Ok(code),
         Err(error) => {
             tracing::error!(%error, "Command failed");
-            report_error(error);
+            report_error(error, format);
             Ok(1)
         }
     }
@@ -113,6 +204,79 @@ fn run_with_logging(command: impl FnOnce() -> anyhow::Result<i32>) -> anyhow::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_error_format_detection_supports_global_positions_and_stops_at_native_args() {
+        for (arguments, expected) in [
+            (
+                vec!["apexe", "--error-format=json", "exec"],
+                ErrorFormat::Json,
+            ),
+            (
+                vec!["apexe", "exec", "--error-format", "json"],
+                ErrorFormat::Json,
+            ),
+            (
+                vec!["apexe", "exec", "--", "toy", "--error-format", "json"],
+                ErrorFormat::Text,
+            ),
+            (
+                vec!["apexe", "--error-format", "invalid"],
+                ErrorFormat::Text,
+            ),
+        ] {
+            let raw: Vec<_> = arguments
+                .into_iter()
+                .map(std::ffi::OsString::from)
+                .collect();
+            assert_eq!(error_format_from_args(&raw), expected);
+        }
+    }
+
+    #[test]
+    fn test_scan_and_verify_depth_defaults_use_config_and_preserve_explicit_values() {
+        let config = apexe::config::ApexeConfig {
+            scan_depth: 4,
+            ..Default::default()
+        };
+        for arguments in [vec!["apexe", "scan", "git"], vec!["apexe", "verify"]] {
+            for explicit in [false, true] {
+                let mut arguments = arguments.clone();
+                if explicit {
+                    arguments.extend(["--depth", "2"]);
+                }
+                let matches = Cli::command().try_get_matches_from(arguments).unwrap();
+                let mut cli = Cli::from_arg_matches(&matches).unwrap();
+                apply_depth_default(&mut cli, &matches, &config).unwrap();
+                let depth = match cli.command {
+                    apexe::cli::Commands::Scan(args) => args.depth,
+                    apexe::cli::Commands::Verify(args) => args.depth,
+                    _ => unreachable!(),
+                };
+                assert_eq!(depth, if explicit { 2 } else { 4 });
+            }
+        }
+    }
+
+    #[test]
+    fn test_invalid_depth_config_does_not_override_an_explicit_valid_flag() {
+        let config = apexe::config::ApexeConfig {
+            scan_depth: 0,
+            ..Default::default()
+        };
+        for arguments in [vec!["apexe", "scan", "git"], vec!["apexe", "verify"]] {
+            let matches = Cli::command()
+                .try_get_matches_from(arguments.clone())
+                .unwrap();
+            let mut cli = Cli::from_arg_matches(&matches).unwrap();
+            assert!(apply_depth_default(&mut cli, &matches, &config).is_err());
+            let matches = Cli::command()
+                .try_get_matches_from(arguments.into_iter().chain(["--depth", "2"]))
+                .unwrap();
+            let mut cli = Cli::from_arg_matches(&matches).unwrap();
+            assert!(apply_depth_default(&mut cli, &matches, &config).is_ok());
+        }
+    }
 
     #[test]
     fn test_report_error_renders_guidance_for_a_module_error() {

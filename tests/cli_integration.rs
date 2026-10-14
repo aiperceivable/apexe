@@ -20,7 +20,14 @@ fn apexe() -> Command {
     let mut cmd = Command::cargo_bin("apexe").unwrap();
     cmd.env("HOME", home).env("APEXE_OFFLINE", "true");
     // Isolate the filter from the developer's terminal configuration.
-    cmd.env_remove("RUST_LOG");
+    for name in [
+        "RUST_LOG",
+        "APEXE_LOG_LEVEL",
+        "APEXE_BINDINGS_DIR",
+        "APCORE_CONFIG",
+    ] {
+        cmd.env_remove(name);
+    }
     cmd
 }
 
@@ -35,6 +42,107 @@ fn test_help_shows_subcommands() {
         .stdout(predicate::str::contains("a2a"))
         .stdout(predicate::str::contains("list"))
         .stdout(predicate::str::contains("config"));
+}
+
+#[test]
+fn test_help_leads_with_setup_discovery_and_execution() {
+    let output = apexe()
+        .arg("--help")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let help = String::from_utf8(output).unwrap();
+    let commands: Vec<&str> = help
+        .lines()
+        .skip_while(|line| *line != "Commands:")
+        .skip(1)
+        .take_while(|line| !line.is_empty())
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert_eq!(&commands[..3], &["init", "list", "exec"]);
+    assert!(help.contains("apexe exec --dry-run -- ls -la"));
+}
+
+#[test]
+fn test_visible_cli_arguments_have_help_descriptions() {
+    use clap::CommandFactory;
+    let mut pending = vec![apexe::cli::Cli::command()];
+    let mut missing = Vec::new();
+    while let Some(command) = pending.pop() {
+        for argument in command.get_arguments() {
+            if argument.is_hide_set() || matches!(argument.get_id().as_str(), "help" | "version") {
+                continue;
+            }
+            if argument.get_help().is_none() {
+                missing.push(format!("{} {}", command.get_name(), argument.get_id()));
+            }
+        }
+        pending.extend(command.get_subcommands().cloned());
+    }
+    assert!(
+        missing.is_empty(),
+        "Visible arguments with no help: {missing:?}"
+    );
+}
+
+#[test]
+fn test_list_empty_json_preserves_array_and_verbose_envelope() {
+    for verbose in [false, true] {
+        let mut command = apexe();
+        command.args(["list", "--format", "json"]);
+        if verbose {
+            command.arg("--verbose");
+        }
+        let output = command.assert().success().get_output().stdout.clone();
+        let result: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        let expected = if verbose {
+            serde_json::json!({"acl_policy":null,"modules":[]})
+        } else {
+            serde_json::json!([])
+        };
+        assert_eq!(result, expected);
+    }
+}
+
+#[test]
+fn test_list_unavailable_json_preserves_array_and_verbose_envelope() {
+    let directory = tempfile::tempdir().unwrap();
+    let module = apcore_toolkit::ScannedModule::new(
+        "cli.missing".into(),
+        "Unavailable command".into(),
+        serde_json::json!({"type":"object"}),
+        serde_json::json!({"type":"object"}),
+        vec![],
+        "exec:///nonexistent/apexe-product-test".into(),
+    );
+    apexe::output::YamlOutput::without_verification()
+        .write(&[module], directory.path(), false)
+        .unwrap();
+    for verbose in [false, true] {
+        let mut command = apexe();
+        command
+            .args([
+                "list",
+                "--format",
+                "json",
+                "--available-only",
+                "--bindings-dir",
+            ])
+            .arg(directory.path());
+        if verbose {
+            command.arg("--verbose");
+        }
+        let output = command.assert().success().get_output().stdout.clone();
+        let result: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        let expected = if verbose {
+            serde_json::json!({"acl_policy":null,"modules":[]})
+        } else {
+            serde_json::json!([])
+        };
+        assert_eq!(result, expected);
+    }
 }
 
 #[test]
@@ -107,7 +215,74 @@ fn test_config_show_succeeds() {
 
 #[test]
 fn test_config_no_flags_succeeds() {
-    apexe().arg("config").assert().success();
+    let output = apexe()
+        .arg("config")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let settings: serde_yaml::Value = serde_yaml::from_slice(&output).unwrap();
+    assert!(settings["bindings_dir"].is_string());
+    assert_eq!(settings["log_level"], "warn");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_scan_json_preference_controls_generated_bindings_and_captured_execution() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let binary = directory.path().join("toy-json");
+    std::fs::write(&binary, "#!/bin/sh\ncase \"$1\" in --version) echo 'toy 1.0';; --help) printf 'Usage: toy-json [OPTIONS]\\nOptions:\\n  --json  Print JSON output\\n';; --json) echo '{\"mode\":\"json\"}';; *) echo plain;; esac\n").unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for enabled in [false, true] {
+        let home = directory.path().join(enabled.to_string());
+        std::fs::create_dir_all(home.join(".apexe")).unwrap();
+        std::fs::write(
+            home.join(".apexe/config.yaml"),
+            format!("json_output_preference: {enabled}\n"),
+        )
+        .unwrap();
+        apexe()
+            .env("HOME", &home)
+            .args(["scan", "--offline", "--no-cache"])
+            .arg(&binary)
+            .assert()
+            .success();
+        let modules =
+            apexe::output::load_modules_from_dir(&home.join(".apexe/bindings"), None).unwrap();
+        assert_eq!(modules[0].metadata.contains_key("json_flag"), enabled);
+        apexe()
+            .env("HOME", &home)
+            .args(["verify", "--strict"])
+            .assert()
+            .success();
+        assert_eq!(
+            captured_module_output(&home, &modules[0].module_id),
+            if enabled {
+                "{\"mode\":\"json\"}\n"
+            } else {
+                "plain\n"
+            }
+        );
+    }
+}
+
+#[cfg(unix)]
+fn captured_module_output(home: &std::path::Path, module_id: &str) -> serde_json::Value {
+    let acl = home.join("allow.yaml");
+    std::fs::write(&acl, "rules: []\ndefault_effect: allow\n").unwrap();
+    let output = apexe()
+        .env("HOME", home)
+        .args(["exec", module_id, "--acl"])
+        .arg(acl)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let result: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    result["stdout"].clone()
 }
 
 /// Regression: one unscannable name used to abort the whole batch.

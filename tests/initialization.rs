@@ -584,6 +584,53 @@ fn test_init_reports_scan_failure_and_nonzero_exit() {
 }
 
 #[test]
+fn test_init_json_preference_controls_captured_output_and_preserves_native_output() {
+    for enabled in [false, true] {
+        let fixture = Fixture::new();
+        executable(&fixture.binary, "case \"$1\" in --version) echo 'toy 1.0';; --help) printf 'Usage: toy [OPTIONS]\\nOptions:\\n  --json  Print JSON output\\n';; --json) echo '{\"mode\":\"json\"}';; *) echo plain;; esac");
+        let path = fixture.repository.join("overlays/toy.json");
+        let mut overlay: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        overlay["flags"][0]["long"] = json!("--json");
+        std::fs::write(&path, serde_json::to_vec(&overlay).unwrap()).unwrap();
+        fixture.commit();
+        std::fs::create_dir_all(fixture.home.join(".apexe")).unwrap();
+        std::fs::write(
+            fixture.home.join(".apexe/config.yaml"),
+            format!("json_output_preference: {enabled}\n"),
+        )
+        .unwrap();
+        fixture.init(&[]);
+        let modules =
+            apexe::output::load_modules_from_dir(fixture.binding().parent().unwrap(), None)
+                .unwrap();
+        assert_eq!(modules[0].metadata.contains_key("json_flag"), enabled);
+        let output = fixture
+            .command()
+            .args(["exec", "cli.toy"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let result: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(
+            result["stdout"],
+            if enabled {
+                "{\"mode\":\"json\"}\n"
+            } else {
+                "plain\n"
+            }
+        );
+        fixture
+            .command()
+            .args(["exec", "--", "toy"])
+            .assert()
+            .success()
+            .stdout("plain\n");
+    }
+}
+
+#[test]
 fn test_init_changed_default_source_does_not_reuse_old_named_corpus() {
     let fixture = Fixture::new();
     std::fs::write(fixture.repository.join("manifest.json"),

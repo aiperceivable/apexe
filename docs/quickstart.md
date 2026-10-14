@@ -113,6 +113,28 @@ an explicit reviewed capability. Local execution loads the default ACL when
 present and uses caller `local`; approval-required local calls fail closed.
 See the [exec reference](user-manual.md#47-apexe-exec) for unmanaged policies.
 
+For a terminal agent or CI job, discover the JSON contract before constructing
+arguments, then preview and execute the same input:
+
+```bash
+apexe list --verbose --format json
+# Choose an advertised module ID and match its input_schema.
+apexe exec cli.ls --input '{}' --dry-run
+apexe exec cli.ls --input '{}'
+apexe exec cli.ls --input-file request.json --dry-run
+cat request.json | apexe exec cli.ls --input-file - --error-format json
+```
+
+Plain `list --format json` returns a summary array, including `[]` on an empty
+machine. Verbose JSON adds schemas and ACL context in a `modules` envelope.
+Both are discovery reports; preflight evaluates a concrete invocation.
+File/stdin input accepts one JSON object up to 1 MiB. `--error-format json`
+adds a versioned error envelope on stderr while retaining existing stdout and
+exit status behavior. Inline `--input` remains available.
+`--as` changes only a dry-run simulation, and cannot impersonate a caller during
+execution. Local calls requiring interactive approval must use an MCP client
+and a server configured for approval instead.
+
 ## 5. Optionally activate your shell
 
 Use this step only when initialization reports native-ready modules. An

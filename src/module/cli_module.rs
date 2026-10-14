@@ -4,7 +4,7 @@ use apcore::module::ModuleAnnotations;
 use apcore::{Change, Context, ErrorCode, Module, ModuleError, PreviewResult};
 use apcore_toolkit::ScannedModule;
 use async_trait::async_trait;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::executor;
 use crate::governance::path_guard::AccessMode;
@@ -183,14 +183,49 @@ impl CliModule {
         if let Some(args) = &self.fixed_argv {
             return Ok(args.clone());
         }
-        let kwargs = inputs.as_object().ok_or_else(|| {
-            ModuleError::new(
-                ErrorCode::GeneralInvalidInput,
-                "Input must be a JSON object",
-            )
-        })?;
-        let rendered = executor::build_argv(kwargs, Some(&self.input_schema), self.access_mode())?;
+        let mut kwargs = inputs
+            .as_object()
+            .ok_or_else(|| {
+                ModuleError::new(
+                    ErrorCode::GeneralInvalidInput,
+                    "Input must be a JSON object",
+                )
+            })?
+            .clone();
+        self.apply_json_default(&mut kwargs);
+        let rendered = executor::build_argv(&kwargs, Some(&self.input_schema), self.access_mode())?;
         Ok(self.assemble_arguments(rendered))
+    }
+
+    fn apply_json_default(&self, inputs: &mut Map<String, Value>) {
+        if self.execution_io != super::ExecutionIo::Captured {
+            return;
+        }
+        let Some((name, value)) = self.json_flag.as_deref().and_then(|flag| {
+            crate::adapter::schema::json_output_argument(&self.input_schema, flag)
+        }) else {
+            return;
+        };
+        let properties = &self.input_schema["properties"];
+        let conflicts_with = |property: &Value, other: &str| {
+            property["x-apexe-conflicts-with"]
+                .as_array()
+                .is_some_and(|names| names.iter().any(|value| value == other))
+        };
+        let conflict = inputs.iter().any(|(other, input)| {
+            executor::is_effective(input)
+                && (conflicts_with(&properties[&name], other)
+                    || conflicts_with(&properties[other], &name))
+        });
+        if !conflict {
+            inputs.entry(name).or_insert(value);
+        }
+    }
+
+    fn legacy_json_flag(&self) -> Option<&str> {
+        self.json_flag.as_deref().filter(|flag| {
+            crate::adapter::schema::json_output_argument(&self.input_schema, flag).is_none()
+        })
     }
 
     /// Resolve the exact subprocess argv without starting a process.
@@ -198,7 +233,7 @@ impl CliModule {
     pub(crate) fn planned_argv(&self, inputs: &Value) -> Result<Vec<String>, ModuleError> {
         let mut args = self.execution_argv(inputs)?;
         if self.execution_io == super::ExecutionIo::Captured {
-            if let Some(flag) = &self.json_flag {
+            if let Some(flag) = self.legacy_json_flag() {
                 args.extend(shell_words::split(flag).unwrap_or_default());
             }
         }
@@ -455,7 +490,7 @@ impl Module for CliModule {
         let output = match super::io::execute(
             &self.binary_path,
             &args,
-            self.json_flag.as_deref(),
+            self.legacy_json_flag(),
             self.timeout_ms,
             self.max_output_bytes,
             self.execution_io,
@@ -488,6 +523,50 @@ mod tests {
             vec!["test".to_string()],
             target.to_string(),
         )
+    }
+
+    #[test]
+    fn test_json_preference_respects_explicit_inputs_conflicts_and_native_io() {
+        let mut module = make_echo_module(vec![], Some("--json".into()));
+        module.input_schema = json!({"type":"object","properties":{
+            "json":{"type":"boolean","x-apexe-flag":"--json"},
+            "yaml":{"type":"boolean","x-apexe-flag":"--yaml","x-apexe-conflicts-with":["json"]}
+        }});
+        assert_eq!(module.planned_argv(&json!({})).unwrap(), vec!["--json"]);
+        assert!(module
+            .planned_argv(&json!({"json":false}))
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            module.planned_argv(&json!({"yaml":true})).unwrap(),
+            vec!["--yaml"]
+        );
+        assert_eq!(
+            module.planned_argv(&json!({"json":true})).unwrap(),
+            vec!["--json"]
+        );
+        let module = module.with_execution_io(crate::module::ExecutionIo::Passthrough {
+            stdin: crate::module::StdinMode::Null,
+        });
+        assert!(module.planned_argv(&json!({})).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_json_preference_uses_schema_ordering_before_subcommands_and_separators() {
+        let mut module = make_echo_module(vec!["list".into()], Some("--format json".into()));
+        module.input_schema = json!({"type":"object","x-apexe-end-of-options":true,
+        "properties":{
+            "format":{"type":"string","enum":["json","yaml"],"x-apexe-flag":"--format","x-apexe-flag-position":"before-subcommand"},
+            "items":{"type":"array","items":{"type":"string"},"x-apexe-positional":0}
+        }});
+        assert_eq!(
+            module.planned_argv(&json!({"items":["-literal"]})).unwrap(),
+            vec!["--format", "json", "list", "--", "-literal"]
+        );
+        assert_eq!(
+            module.planned_argv(&json!({"format":"yaml"})).unwrap(),
+            vec!["--format", "yaml", "list"]
+        );
     }
 
     fn make_echo_module(command_parts: Vec<String>, json_flag: Option<String>) -> CliModule {

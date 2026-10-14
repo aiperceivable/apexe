@@ -17,7 +17,9 @@
 
 ## 1. Purpose
 
-Replace the custom MCP JSON-RPC server (6 files, ~1,200 LOC) with apcore-mcp's `APCoreMCP` builder. This gains full MCP protocol compliance, streamable-http transport, Explorer UI, and middleware integration without maintaining a custom implementation. (Transport-level authentication shipped as a first-class CLI flag set — `--auth`, `--auth-token`, `--jwt-secret`, `--allow-unauthenticated-bind` — required by default on the HTTP-family transports; see §4.1.)
+Replace the custom MCP JSON-RPC server (6 files, ~1,200 LOC) with apcore-mcp's `APCoreMCP` builder. This gains MCP integration, streamable-http transport, Explorer UI, and middleware support without maintaining a custom implementation. The current protocol version and output capabilities are documented in [the user manual](../user-manual.md). (Transport-level authentication shipped as a first-class CLI flag set — `--auth`, `--auth-token`, `--jwt-secret`, `--allow-unauthenticated-bind` — required by default on the HTTP-family transports; see §4.1.)
+
+The structured-result upgrade is tracked in [apcore-mcp-rust #10](https://github.com/aiperceivable/apcore-mcp-rust/issues/10), with matching Python and TypeScript SDK changes prepared locally as `0.23.0`. Publication requires the referenced-schema redaction fix in [apcore-rust #41](https://github.com/aiperceivable/apcore-rust/issues/41) to be released first and the MCP core dependency floor to be advanced. The SDK owns protocol negotiation, `outputSchema`, and post-redaction `structuredContent`; apexe consumes the SDK without vendoring it. Development integration tests exercise the corrected local SDK and core explicitly, while the published `0.22.3` dependency retains its existing text-only behavior. These local joint tests do not establish compatibility with the uncorrected published core dependency.
 
 ---
 

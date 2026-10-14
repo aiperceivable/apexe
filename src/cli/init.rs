@@ -12,9 +12,12 @@ const OWNER_KEY: &str = "apexe_init_source";
 
 /// Prepare reviewed command bindings and a starter ACL for this machine.
 #[derive(Debug, clap::Args, Serialize, Deserialize)]
+#[command(
+    after_help = "Examples:\n  apexe init                                Prepare this machine\n  apexe init --offline --format json         Use cached or local rules\n  apexe init --refresh                       Refresh unchanged init-owned bindings\n\nNext: inspect 'apexe list --verbose', review the ACL, then use 'apexe exec',\n'apexe env --enable' or 'apexe serve --acl ~/.apexe/acl.yaml'."
+)]
 pub struct InitArgs {
     /// Rules Git repository; defaults to default_overlay_repository.
-    #[arg(long, value_parser = parse_source)]
+    #[arg(long, value_name = "SOURCE", value_parser = parse_source)]
     pub overlays: Option<String>,
     /// Pin a branch, tag or commit for the selected rules repository.
     #[arg(long = "ref")]
@@ -148,6 +151,7 @@ impl InitArgs {
             orchestrator.overlay_count() == 0,
             &mut report,
             self.format,
+            config.json_output_preference,
         )?;
         let existing = crate::output::load_modules_from_dir(
             &config.bindings_dir,
@@ -278,6 +282,7 @@ fn discover_modules(
     fallback: bool,
     report: &mut InitReport,
     format: ReportFormat,
+    json_output_preference: bool,
 ) -> anyhow::Result<Vec<ScannedModule>> {
     let mut modules = Vec::new();
     for (index, name) in scan.tools.iter().enumerate() {
@@ -290,7 +295,14 @@ fn discover_modules(
                 name.escape_debug()
             ),
         )?;
-        modules.extend(discover_command(orchestrator, scan, name, fallback, report));
+        modules.extend(discover_command(
+            orchestrator,
+            scan,
+            name,
+            fallback,
+            report,
+            json_output_preference,
+        ));
     }
     Ok(modules)
 }
@@ -301,6 +313,7 @@ fn discover_command(
     name: &String,
     fallback: bool,
     report: &mut InitReport,
+    json_output_preference: bool,
 ) -> Vec<ScannedModule> {
     if !super::shim::valid_name(name) {
         report
@@ -331,7 +344,9 @@ fn discover_command(
         report
             .tools
             .push(tool_report(name, ToolStatus::Ready, tool.overlay.clone()));
-        let mut converted = crate::adapter::CliToolConverter::new().convert(&tool);
+        let mut converted = crate::adapter::CliToolConverter::new()
+            .with_json_output_preference(json_output_preference)
+            .convert(&tool);
         for module in &mut converted {
             stamp_module(module, tool.overlay.as_deref().unwrap_or("fallback"));
         }

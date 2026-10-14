@@ -178,7 +178,10 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 ### MCP Server (v0.1.0 new, replaces v0.1.x self-built server)
 - `McpServerBuilder`: bindings_dir → Registry → Executor → APCoreMCP
 - Transports: stdio, streamable-http (was "http"), SSE
-- Full MCP protocol compliance via apcore-mcp
+- MCP tool discovery and invocation via the apcore-mcp SDK. The structured-result
+  SDK upgrade is pending publication and a normal apexe dependency update; it supports `2025-06-18` and legacy `2025-03-26`. Compatible clients
+  receive object `outputSchema` and redacted `structuredContent`, with JSON text
+  retained for compatibility. HTTP selects the format per protocol-version header.
 - Explorer UI (HTTP transports)
 - Transport authentication is a first-class CLI surface (`--auth token|jwt|none`, `--auth-token`, `--jwt-secret`), required by default on the HTTP-family transports; a non-loopback bind without an explicit acknowledgement (`--allow-unauthenticated-bind`) refuses to start. See `docs/user-manual.md` §9.
 

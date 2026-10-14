@@ -599,12 +599,16 @@ fn stdio_jsonrpc_roundtrip(bindings_dir: &Path, request: &serde_json::Value) -> 
     use std::io::Write;
     use std::process::{Command, Stdio};
 
+    let home = TempDir::new().unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_apexe"))
+        .env("HOME", home.path())
+        .env_remove("APCORE_CONFIG")
+        .env_remove("APEXE_BINDINGS_DIR")
         .args(["serve", "--transport", "stdio", "--bindings-dir"])
         .arg(bindings_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("apexe serve should start");
 
@@ -621,7 +625,244 @@ fn stdio_jsonrpc_roundtrip(bindings_dir: &Path, request: &serde_json::Value) -> 
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .find(|value| value.get("result").is_some() || value.get("error").is_some())
-        .unwrap_or_else(|| panic!("no JSON-RPC response on stdout: {stdout}"))
+        .unwrap_or_else(|| {
+            panic!(
+                "no JSON-RPC response: {stdout}; stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+        })
+}
+
+fn stdio_session(
+    dir: &Path,
+    version: &str,
+    requests: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+    let home = TempDir::new().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_apexe"))
+        .env("HOME", home.path())
+        .env_remove("APCORE_CONFIG")
+        .env_remove("APEXE_BINDINGS_DIR")
+        .args([
+            "serve",
+            "--transport",
+            "stdio",
+            "--log-level",
+            "off",
+            "--bindings-dir",
+        ])
+        .arg(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let initialize = json!({"jsonrpc":"2.0","id":0,"method":"initialize",
+        "params":{"protocolVersion":version,"capabilities":{},"clientInfo":{"name":"structured-test","version":"1"}}});
+    let mut responses = Vec::new();
+    for request in std::iter::once(&initialize).chain(requests) {
+        writeln!(child.stdin.as_mut().unwrap(), "{request}").unwrap();
+        let mut line = String::new();
+        loop {
+            assert!(
+                reader.read_line(&mut line).unwrap() > 0,
+                "Server closed before replying"
+            );
+            let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if value["id"] == request["id"] {
+                responses.push(value);
+                break;
+            }
+            line.clear();
+        }
+    }
+    drop(child.stdin.take());
+    assert!(child.wait().unwrap().success());
+    responses
+}
+
+#[test]
+fn test_mcp_structured_results_preserve_text_and_legacy_clients() {
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let requests = [
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cli.echo","arguments":{},"_meta":{"mcpProtocolVersion":"2025-06-18"}}}),
+    ];
+    for version in ["2025-03-26", "2025-06-18"] {
+        let responses = stdio_session(dir.path(), version, &requests);
+        assert_eq!(responses[0]["result"]["protocolVersion"], version);
+        let tool = responses[1]["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "cli.echo")
+            .unwrap();
+        let result = &responses[2]["result"];
+        let text: serde_json::Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(result["isError"], false);
+        if version == "2025-06-18" {
+            assert_eq!(tool["outputSchema"], json!({"type":"object"}));
+            assert_eq!(result["structuredContent"], text);
+            assert_eq!(text["exit_code"], 0);
+        } else {
+            assert!(tool.get("outputSchema").is_none());
+            assert!(result.get("structuredContent").is_none());
+        }
+    }
+}
+
+#[test]
+fn test_mcp_structured_results_are_redacted_and_refusals_are_not_successes() {
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let mut modules = apexe::output::load_modules_from_dir(dir.path(), None).unwrap();
+    modules[0].output_schema = json!({"type":"object","properties":{
+        "stdout":{"type":"string","x-sensitive":true}},"required":["stdout"]});
+    modules[0]
+        .metadata
+        .insert("display".into(), json!({"mcp":{"alias":"echo"}}));
+    YamlOutput::without_verification()
+        .write(&modules, dir.path(), false)
+        .unwrap();
+    let requests = [
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+        "params":{"name":"cli.echo","arguments":{"message":"PRIVATE-OUTPUT"}}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+        "params":{"name":"cli.missing","arguments":{}}}),
+    ];
+    let responses = stdio_session(dir.path(), "2025-06-18", &requests);
+    let result = &responses[1]["result"];
+    assert_eq!(result["structuredContent"]["stdout"], "***REDACTED***");
+    assert!(!result.to_string().contains("PRIVATE-OUTPUT"));
+    assert_eq!(responses[2]["result"]["isError"], true);
+    assert!(responses[2]["result"].get("structuredContent").is_none());
+}
+
+async fn http_rpc(
+    app: &axum::Router,
+    version: Option<&str>,
+    request: serde_json::Value,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let mut builder = axum::http::Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header("content-type", "application/json");
+    if let Some(version) = version {
+        builder = builder.header("mcp-protocol-version", version);
+    }
+    let response = app
+        .clone()
+        .oneshot(
+            builder
+                .body(axum::body::Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&body).unwrap())
+}
+
+#[tokio::test]
+async fn test_mcp_http_structured_results_are_request_scoped_and_legacy_safe() {
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let app = http_app(dir.path()).await;
+    for version in [
+        Some("2025-06-18"),
+        Some("2025-03-26"),
+        None,
+        Some("2025-06-18"),
+    ] {
+        let (_, response) = http_rpc(
+            &app,
+            version,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        )
+        .await;
+        let tool = response["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "cli.echo")
+            .unwrap();
+        assert_eq!(
+            tool.get("outputSchema").is_some(),
+            version == Some("2025-06-18")
+        );
+        let (status, response) = http_rpc(&app, version, json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"cli.echo","arguments":{},"_meta":{"mcpProtocolVersion":"2025-06-18","sessionId":"forged"}}})).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let result = &response["result"];
+        assert_eq!(
+            result.get("structuredContent").is_some(),
+            version == Some("2025-06-18")
+        );
+        if version == Some("2025-06-18") {
+            let text: serde_json::Value =
+                serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+            assert_eq!(result["structuredContent"], text);
+        }
+    }
+    let (status, _) = http_rpc(
+        &app,
+        Some("unsupported"),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+}
+
+async fn http_app(dir: &Path) -> axum::Router {
+    let server = McpServerBuilder::new()
+        .bindings_dir(dir)
+        .transport("http")
+        .auth(apexe::auth::AuthOptions {
+            mode: Some(apexe::auth::AuthMode::None),
+            ..Default::default()
+        })
+        .build()
+        .unwrap();
+    server
+        .async_serve(apcore_mcp::AsyncServeOptions::default())
+        .await
+        .unwrap()
+}
+
+#[test]
+fn test_mcp_structured_child_status_and_post_redaction_validation() {
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let mut modules = apexe::output::load_modules_from_dir(dir.path(), None).unwrap();
+    modules[0].target = "exec:///usr/bin/false".into();
+    YamlOutput::without_verification()
+        .write(&modules, dir.path(), false)
+        .unwrap();
+    let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"cli.echo","arguments":{}}});
+    let responses = stdio_session(dir.path(), "2025-06-18", std::slice::from_ref(&request));
+    assert_eq!(responses[1]["result"]["isError"], false);
+    assert_eq!(responses[1]["result"]["structuredContent"]["exit_code"], 1);
+    modules[0].target = "exec:///bin/echo".into();
+    modules[0].output_schema = json!({"type":"object","properties":{
+        "stdout":{"type":"string","const":"\n","x-sensitive":true}},"required":["stdout"]});
+    YamlOutput::without_verification()
+        .write(&modules, dir.path(), false)
+        .unwrap();
+    let responses = stdio_session(dir.path(), "2025-06-18", &[request]);
+    assert_eq!(responses[1]["result"]["isError"], true);
+    assert!(responses[1]["result"].get("structuredContent").is_none());
+    assert!(responses[1]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("after redaction"));
 }
 
 #[test]
@@ -652,6 +893,26 @@ fn test_mcp_initialize_reports_the_apexe_version() {
         "serverInfo.version must be apexe's version: {response}"
     );
     assert_eq!(server_info["name"].as_str(), Some("apexe"));
+}
+
+#[test]
+fn test_mcp_negotiated_protocol_matches_the_documented_version() {
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let response = stdio_jsonrpc_roundtrip(
+        dir.path(),
+        &json!({
+            "jsonrpc":"2.0", "id":1, "method":"initialize",
+            "params":{"protocolVersion":"2025-11-25", "capabilities":{},
+                "clientInfo":{"name":"apexe-protocol-test", "version":"1"}}
+        }),
+    );
+    let version = response["result"]["protocolVersion"].as_str().unwrap();
+    let expected = format!("negotiates **`{version}`**");
+    assert!(
+        include_str!("../docs/user-manual.md").contains(&expected),
+        "User manual must document the negotiated protocol: {expected}"
+    );
 }
 
 /// Write an ACL file whose single rule carries the given target list.

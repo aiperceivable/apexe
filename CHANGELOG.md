@@ -6,9 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
-## [0.9.0] - 2026-10-13
+## [0.9.0] - 2026-10-14
 
 ### Added
+- Global `--error-format text|json` for versioned CLI failures on stderr,
+  preserving domain codes, schema diagnostics, recovery guidance and trace IDs.
+  Default text, help, success output and child exit statuses stay compatible.
+- `exec --input-file PATH` reads one JSON object; `--input-file -` reads piped or
+  redirected stdin. File/stdin input is capped at 1 MiB and shares inline-input
+  validation and governance; source options and native argv are mutually exclusive.
+- The SDK structured-result integration (pending an apcore-mcp release) exposes object `outputSchema` and redacted
+  `structuredContent`, retaining JSON text. It negotiates `2025-06-18`, preserves
+  legacy `2025-03-26`, and chooses HTTP fields per protocol-version header.
+  Result schemas are validated after redaction without disclosing invalid payloads.
+  The SDK implementation lives in apcore-mcp-rust; apexe retains its normal Cargo dependency.
 - `apexe init` initializes matching installed CLI tools from the configured
   rules source. `--overlays` selects a Git source, `--ref` pins a revision,
   `--refresh` updates rules and unchanged init-owned bindings, and `--offline`
@@ -72,6 +83,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   escaped JSON Pointer paths) through the shared executor and both adapters.
 
 ### Fixed
+- `scan` and `verify` now honor configured `scan_depth` when `--depth` is absent,
+  while explicit CLI values continue to take precedence.
+- Generated bindings honor `json_output_preference` for schema-declared output
+  switches. Captured execution respects explicit alternatives and flag ordering;
+  native output is preserved. Existing bindings need a rescan or owned refresh.
+  Source drift baselines retain the underlying CLI defaults.
+- JSON module listings preserve their array or verbose envelope when no modules
+  exist or availability filtering removes every module.
+- `apexe config` without an operation now shows resolved YAML instead of silently
+  succeeding without output.
+- Installation guidance recommends the CI-tested stable Rust toolchain rather
+  than claiming unsupported Rust 1.75 compatibility.
 - Docker scanning recognizes common, management and swarm command groups,
   plugin markers, typed option sections and inline usage. Repeated commands are
   discovered once, including nested management commands such as `container ls`.
@@ -93,6 +116,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   still require acknowledgement. Agent Card version comments describe the SDK.
 
 ### Changed
+- Help leads with initialization, discovery and execution, groups global options,
+  gives readable argument labels, and includes native/module and shell examples.
+  Existing command and option names remain accepted.
+- Documentation states the negotiated MCP protocol and the current text-result
+  contract, distinguishing it from newer optional structured-output capabilities.
 - **BREAKING:** remove `apexe overlays`; source installation, pinning and refresh
   move to `apexe init` options. README and quickstart now lead with initialization,
   followed by list, exec, env and serve; custom scanning is an advanced workflow.

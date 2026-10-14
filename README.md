@@ -7,7 +7,7 @@
 Outside-In CLI-to-Agent Bridge — automatically wraps existing CLI tools into governed [apcore](https://github.com/aiperceivable) modules, served via MCP.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org)
 
 ## What is apexe?
 
@@ -98,7 +98,8 @@ Available targets: `x86_64-apple-darwin`, `aarch64-apple-darwin`,
 
 ### From source
 
-Requires **Rust 1.75+** and Cargo.
+Use the current **stable Rust** toolchain and Cargo. CI tests stable Rust;
+the project does not declare or test an older minimum supported Rust version.
 
 ```bash
 git clone https://github.com/aiperceivable/apexe.git
@@ -236,6 +237,7 @@ List registered modules.
 apexe list                     # Table format
 apexe list --format json       # JSON format
 apexe list --available-only    # Only binaries reachable on this machine
+apexe list --verbose --format json  # Schemas, annotations and ACL context for agents
 ```
 
 ### `apexe exec`
@@ -246,6 +248,8 @@ Execute reviewed native argv without activation, or a module with JSON input:
 apexe exec -- ls -la
 apexe exec --dry-run -- ls -la
 apexe exec cli.ls --input '{"file":["."]}'
+apexe exec cli.ls --input-file request.json --dry-run
+cat request.json | apexe exec cli.ls --input-file - --error-format json
 ```
 
 Native mode preserves streams and child status. The JSON property names depend
@@ -335,6 +339,7 @@ Show, initialize or update configuration.
 
 ```bash
 apexe config --show     # Print resolved config (YAML)
+apexe config            # Same as --show
 apexe config --init     # Create ~/.apexe/config.yaml
 apexe config set log.level debug  # Update the saved diagnostic log level
 ```
