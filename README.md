@@ -35,7 +35,7 @@ the same executor for schema validation, configured ACLs and auditing.
 | Prepare installed CLI coverage | `apexe init`, `apexe list --verbose` | Matching reviewed rules, typed bindings and a starter ACL to inspect |
 | Run a CLI command locally | `apexe exec` | Module JSON with captured output, or reviewed native argv with passthrough streams |
 | Keep native command names in your shell | `apexe env` | PATH shims for eligible external commands, activation helpers and installation checks |
-| Route a terminal agent's external CLI commands | [Agent Skill](docs/agent-skill.md) + `apexe exec -- ...` | Default native execution routing in configured environments for Claude Code, Codex and pi |
+| Route a terminal agent's external CLI commands | [Agent Skill](docs/agent-skill.md) + `apexe exec -- ...` | Default native execution routing in configured environments for Claude Code, Codex, pi and OpenCode |
 | Connect a protocol client or import an HTTP API | `apexe serve`, `apexe a2a` | CLI modules and optional imported OpenAPI operations over MCP or A2A |
 | Check a CLI contract after changes | `apexe verify` | Source drift reports and optional digest-bound evidence from explicit behavioral cases |
 | Cover a custom CLI | `apexe scan` | Deterministic discovery, YAML bindings, generated ACL rules and optional Claude Skills |
@@ -85,7 +85,7 @@ apexe exec -- ls -la
   test concrete invocations; recorded evidence is invalidated by changed
   bindings, binaries or case files. Verification does not certify every invocation.
 - **Support integrations** — Install the shared Agent Skill for Claude Code,
-  Codex and pi; export YAML bindings and optional per-module Claude Skills,
+  Codex, pi and OpenCode; export YAML bindings and optional per-module Claude Skills,
   embed the Rust library, and export OpenAI tool definitions programmatically.
   Structured CLI errors and module guidance help callers inspect and correct failures.
 
@@ -222,7 +222,7 @@ does not imply native eligibility. When matching native grammar is unavailable,
 use module JSON if its checks permit; a server is not required for local use.
 See the [Quick Start guide](docs/quickstart.md) for the full workflow.
 
-### Claude Code, Codex and pi: Agent Skill + native exec
+### Claude Code, Codex, pi and OpenCode: Agent Skill + native exec
 
 Install the same self-contained [Agent Skill](skills/apexe/SKILL.md) for any of
 these terminal-capable agents. From a source checkout:
@@ -238,12 +238,16 @@ The installer uses `.claude/skills/apexe` for Claude Code and the shared
 `.agents/skills/apexe` location for Codex and pi. It preserves a different
 existing skill unless `--force` is specified. Invoke `/apexe` in Claude Code,
 `$apexe` in Codex, or `/skill:apexe` in pi.
+OpenCode also discovers the shared Agent Skills path and loads `apexe` through
+its native Skill tool, so it can reuse the same installation.
 
-Declare apexe-governed CLI execution in your project's `AGENTS.md` (Codex/pi)
+Declare apexe-governed CLI execution in your project's `AGENTS.md` (Codex/pi/OpenCode)
 or `CLAUDE.md` (Claude Code), or in task instructions. The Skill then routes
 ordinary external CLI commands through native exec without requiring an
 explicit apexe request each time. For example, listing directory entries uses
 `apexe exec -- ls -la`, with a preflight for a new or changed invocation.
+The route applies from the first terminal call, including initial inspection
+and readonly probes; a preliminary bare `pwd && ls -la` is not exempt.
 Installation alone does not enroll unrelated projects; automatic Skill
 selection depends on the host and model. See the
 [project instruction example](docs/agent-skill.md#declare-the-projects-execution-route).

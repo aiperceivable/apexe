@@ -1,6 +1,6 @@
 ---
 name: apexe
-description: Route external CLI commands through native apexe exec by default in an apexe-configured environment. Use for ordinary terminal tasks such as listing files, reading text or running tools when the operator or project requires apexe governance, and for explicit apexe requests. Compatible with Claude Code, Codex and pi; env is optional.
+description: Route external CLI commands through native apexe exec from the first terminal call in an apexe-configured environment, including initial inspection and readonly probes. Use for ordinary terminal tasks when the operator or project requires apexe governance, and for explicit apexe requests. Compatible with Claude Code, Codex, pi and OpenCode; env is optional.
 license: Apache-2.0
 ---
 
@@ -27,7 +27,30 @@ not bare `ls -la`. Preserve the working directory, arguments and task intent.
 Prefer native argv; use governed module JSON only for a grammar gap as described
 below. Do not wrap an already governed call again.
 
-Keep shell builtins such as `cd`, `test` and `printf` in the host shell. Keep
+### Route before the first terminal call
+
+Initial inspection, orientation, readonly probes and quick checks are already
+CLI execution. Do not run a raw command to prepare for a later governed call.
+Loading this Skill does not itself govern subsequent commands: rewrite the
+execution route before submitting each terminal call.
+
+For example, `pwd && ls -la` is not an admissible preliminary inspection. `pwd`
+can remain a shell builtin, but `ls` must enter apexe even in that first call:
+
+```bash
+pwd && apexe exec --dry-run -- ls -la
+# Inspect preflight before the separate execution call.
+apexe exec -- ls -la
+```
+
+Check every external program in a compound command, conditional branch or
+pipeline before sending it to the terminal. Readonly status does not exempt
+`ls`, `cat`, `head` or another external program from this route. If it cannot
+be admitted, report the coverage or governance failure instead of first trying
+the original program. The direct apexe administration calls below are the
+discovery route; bare task commands are not a substitute for discovery.
+
+Keep shell builtins such as `cd`, `pwd`, `test` and `printf` in the host shell. Keep
 host-provided file readers, editors and other non-CLI tools on their existing
 interfaces; this Skill routes external CLI commands, not every agent tool.
 Do not select another tool to evade an apexe refusal. Run apexe's own discovery,
@@ -38,6 +61,8 @@ an interpreter script or an absolute binary path to bypass admission.
 ## Discover the environment
 
 Use the configured working directory, binding directory and ACL for the task.
+Carry explicit binding-directory and ACL overrides into every preflight and
+execution, including retries; do not silently revert to a different default.
 When they are not already known, inspect them once:
 
 ```bash
@@ -64,6 +89,11 @@ Local execution loads the default ACL when present. If no ACL is loaded,
 access control is inactive: do not present such a call as policy-authorized.
 Use the operator-provided `--acl` path when needed; if policy is required and
 unavailable, report the prerequisite instead of creating permissive rules.
+Host permission to read an ACL and apexe's decision under that ACL are separate.
+If a host reader refuses access, stop and report that prerequisite; do not
+remove `--acl`, switch to the default policy or use a raw CLI to read around
+the host's refusal. Operators should provide canonical paths and the required
+host file permissions for the selected configuration.
 
 ## Execute native argv by default
 

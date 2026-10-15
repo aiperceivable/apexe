@@ -1,6 +1,6 @@
 # Agent Skill: default CLI execution routing
 
-For a terminal-capable Claude Code, Codex or pi agent, install the shared
+For a terminal-capable Claude Code, Codex, pi or OpenCode agent, install the shared
 [apexe Agent Skill](../skills/apexe/SKILL.md) to route external CLI commands
 through native `apexe exec -- <command> <arguments>` by default in an
 apexe-configured environment. Ordinary requests such as listing files or
@@ -22,11 +22,17 @@ still be available in the agent's execution environment.
 | Claude Code | `.claude/skills/apexe/SKILL.md` | `~/.claude/skills/apexe/SKILL.md` | `/apexe` |
 | Codex | `.agents/skills/apexe/SKILL.md` | `~/.agents/skills/apexe/SKILL.md` | `$apexe` |
 | pi | `.agents/skills/apexe/SKILL.md` | `~/.agents/skills/apexe/SKILL.md` | `/skill:apexe` |
+| OpenCode | `.agents/skills/apexe/SKILL.md` | `~/.agents/skills/apexe/SKILL.md` | Ask the agent to load the `apexe` Skill |
 
 Codex and pi use the same Agent Skills location, so a single installed copy
 serves both. These paths follow the official [Claude Code skill documentation](https://code.claude.com/docs/en/skills),
 [Codex skill documentation](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills)
 and [pi skill documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md).
+OpenCode discovers these Agent Skills paths too, as well as Claude-compatible
+paths, and loads instructions through its native `skill` tool. See the
+[OpenCode skill documentation](https://opencode.ai/docs/skills/). The installed
+copies must have identical content if both locations contain `apexe`; a host
+may select either copy. No additional OpenCode-specific installation is needed.
 This integration targets terminal-capable agents; Claude Desktop's MCP setup is
 a separate integration.
 
@@ -62,15 +68,17 @@ establish a project-wide routing requirement.
 ## Declare the project's execution route
 
 After preparing bindings and reviewing policy, declare apexe-governed CLI
-execution in the instructions your host reads: `AGENTS.md` for Codex or pi,
+execution in the instructions your host reads: `AGENTS.md` for Codex, pi or OpenCode,
 and `CLAUDE.md` for Claude Code. For example:
 
 ```markdown
 This project uses apexe-governed CLI execution. Load the installed apexe Skill
-before running external CLI commands, including ordinary file-listing and
-text-processing tasks. Route them through native `apexe exec -- <command> ...`
+before the first terminal call. Route external CLI commands, including initial
+inspection, readonly probes, file listing and text processing, through native
+`apexe exec -- <command> ...`
 by default, using the current working directory and the reviewed default
 bindings and ACL under ~/.apexe. Preflight new or changed invocations.
+Do not run a preliminary bare command such as `pwd && ls -la` before routing.
 For missing native grammar, use an advertised module's JSON interface only
 when it preserves the operation and its normal checks permit it. Report
 missing coverage or governance refusals; do not fall back to raw binaries.
@@ -114,6 +122,11 @@ See [initialization](quickstart.md#2-initialize) and the
 
 ## Default agent workflow: native exec
 
+Routing starts with the first terminal call, including orientation and readonly
+probes. Loading the Skill is followed by rewriting the intended commands;
+an initial bare `ls` is a routing violation even if a later listing uses apexe.
+Shell builtins do not exempt adjacent external programs in a compound command.
+
 For a request such as "list all current directory entries, including hidden
 files," the agent selects native exec itself and checks the intended call:
 
@@ -136,6 +149,21 @@ annotations. The Skill inspects that warning; actual execution weighs the sent
 arguments and can stand down when none escalate. Preflight does not obtain
 human approval, and calls actually needing an interactive decision fail closed
 locally. The Skill never clears the warning by editing policy or annotations.
+
+### Host ACL reading and apexe policy checks
+
+Host file permissions and apexe's ACL decisions are separate. Use canonical
+paths for the working directory and any operator-selected ACL. For example,
+macOS `/tmp` can resolve to `/private/tmp`; a host may classify a path under a
+different spelling as outside the working directory. For an ACL stored outside
+the workspace, an operator may need to allow the selected file through the
+host's file-reading and external-directory permissions. OpenCode documents
+these separately in its [permission reference](https://opencode.ai/docs/permissions/).
+
+Provide only the needed host access. Do not disable all host permissions or
+weaken apexe policy to make a test pass. If a host reader refuses the ACL, report
+that prerequisite; the apexe denial test has not run. Preserve the selected
+`--acl` on every preflight and execution instead of silently using a default.
 
 The shell handles pipes, expansions and redirections. Route each external
 pipeline stage independently; use `pipefail` or inspect all stage statuses so

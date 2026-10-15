@@ -14,7 +14,7 @@ boundaries you must review.
 
 | Goal | Guide |
 | --- | --- |
-| Route Claude Code, Codex or pi external CLI commands through native exec by default | [Agent Skill](agent-skill.md) |
+| Route Claude Code, Codex, pi or OpenCode external CLI commands through native exec by default | [Agent Skill](agent-skill.md) |
 | Initialize CLI coverage, review its ACL, and choose local execution or MCP/A2A | [Quick Start](quickstart.md) |
 | Execute CLI commands with module JSON, reviewed native argv or PATH shims | [Local execution example](../examples/local_execution/README.md) |
 | Check source drift, explicit dry-runs and earned case evidence | [Verification guide](verification.md) and [runnable example](../examples/verification/README.md) |

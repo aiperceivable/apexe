@@ -157,6 +157,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   still require acknowledgement. Agent Card version comments describe the SDK.
 
 ### Changed
+- Apply Agent Skill routing from the first terminal call, including initial
+  inspection and readonly probes. Cover OpenCode's shared Skill discovery and
+  distinguish host ACL-reading permissions from apexe policy decisions.
 - Make the shared Agent Skill the default external CLI execution route in
   projects or tasks declaring apexe governance, including ordinary terminal
   requests. Document project instructions, routing boundaries, coverage gaps

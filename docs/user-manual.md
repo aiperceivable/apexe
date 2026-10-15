@@ -2180,7 +2180,7 @@ unauthenticated surface may disclose detailed refusal reasons.
 
 ### Terminal agents: Skill and native exec
 
-For terminal-capable Claude Code, Codex and pi, install the shared
+For terminal-capable Claude Code, Codex, pi and OpenCode, install the shared
 [apexe Agent Skill](agent-skill.md). In a project or task declaring apexe-governed
 CLI execution, it routes ordinary external CLI commands through native `exec`
 by default, even without an explicit apexe request. No MCP server or shell
@@ -2200,17 +2200,22 @@ python3 scripts/install_agent_skill.py --project-dir /path/to/your-project
 ```
 
 The same `skills/apexe/SKILL.md` is installed into Claude Code's `.claude/skills`
-and the shared `.agents/skills` location used by Codex and pi. Explicit entry
+and the shared `.agents/skills` location used by Codex and pi. OpenCode also
+discovers these locations and loads the Skill through its native tool. Explicit entry
 points are `/apexe`, `$apexe` and `/skill:apexe`, respectively. The
 [installation guide](agent-skill.md#install-the-same-skill-in-your-agent) covers
 user scope, individual agents, idempotent reinstall and overwrite protection.
 
 Put the execution requirement and intended configuration in `AGENTS.md`
-(Codex/pi), `CLAUDE.md` (Claude Code), or operator task instructions. See the
+(Codex/pi/OpenCode), `CLAUDE.md` (Claude Code), or operator task instructions. See the
 [project instruction example](agent-skill.md#declare-the-projects-execution-route).
 User-level installation makes the Skill available across projects; it does not
 enroll unrelated projects. Automatic Skill selection depends on the host and
 model, and compulsory routing requires enforcement at the host execution tool.
+The route starts with the first terminal call, including readonly probes and
+initial directory inspection; a preliminary bare `ls` violates that route.
+Host permission to read a selected ACL is separate from apexe's policy decision.
+See [ACL reading and policy checks](agent-skill.md#host-acl-reading-and-apexe-policy-checks).
 
 Native admission requires reviewed grammar; the current BSD pilot covers
 cat/head/ls. Listing a module alone does not prove native eligibility. Inspect
