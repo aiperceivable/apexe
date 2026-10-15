@@ -9,6 +9,7 @@ with the [Quick Start](quickstart.md) and [OpenAPI guide](openapi.md) instead.
 
 | Task | Starting point |
 | --- | --- |
+| Maintain or install the portable agent workflow | [Agent Skill guide](agent-skill.md) and [installer](../scripts/install_agent_skill.py) |
 | Embed apexe and export generated tool definitions | [Programmatic example](../examples/programmatic/README.md) |
 | Test ACL behaviour with an explicit caller identity | [ACL library example](../examples/acl_demo/README.md) |
 | Import HTTP operations through the shared executor | [OpenAPI guide](openapi.md) and [runnable example](../examples/openapi_import/README.md) |

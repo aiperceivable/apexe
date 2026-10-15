@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runtime_validation import (
@@ -16,8 +17,14 @@ from runtime_validation import (
     coverage_gaps,
     interface_usage,
     require,
+    stop_process_group,
 )
-from validate_examples import check_example_inventory
+from validate_examples import (
+    EXAMPLE_ENTRYPOINTS,
+    check_acl_refusal,
+    check_example_coverage,
+    check_example_inventory,
+)
 
 
 def argument(name, values=(), index=None, last=False, global_option=False):
@@ -66,6 +73,25 @@ def covered_cases():
 
 
 class CoverageTests(unittest.TestCase):
+    def test_example_acl_refusal_cannot_be_satisfied_by_a_schema_error(self):
+        check_acl_refusal(
+            {
+                "result": {
+                    "isError": True,
+                    "content": [{"text": "ACL_DENIED: Access denied"}],
+                }
+            }
+        )
+        with self.assertRaises(RuntimeError):
+            check_acl_refusal(
+                {
+                    "result": {
+                        "isError": True,
+                        "content": [{"text": "SCHEMA_VALIDATION_ERROR: Invalid input"}],
+                    }
+                }
+            )
+
     def test_new_parameter_is_a_missing_runtime_contract(self):
         data = manifest()
         data["commands"][1]["arguments"].append(argument("--future"))
@@ -141,6 +167,20 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual(used, {"native"})
         self.assertEqual(values, {})
 
+    def test_option_value_cannot_cover_a_global_flag(self):
+        option = argument("--input")
+        option["takes_value"] = True
+        commands = {
+            "root": {
+                "arguments": [argument("--error-format", ["json"], global_option=True)]
+            },
+            "exec": {"arguments": [option]},
+        }
+        _command, used, _values = interface_usage(
+            ["exec", "--input", "--error-format"], commands
+        )
+        self.assertEqual(used, {"--input"})
+
     def test_equals_options_and_positionals_are_counted(self):
         commands = {item["name"]: item for item in manifest()["commands"]}
         command, used, values = interface_usage(
@@ -170,13 +210,36 @@ class CoverageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "examples/new-example").mkdir(parents=True)
-            (root / "examples/new-example/demo.py").write_text("print('new')")
+            (root / "examples/new-example/tool.py").write_text("print('new')")
             with self.assertRaises(RuntimeError):
                 check_example_inventory(root)
+
+    def test_registered_example_still_requires_a_passing_execution(self):
+        cases = [{"example": path, "passed": True} for path in EXAMPLE_ENTRYPOINTS]
+        check_example_coverage(cases)
+        cases[0]["passed"] = False
+        with self.assertRaises(RuntimeError):
+            check_example_coverage(cases)
 
 
 @unittest.skipUnless(os.name == "posix", "Process groups require Unix")
 class ExecutionTests(unittest.TestCase):
+    def test_exited_group_permission_error_does_not_fail_a_successful_case(self):
+        process = Mock(pid=123)
+        with patch(
+            "runtime_validation.os.killpg", side_effect=PermissionError()
+        ), patch("runtime_validation.group_has_live_process", return_value=False):
+            stop_process_group(process)
+        process.wait.assert_called()
+
+    def test_live_group_permission_error_remains_a_cleanup_failure(self):
+        process = Mock(pid=123)
+        with patch(
+            "runtime_validation.os.killpg", side_effect=PermissionError()
+        ), patch("runtime_validation.group_has_live_process", return_value=True):
+            with self.assertRaises(PermissionError):
+                stop_process_group(process)
+
     def test_failed_case_makes_runner_fail_and_cleans_up_its_home(self):
         with tempfile.TemporaryDirectory() as directory:
             report = Path(directory) / "result.json"

@@ -48,8 +48,8 @@ Choose a surface according to the work:
 | Work | Surface |
 |---|---|
 | Prepare and inspect installed CLI coverage | `init`, `list --verbose`; `scan` for custom tools |
+| Run CLI tools from Claude Code, Codex or pi | [Agent Skill](agent-skill.md) + native `exec -- <COMMAND> ...` |
 | Execute locally with structured input/output | `exec <MODULE_ID>` with inline, file or stdin JSON |
-| Execute reviewed native argv with passthrough I/O | `exec -- <COMMAND> ...` |
 | Activate eligible external-command PATH shims | `env --enable`; diagnose with `env --check` |
 | Expose CLI modules and optional HTTP operations | `serve` for MCP; `a2a` for A2A; add `--openapi` for HTTP import |
 | Check CLI source drift and explicit case outcomes | `verify`; add `--cases` and `--record` for persisted evidence |
@@ -393,9 +393,12 @@ ACL-denied plans omit binary and argv details. Invalid governance checks produce
 nonzero exit status. Command lookup and native grammar errors are reported on
 stderr before a plan can be produced.
 
-`approval_required` reports whether approval would be required. Local execution
-has no MCP client to prompt, so calls requiring approval are refused; dry-run
-can inspect them. `--as` is an asserted simulation identity. Module mode supplies
+`approval_required` reports the preflight approval requirement; for flag-derived
+annotations it can be a static ceiling. The execution gate weighs the actual
+arguments and may stand down when none escalate. Local execution has no MCP
+client to prompt, so calls actually needing interactive approval are refused;
+dry-run can inspect them but cannot obtain approval. `--as` is an asserted
+simulation identity. Module mode supplies
 no stdin; reviewed native commands inherit stdin only when their overlay declares
 `streaming_stdin_safe`. PTY sessions remain unsupported.
 
@@ -2175,6 +2178,63 @@ unauthenticated surface may disclose detailed refusal reasons.
 
 ## 12. Integrating with AI Agents
 
+### Terminal agents: Skill and native exec
+
+For terminal-capable Claude Code, Codex and pi, install the shared
+[apexe Agent Skill](agent-skill.md). The default execution entry point is
+native `exec`, with no MCP server or shell activation required:
+
+```bash
+apexe list --verbose --format json
+# Requires matching reviewed native grammar and a policy permitting this call.
+apexe exec --dry-run -- ls -la
+apexe exec -- ls -la
+```
+
+From an apexe source checkout, install for the project where the agent works:
+
+```bash
+python3 scripts/install_agent_skill.py --project-dir /path/to/your-project
+```
+
+The same `skills/apexe/SKILL.md` is installed into Claude Code's `.claude/skills`
+and the shared `.agents/skills` location used by Codex and pi. Explicit entry
+points are `/apexe`, `$apexe` and `/skill:apexe`, respectively. The
+[installation guide](agent-skill.md#install-the-same-skill-in-your-agent) covers
+user scope, individual agents, idempotent reinstall and overwrite protection.
+
+Native admission requires reviewed grammar; the current BSD pilot covers
+cat/head/ls. Listing a module alone does not prove native eligibility. Inspect
+`native_ready` from an existing init report or preflight the intended command.
+The Skill handles missing grammar through the module JSON interface when the
+same operation's schema, policy, approval and path checks permit it. It does
+not bypass refusals, automatically weaken policy or enable unmanaged execution.
+
+Native calls preserve child streams and status; they do not produce a JSON
+result envelope. The shell owns pipes and redirections, so each external
+pipeline stage needing governance must enter apexe separately. Local execution
+loads the default ACL when present. Preflight can report a static approval
+ceiling; calls that actually need interactive approval cannot obtain it locally.
+See the [exec reference](#47-apexe-exec).
+
+### Optional enhancement: governed shell environment
+
+Use `env` when an authorized shell/script workflow needs ordinary command names
+backed by eligible PATH shims. Activation must occur in the shell that executes
+the commands; a later independent agent tool call may start a new shell. Keep
+using explicit exec when that process lifetime is uncertain. `env --check`
+inspects state; enable/reload/deactivation change installation state. Builtins,
+aliases, absolute paths and uncovered tools can bypass shims. See the
+[Agent Skill guide](agent-skill.md#optional-enhancement-env) and
+[env reference](#48-apexe-env).
+
+### Optional protocol integration: MCP and A2A
+
+Use MCP/A2A when the client needs protocol tool discovery, structured protocol
+calls, a network endpoint or imported OpenAPI HTTP operations. HTTP import is
+unavailable through local exec/shims. The following client configurations are
+for this protocol path; terminal Skill use does not need them.
+
 ### `--show-config` reproduces the invocation you type
 
 `--show-config` renders the *rest of the command line* into the snippet, so add
@@ -2227,7 +2287,7 @@ error message into the config file.
 
 ```bash
 apexe scan git curl grep
-apexe serve --show-config claude-desktop
+apexe serve --show-config claude-desktop --acl ~/.apexe/acl.yaml
 ```
 
 Copy the JSON output into:
@@ -2239,7 +2299,7 @@ Restart Claude Desktop. Scanned tools appear as MCP tools.
 ### Cursor
 
 ```bash
-apexe serve --show-config cursor
+apexe serve --show-config cursor --acl ~/.apexe/acl.yaml
 ```
 
 Add the JSON to Cursor's MCP settings. `cursor` honours `--transport`: with
@@ -2248,8 +2308,8 @@ Add the JSON to Cursor's MCP settings. `cursor` honours `--transport`: with
 ### HTTP Mode (Remote Agents)
 
 ```bash
-apexe serve --transport http --host 0.0.0.0 --port 8000
-apexe serve --show-config claude-desktop --transport http --port 8000
+apexe serve --transport http --host 0.0.0.0 --port 8000 --acl ~/.apexe/acl.yaml
+apexe serve --show-config claude-desktop --transport http --port 8000 --acl ~/.apexe/acl.yaml
 ```
 
 The MCP endpoint is at `POST /mcp` (the deprecated SSE transport is served at

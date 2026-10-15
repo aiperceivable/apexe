@@ -1,8 +1,9 @@
 # apexe Quick Start
 
 Run existing tools through schemas, access rules and audit records. This guide
-starts with CLI coverage: install, initialize, inspect and review, then choose
-local execution, eligible PATH shims or an MCP/A2A server. To expose an HTTP API,
+starts with CLI coverage: install, initialize, inspect and review. Terminal
+agents use the shared [Agent Skill](agent-skill.md) with native exec by default;
+PATH shims and MCP/A2A are optional integration paths. To expose an HTTP API,
 follow the [OpenAPI import guide](openapi.md); HTTP import is a server feature.
 
 ## 1. Install
@@ -90,39 +91,44 @@ These are generated suggestions rather than your own review.
 
 ## 4. Execute locally
 
-Module JSON execution works with initialized bindings when policy permits:
-
-```bash
-apexe exec cli.ls
-```
-
-The optional native examples below require matching reviewed grammar. Check
-`native_ready` in the init report; GNU scanning support alone is insufficient.
-The current native pilot covers BSD cat/head/ls.
+Native exec is the default terminal-agent entry point. It requires matching
+reviewed grammar: check `native_ready` in an existing init report or preflight
+the intended command. GNU scanning support alone is insufficient; the current
+native pilot covers BSD cat/head/ls.
 
 ```bash
 apexe exec --dry-run -- ls -la
 apexe exec -- ls -la
 printf 'one\ntwo\n' | apexe exec -- cat | apexe exec -- head -n1
-# Captured JSON mode; use your binding's input property names.
-apexe exec cli.ls --input '{"file":["."]}'
 ```
 
-Native argv needs reviewed grammar; the current BSD pilot covers cat/head/ls.
-Put apexe options before `--`, then the command and its arguments. The shell
-handles pipelines; each stage above enters apexe. stdin is inherited only with
-an explicit reviewed capability. Local execution loads the default ACL when
-present and uses caller `local`; approval-required local calls fail closed.
-See the [exec reference](user-manual.md#47-apexe-exec) for unmanaged policies.
+Put apexe options before `--`, then the command and its arguments. Native calls
+preserve child streams and exit status. The shell owns pipelines and
+redirections; each external stage above enters apexe independently. stdin is
+inherited only with an explicit reviewed capability. Local execution loads the
+default ACL when present and uses caller `local`; approval-required local calls
+fail closed. See the [exec reference](user-manual.md#47-apexe-exec).
 
-For a terminal agent or CI job, discover the JSON contract before constructing
-arguments, then preview and execute the same input:
+For Claude Code, Codex or pi, install the same workflow Skill from an apexe
+source checkout into the project where you run your agent:
+
+```bash
+python3 scripts/install_agent_skill.py --project-dir /path/to/your-project
+```
+
+See the [Agent Skill guide](agent-skill.md) for user installation, invocation,
+refusal handling and shell lifetime. No MCP server or shim activation is needed
+for explicit exec.
+
+When native grammar alone is unavailable, module JSON works with initialized
+bindings if its normal checks permit the operation. Discover the actual schema
+before constructing JSON:
 
 ```bash
 apexe list --verbose --format json
 # Choose an advertised module ID and match its input_schema.
-apexe exec cli.ls --input '{}' --dry-run
-apexe exec cli.ls --input '{}'
+apexe exec cli.ls --input '{"file":["."]}' --dry-run
+apexe exec cli.ls --input '{"file":["."]}'
 apexe exec cli.ls --input-file request.json --dry-run
 cat request.json | apexe exec cli.ls --input-file - --error-format json
 ```
@@ -166,7 +172,10 @@ apexe init --refresh
 apexe env --reload
 ```
 
-## 6. Optionally serve agents
+## 6. Optionally serve protocol clients
+
+Use MCP/A2A for protocol clients or HTTP API import. Terminal agents using the
+Skill and explicit exec do not need a server.
 
 ```bash
 apexe serve --acl ~/.apexe/acl.yaml

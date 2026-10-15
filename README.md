@@ -20,9 +20,11 @@ and applies configured access rules and approval checks before execution.
 Calls leave audit records. Your CLI binaries keep working as they are; scanning
 requires no LLM or changes to their source code.
 
-Use it in the terminal with `apexe exec`, activate eligible external commands
-through PATH shims, or connect an AI client through MCP or A2A. Servers can also
-import HTTP operations from an OpenAPI document, alongside CLI modules, using
+For terminal-capable AI agents, install the shared [apexe Agent Skill](docs/agent-skill.md)
+and use native `apexe exec -- <command> ...` by default. Activate eligible
+external commands through PATH shims when shell integration is useful, or use
+MCP/A2A for protocol clients. Servers can also import HTTP operations from an
+OpenAPI document, alongside CLI modules, using
 the same executor for schema validation, configured ACLs and auditing.
 
 ### Choose your entry point
@@ -32,18 +34,20 @@ the same executor for schema validation, configured ACLs and auditing.
 | Prepare installed CLI coverage | `apexe init`, `apexe list --verbose` | Matching reviewed rules, typed bindings and a starter ACL to inspect |
 | Run a CLI command locally | `apexe exec` | Module JSON with captured output, or reviewed native argv with passthrough streams |
 | Keep native command names in your shell | `apexe env` | PATH shims for eligible external commands, activation helpers and installation checks |
-| Give an AI client access to tools | `apexe serve`, `apexe a2a` | CLI modules and optional imported OpenAPI operations over MCP or A2A |
+| Give a terminal agent access to CLI tools | [Agent Skill](docs/agent-skill.md) + `apexe exec -- ...` | One portable workflow for Claude Code, Codex and pi; native argv by default |
+| Connect a protocol client or import an HTTP API | `apexe serve`, `apexe a2a` | CLI modules and optional imported OpenAPI operations over MCP or A2A |
 | Check a CLI contract after changes | `apexe verify` | Source drift reports and optional digest-bound evidence from explicit behavioral cases |
 | Cover a custom CLI | `apexe scan` | Deterministic discovery, YAML bindings, generated ACL rules and optional Claude Skills |
 
-Initialize CLI coverage, inspect the generated policy, then execute or serve:
+Initialize CLI coverage, inspect the generated policy, then use native exec
+for commands with matching reviewed grammar:
 
 ```bash
 apexe init
 apexe list --verbose
-# Review ~/.apexe/acl.yaml before executing or serving commands.
-apexe exec cli.ls
-apexe serve --acl ~/.apexe/acl.yaml --enable-approval
+# Review ~/.apexe/acl.yaml and check native_ready in the init report.
+apexe exec --dry-run -- ls -la
+apexe exec -- ls -la
 ```
 
 ### Key capabilities
@@ -79,7 +83,8 @@ apexe serve --acl ~/.apexe/acl.yaml --enable-approval
   baseline. Optional readonly, isolated and explicitly authorized dry-run cases
   test concrete invocations; recorded evidence is invalidated by changed
   bindings, binaries or case files. Verification does not certify every invocation.
-- **Support integrations** — Export YAML bindings and optional Claude Skills,
+- **Support integrations** — Install the shared Agent Skill for Claude Code,
+  Codex and pi; export YAML bindings and optional per-module Claude Skills,
   embed the Rust library, and export OpenAI tool definitions programmatically.
   Structured CLI errors and module guidance help callers inspect and correct failures.
 
@@ -168,8 +173,8 @@ and a `/?` parser, and is not implemented.
 
 ## Quick Start
 
-Initialize once, inspect the available commands, then choose local execution,
-shell activation or an agent server:
+Initialize once and review policy. Terminal agents use the shared Skill and
+native exec; env is optional shell integration and MCP/A2A are protocol options:
 
 ```bash
 # Fetch cli-permissions and prepare bindings for matching tools on this machine.
@@ -177,11 +182,12 @@ apexe init
 # Inspect module IDs, annotations and the generated ACL decisions.
 apexe list --verbose
 # Review ~/.apexe/acl.yaml before executing or serving commands.
-apexe exec cli.ls
-
-# Optional native argv: only for modules reported under native_ready.
+# Default native argv: only for modules reported under native_ready.
 apexe exec --dry-run -- ls -la
 apexe exec -- ls -la
+
+# JSON alternative when native grammar is unavailable and policy permits.
+apexe exec cli.ls
 
 # Optional shell shims: require matching reviewed native grammar.
 apexe env --enable
@@ -211,10 +217,36 @@ For a new ACL, unknown, destructive and network-reaching modules default to
 deny. Existing manual rules and policy defaults are preserved. Local exec/env
 load the default ACL when present; `serve` and `a2a` still need an explicit
 `--acl`. The current native pilot covers BSD cat/head/ls; GNU scanning support
-does not imply native eligibility. On other installations start with module JSON
-and the server, then check `native_ready` before using native exec/env. See the [Quick Start guide](docs/quickstart.md) for the full workflow.
+does not imply native eligibility. When matching native grammar is unavailable,
+use module JSON if its checks permit; a server is not required for local use.
+See the [Quick Start guide](docs/quickstart.md) for the full workflow.
 
-### Claude Desktop integration
+### Claude Code, Codex and pi: Agent Skill + native exec
+
+Install the same self-contained [Agent Skill](skills/apexe/SKILL.md) for any of
+these terminal-capable agents. From a source checkout:
+
+```bash
+# Install into the project where your agent works (all three agents by default).
+python3 scripts/install_agent_skill.py --project-dir /path/to/your-project
+# Or install for your user across projects.
+python3 scripts/install_agent_skill.py --scope user
+```
+
+The installer uses `.claude/skills/apexe` for Claude Code and the shared
+`.agents/skills/apexe` location for Codex and pi. It preserves a different
+existing skill unless `--force` is specified. Invoke `/apexe` in Claude Code,
+`$apexe` in Codex, or `/skill:apexe` in pi.
+
+The Skill teaches native exec discovery, preflight, passthrough results and
+refusal handling. It uses module JSON when native grammar alone is unavailable,
+keeps normal governance checks in force and offers `env` for optional shell
+workflows. It does not start MCP, install CLI binaries, expand native coverage
+or grant permissions. See the [Agent Skill guide](docs/agent-skill.md) for paths,
+setup and execution boundaries. Per-module output from `scan --skills-dir`
+complements this shared workflow skill.
+
+### Optional MCP integration: Claude Desktop
 
 ```bash
 apexe serve --show-config claude-desktop --acl ~/.apexe/acl.yaml
@@ -227,7 +259,7 @@ The snippet carries the rest of the command line (`--bindings-dir`, `--prefix`,
 intend to serve with. `--auth-token` / `--jwt-secret` are deliberately never
 included.
 
-### Cursor integration
+### Optional MCP integration: Cursor
 
 ```bash
 apexe serve --show-config cursor --acl ~/.apexe/acl.yaml

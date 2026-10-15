@@ -433,8 +433,9 @@ classifications for tools you rely on.
 ### 5.3 Access control and approval are both opt-in
 
 Neither `--acl` nor `--enable-approval` is on by default. A bare `apexe serve`
-gives you the contract (schema validation), the isolation (§4.1, §4.2, §4.5,
-§4.6) and the audit trail — and **no policy**: every registered module is
+gives you the contract (schema validation), CLI process controls (§4.1, §4.2,
+§4.5, §4.6), typed-path checks and the audit trail — and **no ACL or approval
+policy**: every registered module is
 callable by every caller.
 
 This is the gap most likely to produce a false sense of safety, because the scan

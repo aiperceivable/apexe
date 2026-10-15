@@ -53,6 +53,7 @@ nav:
   - Home: index.md
   - Guide Index: documentation.md
   - Quick Start: quickstart.md
+  - Agent Skill: agent-skill.md
   - User Manual: user-manual.md
   - Contract Verification: verification.md
   - OpenAPI Import: openapi.md

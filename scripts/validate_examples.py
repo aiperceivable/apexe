@@ -35,7 +35,8 @@ def check_example_inventory(repository):
     discovered = set()
     for source in examples.rglob("*"):
         if source.is_file() and (
-            source.name in {"demo.py", "run.sh", "main.rs"}
+            source.suffix in {".py", ".sh", ".ts", ".js"}
+            or source.name == "main.rs"
             or source.parent == examples
             and source.suffix == ".rs"
         ):
@@ -75,6 +76,9 @@ def run_rust_examples(session):
         executable = Path(session.binary).parent / "examples" / name
 
         def body(entry, executable=executable, name=name):
+            entry["example"] = (
+                "programmatic.rs" if name == "programmatic" else f"{name}/main.rs"
+            )
             require(
                 executable.is_file(),
                 "Build examples with cargo build --all-features --examples",
@@ -107,6 +111,7 @@ def run_corpus_example(session, corpus):
     environment = {**session.environment, "CLI_PERMISSIONS_DIR": str(corpus.parent)}
 
     def body(entry):
+        entry["example"] = "cli_permissions/run.sh"
         result = session.execute(
             [script], executable=bash, environment=environment, timeout=90
         )
@@ -130,6 +135,15 @@ def run_corpus_example(session, corpus):
             entry["stderr"] = result.stderr
 
         session.record("cli_permissions missing source " + missing, [], refused)
+
+
+def check_acl_refusal(response):
+    require("error" in response or response.get("result", {}).get("isError"), response)
+    rendered = json.dumps(response)
+    require(
+        "ACL_DENIED" in rendered or "Access denied" in rendered,
+        "Expected an ACL refusal, not a schema or execution error",
+    )
 
 
 def basic_calls(url):
@@ -167,7 +181,7 @@ def basic_calls(url):
         },
         token,
     )
-    require("error" in denied or denied.get("result", {}).get("isError"), denied)
+    check_acl_refusal(denied)
 
 
 def run_basic_example(session):
@@ -178,6 +192,7 @@ def run_basic_example(session):
     bash = shutil.which("bash", path=session.environment["PATH"])
 
     def body(entry):
+        entry["example"] = "basic/run.sh"
         with session.process(
             [script], executable=bash, environment=environment
         ) as process:
@@ -198,6 +213,7 @@ def run_python_example(session, name, arguments, check):
     script = session.repository / "examples" / name / "demo.py"
 
     def body(entry):
+        entry["example"] = f"{name}/demo.py"
         result = session.execute(
             [script, "--apexe", session.binary, *arguments],
             executable=sys.executable,
@@ -278,6 +294,13 @@ def run_python_examples(session, corpus):
         )
 
 
+def check_example_coverage(cases):
+    covered = {
+        case["example"] for case in cases if case.get("passed") and case.get("example")
+    }
+    equal(covered, EXAMPLE_ENTRYPOINTS)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     repository = Path(__file__).resolve().parents[1]
@@ -320,6 +343,11 @@ def main():
             run_corpus_example(session, corpus)
             run_basic_example(session)
             run_python_examples(session, corpus)
+        session.record(
+            "example runtime coverage",
+            [],
+            lambda entry: check_example_coverage(session.report["cases"]),
+        )
         session.report["examples"] = sorted(EXAMPLE_ENTRYPOINTS)
         return session.finish()
 

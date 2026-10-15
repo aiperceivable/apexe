@@ -82,20 +82,47 @@ def rpc(url, method, params=None, token=None):
     return json.loads(body)
 
 
-def stop_process_group(process):
-    """Reap the owned process and kill descendants even if the parent exited."""
+def group_has_live_process(group_id):
+    executable = shutil.which("ps", path=os.defpath)
+    require(executable, "Process cleanup requires the system ps command")
+    result = subprocess.run(
+        [executable, "-A", "-o", "pgid=,stat="],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=True,
+    )
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if (
+            len(fields) == 2
+            and fields[0] == str(group_id)
+            and not fields[1].startswith("Z")
+        ):
+            return True
+    return False
+
+
+def signal_process_group(group_id, requested_signal):
     try:
-        os.killpg(process.pid, signal.SIGTERM)
+        os.killpg(group_id, requested_signal)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        # macOS can refuse signals to a group whose remaining members have
+        # already exited. A live member or a failed query must still fail.
+        if group_has_live_process(group_id):
+            raise
+
+
+def stop_process_group(process):
+    """Reap the owned process and kill descendants even if the parent exited."""
+    signal_process_group(process.pid, signal.SIGTERM)
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
         pass
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    signal_process_group(process.pid, signal.SIGKILL)
     process.wait(timeout=5)
 
 
@@ -107,13 +134,24 @@ def interface_usage(arguments, commands):
         if item.get("long") and item.get("global")
         for spelling in argument_spellings(item)
     }
+    used, values, positionals = set(), {}, []
     index = 0
     while index < len(arguments) and arguments[index].startswith("-"):
-        token = arguments[index].split("=", 1)[0]
+        token, separator, inline = arguments[index].partition("=")
         option = global_options.get(token)
-        index += 1 + bool(
-            option and option["takes_value"] and "=" not in arguments[index]
-        )
+        if option:
+            used.update([token, option["long"]])
+            if option["takes_value"]:
+                value = (
+                    inline
+                    if separator
+                    else arguments[index + 1]
+                    if index + 1 < len(arguments)
+                    else None
+                )
+                if value is not None:
+                    values.setdefault(option["long"], set()).add(value)
+        index += 1 + bool(option and option["takes_value"] and not separator)
     parts = []
     while index < len(arguments):
         candidate = " ".join([*parts, arguments[index]])
@@ -130,7 +168,6 @@ def interface_usage(arguments, commands):
         for spelling in argument_spellings(item)
     }
     options.update(global_options)
-    used, values, positionals = set(), {}, []
     while index < len(arguments):
         token = arguments[index]
         if token == "--":
@@ -162,25 +199,6 @@ def interface_usage(arguments, commands):
         if position and not item.get("last") and len(positionals) >= position:
             used.add(item["id"])
             values.setdefault(item["id"], set()).add(positionals[position - 1])
-    # Global options before the subcommand also contribute to root coverage.
-    for index, token in enumerate(arguments):
-        if token == "--":
-            break
-        flag, separator, inline = token.partition("=")
-        option = global_options.get(flag)
-        if option:
-            used.add(flag)
-            used.add(option["long"])
-            if option["takes_value"]:
-                value = (
-                    inline
-                    if separator
-                    else arguments[index + 1]
-                    if index + 1 < len(arguments)
-                    else None
-                )
-                if value is not None:
-                    values.setdefault(option["long"], set()).add(value)
     return command, used, values
 
 
