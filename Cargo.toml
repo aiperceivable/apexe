@@ -9,7 +9,7 @@ authors = ["aiperceivable <team@aiperceivable.com>"]
 homepage = "https://aiperceivable.com"
 repository = "https://github.com/aiperceivable/apexe"
 documentation = "https://aiperceivable.github.io/apexe/"
-keywords = ["mcp", "cli", "agent", "governance", "scanner"]
+keywords = ["mcp", "cli", "agent", "governance", "openapi"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
