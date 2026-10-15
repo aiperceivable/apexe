@@ -4,77 +4,106 @@
 
 # apexe
 
-Outside-In CLI-to-Agent Bridge — automatically wraps existing CLI tools into governed [apcore](https://github.com/aiperceivable) modules, served via MCP.
+**Run your tools. Enforce your rules.**
+
+Governed execution for CLI tools and HTTP APIs. Run CLI commands locally and
+expose CLI and OpenAPI operations to AI agents through MCP and A2A.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org)
 
 ## What is apexe?
 
-Your agent needs `git`, `kubectl`, and your internal deploy script. Today it
-reaches them through a shell, and the only thing between it and an irreversible
-command is a permission list that matches command strings.
+`apexe` gives humans and AI agents a shared execution layer for existing tools.
+It discovers supported CLI commands, turns their arguments into JSON Schema,
+and applies configured access rules and approval checks before execution.
+Calls leave audit records. Your CLI binaries keep working as they are; scanning
+requires no LLM or changes to their source code.
 
-String matching loses to string variation. Compound commands, path aliases, and
-delegated sub-agents have all been shown to slip past such lists in practice —
-and after the hundredth approval prompt, the documented response is to switch
-prompting off entirely. The premise this tool starts from is narrower than it
-sounds: a constraint expressed in an instruction is a request; only a constraint
-enforced where the process is spawned is a fact.
+Use it in the terminal with `apexe exec`, activate eligible external commands
+through PATH shims, or connect an AI client through MCP or A2A. Servers can also
+import HTTP operations from an OpenAPI document, alongside CLI modules, using
+the same executor for schema validation, configured ACLs and auditing.
 
-`apexe` executes argument vectors directly, without a shell. It scans a CLI deterministically
-(`--help` → man pages → shell completions, no LLM) and turns it into a governed
-[apcore](https://github.com/aiperceivable) module with a real JSON Schema. Every
-call is then validated against that schema, and argv goes straight to `execve`
-with no shell anywhere on the path — so shell metacharacters are inert bytes
-rather than something to blacklist.
+### Choose your entry point
 
-On top of that contract you opt into policy keyed on what an operation **is**,
-not on how it is spelled. Initialize with `apexe init` to prepare command
-bindings and a starter ACL from reviewed rules for tools on your machine.
-Commands are annotated `readonly`, `destructive` or `idempotent`; the ACL is
-generated from these annotations with `default_effect: deny`, so anything it could not classify is
-refused rather than allowed:
+| Goal | Entry point | What you get |
+|---|---|---|
+| Prepare installed CLI coverage | `apexe init`, `apexe list --verbose` | Matching reviewed rules, typed bindings and a starter ACL to inspect |
+| Run a CLI command locally | `apexe exec` | Module JSON with captured output, or reviewed native argv with passthrough streams |
+| Keep native command names in your shell | `apexe env` | PATH shims for eligible external commands, activation helpers and installation checks |
+| Give an AI client access to tools | `apexe serve`, `apexe a2a` | CLI modules and optional imported OpenAPI operations over MCP or A2A |
+| Check a CLI contract after changes | `apexe verify` | Source drift reports and optional digest-bound evidence from explicit behavioral cases |
+| Cover a custom CLI | `apexe scan` | Deterministic discovery, YAML bindings, generated ACL rules and optional Claude Skills |
+
+Initialize CLI coverage, inspect the generated policy, then execute or serve:
 
 ```bash
 apexe init
 apexe list --verbose
-# Review ~/.apexe/acl.yaml before serving commands.
+# Review ~/.apexe/acl.yaml before executing or serving commands.
+apexe exec cli.ls
 apexe serve --acl ~/.apexe/acl.yaml --enable-approval
 ```
 
-Read-only work then runs unattended, irreversible work is gated on a human, and
-either way it leaves an audit record. Both flags are opt-in — without `--acl`
-there is no access control, only the contract and the isolation.
-
-**No LLM required for scanning. No changes to the CLI tools. The policy is
-generated for you — reviewing and enabling it is yours.**
-
-> **`apexe` is not a sandbox.** It decides what should be attempted and records
-> what was; it does not contain what runs. Run it *inside* one.
-> **[Threat model](docs/threat-model.md)** — what this stops, and the longer
-> list of what it does not.
-
 ### Key capabilities
 
-- **Init** — Fetch reviewed cli-permissions rules, match installed tools and their variants, and prepare local bindings and a starter ACL; repeat initialization to discover new tools or use `--refresh` to update rules
-- **Scan** — Three-tier deterministic engine (--help → man pages → shell completions) with 6 built-in parsers (Man, BSD Usage, GNU, Click, Cobra, Clap), plus a fourth tier that applies a curated, human-verified overlay when one matches the detected tool variant
-- **Schema** — Generates JSON Schema with type mapping, format hints (`path`, `uri`), defaults, enums, and required fields
-- **Serve** — MCP server via [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) (stdio / streamable-http / SSE) with an Explorer UI, plus an A2A agent server via [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust). Transport authentication is a first-class CLI surface (`--auth token|jwt|none`) required by default on the HTTP-family transports; a non-loopback bind with no credential refuses to start unless explicitly acknowledged
-- **Govern** — Behavioral annotations (readonly/destructive/idempotent/open-world), a generated **fail-closed** default-deny ACL (enforced when passed via `--acl`; see the [threat model](docs/threat-model.md)), an approval gate that weighs the arguments a call actually sent rather than the flags a command merely accepts, a JSONL audit trail of executions, refusals **and** ACL allow/deny decisions (no input values, hashed or otherwise; log `0600`), `Module::preview()` dry-run for destructive commands
-- **Bound** — an always-on path guard resolves every argument the schema types as a filesystem path — symlinks followed, `..` folded, compared against what the kernel would act on — and refuses a writer pointed at a system directory or anyone pointed at a credential store. No flag, no off switch; `apexe policy` prints the boundary and checks a path against it
-- **Isolate** — every wrapped subprocess runs with the environment **scrubbed** to a base allowlist (secrets don't leak to tools), no shell (argv goes straight to `execve`, so shell metacharacters are inert data — the actual guard rejects a value that would be parsed as an option), captured output capped at 64 MiB, and a hard timeout that actually kills the process (`kill_on_drop`); circuit breaker + retry middleware on by default, optional `/metrics` + `/usage`
-- **AI Guidance** — Every error includes `ai_guidance` to help agents self-correct; non-zero exit codes return stderr context
+- **Discover and describe CLI commands** — Read `--help`, man pages and shell
+  completions with 6 built-in parsers (Man, BSD Usage, GNU, Click, Cobra, Clap).
+  Detect the installed variant and apply matching reviewed overlays as a fourth tier.
+  Generate schemas with types, defaults, enums, required fields and argument placement.
+- **Initialize from reviewed rules** — Acquire and cache external rules from
+  cli-permissions or your own Git source. Pin a revision, work offline, refresh
+  init-owned bindings and preserve custom bindings and existing policy.
+- **Execute locally** — Use module JSON or eligible native argv, inspect checks
+  with `--dry-run`, and preserve native streams and child status. PATH shims
+  reuse the local governance path; native eligibility requires explicit reviewed
+  grammar and capabilities. The current BSD pilot covers cat/head/ls.
+- **Serve through MCP and A2A** — Share the executor across both protocols. MCP
+  offers stdio, streamable HTTP, legacy SSE, structured results, an Explorer UI,
+  client configuration snippets and optional metrics. HTTP-family transports
+  require token authentication by default; JWT supports caller identities and roles.
+- **Import HTTP APIs** — Load OpenAPI 3.0/3.1 JSON or YAML from a file or URL at
+  server startup. CLI and API modules share validation, filters, configured ACLs
+  and audit records. Specification-fetch, upstream API and client credentials
+  stay separate. See [supported proxy operations](docs/openapi.md).
+- **Apply policy and record decisions** — Generate a default-deny starter ACL,
+  classify readonly/destructive/idempotent/network-reaching behavior, and gate
+  calls on their actual escalating arguments when approval is enabled. Audit
+  executions, refusals and ACL decisions without recording input values.
+- **Check paths and bound subprocesses** — Always check schema-typed filesystem
+  paths against system and credential boundaries. Execute CLI argv without a
+  shell, scrub the child environment, enforce timeouts and cap captured output.
+  Servers also offer retry and circuit breaking; local execution disables both.
+- **Verify CLI contracts** — Detect source drift against the pre-overlay
+  baseline. Optional readonly, isolated and explicitly authorized dry-run cases
+  test concrete invocations; recorded evidence is invalidated by changed
+  bindings, binaries or case files. Verification does not certify every invocation.
+- **Support integrations** — Export YAML bindings and optional Claude Skills,
+  embed the Rust library, and export OpenAI tool definitions programmatically.
+  Structured CLI errors and module guidance help callers inspect and correct failures.
+
+Coverage depends on the installed CLI, its discoverable grammar and matching
+rules. Local `exec` and shims use the default ACL when present; `serve` and `a2a`
+require an explicit `--acl` to enforce access control. MCP interactive approval
+is opt-in with `--enable-approval`; A2A approval stores are a library integration.
+OpenAPI import is a server feature; local exec and shims execute CLI commands.
+
+> **`apexe` is not a sandbox.** Normal execution runs with the host process's
+> privileges. PATH shims cover eligible external commands and can be bypassed
+> by builtins, aliases or absolute paths. OS isolation for explicit verification
+> cases does not sandbox normal execution. See the [threat model](docs/threat-model.md)
+> for the boundary and deployment requirements.
 
 ### Built on the apcore ecosystem
 
 | Crate | Role |
 |-------|------|
-| [apcore](https://github.com/aiperceivable/apcore-rust) 0.32.0 | Module trait, Registry, ACL, ModuleError, Context |
+| [apcore](https://github.com/aiperceivable/apcore-rust) 0.32.1 | Module trait, Registry, ACL, ModuleError, Context |
 | [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit-rust) 0.14.0 | ScannedModule, YAMLWriter, DisplayResolver |
-| [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) 0.22.3 | MCP server with middleware, auth, Explorer UI |
-| [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust) 0.8.2 | A2A agent server sharing the same governed `Executor` |
-| [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) 0.12.3 | `--man` page generation |
+| [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) 0.23.0 | MCP server with structured results, middleware, auth, Explorer UI |
+| [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust) 0.8.3 | A2A agent server sharing the same governed `Executor` |
+| [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) 0.12.4 | `--man` page generation |
 
 ---
 
@@ -114,8 +143,8 @@ apexe scans Unix CLIs. What you get depends on the host:
 
 | Host | Scanning | Curated overlays |
 |---|---|---|
-| **macOS** | Full — all four tiers | 21 commands (`bsd`, `apple`) |
-| **Linux** | Full — install `man-db` for tier 2 | 21 commands (`gnu`) |
+| **macOS** | Help, man pages, completions and matching overlays | Matching `bsd` / `apple` rules from the external corpus |
+| **Linux** | Help, man pages, completions and matching overlays; install `man-db` for tier 2 | Matching `gnu` rules from the external corpus |
 | **FreeBSD** | Full | `bsd` overlays apply |
 | **OpenBSD / NetBSD / DragonFly** | Full | none — falls back to scanning |
 | **Other Unix** (Solaris, illumos, AIX) | Tiers 1–2 | none |
@@ -273,7 +302,7 @@ activation boundaries.
 
 ### `apexe serve`
 
-Start MCP server for scanned tools.
+Serve CLI modules and optional imported OpenAPI operations through MCP.
 
 ```bash
 apexe serve --acl ~/.apexe/acl.yaml # stdio (default)
@@ -298,7 +327,7 @@ apexe serve --no-log-arguments --acl ~/.apexe/acl.yaml # Drop argument payloads 
 
 ### `apexe a2a`
 
-Start an A2A agent server for scanned tools. Shares governance (ACL, logging, audit) with `apexe serve` via the same `Executor`.
+Serve CLI modules and optional imported OpenAPI operations through A2A. Shares configured governance (ACL, logging, audit) with `apexe serve` via the same `Executor`.
 
 ```bash
 apexe a2a --acl ~/.apexe/acl.yaml # http://127.0.0.1:8000 (default)
@@ -319,19 +348,21 @@ apexe a2a --cors-origin https://example.com --acl ~/.apexe/acl.yaml # Allow a br
 
 ### `apexe verify`
 
-Compare fresh source contracts with the recorded pre-overlay baseline, without
-replacing bindings. Breaking drift, unclassified source changes and missing
-baselines fail the command. Optional readonly behavioral cases run only for
-explicitly allowlisted system cat/head/ls binaries against temporary fixtures.
-The report records actual case outcomes and binding/binary/case hashes;
-overlay confidence remains a separate human assertion.
+Compare fresh CLI source contracts with the recorded pre-overlay baseline,
+without replacing bindings. Breaking drift, unclassified changes and missing
+baselines fail the command. Optional cases test concrete readonly, isolated or
+explicitly authorized dry-run invocations. Recorded evidence binds outcomes to
+binding, binary and case digests; overlay provenance remains a separate author claim.
 
 ```bash
 apexe verify --report verification.json
-apexe verify --cases readonly-cases.json --report verification.json
+apexe verify --cases readonly-cases.json --record --report verification.json
 ```
 
-See the [verification reference](docs/user-manual.md#49-apexe-verify).
+The ordinary readonly allowlist covers reviewed system cat/head/ls binaries.
+Other isolated and dry-run cases require executable digest pinning and working
+OS isolation. See the [verification guide](docs/verification.md) for admission
+rules, evidence scope and invalidation.
 
 ### `apexe config`
 
@@ -534,48 +565,54 @@ GNU variants, **zero** have identical descriptions — never copy one across).
 
 ## How It Works
 
+```text
+CLI binaries
+     |
+     v
+Help / man / completions + matching reviewed overlays
+     |
+     v
+Typed CLI modules --> YAML bindings + starter ACL + optional Claude Skills
+                           |
+             +-------------+-------------------+
+             |                                 |
+       exec / PATH shims                   MCP / A2A <--- OpenAPI document
+             |                                 |            |
+             |                                 |       HTTP modules
+             +----------------+----------------+
+                              |
+                       Shared executor
+              schema validation / configured ACL
+                approval configuration / audit
+                              |
+                 +------------+------------+
+                 |                         |
+          CLI subprocess                HTTP API
+       path checks, clean env       imported proxy operation
+       direct argv, timeout        upstream call timeout
 ```
-CLI Tool Binary
-      |
-      v
-+--------------------+
-|   Scanner Engine   |  <-- Tier 1: --help (Man/BSD Usage/GNU/Click/Cobra/Clap)
-|                    |  <-- Tier 2: man pages (DESCRIPTION + OPTIONS)
-|                    |  <-- Tier 3: shell completions (subcommand discovery)
-|                    |  <-- Tier 4: matching curated overlay
-+---------+----------+
-          |  ScannedCLITool
-          v
-+--------------------+
-|   Adapter Layer    |  <-- module IDs, JSON Schema, annotations, display metadata
-+---------+----------+
-          |  ScannedModule (apcore-toolkit)
-          |
-    +-----+-----+
-    |           |
-    v           v
-+--------+  +------------------+
-| Output |  |   MCP Server     |
-| .yaml  |  | apcore-mcp       |
-| ACL    |  | stdio/http/sse   |
-| Audit  |  | middleware+auth   |
-+--------+  +------------------+
-```
+
+`verify` checks stored CLI contracts against fresh source observations and can
+record evidence for explicit cases. HTTP modules are imported at server startup
+and are not persisted as CLI bindings. CLI path checks and subprocess controls
+apply to the CLI branch; remote API data needs its own authorization boundary.
+See the [feature manifest](docs/FEATURE_MANIFEST.md) for the implementation map.
 
 ### Behavioral annotations
 
 | Signal | Inference |
 |--------|-----------|
 | Command `list`, `show`, `status`, `get` | `readonly: true`, `cacheable: true` |
-| Command `delete`, `rm`, `kill`, `destroy` | `destructive: true`, `requires_approval: true` — always prompts |
+| Command `delete`, `rm`, `kill`, `destroy` | `destructive: true`, `requires_approval: true` — needs approval when the gate is enabled |
 | Tool `env`, `xargs`, `sudo`, `timeout`, `nice` | `destructive: true`, whatever the name suggests: their arguments *are* another command |
 | Tool `curl`, `wget`, `ssh`, or subcommand `push`, `clone`, `login` | `open_world: true` |
 | Command *accepts* `--force`, `-f`, `--hard`, … | Marked `requires_approval` as a ceiling, with the escalating properties recorded — the gate then prompts only for a call that actually **sends** one |
 | Overlay `risk: escalates` / `executes` / `benign` | Human assertion about one flag: goes to the gate when sent / refused outright / exempted from the name list |
 
 A scan sees the flags a command accepts; a call carries the flags a caller sent.
-Only the second is a reason to interrupt a human, so `git log` runs unprompted
-while `git log --all` prompts. See [user manual §8](docs/user-manual.md).
+When the approval gate is enabled, only a call that sends an escalating
+argument prompts: `git log` needs no prompt while `git log --all` does, provided
+the ACL permits the operation. See [user manual §8](docs/user-manual.md).
 
 ### Schema generation
 
@@ -631,6 +668,10 @@ See [examples/README.md](examples/README.md) for full details.
 | [programmatic](examples/programmatic.rs) | Rust library: scan → convert → export OpenAI tools → build MCP server | `cargo run --example programmatic` |
 | [acl_demo](examples/acl_demo/) | Rust library: role-based ACL rules on `CliModule` calls via `Executor` | `cargo run --example acl_demo` |
 | [path_guard](examples/path_guard/) | Rust library: the always-on path boundary — which directories a call may touch | `cargo run --example path_guard` |
+| [cli_permissions](examples/cli_permissions/) | Scan with the external reviewed command corpus | `./examples/cli_permissions/run.sh` |
+| [local_execution](examples/local_execution/) | Local execution and optional native PATH shims in a temporary home | `python3 examples/local_execution/demo.py` |
+| [verification](examples/verification/) | Isolated case verification and evidence invalidation | `python3 examples/verification/demo.py` |
+| [openapi_import](examples/openapi_import/) | HTTP API import through MCP/A2A with ACL enforcement | `python3 examples/openapi_import/demo.py` |
 
 ---
 
@@ -640,12 +681,20 @@ See [examples/README.md](examples/README.md) for full details.
 
 ```bash
 cargo build                                             # Build
-cargo test --all-features                               # Run tests (~338)
-cargo test -- --include-ignored                         # Include integration tests
+cargo test --all-features --locked                      # Full suite and real CLI parameter gate
+cargo test --all-features --examples --locked            # Rust example tests
+make check CORPUS=../cli-permissions/overlays             # All quality gates and runnable examples
+make test-scripts                                      # Runtime-validator regression tests
 cargo clippy --all-targets --all-features -- -D warnings  # Lint
 cargo fmt --all -- --check                              # Format check
 cargo run --example programmatic                        # Run example
 ```
+
+Runtime checks require Python 3.9+, Git and working OS isolation (`sandbox-exec`
+on macOS; `bwrap` and unprivileged user namespaces on Linux). The full example
+gate requires `jq`, `curl` and the reviewed cli-permissions corpus. CI runs the
+full gates on Linux and macOS and uploads JSON receipts. See the
+[Developer Guide](docs/developer-guide.md) for coverage rules and platform scope.
 
 ### Adding a Custom Parser
 

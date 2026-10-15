@@ -14,6 +14,9 @@ starts an HTTP server with both Explorer UI and ACL enforcement.
 ./run.sh
 ```
 
+Set `APEXE_EXAMPLE_PORT=18000 ./run.sh` to choose another HTTP port. The default
+remains 8000; automated validation chooses a free temporary port.
+
 ## What it does
 
 1. Scans `ls`, `jq`, and `curl` (extracts flags and generates JSON Schema)

@@ -1,7 +1,9 @@
 # apexe Quick Start
 
-Install, initialize this machine, inspect its command modules, then choose local
-execution, shell activation or an MCP/A2A server.
+Run existing tools through schemas, access rules and audit records. This guide
+starts with CLI coverage: install, initialize, inspect and review, then choose
+local execution, eligible PATH shims or an MCP/A2A server. To expose an HTTP API,
+follow the [OpenAPI import guide](openapi.md); HTTP import is a server feature.
 
 ## 1. Install
 

@@ -2,9 +2,14 @@ use std::path::Path;
 
 use tracing_appender::{non_blocking::WorkerGuard, rolling::Rotation};
 use tracing_subscriber::{fmt::writer::MakeWriterExt, EnvFilter};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Configure the same diagnostic pipeline for commands and governed shims.
-pub(super) fn init(explicit_level: Option<&str>, stderr: bool) -> anyhow::Result<WorkerGuard> {
+pub(super) fn init(
+    explicit_level: Option<&str>,
+    stderr: bool,
+    suppress_sdk_calls: bool,
+) -> anyhow::Result<WorkerGuard> {
     let config = apexe::config::load_config(None).unwrap_or_default();
     let filter = resolve_filter(
         explicit_level,
@@ -18,9 +23,25 @@ pub(super) fn init(explicit_level: Option<&str>, stderr: bool) -> anyhow::Result
         .with_writer(writer)
         .with_ansi(false)
         .with_env_filter(filter)
+        .finish()
+        .with(tracing_subscriber::filter::filter_fn(move |metadata| {
+            allow_diagnostic(metadata, suppress_sdk_calls)
+        }))
         .try_init()
         .map_err(|error| anyhow::anyhow!("Failed to initialize logging: {error}"))?;
     Ok(guard)
+}
+
+fn allow_diagnostic(metadata: &tracing::Metadata<'_>, suppress_sdk_calls: bool) -> bool {
+    // The SDK router logs inputs at DEBUG and executor errors at ERROR. Those
+    // diagnostics are independent of the host's execution logging middleware.
+    // Filter the source, not message text, so explicit RUST_LOG directives
+    // cannot re-enable call payloads while the user requests suppression.
+    !suppress_sdk_calls
+        || !(metadata.target() == "apcore_mcp::server::router"
+            || metadata
+                .target()
+                .starts_with("apcore_mcp::server::router::"))
 }
 
 fn resolve_filter(

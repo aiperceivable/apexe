@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-`apexe` is an Outside-In CLI-to-Agent Bridge — automatically wraps existing CLI tools into governed apcore modules, served via MCP/A2A.
+`apexe` is a governed execution layer for CLI tools and HTTP APIs. It scans CLI commands into typed apcore modules, executes them locally through `exec` and eligible PATH shims, verifies CLI contracts, and serves CLI and imported OpenAPI operations through MCP/A2A with configurable access control, approval and auditing.
 
 ---
 
@@ -80,8 +80,11 @@ Run `make check` before every commit (mirrors CI exactly):
 | `cargo fmt --all -- --check` | Formatting |
 | `cargo clippy --all-targets --all-features -- -D warnings` | Lint (warnings = errors) |
 | `apdev-rs check-chars src/` | Character validation |
-| `cargo build --all-features` | Full build |
-| `cargo test --all-features` | Tests |
+| `cargo build --all-features --examples --locked` | Full build and example binaries |
+| `cargo test --all-features --locked` | Full suite, including the compiled-interface CLI runtime gate |
+| `cargo test --all-features --examples --locked` | Rust example tests |
+| `python3 -m unittest discover -s scripts/tests -v` | Runtime-validator regression tests |
+| `make test-examples` | All runnable examples and live documented calls |
 
 ```bash
 make setup   # One-time: installs apdev-rs + pre-commit hook

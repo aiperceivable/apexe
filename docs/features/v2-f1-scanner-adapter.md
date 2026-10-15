@@ -179,10 +179,15 @@ pub fn build_output_schema(command: &ScannedCommand) -> serde_json::Value;
 
 **Output schema logic**:
 
-1. If `command.structured_output.supported` and format is `"json"`:
-   - Return `{ "type": "object", "properties": { "json_output": { "type": "object" }, "exit_code": { "type": "integer" } } }`
-2. Otherwise:
-   - Return `{ "type": "object", "properties": { "stdout": { "type": "string" }, "stderr": { "type": "string" }, "exit_code": { "type": "integer" } } }`
+1. Always return an object schema with required string `stdout`, string `stderr`
+   and integer `exit_code` properties.
+2. If `command.structured_output.supported` and format is `"json"`, add an
+   optional `json_output` property accepting any JSON value: object, array,
+   string, number, boolean or null. Its schema has a description and no type
+   restriction because the parser accepts every JSON root.
+3. Preserve raw stdout. The executor adds `json_output` only when its declared
+   JSON output mode produces parseable JSON; malformed/non-JSON output omits
+   that property. The top-level module result remains an object in every case.
 
 ### 3.5 `src/adapter/annotations.rs` -- Annotation Inference
 

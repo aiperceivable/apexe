@@ -18,6 +18,12 @@
 > F8 records the implemented local execution and PATH shim surfaces, their
 > bounded reviewed-overlay pilot, and the deferred session daemon.
 
+The current product also includes reviewed-source initialization, OpenAPI HTTP
+operation import and CLI drift/case verification. These capabilities extend
+beyond the original F1–F7 integration plan. See the
+[current capability inventory](../FEATURE_MANIFEST.md#current-capability-inventory),
+[OpenAPI guide](../openapi.md) and [verification guide](../verification.md).
+
 ---
 
 ## Feature Summary

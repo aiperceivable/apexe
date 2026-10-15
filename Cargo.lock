@@ -139,9 +139,9 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "apcore"
-version = "0.32.0"
+version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5546339f5c8ca488544c2e891ff033eb75aa894c562bbabfdeaa8f73b0097013"
+checksum = "85829615f0b8962f2d04e6f5a15ba728463f3bd2b12d0a738a8271f7fda7ed5c"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -152,6 +152,7 @@ dependencies = [
  "jsonschema 0.28.3",
  "notify",
  "parking_lot",
+ "referencing 0.28.3",
  "regex",
  "schemars",
  "serde",
@@ -166,9 +167,9 @@ dependencies = [
 
 [[package]]
 name = "apcore-a2a"
-version = "0.8.2"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55c03b136360bbbeaa26e8c9d487e6bef4d29e6842f228106bef8aa4bac1560a"
+checksum = "e7e4931498333a17e02fcd62e3baa7038cdd321801d6d55c459705acf3d0f8eb"
 dependencies = [
  "apcore",
  "apcore-toolkit",
@@ -197,9 +198,9 @@ dependencies = [
 
 [[package]]
 name = "apcore-cli"
-version = "0.12.3"
+version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9fb45cacdac3de2e526c202c0c1d6a2e555998f63726d805e41a92751583a007"
+checksum = "b6500c483c9c0363e16094d96438835dec0db1e6c54b9c341e7acf5d25b4c680"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -233,9 +234,9 @@ dependencies = [
 
 [[package]]
 name = "apcore-mcp"
-version = "0.22.3"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1d6900eeada2c671324fea547a2702812269e9602d33d28a63673c936616b31"
+checksum = "6c5644180bc2a1d03225865ac10a67b1d2e5c68cf0090a69f1a7a990d4dc62d6"
 dependencies = [
  "apcore",
  "apcore-toolkit",
@@ -244,8 +245,10 @@ dependencies = [
  "clap",
  "futures",
  "hyper",
+ "jsonschema 0.28.3",
  "jsonwebtoken",
  "mcp-embedded-ui",
+ "referencing 0.28.3",
  "regex",
  "schemars",
  "serde",

@@ -19,7 +19,20 @@
 
 Replace the custom MCP JSON-RPC server (6 files, ~1,200 LOC) with apcore-mcp's `APCoreMCP` builder. This gains MCP integration, streamable-http transport, Explorer UI, and middleware support without maintaining a custom implementation. The current protocol version and output capabilities are documented in [the user manual](../user-manual.md). (Transport-level authentication shipped as a first-class CLI flag set — `--auth`, `--auth-token`, `--jwt-secret`, `--allow-unauthenticated-bind` — required by default on the HTTP-family transports; see §4.1.)
 
-The structured-result upgrade is tracked in [apcore-mcp-rust #10](https://github.com/aiperceivable/apcore-mcp-rust/issues/10), with matching Python and TypeScript SDK changes prepared locally as `0.23.0`. Publication requires the referenced-schema redaction fix in [apcore-rust #41](https://github.com/aiperceivable/apcore-rust/issues/41) to be released first and the MCP core dependency floor to be advanced. The SDK owns protocol negotiation, `outputSchema`, and post-redaction `structuredContent`; apexe consumes the SDK without vendoring it. Development integration tests exercise the corrected local SDK and core explicitly, while the published `0.22.3` dependency retains its existing text-only behavior. These local joint tests do not establish compatibility with the uncorrected published core dependency.
+apexe uses the published `apcore-mcp 0.23.0` and `apcore 0.32.1` crates. The MCP
+SDK owns protocol negotiation, `outputSchema`, and post-redaction
+`structuredContent`; the core SDK resolves local schema references during
+sensitive-field redaction. apexe registers its existing output schemas and uses
+the SDK builder without a capability override. Integration tests exercise the
+registry dependencies through actual stdio and HTTP requests.
+
+`2025-06-18` clients receive structured objects and matching JSON text.
+`2025-03-26` and `2024-11-05` clients retain text-only results. Stdio and SSE
+negotiate per connection; stateless HTTP selects capabilities from each request's
+`MCP-Protocol-Version` header. Validation uses the advertised raw output schema
+after redaction, supports a single Draft 7, 2019-09 or 2020-12 dialect, and never
+fetches external resources. Invalid schemas, unresolved references, mismatches
+and precision-losing output return payload-free errors.
 
 ---
 

@@ -82,15 +82,16 @@ def demonstrate(apexe):
 
         def confidence():
             result = require_success(run(apexe, environment, root, "list", "--verbose", "--format", "json"))
-            return {entry["module_id"]: entry["metadata"] for entry in json.loads(result.stdout)}
+            return {entry["id"]: entry.get("x-confidence")
+                    for entry in json.loads(result.stdout)["modules"]}
 
-        assert all(metadata["confidence"] == "verified" for metadata in confidence().values())
+        assert all(value == "verified" for value in confidence().values())
         cases_path.write_text(cases_path.read_text() + "\n", encoding="utf-8")
-        assert all(metadata.get("confidence") != "verified" for metadata in confidence().values())
+        assert all(value != "verified" for value in confidence().values())
         require_success(run(apexe, environment, root, "verify", "--cases", cases_path,
                             "--allow-dry-run", "--isolation", "required", "--record"))
         dry.write_text(dry.read_text() + "\n# Updated executable build\n", encoding="utf-8")
-        assert confidence()["cli.verify_dry"].get("confidence") != "verified"
+        assert confidence()["cli.verify_dry"] != "verified"
         return {"supported": True, "dry_run": True, "isolated_effects": True,
                 "case_file_invalidation": True, "binary_invalidation": True, "bindings_preserved": True,
                 "backends": sorted({entry["isolation"] for entry in report["behavioral"]})}

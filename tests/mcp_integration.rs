@@ -1,13 +1,9 @@
 //! End-to-end integration coverage for the MCP serve path.
 //!
-//! The prior review flagged that `serve` had only unit coverage: the request
-//! path (a `tools/call` that actually executes a CLI, and injection blocking on
-//! that path) was never exercised end to end. These tests drive a *real*
-//! on-disk `.binding.yaml` through the exact pipeline MCP dispatches into —
-//! `McpServerBuilder::build()` for the server surface, and `Executor::call`
-//! (what apcore-mcp's `tools/call` handler invokes) for execution + governance.
-//! The JSON-RPC transport framing itself is apcore-mcp's responsibility and is
-//! tested there.
+//! These tests drive on-disk bindings through the shared registry and executor,
+//! exercising CLI execution, authentication, validation and governance. Actual
+//! stdio and HTTP JSON-RPC requests verify the published SDK's negotiation,
+//! structured results, sensitive-output redaction and legacy wire compatibility.
 
 use std::path::Path;
 
@@ -638,22 +634,26 @@ fn stdio_session(
     version: &str,
     requests: &[serde_json::Value],
 ) -> Vec<serde_json::Value> {
+    let home = TempDir::new().unwrap();
+    stdio_session_with_options(dir, version, requests, home.path(), &["--log-level", "off"])
+}
+
+fn stdio_session_with_options(
+    dir: &Path,
+    version: &str,
+    requests: &[serde_json::Value],
+    home: &Path,
+    options: &[&str],
+) -> Vec<serde_json::Value> {
     use std::io::{BufRead, BufReader, Write};
     use std::process::{Command, Stdio};
-    let home = TempDir::new().unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_apexe"))
-        .env("HOME", home.path())
+        .env("HOME", home)
         .env_remove("APCORE_CONFIG")
         .env_remove("APEXE_BINDINGS_DIR")
-        .args([
-            "serve",
-            "--transport",
-            "stdio",
-            "--log-level",
-            "off",
-            "--bindings-dir",
-        ])
+        .args(["serve", "--transport", "stdio", "--bindings-dir"])
         .arg(dir)
+        .args(options)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -685,6 +685,37 @@ fn stdio_session(
 }
 
 #[test]
+fn test_mcp_logging_controls_suppress_sdk_payload_diagnostics_at_trace_level() {
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let canary = "SDK-PRIVATE-CANARY";
+    let requests = [
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"cli.echo","arguments":{"message":canary}}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"cli.echo","arguments":{"message":[canary]}}}),
+    ];
+    for flag in [None, Some("--no-log-arguments"), Some("--no-logging")] {
+        let home = TempDir::new().unwrap();
+        let mut options = vec!["--log-level", "trace"];
+        options.extend(flag);
+        let responses =
+            stdio_session_with_options(dir.path(), "2025-06-18", &requests, home.path(), &options);
+        assert_eq!(responses[1]["result"]["isError"], false);
+        assert_eq!(responses[2]["result"]["isError"], true);
+        let log: String = std::fs::read_dir(home.path().join(".apexe/log"))
+            .unwrap()
+            .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+            .collect();
+        assert_eq!(log.contains(canary), flag.is_none(), "{flag:?}: {log}");
+        assert!(log.contains("CLI module execution completed"));
+        if flag == Some("--no-log-arguments") {
+            assert!(log.contains("error_code"));
+        }
+    }
+}
+
+#[test]
 fn test_mcp_structured_results_preserve_text_and_legacy_clients() {
     let dir = TempDir::new().unwrap();
     write_echo_binding(dir.path());
@@ -692,7 +723,7 @@ fn test_mcp_structured_results_preserve_text_and_legacy_clients() {
         json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
         json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cli.echo","arguments":{},"_meta":{"mcpProtocolVersion":"2025-06-18"}}}),
     ];
-    for version in ["2025-03-26", "2025-06-18"] {
+    for version in ["2024-11-05", "2025-03-26", "2025-06-18"] {
         let responses = stdio_session(dir.path(), version, &requests);
         assert_eq!(responses[0]["result"]["protocolVersion"], version);
         let tool = responses[1]["result"]["tools"]
@@ -743,6 +774,50 @@ fn test_mcp_structured_results_are_redacted_and_refusals_are_not_successes() {
     assert!(responses[2]["result"].get("structuredContent").is_none());
 }
 
+#[test]
+fn test_mcp_published_sdks_redact_referenced_output_on_modern_and_legacy_wires() {
+    let dir = TempDir::new().unwrap();
+    write_echo_binding(dir.path());
+    let schema = json!({
+        "$schema":"https://json-schema.org/draft/2020-12/schema",
+        "type":"object", "properties":{"stdout":{"$ref":"#/$defs/secret"}},
+        "$defs":{"secret":{"type":"string","x-sensitive":true}},
+        "required":["stdout"]
+    });
+    let mut modules = apexe::output::load_modules_from_dir(dir.path(), None).unwrap();
+    modules[0].output_schema = schema.clone();
+    YamlOutput::without_verification()
+        .write(&modules, dir.path(), false)
+        .unwrap();
+    let requests = [
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"cli.echo","arguments":{"message":"REFERENCED-SECRET"}}}),
+    ];
+    for version in ["2024-11-05", "2025-03-26", "2025-06-18"] {
+        let responses = stdio_session(dir.path(), version, &requests);
+        let tool = responses[1]["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "cli.echo")
+            .unwrap();
+        let result = &responses[2]["result"];
+        let text: serde_json::Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(result["isError"], false);
+        assert_eq!(text["stdout"], "***REDACTED***");
+        assert!(!result.to_string().contains("REFERENCED-SECRET"));
+        if version == "2025-06-18" {
+            assert_eq!(tool["outputSchema"], schema);
+            assert_eq!(result["structuredContent"], text);
+        } else {
+            assert!(tool.get("outputSchema").is_none());
+            assert!(result.get("structuredContent").is_none());
+        }
+    }
+}
+
 async fn http_rpc(
     app: &axum::Router,
     version: Option<&str>,
@@ -778,6 +853,7 @@ async fn test_mcp_http_structured_results_are_request_scoped_and_legacy_safe() {
     let app = http_app(dir.path()).await;
     for version in [
         Some("2025-06-18"),
+        Some("2024-11-05"),
         Some("2025-03-26"),
         None,
         Some("2025-06-18"),
@@ -837,6 +913,92 @@ async fn http_app(dir: &Path) -> axum::Router {
         .unwrap()
 }
 
+#[cfg(unix)]
+fn write_json_value_binding(dir: &Path, value: &serde_json::Value) {
+    use apexe::models::{HelpFormat, ScannedCommand, StructuredOutputInfo};
+    use std::os::unix::fs::PermissionsExt;
+    let executable = dir.join("json-tool");
+    std::fs::write(
+        executable.with_extension("json"),
+        serde_json::to_vec(value).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(&executable, "#!/bin/sh\nexec /bin/cat \"$0.json\"\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let command = ScannedCommand {
+        name: "json-tool".into(),
+        full_command: "json-tool".into(),
+        description: "Return a JSON value".into(),
+        flags: vec![],
+        positional_args: vec![],
+        subcommands: vec![],
+        examples: vec![],
+        help_format: HelpFormat::Unknown,
+        structured_output: StructuredOutputInfo {
+            supported: true,
+            flag: Some("--json".into()),
+            format: Some("json".into()),
+        },
+        end_of_options: false,
+        raw_help: String::new(),
+    };
+    let mut module = ScannedModule::new(
+        "cli.json_tool".into(),
+        command.description.clone(),
+        json!({"type":"object"}),
+        apexe::adapter::schema::build_output_schema(&command),
+        vec![],
+        format!("exec://{}", executable.display()),
+    );
+    module.metadata.insert("json_flag".into(), json!("--json"));
+    YamlOutput::without_verification()
+        .write(&[module], dir, false)
+        .unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_mcp_generated_output_schema_accepts_all_captured_json_roots() {
+    for value in [
+        json!({"count":1}),
+        json!([1, 2]),
+        json!("text with 'quotes'"),
+        json!(17),
+        json!(true),
+        json!(null),
+    ] {
+        let dir = TempDir::new().unwrap();
+        write_json_value_binding(dir.path(), &value);
+        let app = http_app(dir.path()).await;
+        for version in [
+            None,
+            Some("2024-11-05"),
+            Some("2025-03-26"),
+            Some("2025-06-18"),
+        ] {
+            let (_, response) = http_rpc(
+                &app,
+                version,
+                json!({
+                    "jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":"cli.json_tool","arguments":{}}
+                }),
+            )
+            .await;
+            let result = &response["result"];
+            assert_eq!(result["isError"], false, "{value}: {response}");
+            let text: serde_json::Value =
+                serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+            assert_eq!(text.get("json_output"), Some(&value));
+            if version == Some("2025-06-18") {
+                assert_eq!(result["structuredContent"], text);
+            } else {
+                assert!(result.get("structuredContent").is_none());
+            }
+        }
+    }
+}
+
 #[test]
 fn test_mcp_structured_child_status_and_post_redaction_validation() {
     let dir = TempDir::new().unwrap();
@@ -852,7 +1014,8 @@ fn test_mcp_structured_child_status_and_post_redaction_validation() {
     assert_eq!(responses[1]["result"]["structuredContent"]["exit_code"], 1);
     modules[0].target = "exec:///bin/echo".into();
     modules[0].output_schema = json!({"type":"object","properties":{
-        "stdout":{"type":"string","const":"\n","x-sensitive":true}},"required":["stdout"]});
+        "stdout":{"$ref":"#/$defs/secret"}},"required":["stdout"],
+        "$defs":{"secret":{"type":"string","const":"\n","x-sensitive":true}}});
     YamlOutput::without_verification()
         .write(&modules, dir.path(), false)
         .unwrap();

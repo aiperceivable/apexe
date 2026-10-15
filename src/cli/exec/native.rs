@@ -257,7 +257,7 @@ fn build_unmanaged_module(
         binary_path: binary.into(),
         command_parts: vec![],
         json_flag: None,
-        timeout_ms: config.default_timeout * 1000,
+        timeout_ms: config.timeout_milliseconds()?,
         max_output_bytes: crate::module::executor::DEFAULT_MAX_OUTPUT_BYTES,
     })
     .with_fixed_argv(args.to_vec())?

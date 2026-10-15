@@ -1,4 +1,8 @@
-//! apexe — Outside-In CLI-to-Agent Bridge.
+//! apexe — Governed execution for CLI tools and HTTP APIs.
+//!
+//! Scan CLI tools into typed apcore modules, execute them locally, and expose
+//! CLI and imported OpenAPI operations through MCP or A2A with configurable
+//! access controls, approval and auditing.
 //!
 //! # Public Modules
 //!
@@ -9,13 +13,15 @@
 //! # Library API (for programmatic use)
 //!
 //! - [`adapter`] — `CliToolConverter`: ScannedCLITool → ScannedModule
-//! - [`scanner`] — `ScanOrchestrator`: 3-tier CLI scanner engine
-//! - [`output`] — `YamlOutput` + `load_modules_from_dir`
+//! - [`scanner`] — `ScanOrchestrator`: deterministic scanning and matching overlays
+//! - [`output`] — YAML bindings, binding loading and Claude Skill generation
 //! - [`mcp`] — `McpServerBuilder`: build and start MCP servers
 //! - [`a2a`] — `A2aServerBuilder`: build and start A2A agent servers
-//! - [`module`] — `CliModule`: apcore Module trait for CLI execution
-//! - [`governance`] — `AclManager`, `AuditManager`
-//! - [`auth`] — Transport authentication for the HTTP-family MCP transports
+//! - [`module`] — `CliModule` and shared executor construction
+//! - [`governance`] — `AclManager`, `AuditManager`, `PathGuard`
+//! - [`auth`] — Token/JWT authentication for MCP HTTP/SSE and A2A
+//! - [`openapi`] — OpenAPI source options for HTTP operation import
+//! - [`verification`] — CLI source drift reports and explicit case evidence
 //! - [`models`] — Scanner data types (ScannedCLITool, ScannedCommand, etc.)
 
 pub mod a2a;

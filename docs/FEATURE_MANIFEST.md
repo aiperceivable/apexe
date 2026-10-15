@@ -2,11 +2,46 @@
 
 ## Project Overview
 
-**apexe** -- Outside-In CLI-to-Agent Bridge. Automatically wraps CLI tools into governed apcore modules, served via MCP/A2A.
+**apexe** is a governed execution layer for CLI tools and HTTP APIs. It
+turns discoverable CLI commands into typed apcore modules, runs CLI commands
+locally, and serves CLI and imported OpenAPI operations through MCP and A2A.
+Configured access controls, approval checks and audit records accompany the
+execution path.
 
-**Version:** 0.9.0 — Full apcore ecosystem integration (MCP + A2A), variant-aware scanning against an external overlay corpus, an always-on filesystem path guard and per-call approval escalation.
+**Version:** 0.9.0.
 
-**Status:** F1–F7 implemented; F8 Stages 1 and 2 (local execution and governed PATH shims) are implemented with a bounded reviewed-overlay pilot. MCP and A2A can import OpenAPI HTTP operations at startup. Run `cargo test --all-features` for the current test count — git/docker scan tests are opt-in; the macOS native-example test also requires the reviewed companion corpus.
+**Status:** CLI discovery, initialization, binding/Skill generation, local
+module execution, reviewed native argv and PATH shims, MCP/A2A serving, OpenAPI
+import and CLI contract verification are implemented. Native coverage remains
+a bounded reviewed-overlay pilot; verification evidence covers explicit cases.
+Run `cargo test --all-features` for the current test count. Host-dependent
+git/docker scan tests and the macOS native example are opt-in.
+
+## Current capability inventory
+
+| Capability | Implementation / entry point | Scope |
+|---|---|---|
+| CLI discovery and schemas | `scanner`, `adapter`; `scan` | Help, man pages, completions, variant-aware overlays, JSON Schema and annotations |
+| Reviewed source initialization | `corpus`, `cli::init`; `init` | Cached Git rules, revision pinning, offline use, refresh and binding/policy preservation |
+| Binding and agent guidance output | `output`; `scan --skills-dir` | YAML bindings and optional Claude Skills; Rust API tool-definition export |
+| Discovery and policy inspection | `list --verbose`, `policy` | Module schemas, annotations, ACL context, validated evidence and filesystem boundary checks |
+| Local execution | `cli::exec`, `module`; `exec` | Module JSON and reviewed native argv; preflight dry-run, child status and native streams |
+| Shell integration | `cli::env`, `shim`, `shell_init`; `env` | Eligible external-command PATH shims, startup activation, refresh, removal and diagnostics |
+| MCP serving | `mcp`; `serve` | stdio, streamable HTTP, legacy SSE, structured results, Explorer, client snippets and optional metrics |
+| A2A serving | `a2a`; `a2a` | Authenticated agent server and agent card over the shared executor |
+| HTTP API import | `openapi`; `serve/a2a --openapi` | OpenAPI 3.0/3.1 file/URL import at startup; supported JSON proxy operations |
+| Execution governance | `governance`, `module::approval`, `auth` | Configured ACL/approval, token/JWT identities and payload-free governance audit records |
+| CLI process controls | `module::executor`, `module::io`, `governance::path_guard` | Typed-path checks, direct argv, scrubbed environment, timeout and capped captured output |
+| CLI contract verification | `verification`, `cli::verify`; `verify` | Source drift and explicit readonly/isolated/authorized dry-run cases with digest-bound evidence |
+| Configuration and diagnostics | `config`, `logging`; `config` | CLI/env/file defaults, structured errors, rotating diagnostics and argument-log controls |
+
+Local execution loads the default ACL when present and installs an approval
+gate. Servers require `--acl` to enforce access control; MCP interactive approval
+requires `--enable-approval`, while A2A approval stores are library-only. OpenAPI
+modules use shared schema validation, configured ACLs and auditing, but not CLI
+filesystem checks. HTTP import is unavailable to local exec/shims. Normal
+execution is not OS-sandboxed. The current native BSD pilot covers cat/head/ls;
+builtins and absolute paths can bypass PATH shims.
 
 > The section headings below tagged "(v0.1.0 …)" record when each piece first
 > landed; the crate is now **0.9.0**. For the authoritative current state see
@@ -35,39 +70,35 @@ construction. Servers enable ACL and approval explicitly; local execution
 loads the default ACL when present and always installs the approval gate.
 Local execution disables retry and circuit breaking and suppresses argument logs:
 
+```text
+MCP client       A2A client       exec / PATH shims       Rust library
+     |                |                  |                   |
+     +----------------+------------------+-------------------+
+                                      |
+                              [apcore Executor]
+                                      |
+                   schema validation / configured ACL
+                    approval handler / middleware chain
+                                      |
+                         +------------+------------+
+                         |                         |
+                    [CliModule]             [HTTP proxy module]
+                         |                   server import only
+                typed-path checks                  |
+                argv validation                    |
+                         |                         |
+              direct argv / scrubbed env       HTTP API
+              timeout / captured output cap    upstream timeout
+                         |                         |
+                    CLI binary                     |
+                         +------------+------------+
+                                      |
+                      audit.jsonl: execution / refusal
+                            and ACL decision records
 ```
-MCP client          A2A client          exec / PATH shims
-     |                   |                     |
-     └───────────────────┼─────────────────────┘
-                 v
-        [apcore Executor]
-                 |
-    ┌────────────┼──────────────────────────────┐
-    |            |                              |
-[ACL]      [ApprovalGate]              [middleware chain]
- --acl     --enable-approval        CircuitBreaker / Retry
- opt-in    opt-in, per-call         Logging / FailureLog
-    |            |                              |
-    └────────────┴──────────────┬───────────────┘
-                                v
-                          [CliModule]
-                                |
-                                v
-                      [PathGuard]  always-on, no flag
-                                |
-                                v
-                 [executor::build_argv]  option-injection +
-                                |        control-char + exec-param guards
-                                v
-              [module::io::execute]  env-scrubbed, no shell,
-                                |   timeout + kill_on_drop; output cap
-                                |   for captured I/O, inherited native streams
-                                v
-                          wrapped binary
-                                |
-                                v
-                   audit.jsonl  execution / refusal / acl_decision
-```
+
+CLI process controls do not apply to the HTTP proxy branch. Audit records cover
+both module types; the API must enforce its own data authorization.
 
 ## Module Map
 
@@ -101,8 +132,8 @@ src/
 │   ├── audit        AuditManager, apexe's own JSONL execution/refusal record
 │   └── path_guard   PathGuard: resolves every x-apexe-path argument and checks
 │                    it against the system/credential baselines. Always-on, no
-│                    flag; `apexe policy` reports it. (Subprocess isolation is
-│                    likewise always-on, in module/executor.rs)
+│                    flag; `apexe policy` reports it. CLI process controls
+│                    are in module/executor.rs and module/io.rs
 ├── mcp/             MCP server integration
 │   └── server       McpServerBuilder wrapping apcore_mcp::APCoreMCP
 ├── models/          ScannedCLITool, ScannedCommand, ScannedFlag, ScannedArg
@@ -131,7 +162,7 @@ src/
     ├── exec            run_with_timeout: bounded subprocess probes
     ├── man_page        Man-page section/option/example extraction
     ├── variant         Tool variant detection (bsd/gnu/apple/busybox)
-    ├── overlay_store   Built-in + user overlay loading and matching
+    ├── overlay_store   External corpus + user overlay loading and matching
     ├── value_placeholder  Shared placeholder → ValueType inference table
     ├── completion      Shell-completion-script subcommand discovery
     └── protocol        ParsedHelp / CliParser: the shared parser contract
@@ -141,11 +172,11 @@ src/
 
 | Crate | Version | Usage |
 |-------|---------|-------|
-| `apcore` | 0.32.0 | Module trait, Registry, ACL, ModuleError, ErrorCode, Context, Config |
+| `apcore` | 0.32.1 | Module trait, Registry, ACL, ModuleError, ErrorCode, Context, Config |
 | `apcore-toolkit` | 0.14.0 | ScannedModule, YAMLWriter, Verifier, ModuleAnnotations, `deduplicate_ids` |
-| `apcore-mcp` | 0.22.3 | APCoreMCP server (stdio, streamable-http, SSE, Explorer UI) |
-| `apcore-a2a` | 0.8.2 | A2A agent server with token/JWT authentication (`build_app_with_auth`) |
-| `apcore-cli` | 0.12.3 | `--man` page generation (`build_program_man_page`) |
+| `apcore-mcp` | 0.23.0 | APCoreMCP server with structured results (stdio, streamable-http, SSE, Explorer UI) |
+| `apcore-a2a` | 0.8.3 | A2A agent server with token/JWT authentication (`build_app_with_auth`) |
+| `apcore-cli` | 0.12.4 | `--man` page generation (`build_program_man_page`) |
 
 ## v0.1.0 Features
 
@@ -178,8 +209,8 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 ### MCP Server (v0.1.0 new, replaces v0.1.x self-built server)
 - `McpServerBuilder`: bindings_dir → Registry → Executor → APCoreMCP
 - Transports: stdio, streamable-http (was "http"), SSE
-- MCP tool discovery and invocation via the apcore-mcp SDK. The structured-result
-  SDK upgrade is pending publication and a normal apexe dependency update; it supports `2025-06-18` and legacy `2025-03-26`. Compatible clients
+- MCP tool discovery and invocation via the published apcore-mcp 0.23.0 SDK.
+  It negotiates `2025-06-18` and retains `2025-03-26` and `2024-11-05`. Compatible clients
   receive object `outputSchema` and redacted `structuredContent`, with JSON text
   retained for compatibility. HTTP selects the format per protocol-version header.
 - Explorer UI (HTTP transports)
@@ -189,8 +220,8 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 - `AclManager`: wraps `apcore::ACL`, generates default rules from annotations; fails closed when a configured ACL is missing/malformed. **Opt-in** — a server started without `--acl` enforces no access control
 - `AuditManager`: apexe's own append-only JSONL trail (log `0o600`); records executions, refusals (`event`, `trace_id`, `caller_id`, `error_code`) and ACL allow/deny decisions. No input values, hashed or otherwise — see user-manual §9.2
 - `PathGuard` (v0.7.0): resolves every argument the schema types `x-apexe-path` and checks it against two compiled-in baselines — system paths bind writers, credential paths bind readers and writers alike. **Always-on, no flag.** `config.yaml` extends it with `additional_denied_paths` and relaxes it with `allowed_paths`; `apexe policy` reports the installed boundary
-- `ApprovalGate`: wraps apcore-mcp's elicitation handler, audits every refusal, and stands down for a call that carries none of the escalating arguments its module was marked for. **Opt-in** via `--enable-approval`; MCP only
-- Subprocess isolation: always-on in `module/executor.rs` — env scrubbing, no-shell argv, output cap, timeout + `kill_on_drop`, plus the option-injection, control-character and `x-apexe-exec` parameter guards (no separate SandboxManager)
+- `ApprovalGate`: weighs actual escalating inputs and audits refusals. Local execution installs it automatically. MCP interactive approval is opt-in via `--enable-approval`; approval stores can be supplied through the MCP/A2A library builders
+- CLI process controls: always-on in `module/executor.rs` and `module/io.rs` — env scrubbing, direct argv, captured output cap, timeout + `kill_on_drop`, plus option-injection, control-character and `x-apexe-exec` guards. Native streams are inherited; there is no normal-execution SandboxManager
 
 ## Tool Overlays & Variant Detection (v0.4.0, extended in v0.5.0)
 
@@ -208,6 +239,7 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 | `apcore` | Core module system, ACL, errors |
 | `apcore-toolkit` | Scanner types, YAML writer, verifiers |
 | `apcore-mcp` | MCP protocol server |
+| `apcore-a2a` | A2A protocol server |
 | `apcore-cli` | `--man` page generation |
 | `clap` (derive mode) | CLI argument parsing |
 | `serde` + `serde_json` + `serde_yaml` | Serialization |
@@ -226,14 +258,20 @@ ACL writer. Source selection, pinning and refresh use `--overlays`, `--ref` and
 `--refresh`; the old `overlays` command is removed. Initialization preserves
 existing policy and custom/edited bindings, and reports fallback coverage.
 
-## Open Items
+## Scope and remaining work
 
-1. **A2A protocol** -- Implemented in 0.3.0 (`apexe a2a`, `A2aServerBuilder`).
-2. **CLI rewiring completion** -- `apexe scan` fully rewired; `apexe serve` uses McpServerBuilder.
-3. **Tool overlays & variant detection** -- Implemented in 0.4.0; man page examples and `open_world` inference added in 0.5.0.
-4. **F8 local execution** -- Implemented: module JSON and native argv `apexe exec` (default-deny unmanaged policy with explicit allow/approval), and native PATH shims through `apexe env --enable`, `--reload` and `--disable`. Reload retains installed settings and automatically enables when absent. stdin and bundling require explicit overlay capabilities; order-dependent or unasserted grammar is excluded. The verified BSD pilot covers cat/head/ls. See [`features/v2-f8-local-execution.md`](features/v2-f8-local-execution.md) for measurements and remaining daemon work.
-5. **Per-caller identity over the wire** -- Implemented: token/JWT authentication establishes identities; JWT roles are available to ACL conditions and subjects reach audit records. `callers` still matches module-chain IDs. See user-manual §11.
-6. **OS-level sandboxing** -- seccomp/landlock, namespaces and cgroup limits remain roadmap. v0.x relies on the governance stack plus process hygiene; see [`threat-model.md`](threat-model.md) §1.
-7. **`apexe evo`** -- Deferred. Depends on apevo product maturity.
-
-Source drift verification and explicit readonly behavioral cases are available through `apexe verify`. Reports bind earned case results to binding, binary and case SHA-256 digests; author-declared overlay confidence remains distinct.
+- **Broader native command coverage** — Requires matching reviewed grammar and
+  explicit stdin/bundling capabilities. Scanner coverage alone does not make a
+  command eligible for native argv or PATH shims.
+- **Session daemon** — Deferred F8 stage; current shims invoke the apexe process
+  for each command. See [F8](features/v2-f8-local-execution.md) for measurements.
+- **Normal execution sandboxing** — OS filesystem, network and syscall
+  containment remain outside normal exec/serve. Explicit verification cases have
+  their own macOS/Linux isolation backends. See [verification](verification.md)
+  and the [threat model](threat-model.md).
+- **Additional HTTP proxy formats** — Multipart, per-input header/cookie
+  parameters and non-JSON responses are outside the current OpenAPI surface.
+  See [OpenAPI import](openapi.md) for supported method/parameter combinations.
+- **Native Windows scanning** — Not supported; Windows help and PowerShell
+  reflection need their own discovery path.
+- **`apexe evo`** — Deferred; depends on apevo product maturity.

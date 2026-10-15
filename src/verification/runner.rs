@@ -157,6 +157,9 @@ fn case_command(
         .current_dir(&prepared.work)
         .env_clear()
         .env("HOME", &prepared.home)
+        // Keep temporary paths inside the case's OS-isolated workspace and
+        // preserve its path-guard exemption after clearing the host environment.
+        .env("TMPDIR", &prepared.work)
         .env("PATH", crate::runtime_path::search_path())
         .env("LC_ALL", "C")
         .env("RUST_LOG", "error")

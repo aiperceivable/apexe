@@ -5,6 +5,7 @@ set -euo pipefail
 OUTPUT_DIR="./output"
 BINDINGS_DIR="$OUTPUT_DIR/modules"
 ACL_PATH="${HOME}/.apexe/acl.yaml"
+PORT="${APEXE_EXAMPLE_PORT:-8000}"
 
 echo "=== Step 1: Scan tools ==="
 echo "  ls   — short options and an operand, from a curated overlay"
@@ -45,7 +46,7 @@ apexe serve --show-config cursor --bindings-dir "$BINDINGS_DIR" --acl "$ACL_PATH
 echo
 
 echo "=== Step 6: Start HTTP server with Explorer UI and ACL enforcement ==="
-echo "Open http://127.0.0.1:8000/explorer in your browser."
+echo "Open http://127.0.0.1:${PORT}/explorer in your browser."
 echo "Click 'cli.curl' → fill in JSON input → click Call."
 echo ""
 echo "Explorer shows only required fields. Replace null with a real value before"
@@ -60,4 +61,4 @@ echo "Review $ACL_PATH before adding a narrow allow rule for a real use case."
 echo ""
 echo "Press Ctrl+C to stop."
 echo
-apexe serve --transport http --port 8000 --explorer --bindings-dir "$BINDINGS_DIR" --acl "$ACL_PATH"
+apexe serve --transport http --port "$PORT" --explorer --bindings-dir "$BINDINGS_DIR" --acl "$ACL_PATH"

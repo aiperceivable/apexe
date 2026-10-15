@@ -62,8 +62,10 @@ impl IsolationPlan {
     }
 
     pub async fn probe(&self) -> anyhow::Result<()> {
-        let mut command = self.command(Path::new("/bin/true"));
+        // Both supported platforms provide /bin/sh; macOS has no /bin/true.
+        let mut command = self.command(Path::new("/bin/sh"));
         command
+            .args(["-c", ":"])
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .kill_on_drop(true);
@@ -97,7 +99,7 @@ fn macos_profile(root: &Path, readonly: bool) -> anyhow::Result<String> {
         root.to_path_buf()
     };
     let writable = serde_json::to_string(&path_text(&writable.canonicalize()?)?)?;
-    Ok(format!("(version 1)\n(deny default)\n(allow file-read*)\n(allow process-fork)\n(allow process-exec)\n(allow sysctl-read)\n(allow signal (target same-sandbox))\n(allow file-write* (subpath {writable}))\n"))
+    Ok(format!("(version 1)\n(deny default)\n(allow file-read*)\n(allow process-fork)\n(allow process-exec)\n(allow sysctl-read)\n(allow signal (target same-sandbox))\n(allow file-write-data (literal \"/dev/null\"))\n(allow file-write* (subpath {writable}))\n"))
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -144,6 +146,17 @@ fn linux_arguments(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_probe_runs_with_a_portable_system_command() {
+        let plan = IsolationPlan {
+            launcher: "/bin/sh".into(),
+            arguments: vec!["-c".into(), "exec \"$@\"".into(), "probe".into()],
+            backend: "test".into(),
+        };
+        plan.probe().await.unwrap();
+    }
+
     #[test]
     fn test_macos_profile_defaults_to_denial_and_only_allows_fixture_writes() {
         let root = tempfile::tempdir().unwrap();
@@ -153,6 +166,7 @@ mod tests {
         assert!(!profile.contains("allow network"));
         assert!(!profile.contains("allow mach-lookup"));
         assert_eq!(profile.matches("allow file-write*").count(), 1);
+        assert!(profile.contains("(allow file-write-data (literal \"/dev/null\"))"));
         assert!(profile.contains("target same-sandbox"));
     }
 

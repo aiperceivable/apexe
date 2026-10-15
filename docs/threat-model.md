@@ -11,13 +11,18 @@ its reach is worse than none, because it moves work from "I am careful here" to
 
 ## 1. Position
 
-`apexe` is **not a sandbox.** It does not isolate the filesystem, restrict
-network access, drop capabilities, or filter syscalls. A wrapped tool that is
-permitted to run, runs with the full privileges of the `apexe` process.
+`apexe` is **not a sandbox for normal execution.** Normal CLI exec/serving does
+not isolate the filesystem, restrict network access, drop capabilities, or
+filter syscalls. A wrapped tool that is permitted to run has the privileges of
+the `apexe` process. Explicit verification cases have separate OS isolation;
+that containment does not extend to ordinary tool calls.
 
 `apexe` is an **execution boundary**: a place where a call must present a
-declared contract before the subprocess is spawned, and where the decision to
-permit or refuse it is recorded.
+declared contract before the subprocess is spawned or an imported HTTP
+operation is sent, and where the decision to permit or refuse it is recorded.
+Schema validation, configured ACLs and auditing apply to both module types.
+CLI path checks do not govern remote API data or its filesystem; see the
+[OpenAPI guide](openapi.md) for the HTTP import boundary.
 
 The two are complementary and you should want both. The recommended deployment
 is `apexe` **inside** a sandbox (`sandbox-runtime`, `bubblewrap`, a container):
@@ -69,8 +74,11 @@ of the intent rather than the intent. The fourth is a UX consequence of the same
 thing — when a rule cannot distinguish `git status` from `rm -rf /`, it must ask
 about both.
 
-`apexe`'s response is to never be in that position: **it does not parse a command
-line.** There is no string for a caller to vary.
+`apexe` checks structured operations: a module ID and schema-validated input.
+Module JSON and protocol clients supply those directly. Reviewed native exec
+and PATH shims resolve argv against declared grammar before entering the same
+checks. The executor runs an argument vector, without evaluating a shell
+command string; the calling shell still owns pipes and redirections.
 
 ---
 

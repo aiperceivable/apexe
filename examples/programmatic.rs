@@ -1,5 +1,5 @@
 //! Programmatic example: use apexe as a library to scan tools, build a
-//! filtered MCP server, and export OpenAI-compatible tool definitions.
+//! custom MCP server, and export OpenAI-compatible tool definitions.
 //!
 //! Run with: cargo run --example programmatic
 

@@ -19,12 +19,13 @@ fn exempt_paths() -> HashSet<String> {
     HashSet::from(["/health".to_string()])
 }
 
-/// Builder for creating an MCP server from apexe's scanned CLI modules.
+/// Builder for serving CLI modules and imported OpenAPI operations through MCP.
 ///
 /// Loads `.binding.yaml` files from a bindings directory via
 /// [`build_executor`](crate::module::build_executor), which wraps each as a
 /// `CliModule`, registers them into an apcore `Registry`, and hands the
 /// resulting [`Executor`] to apcore-mcp's [`APCoreMCP`] server.
+/// [`Self::build_with_openapi`] also registers HTTP operations in that executor.
 ///
 /// # There is no `validate_inputs` toggle
 ///
@@ -366,6 +367,11 @@ impl McpServerBuilder {
     }
 
     /// Assemble the APCoreMCP server from a configured executor and transport.
+    ///
+    /// The SDK derives output schemas from the registered modules, redacts
+    /// results through apcore and validates structured content after redaction.
+    /// Protocol negotiation belongs to the SDK transport; no apexe override is
+    /// needed to enable structured results.
     #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
     fn build_mcp_server(
         self,

@@ -33,13 +33,13 @@ pub fn run_shim(raw: &[std::ffi::OsString]) -> anyhow::Result<i32> {
     shim::try_execute(raw).ok_or_else(|| anyhow::anyhow!("Not a shim invocation"))?
 }
 
-/// apexe -- Outside-In CLI-to-Agent Bridge.
+/// apexe -- Governed execution for CLI tools and HTTP APIs.
 ///
-/// Wraps CLI tools into governed apcore modules served via MCP/A2A.
+/// Runs CLI commands locally and serves CLI and OpenAPI operations via MCP/A2A.
 #[derive(Debug, Parser)]
 #[command(
     name = "apexe", version,
-    about = "Run existing CLI tools with access controls and audit trails; serve them to AI clients",
+    about = env!("CARGO_PKG_DESCRIPTION"),
     long_about = None,
     after_help = "Getting started:\n  apexe init                         Prepare bindings and a starter ACL\n  apexe list --verbose               Inspect schemas and access rules\n  apexe exec --dry-run -- ls -la      Preview a reviewed native command\n\nNative execution requires matching reviewed rules. To expose tools to an AI client:\n  apexe serve --acl ~/.apexe/acl.yaml\n\nUse 'apexe <command> --help' for command-specific options."
 )]
@@ -65,7 +65,7 @@ pub struct Cli {
     /// Per-call timeout in seconds, overriding `default_timeout` from
     /// `config.yaml`. Applies to every subcommand that runs a wrapped binary
     /// or probes one during a scan.
-    #[arg(long, global = true, value_name = "SECONDS", display_order = 1002, value_parser = clap::value_parser!(u64).range(1..))]
+    #[arg(long, global = true, value_name = "SECONDS", display_order = 1002, value_parser = clap::value_parser!(u64).range(1..=u64::MAX / 1000))]
     pub timeout: Option<u64>,
 
     #[command(subcommand)]
@@ -77,10 +77,10 @@ pub enum Commands {
     /// Scan CLI tools and generate apcore binding files.
     #[command(display_order = 70)]
     Scan(ScanArgs),
-    /// Start MCP server for scanned CLI tools.
+    /// Serve CLI modules and imported OpenAPI operations through MCP.
     #[command(display_order = 50)]
     Serve(ServeArgs),
-    /// Start A2A agent server for scanned CLI tools.
+    /// Serve CLI modules and imported OpenAPI operations through A2A.
     #[command(display_order = 60)]
     A2a(A2aArgs),
     /// Execute governed CLI commands with native argv or module JSON input.
@@ -678,7 +678,7 @@ impl ServeArgs {
             .port(self.port)
             .explorer(self.explorer)
             .bindings_dir(bindings_dir)
-            .timeout_ms(config.default_timeout * 1000)
+            .timeout_ms(config.timeout_milliseconds()?)
             .enable_logging(!self.no_logging)
             .log_arguments(!self.no_log_arguments)
             .enable_approval(self.enable_approval)
@@ -880,7 +880,7 @@ impl A2aArgs {
             .url(&self.url)
             .explorer(self.explorer)
             .bindings_dir(bindings_dir)
-            .timeout_ms(config.default_timeout * 1000)
+            .timeout_ms(config.timeout_milliseconds()?)
             .enable_logging(!self.no_logging)
             .log_arguments(!self.no_log_arguments)
             .enable_circuit_breaker(!self.no_circuit_breaker)
@@ -1101,6 +1101,13 @@ impl ListArgs {
         acl_manager: Option<&crate::governance::AclManager>,
     ) -> anyhow::Result<serde_json::Value> {
         let mut descriptor = serde_json::to_value(module)?;
+        // The SDK detail renderer retains x- extensions but omits raw metadata.
+        // Publish only these validated confidence fields for CLI consumers.
+        for key in ["confidence", "verification"] {
+            if let Some(value) = module.metadata.get(key) {
+                descriptor[format!("x-{key}")] = value.clone();
+            }
+        }
         if let Some(manager) = acl_manager {
             let decision = manager.explain(&module.module_id);
             if let Some(obj) = descriptor.as_object_mut() {

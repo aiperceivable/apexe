@@ -43,6 +43,14 @@ jobs:
       - name: Install apdev-rs
         run: cargo install apdev-rs
 
+      - name: Install runtime validation prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap zsh fish jq curl
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
       - name: Check characters
         run: apdev-rs check-chars src/
 
@@ -53,16 +61,32 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Build
-        run: cargo build --all-features
+        run: make build
 
       - name: Run tests
-        # The corpus-dependent tests skip here: this job deliberately does not
-        # fetch it, so the other ~990 stay green whatever happens upstream.
-        run: cargo test --all-features
+        # The compiled-interface CLI gate runs without an external corpus.
+        # Corpus-dependent coverage is mandatory in the matrix job below.
+        run: make test test-scripts
+
+      - name: Upload CLI runtime receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-runtime-${{ runner.os }}
+          path: target/runtime-validation/*.json
+          if-no-files-found: warn
 
   corpus:
-    name: Tests against the cli-permissions corpus
-    runs-on: ubuntu-latest
+    name: Full runtime and corpus validation (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            shells: sh,bash,zsh,fish,powershell
+          - os: macos-latest
+            shells: sh,bash,zsh,fish
     # apexe ships no overlays. The entries live in a separate repository, and
     # roughly twenty tests assert things about real ones — conflicts_with,
     # long_running, operand placement — that no scan can recover. They skip
@@ -86,6 +110,29 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Install Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install Linux runtime prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap zsh fish jq curl
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          pwsh --version
+
+      - name: Install macOS runtime prerequisites
+        if: runner.os == 'macOS'
+        run: brew install fish jq
+
+      - name: Install apdev-rs
+        run: cargo install apdev-rs
 
       - name: Cache cargo registry & build
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
@@ -98,10 +145,25 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Run tests with the corpus
+      - name: Run complete quality and runtime gates
         working-directory: apexe
         # Set but missing panics rather than skipping, so a checkout that
         # silently produced nothing fails here instead of passing quietly.
         env:
           APEXE_TEST_CORPUS: ${{ github.workspace }}/cli-permissions/overlays
-        run: cargo test --all-features
+          APEXE_RUNTIME_REQUIRED_SHELLS: ${{ matrix.shells }}
+        run: make check
+
+      - name: Run opt-in real environment tests
+        working-directory: apexe
+        env:
+          APEXE_TEST_CORPUS: ${{ github.workspace }}/cli-permissions/overlays
+        run: cargo test --all-features --locked -- --ignored
+
+      - name: Upload runtime receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-${{ matrix.os }}
+          path: apexe/target/runtime-validation/*.json
+          if-no-files-found: warn

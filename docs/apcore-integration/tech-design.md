@@ -3,10 +3,10 @@
 | Field | Value |
 |---|---|
 | **Authors** | apexe team |
-| **Status** | Historical — superseded by the shipped implementation |
+| **Status** | Historical proposal with current SDK integration notes |
 | **Created** | 2026-03-27 |
 | **Target Version** | 0.1.0 (shipped across 0.2.0–0.7.0) |
-| **Last Updated** | 2026-03-27; as-built note reviewed 2026-09-03 against 0.7.0 |
+| **Last Updated** | 2026-10-15; current SDK integration reviewed against 0.9.0 |
 
 ---
 
@@ -17,8 +17,9 @@
 >
 > **For what apexe does now**, read [`docs/user-manual.md`](../user-manual.md),
 > [`docs/threat-model.md`](../threat-model.md) and
-> [`docs/FEATURE_MANIFEST.md`](../FEATURE_MANIFEST.md). Do not treat any code
-> block below as current API.
+> [`docs/FEATURE_MANIFEST.md`](../FEATURE_MANIFEST.md) and the
+> [current SDK integration](#current-sdk-integration) section below. Code blocks
+> in the original proposal (sections 1-12) are historical sketches, not current API.
 >
 > **Divergences, as of 0.7.0:**
 >
@@ -59,6 +60,82 @@
 >   (`src/scanner/parsers/gnu.rs::extract_flags`).
 > - **A2A shipped.** It is listed as non-goal NG4 in §3.2 below. `apexe a2a`
 >   arrived in 0.3.0 and shares `build_executor` with `apexe serve`.
+
+---
+
+## Current SDK Integration
+
+This section describes the current implementation. The original proposal in
+sections 1-12 remains a historical record, including its original dependency
+versions and unimplemented sketches.
+
+apexe now provides governed execution for CLI tools and HTTP APIs: CLI
+initialization and scanning, local module/native execution, eligible PATH shims,
+MCP/A2A serving, OpenAPI import and CLI contract verification. See the
+[current capability inventory](../FEATURE_MANIFEST.md#current-capability-inventory)
+for the complete product surface and its boundaries.
+
+| Crate | Minimum version | Current responsibility |
+|---|---|---|
+| `apcore` | 0.32.1 | Shared `Registry`, `Executor`, schema validation, ACL, context and sensitive-field redaction |
+| `apcore-mcp` | 0.23.0 | MCP builder, transports, authentication, negotiation and structured result validation |
+| `apcore-a2a` | 0.8.3 | Authenticated A2A router and agent card over the shared executor |
+| `apcore-cli` | 0.12.4 | Man pages, module detail formatting and proxy hazard detection |
+| `apcore-toolkit` | 0.14.0 | Scanned modules, YAML binding output and OpenAPI scanning/proxy helpers |
+
+```toml
+apcore = "0.32.1"
+apcore-mcp = "0.23.0"
+apcore-a2a = "0.8.3"
+apcore-cli = "0.12.4"
+apcore-toolkit = { version = "0.14.0", default-features = false, features = ["http-proxy"] }
+```
+
+Cargo.lock records registry packages and checksums. Integration uses published
+crates; local path patches and copied SDK source are not part of the design.
+
+`src/module/registry.rs::build_executor` registers `CliModule` descriptors with
+their existing input and output schemas and assembles the shared governance
+pipeline. `src/mcp/server.rs::McpServerBuilder` passes that executor to
+`APCoreMCP::builder`; `src/a2a/server.rs::A2aServerBuilder` passes it to
+`build_app_with_auth`. The published CLI and A2A patch versions retain the
+interfaces apexe already uses. Audit records remain owned by apexe, and
+subprocess isolation remains in `src/module/executor.rs`.
+
+Generated output schemas describe the always-object module envelope, with an
+optional `json_output` property accepting any JSON value. This matches the
+executor's parser, including arrays, scalars and null. A2A router assembly
+restores the original apexe logging middleware after the SDK's automatic logger
+is installed, preserving the caller's logging and payload controls without
+changing authentication, auditing or resilience middleware.
+The CLI diagnostic subscriber additionally filters MCP SDK call-router events
+under `--no-logging` or `--no-log-arguments`. This prevents verbose router input
+records and SDK executor-error messages from bypassing the host's payload policy;
+other server diagnostics retain the configured log level.
+
+For synchronous MCP object results, the SDK advertises the raw `outputSchema`
+and produces `structuredContent` from the already-redacted JSON text. Core
+0.32.1 honors sensitive fields reached through local references, scoped
+identifiers and anchors. The MCP SDK validates the same advertised schema after
+redaction and returns a payload-free tool error for a mismatch. It supports one
+Draft 7, 2019-09 or 2020-12 dialect per schema and rejects unsupported/mixed
+dialects, unresolved references and precision-losing JSON values without
+retrieving external resources. Async submissions omit final-result schemas;
+non-object results retain their text representation.
+
+`2025-06-18` clients receive structured fields alongside JSON text.
+`2025-03-26` and `2024-11-05` clients receive the legacy text format. Stdio and
+SSE use connection negotiation; stateless HTTP uses each request's
+`MCP-Protocol-Version` header and defaults to the legacy format when absent.
+Request metadata cannot override transport capabilities.
+
+`tests/mcp_integration.rs` drives the published dependencies over stdio and HTTP,
+covering discovery/call schema agreement, direct and referenced sensitive output,
+validation after redaction, child exit statuses, legacy formats and request
+isolation. A2A and CLI regression suites verify their existing authentication,
+governance, error diagnostics, argument/input formats and server identity.
+See [F4](../features/v2-f4-mcp-server.md) and the
+[current result contract](../user-manual.md#13-error-handling-and-ai-guidance).
 
 ---
 

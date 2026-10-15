@@ -45,7 +45,9 @@ Fixture and expected filenames must be single relative components. Digest-pinned
 isolated/dry-run cases may also use an empty fixture map and boolean/numeric
 inputs without path operands. Readonly declarations reject expected file mutations. Files are
 created in a disposable work directory; HOME and the default-deny verification
-ACL are temporary too. Output and execution time are bounded.
+ACL are temporary too. The child process's temporary-directory setting points
+inside that work directory, preserving the path-guard boundary after the host
+environment is cleared. Output and execution time are bounded.
 
 | Case mode | Admission and execution |
 |---|---|
@@ -129,9 +131,16 @@ source contract and matching recorded digests. `metadata.verification.scope`
 is `explicit_cases`: it identifies the tested cases rather than certifying every
 possible invocation or all flag behavior.
 
+Inspect `apexe list --verbose --format json` for validated runtime evidence.
+Its `modules` array uses `id` for the module ID and exposes `x-confidence`
+and, when evidence is valid, `x-verification`. These are extensions retained
+by the SDK detail renderer; raw internal `metadata` is not part of this output.
+
 `--record` writes `.apexe-verification/evidence.json` under the binding directory.
 It records the exact binding, executable, case-file and case digests, verifier identity, mode,
-backend and time. Binding documents and their source baselines are preserved.
+backend and time. Binding and case-object digests ignore JSON object key order
+at every depth; array order remains significant. Binding documents and their
+source baselines are preserved. The case-file digest still fingerprints exact bytes.
 Subsequent binding loads validate those digests before attaching evidence.
 Changed bindings, executor metadata, binaries, changed/missing case files or
 verification executables/versions,

@@ -1,15 +1,15 @@
 # apexe User Manual
 
 > **Audience:** This manual is for people operating `apexe` from the terminal:
-> scanning an existing CLI, reviewing the generated policy, connecting an AI
-> client, and troubleshooting a deployment. For Rust embedding, parser
+> initializing CLI coverage, executing commands locally, reviewing policy,
+> exposing CLI and HTTP operations to AI clients, and troubleshooting a deployment. For Rust embedding, parser
 > extensions, overlays, and architecture records, see the
 > [Developer Guide](developer-guide.md).
 
 | Field | Value |
 |-------|-------|
 | **Version** | 0.9.0 |
-| **Date** | 2026-10-14 |
+| **Date** | 2026-10-15 |
 | **Platform** | macOS / Linux |
 
 ---
@@ -37,17 +37,41 @@
 
 ## 1. Introduction
 
-**apexe** turns supported existing CLI tools into schema-validated operations
-with access rules and audit records for humans and AI agents. Coverage depends
-on the installed tool, its discoverable grammar and available reviewed rules.
-It provides a governed execution entry point; it does not replace a sandbox.
-The normal workflow has three steps:
+**apexe** is a governed execution layer for CLI tools and HTTP APIs, for
+humans and AI agents. It discovers supported CLI commands, describes their
+inputs with JSON Schema, and runs them through configured access rules,
+approval checks and audit records. The same executor serves CLI modules and
+HTTP operations imported from OpenAPI through MCP or A2A.
 
-1. **Initialize** — Use `apexe init` to prepare matching installed commands. Use `scan` for custom tools or targeted rescans.
-2. **Review** — Inspect schemas, annotations and the generated ACL with `apexe list --verbose`; review access rules before execution.
-3. **Execute or serve** — Use `exec` locally, activate reviewed PATH shims with `env`, or expose modules through MCP/A2A.
+Choose a surface according to the work:
 
-apexe is built on the [apcore](https://github.com/aiperceivable/apcore-rust) ecosystem: apcore (core types), apcore-toolkit (output), apcore-mcp (MCP server), apcore-a2a (A2A agent server), apcore-cli (`--man` page generation). The audit trail is apexe's own — see §9.2.
+| Work | Surface |
+|---|---|
+| Prepare and inspect installed CLI coverage | `init`, `list --verbose`; `scan` for custom tools |
+| Execute locally with structured input/output | `exec <MODULE_ID>` with inline, file or stdin JSON |
+| Execute reviewed native argv with passthrough I/O | `exec -- <COMMAND> ...` |
+| Activate eligible external-command PATH shims | `env --enable`; diagnose with `env --check` |
+| Expose CLI modules and optional HTTP operations | `serve` for MCP; `a2a` for A2A; add `--openapi` for HTTP import |
+| Check CLI source drift and explicit case outcomes | `verify`; add `--cases` and `--record` for persisted evidence |
+| Inspect the filesystem boundary or configuration | `policy`, `config` |
+
+The normal CLI workflow is **initialize → review → execute or serve**. Coverage
+depends on the installed tool, discoverable grammar and matching reviewed rules.
+Native argv and shims require explicit reviewed capabilities; the current BSD
+pilot covers cat/head/ls. HTTP operations are imported at server startup and
+are unavailable to local exec/shims.
+
+Local exec/shims load the default ACL when present. Servers need `--acl` to
+apply access control; MCP interactive approval is enabled separately with
+`--enable-approval`. Verification evidence covers explicit cases and does not
+certify all invocations. Normal execution uses the host process's privileges;
+apexe does not replace a sandbox.
+
+apexe is built on the [apcore](https://github.com/aiperceivable/apcore-rust)
+ecosystem: apcore supplies the shared executor, apcore-toolkit supplies binding
+and OpenAPI helpers, apcore-mcp and apcore-a2a supply protocol adapters, and
+apcore-cli supplies `--man` pages and module detail formatting. The audit trail
+is apexe's own — see §9.2.
 
 ---
 
@@ -77,7 +101,7 @@ See [Quick Start Guide](quickstart.md) for the fastest path to a working setup.
 ```bash
 apexe init                         # prepare matching installed CLI tools
 apexe list --verbose               # inspect modules and generated policy
-apexe exec -- ls -la               # execute through reviewed native grammar
+apexe exec cli.ls                  # execute the module with JSON input defaults
 apexe serve --acl ~/.apexe/acl.yaml # optionally serve with the reviewed ACL
 ```
 
@@ -243,7 +267,9 @@ apexe list [OPTIONS]
 
 For terminal agents and CI, `apexe list --verbose --format json` returns an
 object with `acl_policy` and `modules`. Each module includes `id`,
-`input_schema`, `output_schema` and available annotations. This is discovery
+`input_schema`, `output_schema`, available annotations and optional
+`x-confidence` / `x-verification` extensions for validated runtime evidence.
+This is discovery
 information; use `exec --dry-run` to validate a concrete call with its caller.
 Plain `list --format json` returns an array of module IDs and descriptions.
 Successful JSON listings keep these shapes when empty: `[]`, or an envelope
@@ -1149,10 +1175,18 @@ Tools with detected JSON output flags get an enhanced output schema:
     "stdout": { "type": "string" },
     "stderr": { "type": "string" },
     "exit_code": { "type": "integer" },
-    "json_output": { "type": "object" }
+    "json_output": { "description": "Parsed JSON value, when available" }
   }
 }
 ```
+
+The result envelope remains an object. `json_output` accepts any JSON value,
+including arrays, strings, numbers, booleans and null, while `stdout` retains the
+original text. Unparseable output omits `json_output`. This concerns output;
+module input still requires one JSON object. Older generated bindings that
+restrict `json_output` to an object need a rescan, or `init --refresh` for
+unchanged init-owned bindings, before returning other JSON roots. Custom binding
+schemas remain authoritative and must describe the command's actual output.
 
 ### 7.1 Contract Keywords
 
@@ -1564,15 +1598,20 @@ an output overflow — is **not** a refusal: it appears once, as
 
 ### 9.3 Subprocess Isolation (always-on)
 
-Every `CliModule` call runs through `execute_subprocess` (`src/module/executor.rs`), which applies isolation **unconditionally** — there is no `--sandbox` toggle and no "unsandboxed" mode. (This is not `apcore-cli`'s `Sandbox`, which expects the host binary to re-exec itself with an `--internal-sandbox-runner` subcommand and rediscover modules from `APCORE_EXTENSIONS_ROOT` — a model apexe's runtime-scanned CLI modules don't fit.)
+Every `CliModule` call uses the process controls in `module::executor` and
+`module::io` unconditionally. These bound the subprocess; they do not provide
+OS filesystem or network containment. There is no normal-execution `--sandbox`
+toggle. Imported HTTP operations use a proxy instead of this subprocess path.
 
 - **Environment scrubbing**: the subprocess does **not** inherit apexe's full environment. The env is cleared and only a base allowlist is passed through (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TZ`, `TMPDIR`), so secrets in apexe's environment (API tokens, cloud credentials) can't leak to — or be surfaced by — a wrapped tool. File-based credentials under `$HOME` still work. (Per-tool credential-env passthrough is planned as an opt-in config knob.)
 - **No shell**: arguments are passed as direct argv and handed to `execve` — no shell is spawned anywhere on the execution path, so shell metacharacters are inert data and pass through unchanged. (`curl --data '{"a":1}'` and every `jq` filter depend on that.) A caller-supplied value is rejected only for NUL and the five line terminators, which would corrupt the audit trail's framing, and for a leading `-`, which the wrapped tool would parse as an option the caller was not granted — see `CONTROL_CHARS` and `validate_argument_value` in `src/module/executor.rs`. The shell-metacharacter blacklist that remains (`BINDING_INJECTION_CHARS`) applies only to `json_flag` and the command path read out of a *binding file*, which is a build-time artifact rather than caller input.
-- **Output cap**: stdout/stderr are each capped at 64 MiB (`executor::DEFAULT_MAX_OUTPUT_BYTES`). A command that exceeds it gets `stdout_truncated`/`stderr_truncated: true` in the result instead of exhausting memory.
+- **Captured output cap**: module JSON and server CLI calls cap stdout/stderr at 64 MiB each (`executor::DEFAULT_MAX_OUTPUT_BYTES`). A command that exceeds it gets `stdout_truncated`/`stderr_truncated: true` in the result. Native exec/shims inherit output streams instead of capturing them, so this cap does not apply there.
 - **Timeout kills the process**: the child is spawned with `kill_on_drop(true)`; when `--timeout`/`default_timeout` elapses, the subprocess is actually terminated rather than left running as an orphan.
-- **stdin** is connected to `/dev/null`, so a tool that waits for input fails fast instead of hanging.
+- **stdin** is connected to `/dev/null` for module JSON, server CLI calls and unmanaged native calls. Reviewed native exec/shims inherit it only when their declared capabilities admit streaming stdin.
 
-Stronger OS-level sandboxing (seccomp/landlock, namespaces, cgroup limits) is tracked as roadmap; v0.x relies on the governance stack (ACL + approval + preview) plus the process isolation above.
+Normal execution needs an external sandbox for OS containment. Explicit
+verification cases can use macOS `sandbox-exec` or Linux `bwrap`; those backends
+are scoped to case execution. See [verification](verification.md).
 
 ### 9.4 Preview (Dry-Run Prediction)
 
@@ -1917,8 +1956,14 @@ forever.
 > message quotes the value it rejected. So a refusal is still visible, and
 > `error_code` is what an alert keys on.
 >
-> `--no-logging` remains available to drop logging altogether, failure records
-> included. The `audit.jsonl` trail records no raw argument values in any case.
+> The CLI also suppresses MCP SDK call-router diagnostics under either switch:
+> those records can contain schema-redacted arguments or error text even when
+> execution middleware payload logging is disabled. This suppression applies at
+> `debug`/`trace` levels and cannot be overridden by `RUST_LOG`.
+>
+> `--no-logging` disables call logging middleware, failure records included.
+> Payload-free execution events and server diagnostics still follow `--log-level`.
+> The `audit.jsonl` trail records no raw argument values in any case.
 
 ### Observability
 
@@ -2314,10 +2359,9 @@ the payload in `structuredContent`, with serialized JSON also retained in
 }
 ```
 
-The published `apcore-mcp 0.22.3` dependency currently negotiates **`2025-03-26`**
-and returns JSON text. The structured-result SDK upgrade described below is
-pending publication and an apexe dependency update; it negotiates **`2025-06-18`**,
-retaining `2025-03-26` for legacy clients. On stdio and SSE this decision belongs to the live connection.
+The published `apcore-mcp 0.23.0` dependency negotiates **`2025-06-18`**,
+retaining `2025-03-26` and `2024-11-05` for legacy clients. On stdio and SSE this
+decision belongs to the live connection.
 Streamable HTTP remains stateless: after initialization, send
 `MCP-Protocol-Version: 2025-06-18` on each request to receive structured fields.
 Without the header, HTTP keeps the legacy format; unsupported versions return
@@ -2331,6 +2375,12 @@ original output or returning an invalid success. Async task submissions omit
 the final-result schema, and non-object results retain text output. Legacy
 clients receive neither new structured field. Authentication, approval and
 execution governance use the existing pipeline on every transport.
+
+Sensitive fields referenced through local JSON Schema pointers or scoped anchors
+are redacted by apcore 0.32.1 before MCP validates and publishes the result.
+Output validation supports a single declared Draft 7, 2019-09 or 2020-12 dialect;
+unresolved references, mixed dialects and precision-losing JSON numbers are
+rejected without exposing the payload. External schema resources are never fetched.
 
 The implementation belongs to the
 [apcore-mcp SDK](https://github.com/aiperceivable/apcore-mcp-rust). apexe uses a
@@ -2428,7 +2478,7 @@ more natural to type:
 |------|---------|-------------|
 | `--log-level <LEVEL>` | `warn` unless configured or overridden by the environment | Diagnostic log level; overrides `RUST_LOG`, `APEXE_LOG_LEVEL` and `config.yaml` |
 | `--log-stderr` | Off | Also mirror diagnostic logs to stderr |
-| `--timeout <SECS>` | `default_timeout` from `config.yaml` (30) | Per-call timeout override, applied to every subcommand that runs or probes a wrapped binary. Refuses `0`, which would kill every call before it started |
+| `--timeout <SECS>` | `default_timeout` from `config.yaml` (30) | Per-call timeout override, applied to every subcommand that runs or probes a wrapped binary. Requires positive integer seconds representable as 64-bit milliseconds (at most 18446744073709551) |
 | `--error-format <FORMAT>` | `text` | Render CLI failures on stderr as `text` or a versioned `json` envelope; successful output and child status are unchanged |
 
 ```bash

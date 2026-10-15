@@ -87,6 +87,31 @@ fn test_file_and_stdin_inputs_match_inline_execution_and_preview() {
 }
 
 #[test]
+fn test_oversized_timeouts_return_structured_errors_without_panicking() {
+    let home = fixture();
+    let maximum = u64::MAX.to_string();
+    let result = failure(
+        command(&home).args(["--error-format", "json", "--timeout", &maximum, "list"]),
+        2,
+    );
+    assert_eq!(result["error"]["code"], "GENERAL_INVALID_INPUT");
+
+    for args in [vec!["serve"], vec!["a2a"]] {
+        let result = failure(
+            command(&home)
+                .env("APEXE_TIMEOUT", &maximum)
+                .args(["--error-format", "json"])
+                .args(args),
+            1,
+        );
+        assert!(result["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Execution timeout must not exceed"));
+    }
+}
+
+#[test]
 fn test_json_errors_cover_runtime_schema_and_argument_failures() {
     let home = fixture();
     for (args, code, expected) in [

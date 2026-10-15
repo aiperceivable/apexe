@@ -6,9 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
-## [0.9.0] - 2026-10-14
+## [0.9.0] - 2026-10-15
 
 ### Added
+- Repository-owned real CLI and example validators, integrated into the Rust
+  suite and `make check`. The compiled Clap interface drives fail-closed coverage
+  for commands, parameter spellings, positionals and enum values; newly added
+  example entrypoints and Cargo example targets also require runtime scenarios.
+- Linux/macOS CI runtime gates with reviewed corpus checkouts, mandatory OS
+  isolation, required shell execution, opt-in tests and uploaded JSON receipts.
+  Validator regression tests cover missing coverage, failure propagation,
+  Python optimization and descendant-process cleanup.
+- Optional `APEXE_EXAMPLE_PORT` for the basic walkthrough, allowing independent
+  test runs while retaining port 8000 by default.
 - Global `--error-format text|json` for versioned CLI failures on stderr,
   preserving domain codes, schema diagnostics, recovery guidance and trace IDs.
   Default text, help, success output and child exit statuses stay compatible.
@@ -83,6 +93,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   escaped JSON Pointer paths) through the shared executor and both adapters.
 
 ### Fixed
+- Verification probes use a portable system shell instead of macOS's missing
+  `/bin/true`. Governed verification children keep temporary files inside their
+  isolated work directory, so the path guard permits intended fixture writes.
+  The macOS profile permits data writes to `/dev/null` for ordinary stream
+  redirection while retaining its filesystem and network restrictions.
+- Verbose module listings expose validated `x-confidence` and `x-verification`
+  extensions. The verification example reads the existing `modules` envelope
+  and SDK-rendered IDs correctly and exercises real isolation and invalidation.
+- Verification digests sort object keys recursively, preserving array order,
+  so valid recorded evidence survives independent CLI processes even when SDK
+  dependencies enable insertion-ordered JSON objects.
+- Reject global timeout values that cannot be represented in milliseconds;
+  MCP, A2A and unmanaged execution report oversized configured timeouts instead
+  of overflowing during server or module construction.
+- Correct the programmatic example documentation to describe its actual server
+  construction and tool export without claiming a readonly filter.
+- Generated `json_output` schemas accept every JSON root parsed by the executor,
+  preventing valid arrays, scalars and null from failing output validation.
+  Raw stdout and the object result envelope remain compatible. Existing generated
+  bindings with an object-only constraint need a rescan or an owned init refresh.
+- A2A assembly preserves apexe's configured logging middleware instead of adding
+  the SDK's payload-logging defaults. `--no-logging` and `--no-log-arguments` now
+  control A2A call logging consistently with MCP, without duplicate loggers.
+- The CLI's logging switches also suppress MCP SDK call-router diagnostics,
+  which independently logged arguments and executor-error text. Payload
+  suppression remains effective at debug/trace levels and with `RUST_LOG`.
 - `scan` and `verify` now honor configured `scan_depth` when `--depth` is absent,
   while explicit CLI values continue to take precedence.
 - Generated bindings honor `json_output_preference` for schema-declared output
@@ -116,6 +152,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   still require acknowledgement. Agent Card version comments describe the SDK.
 
 ### Changed
+- Reposition apexe as governed execution for CLI tools and HTTP APIs. Align
+  package metadata, CLI help/man pages, README and documentation with local
+  execution, reviewed PATH shims, MCP/A2A, OpenAPI import and CLI verification.
+  Clarify policy activation, native coverage and verification isolation scope.
+- Upgrade published SDK requirements to apcore 0.32.1, apcore-a2a 0.8.3,
+  apcore-cli 0.12.4 and apcore-mcp 0.23.0; refresh Cargo.lock while retaining
+  apcore-toolkit 0.14.0.
+- Enable the SDK's structured MCP results through the normal Cargo dependency.
+  Modern clients receive `outputSchema` and redacted `structuredContent` alongside
+  JSON text. Legacy clients retain text-only results; HTTP capabilities remain
+  request-scoped. Referenced sensitive fields use core 0.32.1's redaction fix.
+- Synchronize the integration design, feature manifest and guides with the
+  published SDK interfaces and supported schema/protocol versions.
 - Help leads with initialization, discovery and execution, groups global options,
   gives readable argument labels, and includes native/module and shell examples.
   Existing command and option names remain accepted.

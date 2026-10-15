@@ -143,6 +143,15 @@ impl ApexeConfig {
         self
     }
 
+    pub(crate) fn timeout_milliseconds(&self) -> anyhow::Result<u64> {
+        self.default_timeout.checked_mul(1000).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Execution timeout must not exceed {} seconds",
+                u64::MAX / 1000
+            )
+        })
+    }
+
     /// Create all required directories if they do not exist.
     ///
     /// Returns the crate-wide domain error rather than `std::io::Error`, so a

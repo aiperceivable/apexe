@@ -37,6 +37,7 @@ fn test_help_shows_subcommands() {
         .arg("--help")
         .assert()
         .success()
+        .stdout(predicate::str::contains(env!("CARGO_PKG_DESCRIPTION")))
         .stdout(predicate::str::contains("scan"))
         .stdout(predicate::str::contains("serve"))
         .stdout(predicate::str::contains("a2a"))
@@ -143,6 +144,38 @@ fn test_list_unavailable_json_preserves_array_and_verbose_envelope() {
         };
         assert_eq!(result, expected);
     }
+}
+
+#[test]
+fn test_list_verbose_exposes_confidence_without_changing_the_json_envelope() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut module = apcore_toolkit::ScannedModule::new(
+        "cli.confidence".into(),
+        "Confidence display fixture".into(),
+        serde_json::json!({"type":"object"}),
+        serde_json::json!({"type":"object"}),
+        vec![],
+        "exec:///bin/echo".into(),
+    );
+    module
+        .metadata
+        .insert("confidence".into(), serde_json::json!("low"));
+    apexe::output::YamlOutput::without_verification()
+        .write(&[module], directory.path(), false)
+        .unwrap();
+    let output = apexe()
+        .args(["list", "--verbose", "--format", "json", "--bindings-dir"])
+        .arg(directory.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let result: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert!(result["acl_policy"].is_null());
+    assert_eq!(result["modules"][0]["id"], "cli.confidence");
+    assert_eq!(result["modules"][0]["x-confidence"], "low");
+    assert!(result["modules"][0].get("x-verification").is_none());
 }
 
 #[test]
@@ -660,6 +693,10 @@ fn test_man_flag_emits_a_man_page() {
         &man[..man.len().min(200)]
     );
     assert!(man.contains("apexe"), "the page must name the program");
+    assert!(
+        man.contains(env!("CARGO_PKG_DESCRIPTION")),
+        "the man page must use the current package description"
+    );
 }
 
 // --------------------------------------------------------------------------

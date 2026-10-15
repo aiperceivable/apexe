@@ -6,12 +6,13 @@ use apcore_mcp::ApprovalStore;
 
 use crate::module::{build_executor, ExecutorOptions};
 
-/// Builder for creating an A2A agent server from apexe's scanned CLI modules.
+/// Builder for serving CLI modules and imported OpenAPI operations through A2A.
 ///
 /// Shares [`build_executor`](crate::module::build_executor) with
 /// [`crate::mcp::McpServerBuilder`], so an ACL policy, the logging
 /// middleware, and the approval handler apply identically whether a module
 /// is served over MCP or A2A.
+/// [`Self::prepare_with_openapi`] also registers HTTP operations in that executor.
 pub struct A2aServerBuilder {
     auth_options: Option<crate::auth::AuthOptions>,
     name: String,
@@ -515,8 +516,22 @@ impl A2aServerBuilder {
             Some(options) => self.prepare_with_openapi(options).await?,
             None => self.prepare()?,
         };
+        self.assemble_app(executor, config).await
+    }
+
+    #[allow(clippy::result_large_err)] // Preserve the shared ModuleError boundary.
+    async fn assemble_app(
+        &self,
+        executor: Arc<Executor>,
+        config: APCoreA2AConfig,
+    ) -> Result<(axum::Router, serde_json::Value), ModuleError> {
+        let logging = executor.find_middleware("logging");
+        // Avoid duplicate-name warnings while the SDK installs its own logger.
+        if logging.is_some() {
+            executor.remove_middleware("logging");
+        }
         let (router, card) = apcore_a2a::build_app_with_auth(
-            BackendSource::Executor(executor),
+            BackendSource::Executor(executor.clone()),
             config,
             self.transport_auth()?,
         )
@@ -527,6 +542,7 @@ impl A2aServerBuilder {
                 format!("A2A assembly failed: {error}"),
             )
         })?;
+        Self::restore_host_logging(&executor, logging)?;
         let router = router.layer(axum::middleware::from_fn(
             super::notifications::suppress_reply,
         ));
@@ -534,6 +550,22 @@ impl A2aServerBuilder {
             ModuleError::new(ErrorCode::GeneralInternalError, error.to_string())
         })?;
         Ok((router, card))
+    }
+
+    /// Keep the host's payload policy instead of the SDK's automatic logger.
+    #[allow(clippy::result_large_err)] // Preserve the shared ModuleError boundary.
+    fn restore_host_logging(
+        executor: &Executor,
+        logging: Option<Arc<dyn apcore::middleware::Middleware>>,
+    ) -> Result<(), ModuleError> {
+        // Both loggers use "logging". Clear the SDK registrations, then restore
+        // the original instance with its priority and configured payload flags.
+        // This executor is newly prepared by apexe and has no active calls.
+        while executor.remove_middleware("logging") {}
+        if let Some(logging) = logging {
+            executor.use_middleware_shared(logging)?;
+        }
+        Ok(())
     }
 
     /// Assemble the same governed HTTP and CLI surface without binding a port.
@@ -676,6 +708,49 @@ mod tests {
         let builder = A2aServerBuilder::new();
         assert!(builder.enable_logging);
         assert!(!builder.enable_approval);
+    }
+
+    #[tokio::test]
+    async fn test_a2a_app_preserves_host_logging_configuration() {
+        use apcore_toolkit::ScannedModule;
+        use serde_json::json;
+        let directory = tempfile::TempDir::new().unwrap();
+        let module = ScannedModule::new(
+            "cli.echo".into(),
+            "Echo".into(),
+            json!({"type":"object"}),
+            json!({"type":"object"}),
+            vec![],
+            "exec:///bin/echo".into(),
+        );
+        crate::output::YamlOutput::without_verification()
+            .write(&[module], directory.path(), false)
+            .unwrap();
+        for (logging, arguments) in [(true, true), (true, false), (false, true), (false, false)] {
+            let builder = A2aServerBuilder::new()
+                .bindings_dir(directory.path())
+                .enable_logging(logging)
+                .log_arguments(arguments);
+            let (executor, config) = builder.prepare().unwrap();
+            let mut before = executor.middlewares();
+            let original = executor.find_middleware("logging");
+            let _app = builder
+                .assemble_app(executor.clone(), config)
+                .await
+                .unwrap();
+            let mut after = executor.middlewares();
+            before.sort();
+            after.sort();
+            assert_eq!(
+                after, before,
+                "A2A assembly changed the configured logging pipeline"
+            );
+            match (original, executor.find_middleware("logging")) {
+                (Some(original), Some(current)) => assert!(Arc::ptr_eq(&original, &current)),
+                (None, None) => {}
+                _ => panic!("A2A assembly changed the configured logging instance"),
+            }
+        }
     }
 
     #[test]

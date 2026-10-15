@@ -1,7 +1,9 @@
 # Security Policy
 
-`apexe` spawns processes on behalf of AI agents. Its whole purpose is to sit on
-that boundary, so a flaw here is worth reporting carefully.
+`apexe` mediates CLI execution and imported HTTP operations for humans and AI
+agents. Its schema validation, configured policy, transport credentials and
+audit records form an execution boundary, so flaws in those controls are worth
+reporting carefully. Normal execution does not provide OS sandbox containment.
 
 ## Reporting a vulnerability
 
@@ -38,10 +40,14 @@ claims to enforce. Anything that defeats a claim in its **§4** is in scope:
 - Writing to `audit.jsonl` in a way that forges, suppresses, or corrupts the
   framing of a record — including through a value the caller controls
 - Argument values appearing in `audit.jsonl`, which is documented to hold none
-- The output cap or timeout failing to bound a runaway subprocess
+- The captured-output cap or timeout failing to bound a wrapped subprocess
 - A binding file or overlay that achieves execution the scan could not produce
 - Credential handling on the HTTP transports (`--auth`), including a
   non-loopback bind starting without a credential and without acknowledgment
+- Imported HTTP operations bypassing validation or loaded ACLs, or specification,
+  upstream API and incoming client credentials reaching the wrong destination
+- Explicit verification cases escaping their required isolation, or stale
+  binding/binary/case evidence retaining earned runtime confidence
 
 ## What is not in scope
 
@@ -54,8 +60,10 @@ back to that section:
 - **A heuristic misclassifying a command** — e.g. `find` annotated `readonly`
   while `find -delete` is destructive (§5.2). This is an overlay fix; open a
   normal issue or a PR
-- **No policy being enforced without `--acl` / `--enable-approval`** (§5.3).
-  Both are opt-in by design
+- **Server policy not enabled by the operator** (§5.3). Server ACLs require
+  `--acl`, and MCP interactive approval requires `--enable-approval`. Local
+  exec/shims load the default ACL when present and install an approval gate;
+  an absent ACL still means no access control
 - **The audit trail not naming which file was deleted** (§5.5). No argument
   values are recorded, deliberately
 - **An incomplete schema from a CLI with poor `--help` output** (§5.6)
@@ -63,8 +71,9 @@ back to that section:
   HTTP calls, code it runs in a sandbox (§5.7)
 - **Prompt injection carried in a wrapped tool's output.** `apexe` bounds output
   size, not content
-- **Sandbox escape.** `apexe` is not a sandbox (§1) and does not claim
-  containment
+- **Normal execution exceeding a host sandbox boundary.** apexe does not
+  implement that sandbox (§1). Required isolation for explicit verification
+  cases has its own enforced boundary and remains in scope above
 
 If you are unsure which side a finding falls on, report it privately. A
 misrouted report is a smaller problem than an unreported bypass.

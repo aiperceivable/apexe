@@ -1,5 +1,5 @@
 site_name: apexe
-site_description: Outside-In CLI-to-Agent Bridge — automatically wraps CLI tools into governed apcore modules, served via MCP.
+site_description: Governed execution for CLI tools and HTTP APIs. Run CLI commands locally and expose CLI and OpenAPI operations through MCP and A2A.
 site_url: https://aiperceivable.github.io/apexe/
 
 repo_name: aiperceivable/apexe

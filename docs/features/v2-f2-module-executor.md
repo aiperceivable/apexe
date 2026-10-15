@@ -217,6 +217,11 @@ pub struct SubprocessOutput {
 
 ### 3.3 Output Parsing
 
+The result envelope is always an object. Optional `json_output` contains any
+parsed JSON value, including arrays, scalars and null; the generated output
+schema must accept those values. Raw `stdout` remains a string, and a parse
+failure omits `json_output` rather than discarding the original text.
+
 ```rust
 // Inside CliModule::execute()
 

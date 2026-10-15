@@ -124,7 +124,10 @@ impl VerificationReport {
 }
 
 pub(crate) fn digest(value: &impl Serialize) -> anyhow::Result<String> {
-    let value = serde_json::to_value(value)?;
+    let mut value = serde_json::to_value(value)?;
+    // SDK dependencies may enable preserve_order globally. Object insertion
+    // order must not invalidate evidence between independently loaded processes.
+    value.sort_all_objects();
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?)))
 }
 
@@ -176,4 +179,24 @@ pub(crate) fn result(
         mode: None,
         isolation: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_digest_ignores_object_key_order_at_every_depth() {
+        let first: serde_json::Value =
+            serde_json::from_str(r#"{"first":1,"nested":{"a":2,"b":3},"items":[{"c":4,"d":5}]}"#)
+                .unwrap();
+        let second: serde_json::Value =
+            serde_json::from_str(r#"{"items":[{"d":5,"c":4}],"nested":{"b":3,"a":2},"first":1}"#)
+                .unwrap();
+        assert_eq!(digest(&first).unwrap(), digest(&second).unwrap());
+        assert_ne!(
+            digest(&serde_json::json!([1, 2])).unwrap(),
+            digest(&serde_json::json!([2, 1])).unwrap()
+        );
+    }
 }

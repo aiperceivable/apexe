@@ -1,5 +1,6 @@
 # apexe 0.9.0 Examples
 
+Explore governed CLI execution, contract verification and HTTP API import.
 Choose an example based on whether you are operating the `apexe` command or
 developing against its Rust library.
 
@@ -47,3 +48,14 @@ The basic example requires `ls`, `jq`, and `curl` on `PATH`. The local execution
 and OpenAPI examples require Python 3; their own READMEs show how to pass the
 repository-built executable without installing it. The exact set of
 generated modules can vary by operating system and installed CLI version.
+
+## Automated validation
+
+`make check CORPUS=/path/to/cli-permissions/overlays` builds and tests the Rust
+examples and executes every example using isolated homes and local services.
+For a focused rerun after building, use `make test-examples` with the same
+`CORPUS` setting. Results are saved to `target/runtime-validation/examples.json`;
+failures return nonzero. Missing required isolation or corpus is a failure.
+The CI matrix enforces the full walkthroughs on Linux and macOS, including the
+BSD native pipeline on macOS. See the [Developer Guide](../docs/developer-guide.md)
+for prerequisites, platform scope and instructions for adding a new example.

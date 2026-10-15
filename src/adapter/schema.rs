@@ -871,8 +871,7 @@ pub fn build_output_schema(command: &ScannedCommand) -> JsonValue {
             .is_some_and(|f| f.eq_ignore_ascii_case("json"));
     if is_json {
         schema["properties"]["json_output"] = json!({
-            "type": "object",
-            "description": "Parsed JSON output (when structured output is available)",
+            "description": "Parsed JSON value (object, array, scalar or null, when available)",
         });
     }
 
@@ -2048,7 +2047,8 @@ mod tests {
         };
         let schema = build_output_schema(&cmd);
 
-        assert_eq!(schema["properties"]["json_output"]["type"], "object");
+        assert!(schema["properties"]["json_output"].is_object());
+        assert!(schema["properties"]["json_output"].get("type").is_none());
         assert_eq!(schema["properties"]["stdout"]["type"], "string");
     }
 

@@ -23,7 +23,7 @@ fn print_man_page_if_requested(raw_args: &[String]) -> bool {
         &cmd,
         "apexe",
         apexe::VERSION,
-        Some("Outside-In CLI-to-Agent Bridge"),
+        Some(env!("CARGO_PKG_DESCRIPTION")),
         apcore_cli::get_docs_url().as_deref(),
     );
     println!("{man}");
@@ -100,7 +100,7 @@ fn run(format: ErrorFormat) -> anyhow::Result<i32> {
 
     let raw_os_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     if apexe::cli::is_shim_invocation(&raw_os_args) {
-        let _logging_guard = logging::init(None, false)?;
+        let _logging_guard = logging::init(None, false, false)?;
         return run_with_logging(ErrorFormat::Text, || apexe::cli::run_shim(&raw_os_args));
     }
     let raw_args: Vec<String> = raw_os_args
@@ -116,7 +116,13 @@ fn run(format: ErrorFormat) -> anyhow::Result<i32> {
         Err(error) => return report_argument_error(error, format),
     };
     let mut cli = Cli::from_arg_matches(&matches)?;
-    let _logging_guard = logging::init(cli.log_level.as_deref(), cli.log_stderr)?;
+    let suppress_sdk_calls = match &cli.command {
+        apexe::cli::Commands::Serve(args) => args.no_logging || args.no_log_arguments,
+        apexe::cli::Commands::A2a(args) => args.no_logging || args.no_log_arguments,
+        _ => false,
+    };
+    let _logging_guard =
+        logging::init(cli.log_level.as_deref(), cli.log_stderr, suppress_sdk_calls)?;
     run_with_logging(cli.error_format, || {
         let config = apexe::config::load_config(None)?;
         if matches!(

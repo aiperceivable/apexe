@@ -14,7 +14,8 @@ python3 examples/verification/demo.py --apexe target/debug/apexe
 The demo checks untouched original bindings, successful dry-run/isolated cases,
 recorded confidence, and automatic invalidation after case-file or executable
 changes. It uses `apexe list --verbose --format json` to inspect module metadata.
-All files are discarded afterward.
+The verbose JSON report contains a `modules` array with `id`, `x-confidence`
+and valid `x-verification` evidence. All files are discarded afterward.
 
 macOS uses system `sandbox-exec`; Linux needs `bwrap` and enabled unprivileged
 user namespaces. If required isolation is unavailable, the demo reports

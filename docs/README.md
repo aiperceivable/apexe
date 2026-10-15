@@ -1,17 +1,21 @@
 # apexe Documentation
 
+**Governed execution for CLI tools and HTTP APIs.** apexe runs CLI commands
+locally and exposes CLI and OpenAPI operations through MCP and A2A, with shared
+schema validation, configured access rules and audit records.
+
 Start here according to the job you are trying to complete.
 
 ## I want to use apexe
 
-These guides are for an operator, developer, or team introducing existing CLI
-tools to an AI agent. They lead with the outcome, the commands to run, and the
+These guides are for operators, developers and teams running CLI tools locally
+or exposing CLI and HTTP operations to AI agents. They lead with the outcome, the commands to run, and the
 boundaries you must review.
 
 | Goal | Guide |
 | --- | --- |
-| Initialize CLI coverage, review its ACL, and connect an MCP client | [Quick Start](quickstart.md) |
-| Execute locally with captured output and native shims | [Local execution example](../examples/local_execution/README.md) |
+| Initialize CLI coverage, review its ACL, and choose local execution or MCP/A2A | [Quick Start](quickstart.md) |
+| Execute CLI commands with module JSON, reviewed native argv or PATH shims | [Local execution example](../examples/local_execution/README.md) |
 | Check source drift, explicit dry-runs and earned case evidence | [Verification guide](verification.md) and [runnable example](../examples/verification/README.md) |
 | Import an HTTP API and call it through MCP/A2A | [OpenAPI guide](openapi.md) and [runnable example](../examples/openapi_import/README.md) |
 | Find every command, configuration key, transport, and troubleshooting step | [User Manual](user-manual.md) |
@@ -24,8 +28,13 @@ boundaries you must review.
 The normal user path is:
 
 ```text
-init → list and review bindings/ACL → exec, env, or serve with --acl
+CLI: init → list and review bindings/ACL → exec, env, serve or a2a
+API: review OpenAPI source and ACL → serve or a2a with --openapi --acl
 ```
+
+Local exec/shims load the default ACL when present. Servers require `--acl`
+for access control. Native argv/shims require reviewed grammar; HTTP import is
+a server feature.
 
 `apexe` is not a sandbox. Read the threat model and run exposed tools inside
 the OS, container, VM, account, and network boundary appropriate to your use

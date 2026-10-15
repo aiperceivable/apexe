@@ -2,7 +2,7 @@
 name = "apexe"
 version = "0.9.0"
 edition = "2021"
-description = "Outside-In CLI-to-Agent Bridge"
+description = "Governed CLI execution and OpenAPI tools for humans and AI agents"
 license = "Apache-2.0"
 readme = "README.md"
 authors = ["aiperceivable <team@aiperceivable.com>"]
@@ -16,10 +16,10 @@ categories = ["command-line-utilities", "development-tools"]
 anyhow = "1"
 axum = "0.8"
 async-trait = "0.1"
-apcore = "0.32.0"
-apcore-a2a = "0.8.2"
-apcore-cli = "0.12.3"
-apcore-mcp = "0.22.3"
+apcore = "0.32.1"
+apcore-a2a = "0.8.3"
+apcore-cli = "0.12.4"
+apcore-mcp = "0.23.0"
 apcore-toolkit = { version = "0.14.0", default-features = false, features = ["http-proxy"] }
 # RFC 3339 timestamps for the governance audit records apexe writes itself
 # (see `governance::audit`). Already in the graph via apcore; declared here so
