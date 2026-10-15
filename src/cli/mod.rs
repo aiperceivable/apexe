@@ -4,6 +4,7 @@ mod config_set;
 mod env;
 mod exec;
 mod init;
+mod list_output;
 mod local;
 mod shell;
 mod shell_init;
@@ -1157,17 +1158,10 @@ impl ListArgs {
                 println!("{}", serde_json::to_string_pretty(&json)?);
             }
             _ => {
-                println!("{:<40} DESCRIPTION", "MODULE ID");
-                println!("{:<40} {}", "\u{2500}".repeat(40), "\u{2500}".repeat(40));
-                for (id, desc) in &sorted {
-                    let truncated = if desc.chars().count() > 60 {
-                        format!("{}...", desc.chars().take(57).collect::<String>())
-                    } else {
-                        desc.to_string()
-                    };
-                    println!("{:<40} {}", id, truncated);
-                }
-                println!("\n{} module(s) found.", sorted.len());
+                print!(
+                    "{}",
+                    list_output::format_table(&sorted, list_output::terminal_width())
+                );
             }
         }
         Ok(())

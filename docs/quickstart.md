@@ -2,7 +2,8 @@
 
 Run existing tools through schemas, access rules and audit records. This guide
 starts with CLI coverage: install, initialize, inspect and review. Terminal
-agents use the shared [Agent Skill](agent-skill.md) with native exec by default;
+agents use the shared [Agent Skill](agent-skill.md) to route ordinary external
+CLI commands through native exec by default in apexe-configured environments;
 PATH shims and MCP/A2A are optional integration paths. To expose an HTTP API,
 follow the [OpenAPI import guide](openapi.md); HTTP import is a server feature.
 
@@ -116,7 +117,11 @@ source checkout into the project where you run your agent:
 python3 scripts/install_agent_skill.py --project-dir /path/to/your-project
 ```
 
-See the [Agent Skill guide](agent-skill.md) for user installation, invocation,
+Declare apexe-governed CLI execution in the project's `AGENTS.md` (Codex/pi),
+`CLAUDE.md` (Claude Code), or task instructions. The Skill then routes ordinary
+external CLI tasks through native exec; installing it alone does not enroll
+every project. See the [project instruction example](agent-skill.md#declare-the-projects-execution-route)
+and [Agent Skill guide](agent-skill.md) for user installation, invocation,
 refusal handling and shell lifetime. No MCP server or shim activation is needed
 for explicit exec.
 

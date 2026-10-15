@@ -23,7 +23,7 @@ git/docker scan tests and the macOS native example are opt-in.
 |---|---|---|
 | CLI discovery and schemas | `scanner`, `adapter`; `scan` | Help, man pages, completions, variant-aware overlays, JSON Schema and annotations |
 | Reviewed source initialization | `corpus`, `cli::init`; `init` | Cached Git rules, revision pinning, offline use, refresh and binding/policy preservation |
-| Terminal-agent workflow | `skills/apexe/SKILL.md`, `scripts/install_agent_skill.py` | Shared Claude Code/Codex/pi Skill; native exec by default, optional env and governed JSON alternatives |
+| Terminal-agent execution routing | `skills/apexe/SKILL.md`, `scripts/install_agent_skill.py` | Shared Claude Code/Codex/pi Skill; external CLI commands default to native exec in configured environments, optional env and governed JSON alternatives |
 | Binding and agent guidance output | `output`; `scan --skills-dir` | YAML bindings and optional Claude Skills; Rust API tool-definition export |
 | Discovery and policy inspection | `list --verbose`, `policy` | Module schemas, annotations, ACL context, validated evidence and filesystem boundary checks |
 | Local execution | `cli::exec`, `module`; `exec` | Module JSON and reviewed native argv; preflight dry-run, child status and native streams |

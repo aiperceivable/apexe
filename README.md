@@ -21,7 +21,8 @@ Calls leave audit records. Your CLI binaries keep working as they are; scanning
 requires no LLM or changes to their source code.
 
 For terminal-capable AI agents, install the shared [apexe Agent Skill](docs/agent-skill.md)
-and use native `apexe exec -- <command> ...` by default. Activate eligible
+to route external CLI commands through native `apexe exec -- <command> ...`
+by default in apexe-configured environments. Activate eligible
 external commands through PATH shims when shell integration is useful, or use
 MCP/A2A for protocol clients. Servers can also import HTTP operations from an
 OpenAPI document, alongside CLI modules, using
@@ -34,7 +35,7 @@ the same executor for schema validation, configured ACLs and auditing.
 | Prepare installed CLI coverage | `apexe init`, `apexe list --verbose` | Matching reviewed rules, typed bindings and a starter ACL to inspect |
 | Run a CLI command locally | `apexe exec` | Module JSON with captured output, or reviewed native argv with passthrough streams |
 | Keep native command names in your shell | `apexe env` | PATH shims for eligible external commands, activation helpers and installation checks |
-| Give a terminal agent access to CLI tools | [Agent Skill](docs/agent-skill.md) + `apexe exec -- ...` | One portable workflow for Claude Code, Codex and pi; native argv by default |
+| Route a terminal agent's external CLI commands | [Agent Skill](docs/agent-skill.md) + `apexe exec -- ...` | Default native execution routing in configured environments for Claude Code, Codex and pi |
 | Connect a protocol client or import an HTTP API | `apexe serve`, `apexe a2a` | CLI modules and optional imported OpenAPI operations over MCP or A2A |
 | Check a CLI contract after changes | `apexe verify` | Source drift reports and optional digest-bound evidence from explicit behavioral cases |
 | Cover a custom CLI | `apexe scan` | Deterministic discovery, YAML bindings, generated ACL rules and optional Claude Skills |
@@ -238,13 +239,24 @@ The installer uses `.claude/skills/apexe` for Claude Code and the shared
 existing skill unless `--force` is specified. Invoke `/apexe` in Claude Code,
 `$apexe` in Codex, or `/skill:apexe` in pi.
 
-The Skill teaches native exec discovery, preflight, passthrough results and
-refusal handling. It uses module JSON when native grammar alone is unavailable,
+Declare apexe-governed CLI execution in your project's `AGENTS.md` (Codex/pi)
+or `CLAUDE.md` (Claude Code), or in task instructions. The Skill then routes
+ordinary external CLI commands through native exec without requiring an
+explicit apexe request each time. For example, listing directory entries uses
+`apexe exec -- ls -la`, with a preflight for a new or changed invocation.
+Installation alone does not enroll unrelated projects; automatic Skill
+selection depends on the host and model. See the
+[project instruction example](docs/agent-skill.md#declare-the-projects-execution-route).
+
+The Skill covers discovery, preflight, passthrough results and refusal handling.
+It uses module JSON when native grammar alone is unavailable,
 keeps normal governance checks in force and offers `env` for optional shell
 workflows. It does not start MCP, install CLI binaries, expand native coverage
 or grant permissions. See the [Agent Skill guide](docs/agent-skill.md) for paths,
 setup and execution boundaries. Per-module output from `scan --skills-dir`
-complements this shared workflow skill.
+complements this shared routing skill. Shell builtins and host file tools keep
+their existing interfaces; each external pipeline stage enters apexe separately.
+The Skill guides routing; compulsory interception requires host enforcement.
 
 ### Optional MCP integration: Claude Desktop
 

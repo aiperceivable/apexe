@@ -1,17 +1,39 @@
 ---
 name: apexe
-description: Run CLI tools through apexe governance using native apexe exec arguments by default. Use when a task asks for apexe-managed commands, access-policy checks, execution previews, or optional apexe env shell integration in Claude Code, Codex, or pi.
+description: Route external CLI commands through native apexe exec by default in an apexe-configured environment. Use for ordinary terminal tasks such as listing files, reading text or running tools when the operator or project requires apexe governance, and for explicit apexe requests. Compatible with Claude Code, Codex and pi; env is optional.
 license: Apache-2.0
 ---
 
 # apexe
 
-Use your host's terminal execution tool to run CLI commands through apexe.
-Prefer native `apexe exec -- <command> <arguments>`; no MCP server or shell
-activation is needed. This skill requires apexe 0.9 or later on PATH and
-installed bindings; native mode additionally requires matching reviewed
-grammar. It does not make an unregistered command eligible or grant execution
-permissions.
+Route external CLI execution through `apexe exec -- <command> <arguments>`
+using your host's existing terminal tool. Apply this route to ordinary tasks
+in an apexe-configured environment even when the user does not mention apexe.
+No MCP server or shell activation is needed. Requires apexe 0.9 or later,
+installed bindings and matching reviewed grammar for native mode.
+
+## Select the execution route
+
+An environment is in scope when the operator or project instructions declare
+apexe-governed CLI execution and identify the intended configuration, or the
+user explicitly requests it. Installing this Skill or finding apexe on PATH
+alone does not enroll unrelated projects. If the task claims a configured
+environment but prerequisites are missing, report the gap; do not silently
+fall back to raw execution.
+
+Before running an external program in scope, route it through apexe. For
+example, a request to list all directory entries becomes `apexe exec -- ls -la`,
+not bare `ls -la`. Preserve the working directory, arguments and task intent.
+Prefer native argv; use governed module JSON only for a grammar gap as described
+below. Do not wrap an already governed call again.
+
+Keep shell builtins such as `cd`, `test` and `printf` in the host shell. Keep
+host-provided file readers, editors and other non-CLI tools on their existing
+interfaces; this Skill routes external CLI commands, not every agent tool.
+Do not select another tool to evade an apexe refusal. Run apexe's own discovery,
+preflight and configuration commands directly without recursive wrapping.
+Do not replace an unsupported command or pipeline with `sh -c`, `bash -c`,
+an interpreter script or an absolute binary path to bypass admission.
 
 ## Discover the environment
 
@@ -81,7 +103,7 @@ stderr and the command's meaning before retrying, especially after possible
 side effects.
 
 The shell owns pipes, redirections, expansions and compound commands. Wrap each
-external tool that needs apexe governance independently:
+external program in an in-scope pipeline independently:
 
 ```bash
 apexe exec -- cat input.txt | apexe exec -- head -n 5

@@ -14,7 +14,7 @@ boundaries you must review.
 
 | Goal | Guide |
 | --- | --- |
-| Use Claude Code, Codex or pi with native exec and optional env | [Agent Skill](agent-skill.md) |
+| Route Claude Code, Codex or pi external CLI commands through native exec by default | [Agent Skill](agent-skill.md) |
 | Initialize CLI coverage, review its ACL, and choose local execution or MCP/A2A | [Quick Start](quickstart.md) |
 | Execute CLI commands with module JSON, reviewed native argv or PATH shims | [Local execution example](../examples/local_execution/README.md) |
 | Check source drift, explicit dry-runs and earned case evidence | [Verification guide](verification.md) and [runnable example](../examples/verification/README.md) |
@@ -29,7 +29,7 @@ boundaries you must review.
 The normal user path is:
 
 ```text
-CLI agent: init → review bindings/ACL → install Agent Skill → native exec
+CLI agent: init → review bindings/ACL → install Skill → declare route → native exec
 Optional CLI integration: env shims or MCP/A2A protocol serving
 API: review OpenAPI source and ACL → serve or a2a with --openapi --acl
 ```

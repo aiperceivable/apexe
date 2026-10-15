@@ -89,6 +89,63 @@ fn test_visible_cli_arguments_have_help_descriptions() {
 }
 
 #[test]
+fn test_list_preserves_full_descriptions_in_table_and_json() {
+    let directory = tempfile::tempdir().unwrap();
+    let description = "Read files sequentially and write their complete contents to standard output without losing the end of this description.";
+    let module = apcore_toolkit::ScannedModule::new(
+        "cli.cat".into(),
+        description.into(),
+        serde_json::json!({"type":"object"}),
+        serde_json::json!({"type":"object"}),
+        vec![],
+        "exec:///bin/cat".into(),
+    );
+    apexe::output::YamlOutput::without_verification()
+        .write(&[module], directory.path(), false)
+        .unwrap();
+    for format in ["table", "json"] {
+        let output = apexe()
+            .env("COLUMNS", "60")
+            .args(["list", "--format", format, "--bindings-dir"])
+            .arg(directory.path())
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        if format == "json" {
+            let result: serde_json::Value = serde_json::from_slice(&output).unwrap();
+            assert_eq!(result[0]["description"], description);
+        } else {
+            let table = String::from_utf8(output).unwrap();
+            assert_list_table_preserves_description(&table, description, 60);
+            assert!(!table.contains("..."));
+            assert!(table.contains("cli.cat"));
+            assert!(table.contains("1 module(s) found."));
+        }
+    }
+}
+
+fn assert_list_table_preserves_description(table: &str, description: &str, width: usize) {
+    let content: Vec<&str> = table
+        .lines()
+        .skip(1)
+        .take_while(|line| !line.is_empty())
+        .collect();
+    let words: Vec<&str> = content
+        .iter()
+        .flat_map(|line| line.split_whitespace())
+        .skip(1)
+        .collect();
+    assert_eq!(words, description.split_whitespace().collect::<Vec<_>>());
+    assert!(table.lines().all(|line| line.len() <= width));
+    assert!(content
+        .iter()
+        .skip(1)
+        .all(|line| line.starts_with("           ")));
+}
+
+#[test]
 fn test_list_empty_json_preserves_array_and_verbose_envelope() {
     for verbose in [false, true] {
         let mut command = apexe();

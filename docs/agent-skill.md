@@ -1,9 +1,11 @@
-# Agent Skill: native CLI execution
+# Agent Skill: default CLI execution routing
 
 For a terminal-capable Claude Code, Codex or pi agent, install the shared
-[apexe Agent Skill](../skills/apexe/SKILL.md) and use native
-`apexe exec -- <command> <arguments>` by default. Each call enters apexe
-explicitly, without starting an MCP server or activating a shell environment.
+[apexe Agent Skill](../skills/apexe/SKILL.md) to route external CLI commands
+through native `apexe exec -- <command> <arguments>` by default in an
+apexe-configured environment. Ordinary requests such as listing files or
+reading text use this route without the user naming apexe each time. Each call
+enters apexe explicitly, without starting an MCP server or activating a shell environment.
 Use `env` as an optional enhancement for existing scripts and shell workflows.
 MCP/A2A remain available for protocol clients and imported HTTP APIs.
 
@@ -53,7 +55,39 @@ You can also copy `skills/apexe/SKILL.md` into one of the table's directories
 manually; create the directory first and preserve any custom version. Start a
 new agent session if the installed skill is not visible. Invoke the skill
 explicitly when you want to select it; its description also supports automatic
-selection for apexe tasks.
+selection for ordinary CLI tasks in an apexe-configured environment. Automatic
+selection depends on the agent host and model; installation alone does not
+establish a project-wide routing requirement.
+
+## Declare the project's execution route
+
+After preparing bindings and reviewing policy, declare apexe-governed CLI
+execution in the instructions your host reads: `AGENTS.md` for Codex or pi,
+and `CLAUDE.md` for Claude Code. For example:
+
+```markdown
+This project uses apexe-governed CLI execution. Load the installed apexe Skill
+before running external CLI commands, including ordinary file-listing and
+text-processing tasks. Route them through native `apexe exec -- <command> ...`
+by default, using the current working directory and the reviewed default
+bindings and ACL under ~/.apexe. Preflight new or changed invocations.
+For missing native grammar, use an advertised module's JSON interface only
+when it preserves the operation and its normal checks permit it. Report
+missing coverage or governance refusals; do not fall back to raw binaries.
+Keep shell builtins and host-provided file tools on their existing interfaces.
+```
+
+Adapt the configuration description for your deployment and provide any
+explicit binding directory or ACL path. Do not put placeholder paths into
+commands. A task-specific operator instruction can establish the same scope.
+The Skill is available across projects when installed for a user; only projects
+or tasks opting into apexe-governed execution adopt its default CLI route.
+An explicit apexe request also selects the route. A missing binary, binding or
+required ACL is a reported prerequisite, not permission for raw fallback.
+
+This is agent execution guidance. Enforcing that every external command must
+enter apexe requires integration or restrictions at the host's execution tool;
+a Skill cannot intercept or constrain an unrestricted terminal by itself.
 
 ## Prepare CLI coverage and policy
 
@@ -80,6 +114,9 @@ See [initialization](quickstart.md#2-initialize) and the
 
 ## Default agent workflow: native exec
 
+For a request such as "list all current directory entries, including hidden
+files," the agent selects native exec itself and checks the intended call:
+
 ```bash
 apexe exec --dry-run -- ls -la
 apexe exec -- ls -la
@@ -100,9 +137,13 @@ arguments and can stand down when none escalate. Preflight does not obtain
 human approval, and calls actually needing an interactive decision fail closed
 locally. The Skill never clears the warning by editing policy or annotations.
 
-The shell handles pipes, expansions and redirections. A shell-side `> file`
-is outside apexe's typed-path checks. Skill guidance cannot enforce that an
-agent with unrestricted terminal access always enters apexe.
+The shell handles pipes, expansions and redirections. Route each external
+pipeline stage independently; use `pipefail` or inspect all stage statuses so
+an earlier refusal cannot be hidden by a later success. A shell-side `> file`
+is outside apexe's typed-path checks. Builtins such as `cd`, `test` and `printf`
+remain in the shell. Host-provided file readers and editors keep their existing
+interfaces. Do not double-wrap apexe calls, recursively govern its own setup
+commands, or use an interpreter or another tool to evade admission.
 
 When native grammar alone is unavailable, the agent can use an advertised
 module's JSON interface after reading its actual schema:
@@ -157,12 +198,13 @@ environment, so the Skill does not automatically deactivate existing operator
 setups. Builtins, aliases, functions, absolute paths and uncovered tools bypass
 shims. See the [env reference](user-manual.md#48-apexe-env).
 
-## Workflow skill and generated module skills
+## Routing skill and generated module skills
 
-This shared `apexe` Skill teaches discovery, native execution, refusal handling,
-JSON alternatives and optional shell integration. `apexe scan --skills-dir`
+This shared `apexe` Skill chooses the default external CLI execution route in
+configured environments and teaches discovery, native execution, refusal
+handling, JSON alternatives and optional shell integration. `apexe scan --skills-dir`
 generates separate per-module skills with command-specific schemas and guidance
-under `.claude/skills/<module_id>/`. Those outputs complement this workflow
+under `.claude/skills/<module_id>/`. Those outputs complement this routing
 skill; they do not install it or change native eligibility.
 
 For clients that need protocol tool discovery or HTTP API import, see
