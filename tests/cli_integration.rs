@@ -798,7 +798,10 @@ fn test_the_explorer_prefills_only_required_keys() {
         .find_map(|_| {
             std::thread::sleep(std::time::Duration::from_millis(100));
             std::process::Command::new("curl")
-                .args(["-sf", &url])
+                // The served page lives on loopback, which a workstation proxy
+                // can answer for instead of passing the request through to the
+                // server; `-f` then turns that answer into a failed fetch.
+                .args(["-sf", "--noproxy", "*", &url])
                 .output()
                 .ok()
                 .filter(|o| o.status.success())

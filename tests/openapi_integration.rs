@@ -12,6 +12,18 @@ use axum::{routing::get, Json, Router};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
+/// Loopback fixtures must be reached directly. A workstation proxy can answer
+/// for `127.0.0.1` instead of passing the request through, which turns a
+/// fixture call into an empty `502`.
+///
+/// `.cargo/config.toml` supplies this to every process cargo runs -- the only
+/// route that reaches a client built inside the test process -- and
+/// `scripts/runtime_validation.py` sets it for the processes it starts. Stating
+/// it at this call site as well keeps the requirement unconditional: a
+/// developer whose own `NO_PROXY` covers something other than loopback leaves
+/// the config value unapplied.
+const LOOPBACK_NO_PROXY: &str = "127.0.0.1,localhost,::1";
+
 struct TestApi {
     base_url: String,
     calls: Arc<AtomicUsize>,
@@ -301,6 +313,8 @@ async fn test_cli_mcp_serves_and_calls_imported_openapi() {
     let source = source(&dir, &document(), &server.base_url);
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_apexe"))
         .env("HOME", dir.path())
+        .env("NO_PROXY", LOOPBACK_NO_PROXY)
+        .env("no_proxy", LOOPBACK_NO_PROXY)
         .env_remove("APEXE_BINDINGS_DIR")
         .current_dir(dir.path())
         .args([

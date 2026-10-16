@@ -1,0 +1,13 @@
+# Loopback fixtures -- the servers the tests, examples and validators stand up
+# on 127.0.0.1 -- must be reached directly. A workstation proxy can answer for
+# `127.0.0.1` instead of passing the request through, which turns a fixture call
+# into an empty `502`.
+#
+# Spawned processes can be given this per call (see `tests/openapi_integration.rs`
+# and `scripts/runtime_validation.py`). A client built inside the test process
+# cannot: it reads the environment when it is constructed, so the value has to be
+# present before the test binary starts, which is what `[env]` provides. An
+# existing `NO_PROXY` in the developer's environment takes precedence.
+[env]
+NO_PROXY = "127.0.0.1,localhost,::1"
+no_proxy = "127.0.0.1,localhost,::1"

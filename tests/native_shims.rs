@@ -1672,6 +1672,38 @@ fn test_shim_preserves_child_stderr_and_never_appends_json_flag() {
         .stderr("diagnostic");
 }
 
+/// Run the timed-out shim until the child has announced its pid, and return it.
+///
+/// The child writes its pid only once the machine has scheduled it that far, and
+/// with many CLI integration processes running concurrently the timeout can fire
+/// first. That outcome says nothing about the timeout itself, so the scenario is
+/// retried within the same fixture. The elapsed time is checked on every attempt
+/// so a timeout that fires far too early -- the defect this test exists to catch
+/// -- still fails instead of being retried away.
+fn timed_out_child_pid(fixture: &Fixture, pid_file: &Path) -> i32 {
+    let mut missing = None;
+    for _ in 0..3 {
+        let started = std::time::Instant::now();
+        let assertion = fixture
+            .shim("slow")
+            .env("APEXE_TIMEOUT", "5")
+            .timeout(std::time::Duration::from_secs(15))
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains("timed out"));
+        assert!(
+            started.elapsed() >= std::time::Duration::from_secs(4),
+            "the timeout must run its full length; output: {:?}",
+            assertion.get_output()
+        );
+        match std::fs::read_to_string(pid_file) {
+            Ok(pid) => return pid.trim().parse().unwrap(),
+            Err(error) => missing = Some(error),
+        }
+    }
+    panic!("the child never announced its pid in {pid_file:?}: {missing:?}");
+}
+
 #[test]
 fn test_shim_timeout_kills_the_direct_child_and_audits_error() {
     let fixture = Fixture::new();
@@ -1688,24 +1720,7 @@ fn test_shim_timeout_kills_the_direct_child_and_audits_error() {
         false,
     );
     fixture.enable();
-    // Allow startup headroom when many CLI integration processes run concurrently.
-    let assertion = fixture
-        .shim("slow")
-        .env("APEXE_TIMEOUT", "5")
-        .timeout(std::time::Duration::from_secs(15))
-        .assert()
-        .failure()
-        .stderr(predicates::str::contains("timed out"));
-    let pid: i32 = std::fs::read_to_string(&pid_file)
-        .unwrap_or_else(|error| {
-            panic!(
-                "Missing {pid_file:?}: {error}; output: {:?}",
-                assertion.get_output()
-            )
-        })
-        .trim()
-        .parse()
-        .unwrap();
+    let pid = timed_out_child_pid(&fixture, &pid_file);
     // SAFETY: kill with signal zero probes existence and does not signal the process.
     assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
     let audit = std::fs::read_to_string(fixture.home.path().join(".apexe/audit.jsonl")).unwrap();
