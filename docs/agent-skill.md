@@ -1,241 +1,213 @@
-# Agent Skill: default CLI execution routing
+# Connect a terminal agent with the apexe Skill
 
-For a terminal-capable Claude Code, Codex, pi or OpenCode agent, install the shared
-[apexe Agent Skill](../skills/apexe/SKILL.md) to route external CLI commands
-through native `apexe exec -- <command> <arguments>` by default in an
-apexe-configured environment. Ordinary requests such as listing files or
-reading text use this route without the user naming apexe each time. Each call
-enters apexe explicitly, without starting an MCP server or activating a shell environment.
-Use `env` as an optional enhancement for existing scripts and shell workflows.
-MCP/A2A remain available for protocol clients and imported HTTP APIs.
+Use the same [apexe Skill](../skills/apexe/SKILL.md) with Claude Code, Codex,
+pi or OpenCode. In a project configured for apexe, ordinary CLI requests use
+`apexe exec -- <command> <arguments>` through the agent's existing terminal
+tool. No MCP server or shell activation is required.
 
-## Install the same skill in your agent
+Follow the four steps below, then use [troubleshooting](#troubleshooting) if
+the observed commands differ. Contributors testing a Skill change should use
+the separate [maintainer verification guide](agent-skill-verification.md).
 
-The portable package contains one self-contained `SKILL.md` with standard
-`name`, `description` and `license` frontmatter. It does not depend on
-host-specific tool names, macros, permissions metadata or a source checkout
-after installation. The apexe binary, CLI binaries, bindings and policy must
-still be available in the agent's execution environment.
+## Quick integration
 
-| Agent | Project location | User location | Explicit invocation |
-|---|---|---|---|
-| Claude Code | `.claude/skills/apexe/SKILL.md` | `~/.claude/skills/apexe/SKILL.md` | `/apexe` |
-| Codex | `.agents/skills/apexe/SKILL.md` | `~/.agents/skills/apexe/SKILL.md` | `$apexe` |
-| pi | `.agents/skills/apexe/SKILL.md` | `~/.agents/skills/apexe/SKILL.md` | `/skill:apexe` |
-| OpenCode | `.agents/skills/apexe/SKILL.md` | `~/.agents/skills/apexe/SKILL.md` | Ask the agent to load the `apexe` Skill |
+### 1. Prepare CLI coverage and policy
 
-Codex and pi use the same Agent Skills location, so a single installed copy
-serves both. These paths follow the official [Claude Code skill documentation](https://code.claude.com/docs/en/skills),
-[Codex skill documentation](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills)
-and [pi skill documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md).
-OpenCode discovers these Agent Skills paths too, as well as Claude-compatible
-paths, and loads instructions through its native `skill` tool. See the
-[OpenCode skill documentation](https://opencode.ai/docs/skills/). The installed
-copies must have identical content if both locations contain `apexe`; a host
-may select either copy. No additional OpenCode-specific installation is needed.
-This integration targets terminal-capable agents; Claude Desktop's MCP setup is
-a separate integration.
-
-From an apexe source checkout, use Python 3.9+ to install it into the project where
-you run your agent:
+Install apexe 0.9 or later and the command binaries in the environment where
+the agent's terminal runs. See [installation](quickstart.md#1-install).
+An operator initializes coverage once:
 
 ```bash
-# Install for all three agents; Codex and pi share one copy.
-python3 scripts/install_agent_skill.py --project-dir /path/to/your-project
-# Or select one agent.
-python3 scripts/install_agent_skill.py --agent claude --project-dir /path/to/your-project
-# Or install across projects for your user.
-python3 scripts/install_agent_skill.py --scope user
-# Inspect destinations without creating files.
-python3 scripts/install_agent_skill.py --scope user --dry-run
-```
-
-The default scope is the current project. Identical reinstallation leaves files
-untouched. A different existing `SKILL.md` is refused unless `--force` is given;
-replacement preserves other files in the skill directory. Symlinked skill
-destinations are refused. The installer copies only the self-contained skill
-entry point and does not install apexe, initialize bindings, edit ACLs, activate
-shims or configure MCP. Installing a binary alone does not install this skill.
-
-You can also copy `skills/apexe/SKILL.md` into one of the table's directories
-manually; create the directory first and preserve any custom version. Start a
-new agent session if the installed skill is not visible. Invoke the skill
-explicitly when you want to select it; its description also supports automatic
-selection for ordinary CLI tasks in an apexe-configured environment. Automatic
-selection depends on the agent host and model; installation alone does not
-establish a project-wide routing requirement.
-
-## Declare the project's execution route
-
-After preparing bindings and reviewing policy, declare apexe-governed CLI
-execution in the instructions your host reads: `AGENTS.md` for Codex, pi or OpenCode,
-and `CLAUDE.md` for Claude Code. For example:
-
-```markdown
-This project uses apexe-governed CLI execution. Load the installed apexe Skill
-before the first terminal call. Route external CLI commands, including initial
-inspection, readonly probes, file listing and text processing, through native
-`apexe exec -- <command> ...`
-by default, using the current working directory and the reviewed default
-bindings and ACL under ~/.apexe. Preflight new or changed invocations.
-Do not run a preliminary bare command such as `pwd && ls -la` before routing.
-For missing native grammar, use an advertised module's JSON interface only
-when it preserves the operation and its normal checks permit it. Report
-missing coverage or governance refusals; do not fall back to raw binaries.
-Keep shell builtins and host-provided file tools on their existing interfaces.
-```
-
-Adapt the configuration description for your deployment and provide any
-explicit binding directory or ACL path. Do not put placeholder paths into
-commands. A task-specific operator instruction can establish the same scope.
-The Skill is available across projects when installed for a user; only projects
-or tasks opting into apexe-governed execution adopt its default CLI route.
-An explicit apexe request also selects the route. A missing binary, binding or
-required ACL is a reported prerequisite, not permission for raw fallback.
-
-This is agent execution guidance. Enforcing that every external command must
-enter apexe requires integration or restrictions at the host's execution tool;
-a Skill cannot intercept or constrain an unrestricted terminal by itself.
-
-## Prepare CLI coverage and policy
-
-An operator prepares the machine once, reviews the generated policy, and
-provides the agent with the intended working directory and configuration:
-
-```bash
+apexe --version
 apexe init --format json
 apexe list --verbose --format json
-# Review ~/.apexe/acl.yaml before relying on its access rules.
 ```
 
-The init report includes `native_ready` module IDs. CLI scanner coverage does
-not imply native eligibility: native argv needs matching authoritative rules
-with explicit grammar and capabilities. The current reviewed BSD pilot covers
-cat/head/ls. If the report is unavailable, preflight the intended command to
-check its admission. The Skill does not rerun init on every task.
+Review the generated bindings and `~/.apexe/acl.yaml` before execution. If this
+environment is already prepared, inspect the existing configuration rather
+than initializing it again. An absent ACL leaves access control inactive.
 
-Local calls load `~/.apexe/acl.yaml` when present, or use an explicit `--acl`.
-An absent ACL leaves access control inactive; a malformed selected policy
-fails closed. Skill installation does not grant permissions or broaden policy.
-See [initialization](quickstart.md#2-initialize) and the
-[exec reference](user-manual.md#47-apexe-exec).
+The init report's `native_ready` array identifies reviewed native coverage.
+The current BSD pilot covers cat/head/ls; scanning GNU variants or other tools
+does not establish native eligibility. If the intended commands are not
+native-ready, resolve coverage before expecting the native workflow below.
+See [initialization](quickstart.md#2-initialize) and [exec](user-manual.md#47-apexe-exec).
 
-## Default agent workflow: native exec
+### 2. Install the same skill in your agent
 
-Routing starts with the first terminal call, including orientation and readonly
-probes. Loading the Skill is followed by rewriting the intended commands;
-an initial bare `ls` is a routing violation even if a later listing uses apexe.
-Shell builtins do not exempt adjacent external programs in a compound command.
+Use Python 3.9+ from an apexe source checkout. If you installed a prebuilt
+binary and have no checkout, obtain one first:
 
-For a request such as "list all current directory entries, including hidden
-files," the agent selects native exec itself and checks the intended call:
+```bash
+git clone https://github.com/aiperceivable/apexe.git
+cd apexe
+```
+
+From the checkout, install for user-level availability across projects:
+
+```bash
+python3 scripts/install_agent_skill.py --scope user
+```
+
+The installer and Skill are repository files; the installed Skill itself
+needs no checkout at runtime.
+
+Alternatively, install only in the project where your agent works:
+
+```bash
+python3 scripts/install_agent_skill.py --project-dir /path/to/your-project
+```
+
+Replace the example project path. The default installer writes both directories:
+
+| Agent | User-level file | Project-level file | Explicit selection |
+| --- | --- | --- | --- |
+| Claude Code | `~/.claude/skills/apexe/SKILL.md` | `.claude/skills/apexe/SKILL.md` | `/apexe` |
+| Codex | `~/.agents/skills/apexe/SKILL.md` | `.agents/skills/apexe/SKILL.md` | `$apexe` |
+| pi | `~/.agents/skills/apexe/SKILL.md` | `.agents/skills/apexe/SKILL.md` | `/skill:apexe` |
+| OpenCode | `~/.agents/skills/apexe/SKILL.md` | `.agents/skills/apexe/SKILL.md` | Ask it to load the `apexe` Skill |
+
+Codex and pi share one copy. OpenCode also discovers Claude-compatible copies;
+keep every discovered `apexe` copy identical. See the official
+[Claude Code](https://code.claude.com/docs/en/skills),
+[Codex](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills),
+[pi](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md)
+and [OpenCode](https://opencode.ai/docs/skills/) Skill references.
+
+Use `--agent claude`, `--agent codex` or `--agent pi` to select a destination;
+there is no `--agent opencode` option, and no extra OpenCode copy is needed.
+`--dry-run` prints the planned destinations. Identical reinstalls leave files
+unchanged. To replace a different version after reviewing it, add `--force`;
+other files in the directory are preserved and symlinked destinations are
+refused. The installer does not install the binary, initialize coverage or
+change policy.
+
+### 3. Declare the project's execution route
+
+Add the following to `CLAUDE.md` for Claude Code and `AGENTS.md`
+for Codex, pi and OpenCode, near the beginning of the file. If you use both
+instruction files, put the rule in both. This template selects the reviewed
+default configuration; use it only after completing step 1.
+
+```markdown
+This project uses apexe-governed external CLI execution, with the project
+working directory and reviewed default bindings and ACL under ~/.apexe.
+Before the first task CLI call, read this entire instruction file and the
+complete installed apexe Skill. Use the host's Skill loader/file reader;
+if only a terminal is available, use shell builtins and input redirection.
+Do not load instructions with bare sed, cat, head or an interpreter. Stop
+if required instructions are missing, truncated or refused by the host.
+
+Follow the Skill for ordinary CLI tasks, including initial directory listing
+and readonly probes. Use native `apexe exec -- <command> ...` by default.
+Record the selected working directory, bindings and ACL before any task call.
+Carry any explicitly selected ACL (--acl before --) and binding override into
+EVERY preflight, execution, pipeline stage and retry; never try defaults first.
+Submit preflight alone and inspect its actual returned checks before execution
+in a separate tool call. For pipelines, submit exactly one stage's preflight
+per assistant response, read and state its decision, then choose the next stage
+in a NEW response. Do not batch or queue dependent stages, even if the host
+runs tool calls serially. Do not join preflight and execution with && or ;.
+Stop on the first refusal, with no later task tools queued or requested.
+If a call omitted a selected ACL, stop and report the error and any operation
+already completed; a corrected retry does not repair that earlier call.
+Do not bypass refusal with raw binaries, another tool, unmanaged execution
+or policy changes. Keep shell builtins and host file tools on their existing
+interfaces. Use pipefail or collect all stage statuses for pipeline execution.
+```
+
+For a custom configuration, replace the opening configuration sentence with
+actual canonical bindings and ACL paths. State that the selected `--acl` must
+appear before `--` in every task exec, including the first preflight. For
+example, the shape is `apexe exec --acl /actual/reviewed-acl.yaml --dry-run -- ls -la`;
+replace that example path with your real path. Provide the host access to the
+selected files. See [ACL reading](#host-acl-reading-and-apexe-policy-checks).
+
+Installing the Skill makes it available; project or task instructions establish
+where the routing rule applies. Automatic selection depends on the host and
+model. A Skill guides behavior through the host terminal tool; mandatory
+interception requires enforcement by that host.
+
+### 4. Verify with an ordinary task
+
+Start a new session in the configured project, keeping project instruction
+sources enabled. Explicitly select the Skill once using the table above if it
+has not loaded. Then ask, without spelling out an apexe command:
+
+> List all entries in the current directory, including hidden entries, with detailed metadata.
+
+Inspect the actual terminal tool calls. They should first preview the listing:
 
 ```bash
 apexe exec --dry-run -- ls -la
-apexe exec -- ls -la
-# Each external pipeline stage uses its own governed call.
-apexe exec -- cat input.txt | apexe exec -- head -n 5
 ```
 
-The Skill teaches the agent to inspect `valid`, `mode`, `acl_decision`,
-`approval_required`, argument and path checks before executing a newly selected
-invocation. Keep the same arguments and policy for preview and execution;
-execution checks them again. Place apexe options before `--` and child options
-after it. Native output and child status pass through instead of returning a
-JSON envelope. stdin is inherited only when the reviewed grammar admits it.
+The agent must read admission (`valid: true`, `mode: native`, ACL allowed,
+matching arguments/paths and no unresolved approval) before a separate call:
 
-`approval_required` can be a conservative static ceiling for flag-derived
-annotations. The Skill inspects that warning; actual execution weighs the sent
-arguments and can stand down when none escalate. Preflight does not obtain
-human approval, and calls actually needing an interactive decision fail closed
-locally. The Skill never clears the warning by editing policy or annotations.
+```bash
+apexe exec -- ls -la
+```
+
+Both calls must carry your explicit ACL/binding overrides when selected.
+Check the output and exit status, and check that no preliminary bare `ls` ran.
+
+With an existing readable `input.txt`, also ask:
+
+> Run a command-line pipeline that reads input.txt and shows only its first two lines. Report the output and success or failure.
+
+Expect cat's preflight, its inspected decision, then head's preflight in a
+new response, its decision, then a pipeline whose **two** external stages
+use exec. The agent must check all stage statuses. On a refusal it must stop
+immediately. A successful final answer alone does not prove correct routing.
+Use the [maintainer procedure](agent-skill-verification.md#3-run-the-three-scenarios)
+for a controlled denial test without changing your normal ACL.
+
+## Troubleshooting
+
+| Symptom | Check and remedy |
+| --- | --- |
+| The Skill is missing | Check the installed file against the table, start a new session, and try explicit selection. Confirm the full Skill loaded rather than just its catalog name. |
+| The host loads an old Skill | Check the actual loader's directory and full body. Remove stale copies or update all discovered copies to the same reviewed content, then restart. |
+| The first command is bare `ls` or `sed` | Confirm the project instructions loaded before task tools. Add the step 3 rule and retain project configuration sources. Installing a Skill alone does not enforce routing. Stop the task and inspect what already ran. |
+| Preview and execution share one shell call | Keep them in separate tool calls with model inspection between them. Shell short-circuiting cannot perform that inspection. |
+| cat/head previews are submitted together | Require one stage per assistant response. Two serial tool calls in one response are still a batch; stop and correct the routing instructions. |
+| The command has no binding or native grammar | Inspect `native_ready` and the concrete preflight. Install matching reviewed rules or use advertised module JSON only for a grammar gap when its normal checks permit the same operation. Do not use raw fallback. |
+| A required ACL is absent or omitted | Restore the operator-selected policy/configuration. Carry its path into every call. If a call already omitted it, stop and report the error rather than counting a retry as success. |
+| apexe returns `ACL_DENIED`, a path/schema refusal or unresolved approval | Stop without requesting later stages or using another tool to finish the denied operation. Report the reason for operator review. Do not widen policy to make the task pass. |
+| The model cannot start | Check the host's provider, credentials and account-supported model. No tool calls means agent routing has not been tested. |
+| A later tool call loses shim activation | Independent tool calls may start new shells. Keep explicit exec, or activate and verify shims in the same shell that executes the task. |
 
 ### Host ACL reading and apexe policy checks
 
-Host file permissions and apexe's ACL decisions are separate. Use canonical
-paths for the working directory and any operator-selected ACL. For example,
-macOS `/tmp` can resolve to `/private/tmp`; a host may classify a path under a
-different spelling as outside the working directory. For an ACL stored outside
-the workspace, an operator may need to allow the selected file through the
-host's file-reading and external-directory permissions. OpenCode documents
-these separately in its [permission reference](https://opencode.ai/docs/permissions/).
+A host reader's permission refusal is different from apexe's `ACL_DENIED`.
+Resolve the selected ACL to its canonical path and grant the host only the
+needed file/directory access. On macOS, `/tmp` may resolve to `/private/tmp`;
+inconsistent spellings can trigger external-directory restrictions. OpenCode's
+[permissions reference](https://opencode.ai/docs/permissions/) covers host access.
 
-Provide only the needed host access. Do not disable all host permissions or
-weaken apexe policy to make a test pass. If a host reader refuses the ACL, report
-that prerequisite; the apexe denial test has not run. Preserve the selected
-`--acl` on every preflight and execution instead of silently using a default.
+If the host refuses the instructions or ACL, stop and report the prerequisite.
+Do not switch readers, remove `--acl` or try a default policy. That attempt
+has not established a denial by apexe. An allowed preview also does not identify
+which ACL file was loaded; inspect the submitted command's policy selection.
 
-The shell handles pipes, expansions and redirections. Route each external
-pipeline stage independently; use `pipefail` or inspect all stage statuses so
-an earlier refusal cannot be hidden by a later success. A shell-side `> file`
-is outside apexe's typed-path checks. Builtins such as `cd`, `test` and `printf`
-remain in the shell. Host-provided file readers and editors keep their existing
-interfaces. Do not double-wrap apexe calls, recursively govern its own setup
-commands, or use an interpreter or another tool to evade admission.
-
-When native grammar alone is unavailable, the agent can use an advertised
-module's JSON interface after reading its actual schema:
-
-```bash
-apexe list --verbose --format json
-# Property names and shapes come from the advertised input_schema.
-apexe exec cli.ls --input '{"file":["."]}' --dry-run
-apexe exec cli.ls --input '{"file":["."]}'
-```
-
-Module JSON remains subject to schema, policy, approval and path checks. It
-returns captured output and uses null child stdin. Switching representation
-does not authorize an otherwise denied operation. The Skill requires reporting
-unresolved governance refusals instead of using raw binaries, unmanaged
-execution or policy edits to get around them. Local approval-required calls
-cannot obtain interactive approval; an operator can choose a configured MCP
-approval workflow separately when that is needed.
+For Claude Code, retain project configuration sources. If you restrict them
+using `--setting-sources`, include `project`, for example
+`--setting-sources user,project`. Loading a Skill alone does not prove the
+applicable `CLAUDE.md` was read. Model/provider setup is part of your agent
+host configuration; sourcing a personal provider script is not an apexe step.
 
 ## Optional enhancement: env
 
-For an explicitly requested shell/script setup with eligible bindings:
-
-```bash
-apexe env --enable
-```
-
-After successful setup, activate and execute in the same shell:
-
-```bash
-source ~/.apexe/bin/apexe-activate.sh &&
-apexe env --check &&
-test "$(command -v cat)" = "$HOME/.apexe/bin/cat" &&
-test "$(command -v head)" = "$HOME/.apexe/bin/head" &&
-cat input.txt | head -n 5
-```
-
-Enabling installs shims and managed startup blocks. Source the helper in the
-same shell that runs commands; an agent's later tool call may start a new shell
-and will not inherit an earlier shell's activation. Explicit exec avoids that
-dependency. Use the printed helper path for a custom shim directory. POSIX sh
-uses `.` instead of `source`; other shells have their own activation syntax.
-The guarded example requires both names to resolve to their expected shims;
-adapt those checks for custom directories. A failed activation, environment
-check or route check stops before the pipeline instead of falling through to
-ordinary binaries.
-
-`--check` inspects installation and activation. `--reload` changes installation
-state and can enable an absent installation. Sourcing the deactivation helper
-uninstalls owned shims and startup blocks as well as restoring the shell's saved
-environment, so the Skill does not automatically deactivate existing operator
-setups. Builtins, aliases, functions, absolute paths and uncovered tools bypass
+Explicit exec works without shims. Use `env` when an authorized shell/script
+workflow needs ordinary command names, and verify activation and every intended
+shim route in the same shell before using those names. Enable/reload and the
+deactivation helper change installation state; `env --check` inspects it.
+Builtins, aliases, functions, absolute paths and uncovered tools can bypass
 shims. See the [env reference](user-manual.md#48-apexe-env).
 
-## Routing skill and generated module skills
-
-This shared `apexe` Skill chooses the default external CLI execution route in
-configured environments and teaches discovery, native execution, refusal
-handling, JSON alternatives and optional shell integration. `apexe scan --skills-dir`
-generates separate per-module skills with command-specific schemas and guidance
-under `.claude/skills/<module_id>/`. Those outputs complement this routing
-skill; they do not install it or change native eligibility.
-
-For clients that need protocol tool discovery or HTTP API import, see
-[MCP/A2A integration](user-manual.md#12-integrating-with-ai-agents) and
-[OpenAPI import](openapi.md). Normal exec/env are not OS sandboxes; see the
-[threat model](threat-model.md).
+`scan --skills-dir` generates command-specific module Skills; it complements
+this shared routing Skill. Use [MCP/A2A](user-manual.md#12-integrating-with-ai-agents)
+for protocol clients and [OpenAPI import](openapi.md) for HTTP APIs. Normal
+exec/env provide process controls and typed-path checks, not an OS sandbox;
+see the [threat model](threat-model.md).

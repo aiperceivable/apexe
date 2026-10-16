@@ -1,6 +1,6 @@
 ---
 name: apexe
-description: Route external CLI commands through native apexe exec from the first terminal call in an apexe-configured environment, including initial inspection and readonly probes. Use for ordinary terminal tasks when the operator or project requires apexe governance, and for explicit apexe requests. Compatible with Claude Code, Codex, pi and OpenCode; env is optional.
+description: Route external CLI commands through native apexe exec in an apexe-configured environment. Resolve project instructions and the selected ACL before the first task command; preserve explicit configuration in every call. Submit pipeline preflights one per assistant response and inspect each returned result before choosing the next stage. Compatible with Claude Code, Codex, pi and OpenCode; env is optional.
 license: Apache-2.0
 ---
 
@@ -11,6 +11,60 @@ using your host's existing terminal tool. Apply this route to ordinary tasks
 in an apexe-configured environment even when the user does not mention apexe.
 No MCP server or shell activation is needed. Requires apexe 0.9 or later,
 installed bindings and matching reviewed grammar for native mode.
+
+For pipeline admission, submit exactly one stage's preflight tool call in an
+assistant response. Wait for its result, read the returned checks, and briefly
+state that stage's admission or refusal before deciding the next call in a new
+assistant response. Never emit `cat` and `head` preflights together. Two separate
+tool calls in one response are a batch, even if the host executes them in order;
+host serialization does not give the model a chance to inspect the first result.
+Do not use a batch tool, parallel dispatch or a loop that queues later stages.
+On refusal, stop with no remaining stages already requested or queued.
+
+## Resolve project policy before task commands
+
+Loading this Skill is not sufficient to select the task's policy. Before any
+task CLI call, including a readonly probe or `--dry-run`, retrieve the complete
+applicable project instructions (`CLAUDE.md` for Claude Code; `AGENTS.md` for
+Codex, pi or OpenCode) using the host reader or the builtin loading method below.
+If the host already supplied their full contents, use those contents. A file
+name, instruction summary or Skill description does not establish configuration.
+In Claude Code, use `Read` for the applicable `CLAUDE.md` when its full contents
+are not available; do not list the directory first to discover policy afterward.
+Stop if required instructions are missing, truncated or refused by the host.
+
+Resolve the working directory, bindings and ACL from those instructions and
+the operator's task-specific configuration. Keep a configuration record for
+the task: the selected paths, whether each uses an explicit override or an
+instructed default, and the instruction that selected it. Resolve conflicting
+selections before execution. Use defaults only when the applicable instructions
+select them; a successful call under a default policy does not validate a
+different operator-selected policy.
+
+When an ACL path is selected, every task `apexe exec` must contain
+`--acl <selected-path>` before `--`, starting with the first preflight. Carry
+explicit binding overrides the same way. Check the actual command you are
+about to submit against this configuration record. Include the selected ACL
+in each pipeline stage, not just one stage or the preflight. Do not run a
+default-policy trial before using the selected policy, and do not infer policy
+selection from `acl_decision: allowed`: that field reports a decision, not
+which ACL file was loaded. Read the selected ACL through the host reader when
+needed to understand its rules; reading it later cannot authorize earlier calls.
+
+The unqualified examples below apply only when the task selects the default
+configuration. For a task selecting `/workspace/reviewed-acl.yaml`, the separate
+preflight and execution calls instead use:
+
+```bash
+apexe exec --acl /workspace/reviewed-acl.yaml --dry-run -- ls -la
+# Inspect the result before a separate execution call with the same ACL.
+apexe exec --acl /workspace/reviewed-acl.yaml -- ls -la
+```
+
+Use the actual operator-provided path, never the example path. If you discover
+that a submitted call omitted the selected ACL, stop and report the routing
+error and any operation that already ran. Repeating it with the correct ACL
+does not repair the earlier execution or make the task compliant.
 
 ## Select the execution route
 
@@ -28,6 +82,32 @@ Prefer native argv; use governed module JSON only for a grammar gap as described
 below. Do not wrap an already governed call again.
 
 ### Route before the first terminal call
+
+Instruction loading is part of the routing boundary. Prefer the host's Skill
+loader or file reader. If only a terminal is available, read the discovered
+Skill file with shell builtins and input redirection, without spawning a
+reader program. For example, after setting `skill_path` to the host-discovered
+installed entry point, retrieve the complete contents, continuing with another
+read if the host truncates them. The name or frontmatter alone is insufficient:
+
+```bash
+skill_text=
+while IFS= read -r line || test -n "$line"; do
+  skill_text="$skill_text$line
+"
+done < "$skill_path"
+printf '%s' "$skill_text"
+unset skill_text
+```
+
+Emit the retrieved text once rather than writing each line separately, so a
+streaming terminal host can capture the complete instructions in one result.
+Do not bootstrap with bare `sed`, `cat`, `head` or an interpreter. These are
+external CLI calls even when they only read instructions. Do not switch readers
+after a host permission refusal. Project instructions must provide this loading
+rule before the Skill body is available; a rule inside an unread Skill cannot
+govern its own loading. This builtin read is for retrieving the selected
+instructions, not for reading task data around an apexe refusal.
 
 Initial inspection, orientation, readonly probes and quick checks are already
 CLI execution. Do not run a raw command to prepare for a later governed call.
@@ -98,12 +178,27 @@ host file permissions for the selected configuration.
 ## Execute native argv by default
 
 For a newly selected invocation or changed arguments, preview the same command
-you intend to execute, then inspect its checks:
+you intend to execute in a preflight-only terminal call. Wait for the result and
+inspect its checks before submitting execution in a separate tool call:
 
 ```bash
+# First tool call: preflight only.
 apexe exec --dry-run -- ls -la
+# Read the returned checks. Separate tool call after admission:
 apexe exec -- ls -la
 ```
+
+Never submit preflight and execution together, even with `&&`, `;`, a newline,
+or a conditional: a shell exit status does not replace reading the returned
+checks. Do not submit another execution speculatively alongside a preflight.
+For a pipeline, preflight its stages in order with one preflight tool call per
+assistant response. Read the returned `valid`, `mode`, `acl_decision`, approval,
+argument and path checks; report the current stage's decision briefly. Only
+after admission may a new assistant response request the next stage. Separate
+terminal calls in the same response, or inside a host batch, still violate this
+rule. Do not request a later stage before the previous result is available.
+Stop the task on the first governance refusal; do not preflight or execute
+remaining stages after receiving it.
 
 Preflight reports `valid`, `mode`, `module_id`, `acl_decision`,
 `approval_required`, `checks`, resolved `binary_path`, `argv` and typed path
@@ -135,8 +230,25 @@ side effects.
 The shell owns pipes, redirections, expansions and compound commands. Wrap each
 external program in an in-scope pipeline independently:
 
+First assistant response: submit only the first stage's preflight.
+
 ```bash
-apexe exec -- cat input.txt | apexe exec -- head -n 5
+apexe exec --dry-run -- cat input.txt
+```
+
+Read the result and state whether cat was admitted. If valid and allowed in
+native mode, with matching paths and no unresolved approval, a new assistant
+response may submit only the next preflight. If refused, stop here.
+
+```bash
+apexe exec --dry-run -- head -n 5
+```
+
+Read head's result and state its decision. Only after both stages are admitted
+may another assistant response submit execution:
+
+```bash
+set -o pipefail && apexe exec -- cat input.txt | apexe exec -- head -n 5
 ```
 
 Use the shell's `pipefail` support or collect individual stage statuses when

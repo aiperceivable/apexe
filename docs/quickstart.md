@@ -110,20 +110,14 @@ inherited only with an explicit reviewed capability. Local execution loads the
 default ACL when present and uses caller `local`; approval-required local calls
 fail closed. See the [exec reference](user-manual.md#47-apexe-exec).
 
-For Claude Code, Codex or pi, install the same workflow Skill from an apexe
-source checkout into the project where you run your agent:
-
-```bash
-python3 scripts/install_agent_skill.py --project-dir /path/to/your-project
-```
-
-Declare apexe-governed CLI execution in the project's `AGENTS.md` (Codex/pi),
-`CLAUDE.md` (Claude Code), or task instructions. The Skill then routes ordinary
-external CLI tasks through native exec; installing it alone does not enroll
-every project. See the [project instruction example](agent-skill.md#declare-the-projects-execution-route)
-and [Agent Skill guide](agent-skill.md) for user installation, invocation,
-refusal handling and shell lifetime. No MCP server or shim activation is needed
-for explicit exec.
+For Claude Code, Codex, pi or OpenCode, continue with the
+[four-step Agent quick integration](agent-skill.md#quick-integration). It covers
+user/project Skill installation, a copyable `CLAUDE.md`/`AGENTS.md` rule and
+acceptance using ordinary listing and pipeline requests. Installing the Skill
+alone does not enroll every project. No MCP server or shim activation is needed
+for native exec. Use [Agent troubleshooting](agent-skill.md#troubleshooting)
+when the observed tool calls differ; contributors can use the separate
+[maintainer verification procedure](agent-skill-verification.md).
 
 When native grammar alone is unavailable, module JSON works with initialized
 bindings if its normal checks permit the operation. Discover the actual schema

@@ -22,7 +22,9 @@ requires no LLM or changes to their source code.
 
 For terminal-capable AI agents, install the shared [apexe Agent Skill](docs/agent-skill.md)
 to route external CLI commands through native `apexe exec -- <command> ...`
-by default in apexe-configured environments. Activate eligible
+by default in apexe-configured environments. The agent resolves project policy
+before its first task command and carries an explicit ACL into every preflight,
+execution and pipeline stage. Activate eligible
 external commands through PATH shims when shell integration is useful, or use
 MCP/A2A for protocol clients. Servers can also import HTTP operations from an
 OpenAPI document, alongside CLI modules, using
@@ -224,43 +226,27 @@ See the [Quick Start guide](docs/quickstart.md) for the full workflow.
 
 ### Claude Code, Codex, pi and OpenCode: Agent Skill + native exec
 
-Install the same self-contained [Agent Skill](skills/apexe/SKILL.md) for any of
-these terminal-capable agents. From a source checkout:
+Follow the [four-step Agent quick integration](docs/agent-skill.md#quick-integration):
+prepare and review CLI coverage/ACL, install the shared Skill, declare the
+route in `CLAUDE.md` or `AGENTS.md`, then check an ordinary listing and pipeline.
+From an apexe source checkout, install for your user:
 
 ```bash
-# Install into the project where your agent works (all three agents by default).
-python3 scripts/install_agent_skill.py --project-dir /path/to/your-project
-# Or install for your user across projects.
 python3 scripts/install_agent_skill.py --scope user
 ```
 
-The installer uses `.claude/skills/apexe` for Claude Code and the shared
-`.agents/skills/apexe` location for Codex and pi. It preserves a different
-existing skill unless `--force` is specified. Invoke `/apexe` in Claude Code,
-`$apexe` in Codex, or `/skill:apexe` in pi.
-OpenCode also discovers the shared Agent Skills path and loads `apexe` through
-its native Skill tool, so it can reuse the same installation.
+Claude Code uses `~/.claude/skills/apexe`; Codex and pi share
+`~/.agents/skills/apexe`, which OpenCode also discovers. In a configured
+project, the Skill routes ordinary CLI requests through `apexe exec -- ...`,
+with inspected preflights, the selected ACL on every call and immediate stopping
+on refusal. No MCP server or shim activation is needed; `env` is optional.
 
-Declare apexe-governed CLI execution in your project's `AGENTS.md` (Codex/pi/OpenCode)
-or `CLAUDE.md` (Claude Code), or in task instructions. The Skill then routes
-ordinary external CLI commands through native exec without requiring an
-explicit apexe request each time. For example, listing directory entries uses
-`apexe exec -- ls -la`, with a preflight for a new or changed invocation.
-The route applies from the first terminal call, including initial inspection
-and readonly probes; a preliminary bare `pwd && ls -la` is not exempt.
-Installation alone does not enroll unrelated projects; automatic Skill
-selection depends on the host and model. See the
-[project instruction example](docs/agent-skill.md#declare-the-projects-execution-route).
-
-The Skill covers discovery, preflight, passthrough results and refusal handling.
-It uses module JSON when native grammar alone is unavailable,
-keeps normal governance checks in force and offers `env` for optional shell
-workflows. It does not start MCP, install CLI binaries, expand native coverage
-or grant permissions. See the [Agent Skill guide](docs/agent-skill.md) for paths,
-setup and execution boundaries. Per-module output from `scan --skills-dir`
-complements this shared routing skill. Shell builtins and host file tools keep
-their existing interfaces; each external pipeline stage enters apexe separately.
-The Skill guides routing; compulsory interception requires host enforcement.
+Installing the Skill alone does not enroll projects or intercept unrestricted
+shell tools. Copy the [project instruction template](docs/agent-skill.md#3-declare-the-projects-execution-route)
+and inspect actual calls during acceptance. See [troubleshooting](docs/agent-skill.md#troubleshooting)
+for discovery, stale copies, native coverage and ACL issues, and the
+[maintainer verification procedure](docs/agent-skill-verification.md) for controlled
+three-scenario tests. Generated per-module Skills complement this shared route.
 
 ### Optional MCP integration: Claude Desktop
 

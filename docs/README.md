@@ -14,7 +14,8 @@ boundaries you must review.
 
 | Goal | Guide |
 | --- | --- |
-| Route Claude Code, Codex, pi or OpenCode external CLI commands through native exec by default | [Agent Skill](agent-skill.md) |
+| Connect Claude Code, Codex, pi or OpenCode in four steps | [Agent quick integration](agent-skill.md#quick-integration) |
+| Resolve Skill discovery, routing, native coverage or ACL problems | [Agent troubleshooting](agent-skill.md#troubleshooting) |
 | Initialize CLI coverage, review its ACL, and choose local execution or MCP/A2A | [Quick Start](quickstart.md) |
 | Execute CLI commands with module JSON, reviewed native argv or PATH shims | [Local execution example](../examples/local_execution/README.md) |
 | Check source drift, explicit dry-runs and earned case evidence | [Verification guide](verification.md) and [runnable example](../examples/verification/README.md) |
@@ -51,6 +52,7 @@ historical design records. They are not required to configure or operate the
 
 | Goal | Guide |
 | --- | --- |
+| Validate a Skill revision with real agent calls and controlled ACL refusals | [Agent Skill maintainer verification](agent-skill-verification.md) |
 | Find the library API, repository layout, and contributor references | [Developer Guide](developer-guide.md) |
 | Embed apexe in a Rust application | [Programmatic example](../examples/programmatic/README.md) |
 | Exercise ACL rules with an explicit apcore identity | [ACL library example](../examples/acl_demo/README.md) |

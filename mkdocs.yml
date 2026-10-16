@@ -53,7 +53,7 @@ nav:
   - Home: index.md
   - Guide Index: documentation.md
   - Quick Start: quickstart.md
-  - Agent Skill: agent-skill.md
+  - Agent Integration: agent-skill.md
   - User Manual: user-manual.md
   - Contract Verification: verification.md
   - OpenAPI Import: openapi.md
@@ -61,6 +61,7 @@ nav:
   - Authoring Overlays: overlays.md
   - Overlay Consumers: overlay-consumers.md
   - Developer Guide: developer-guide.md
+  - Agent Skill Verification: agent-skill-verification.md
   - Changelog: changelog.md
   - Architecture:
       - Feature Manifest: FEATURE_MANIFEST.md

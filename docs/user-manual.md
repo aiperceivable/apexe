@@ -48,7 +48,7 @@ Choose a surface according to the work:
 | Work | Surface |
 |---|---|
 | Prepare and inspect installed CLI coverage | `init`, `list --verbose`; `scan` for custom tools |
-| Run CLI tools from Claude Code, Codex or pi | [Agent Skill](agent-skill.md) + native `exec -- <COMMAND> ...` |
+| Run CLI tools from Claude Code, Codex, pi or OpenCode | [Agent Skill](agent-skill.md) + native `exec -- <COMMAND> ...` |
 | Execute locally with structured input/output | `exec <MODULE_ID>` with inline, file or stdin JSON |
 | Activate eligible external-command PATH shims | `env --enable`; diagnose with `env --check` |
 | Expose CLI modules and optional HTTP operations | `serve` for MCP; `a2a` for A2A; add `--openapi` for HTTP import |
@@ -2180,58 +2180,38 @@ unauthenticated surface may disclose detailed refusal reasons.
 
 ### Terminal agents: Skill and native exec
 
-For terminal-capable Claude Code, Codex, pi and OpenCode, install the shared
-[apexe Agent Skill](agent-skill.md). In a project or task declaring apexe-governed
-CLI execution, it routes ordinary external CLI commands through native `exec`
-by default, even without an explicit apexe request. No MCP server or shell
-activation is required:
+For Claude Code, Codex, pi and OpenCode, follow the
+[four-step Agent quick integration](agent-skill.md#quick-integration):
 
-```bash
-apexe list --verbose --format json
-# Requires matching reviewed native grammar and a policy permitting this call.
-apexe exec --dry-run -- ls -la
-apexe exec -- ls -la
-```
+1. Install apexe and initialize CLI coverage in the agent's execution environment;
+   review bindings and the selected ACL. Native argv requires reviewed grammar,
+   currently provided by the BSD cat/head/ls pilot.
+2. Install the shared Skill from an apexe checkout with
+   `python3 scripts/install_agent_skill.py --scope user`, or use project scope.
+   User installs use `~/.claude/skills/apexe` for Claude Code and
+   `~/.agents/skills/apexe` for Codex/pi,
+   which OpenCode also discovers.
+3. Copy the [project instruction template](agent-skill.md#3-declare-the-projects-execution-route)
+   into `CLAUDE.md` or `AGENTS.md`, selecting the real configuration before task tools.
+4. Start a fresh session and ask for an ordinary directory listing and pipeline.
+   Inspect actual calls, output and status using the guide's acceptance checks.
 
-From an apexe source checkout, install for the project where the agent works:
+In a configured project, the default external CLI route is native
+`apexe exec -- <command> ...`, without MCP or shell activation. Preflight and
+execution are separate calls with model inspection between them. Each pipeline
+stage enters exec, with one stage preflight per assistant response. Every call
+preserves explicit ACL/binding overrides; the first refusal stops the task.
+Shell builtins and native host file tools retain their existing interfaces,
+without using them to evade refusal.
 
-```bash
-python3 scripts/install_agent_skill.py --project-dir /path/to/your-project
-```
-
-The same `skills/apexe/SKILL.md` is installed into Claude Code's `.claude/skills`
-and the shared `.agents/skills` location used by Codex and pi. OpenCode also
-discovers these locations and loads the Skill through its native tool. Explicit entry
-points are `/apexe`, `$apexe` and `/skill:apexe`, respectively. The
-[installation guide](agent-skill.md#install-the-same-skill-in-your-agent) covers
-user scope, individual agents, idempotent reinstall and overwrite protection.
-
-Put the execution requirement and intended configuration in `AGENTS.md`
-(Codex/pi/OpenCode), `CLAUDE.md` (Claude Code), or operator task instructions. See the
-[project instruction example](agent-skill.md#declare-the-projects-execution-route).
-User-level installation makes the Skill available across projects; it does not
-enroll unrelated projects. Automatic Skill selection depends on the host and
-model, and compulsory routing requires enforcement at the host execution tool.
-The route starts with the first terminal call, including readonly probes and
-initial directory inspection; a preliminary bare `ls` violates that route.
-Host permission to read a selected ACL is separate from apexe's policy decision.
-See [ACL reading and policy checks](agent-skill.md#host-acl-reading-and-apexe-policy-checks).
-
-Native admission requires reviewed grammar; the current BSD pilot covers
-cat/head/ls. Listing a module alone does not prove native eligibility. Inspect
-`native_ready` from an existing init report or preflight the intended command.
-The Skill handles missing grammar through the module JSON interface when the
-same operation's schema, policy, approval and path checks permit it. It does
-not bypass refusals, automatically weaken policy or enable unmanaged execution.
-
-Native calls preserve child streams and status; they do not produce a JSON
-result envelope. The shell owns pipes and redirections, so each external
-pipeline stage in scope must enter apexe separately. Shell builtins and native
-host file tools keep their existing interfaces. Do not replace unsupported
-commands with interpreter scripts to bypass admission. Local execution
-loads the default ACL when present. Preflight can report a static approval
-ceiling; calls that actually need interactive approval cannot obtain it locally.
-See the [exec reference](#47-apexe-exec).
+Installation alone does not enroll unrelated projects or enforce unrestricted
+terminal routing. A missing ACL leaves local access control inactive; host file
+permission refusal differs from an apexe ACL decision. See
+[Agent troubleshooting](agent-skill.md#troubleshooting) for discovery, policy,
+coverage and provider failures. The [exec reference](#47-apexe-exec) describes
+native passthrough, governed JSON alternatives and approval behavior.
+Contributors validating a revision should use the
+[maintainer three-scenario procedure](agent-skill-verification.md).
 
 ### Optional enhancement: governed shell environment
 
@@ -2600,6 +2580,11 @@ apexe --log-level debug --log-stderr scan git
 ---
 
 ## 16. Troubleshooting
+
+For terminal-agent Skill discovery, project activation, bare command routing,
+sequential preflights and ACL file access, start with
+[Agent troubleshooting](agent-skill.md#troubleshooting). The cases below cover
+the CLI application and optional shims/servers.
 
 ### "Tool not found" during scan
 
