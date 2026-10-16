@@ -2193,7 +2193,6 @@ For Claude Code, Codex, pi and OpenCode, follow the
    which OpenCode also discovers.
 3. Copy the [project instruction template](agent-skill.md#3-declare-the-projects-execution-route)
    into `CLAUDE.md` or `AGENTS.md`, selecting the real configuration before task tools.
-   For OpenCode, include that section's task-tracking stop rule as well.
 4. Start a fresh session and ask for an ordinary directory listing and pipeline.
    Inspect actual calls, output and status using the guide's acceptance checks.
 
@@ -2201,7 +2200,8 @@ In a configured project, the default external CLI route is native
 `apexe exec -- <command> ...`, without MCP or shell activation. Preflight and
 execution are separate calls with model inspection between them. Each pipeline
 stage enters exec, with one stage preflight per assistant response. Every call
-preserves explicit ACL/binding overrides; the first refusal stops the task.
+preserves explicit ACL/binding overrides. The first refusal ends all tool use,
+including `todowrite` and plan updates; the agent returns a text report only.
 Shell builtins and native host file tools retain their existing interfaces,
 without using them to evade refusal.
 

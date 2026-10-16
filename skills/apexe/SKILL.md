@@ -1,6 +1,6 @@
 ---
 name: apexe
-description: Route external CLI commands through native apexe exec in an apexe-configured environment. Resolve project instructions and the selected ACL before the first task command; preserve explicit configuration in every call. Submit pipeline preflights one per assistant response and inspect each returned result before choosing the next stage. Compatible with Claude Code, Codex, pi and OpenCode; env is optional.
+description: Route external CLI commands through native apexe exec in an apexe-configured environment. Resolve project policy before task commands, preserve the selected ACL, inspect each preflight in a separate response, and stop all tools on refusal, including task tracking. Compatible with Claude Code, Codex, pi and OpenCode; env is optional.
 license: Apache-2.0
 ---
 
@@ -12,14 +12,33 @@ in an apexe-configured environment even when the user does not mention apexe.
 No MCP server or shell activation is needed. Requires apexe 0.9 or later,
 installed bindings and matching reviewed grammar for native mode.
 
-For pipeline admission, submit exactly one stage's preflight tool call in an
-assistant response. Wait for its result, read the returned checks, and briefly
+For every preflight, submit exactly one tool request in that assistant response:
+the preflight itself. Put task tracking or other housekeeping in an earlier,
+separate response, never alongside a potentially refused call. For a pipeline,
+preview one stage at a time. Wait for its result, read the returned checks, and briefly
 state that stage's admission or refusal before deciding the next call in a new
 assistant response. Never emit `cat` and `head` preflights together. Two separate
 tool calls in one response are a batch, even if the host executes them in order;
 host serialization does not give the model a chance to inspect the first result.
 Do not use a batch tool, parallel dispatch or a loop that queues later stages.
-On refusal, stop with no remaining stages already requested or queued.
+On refusal, stop with no remaining stages or other tools requested or queued.
+
+## Stop all tools after refusal
+
+On the first governance or required host-permission refusal, stop ALL tool use
+for that task and return a text report only. This includes `todowrite`,
+`update_plan`, task-status changes, file readers/editors, discovery commands,
+cleanup and bookkeeping tools, even if their purpose is to mark work refused
+or cancel unfinished steps. Describe completed and unfinished work in the
+report without a tool call. Do not request a later pipeline stage or use another
+execution surface to finish the refused operation.
+
+Check that no other tool is queued with a preflight before submitting it.
+Stopping CLI execution alone is insufficient if a tracking tool runs afterward.
+Do not repair, retry or investigate the refusal through tools in the refused
+task; the operator can authorize a subsequent task to resolve the prerequisite
+or review policy. Missing native grammar alone and ordinary child nonzero
+statuses are distinct from governance refusal, as described below.
 
 ## Resolve project policy before task commands
 
@@ -191,14 +210,15 @@ apexe exec -- ls -la
 Never submit preflight and execution together, even with `&&`, `;`, a newline,
 or a conditional: a shell exit status does not replace reading the returned
 checks. Do not submit another execution speculatively alongside a preflight.
-For a pipeline, preflight its stages in order with one preflight tool call per
-assistant response. Read the returned `valid`, `mode`, `acl_decision`, approval,
+Every preflight must be the sole tool request in its assistant response,
+including non-CLI tracking tools. For a pipeline, preflight its stages in order.
+Read the returned `valid`, `mode`, `acl_decision`, approval,
 argument and path checks; report the current stage's decision briefly. Only
 after admission may a new assistant response request the next stage. Separate
 terminal calls in the same response, or inside a host batch, still violate this
 rule. Do not request a later stage before the previous result is available.
-Stop the task on the first governance refusal; do not preflight or execute
-remaining stages after receiving it.
+On the first governance refusal, stop all tools and return only the text report
+as specified above; do not preflight or execute remaining stages.
 
 Preflight reports `valid`, `mode`, `module_id`, `acl_decision`,
 `approval_required`, `checks`, resolved `binary_path`, `argv` and typed path
@@ -287,11 +307,12 @@ keep `--log-stderr` off when parsing it. A completed child's nonzero exit can
 still return a normal result instead of an apexe failure envelope. In native
 mode, child stderr remains passthrough and is not necessarily JSON.
 
-After a refusal, correct only a demonstrably invalid request within the task's
-scope. If the intended operation remains denied, report the reason and the
-operator action needed. Do not try spelling variants or another execution
-surface to evade the decision. `--as` is a dry-run assertion, not authenticated
-impersonation or execution approval.
+After a governance refusal, report its reason, any operation already completed,
+the unfinished work and the operator action needed, without further tools.
+Do not try spelling variants, another execution surface or tracking updates.
+A grammar-only gap may use the admitted JSON alternative above; it is not
+permission to bypass policy, schema or path refusal. `--as` is a dry-run
+assertion, not authenticated impersonation or execution approval.
 
 ## Optional shell integration
 

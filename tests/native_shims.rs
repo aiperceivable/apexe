@@ -100,10 +100,12 @@ fn test_activation_script_sources_current_shell_idempotently_without_rehash() {
     let shells = ["/bin/sh", "/bin/bash"];
     for shell in shells {
         Command::new(shell).env("HOME", fixture.home.path())
+            // Zsh reads startup files from ZDOTDIR even when HOME is overridden.
+            .env("ZDOTDIR", fixture.home.path())
             .env("PATH", "/opt/added-at-runtime:/usr/bin:/bin")
             .env_remove("APEXE_SHIM_DIR").current_dir(fixture.home.path())
             .args(["-c", "cat /dev/null; . \"$1\" || exit; . \"$1\" || exit; command -v cat; printf '%s\\n' \"$PATH\"; printf 'sourced\\n' | cat", "shell"])
-            .arg(fixture.shims().join("activate")).assert().success()
+            .arg(fixture.shims().join("activate")).assert().success().stderr("")
             .stdout(format!("{}/cat\n{}:/opt/added-at-runtime:/usr/bin:/bin\nsourced\n", fixture.shims().display(), fixture.shims().display()));
     }
 }
