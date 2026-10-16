@@ -24,7 +24,8 @@ Do not run init, scan or policy changes inside each agent scenario.
 
 Place the candidate in a supported project Skill location and add the
 [project instruction template](agent-skill.md#3-declare-the-projects-execution-route)
-to the applicable `CLAUDE.md` or `AGENTS.md`. In each scenario, replace its
+to the applicable `CLAUDE.md` or `AGENTS.md`, including the documented OpenCode
+addition when testing that host. In each scenario, replace its
 default-configuration sentence with the actual working directory, reviewed
 bindings and **explicit canonical test ACL path**. Require that `--acl` appear
 in every task exec, starting with the first preview. Give the host only the
@@ -44,7 +45,7 @@ candidate prerequisite and repeat after resolving discovery.
 | Claude Code | Retain project configuration sources; if setting `--setting-sources`, include `project`, such as `user,project`. Confirm the full applicable `CLAUDE.md` was available before the first task command. Loading `Skill` alone does not prove that. |
 | Codex | Confirm the selected Skill body was retrieved before any task CLI; a bare `sed` instruction read is a routing violation. Check whether the configured model is supported by the actual account. |
 | pi | Check the actual provider/model in native events. Preview and execution joined with `;` remain one call and fail inspection requirements. |
-| OpenCode | Check the actual native `skill` result's directory/body and each preview's assistant message ID. Host serialization of cat/head calls in one response does not prove model inspection between stages. |
+| OpenCode | Check the actual native `skill` result's directory/body and each preview's assistant message ID. Host serialization of cat/head calls in one response does not prove model inspection between stages. A preflight response must request only that preflight, and refusal must end tool use, including `todowrite`. |
 
 Set up the provider through the host's normal configuration. A personal
 `source ~/.bash_deepseek` step is specific to a configured Claude terminal,
@@ -191,6 +192,12 @@ Two calls can have increasing execution timestamps and still belong to one
 model response. That is a batch: the model could not inspect cat's result
 before deciding to request head. Distinct message IDs alone are also
 insufficient; inspect the returned checks and decision text as well.
+
+Include internal tracking and housekeeping tools in the stop check. A
+`todowrite` call cancelling remaining steps after ACL refusal still fails
+the all-tool stop requirement, even when head and the pipeline never run.
+Do not weaken the audit or disable that tool to turn such a run into a pass;
+clarify the documented project rule and retest in a new clean project.
 
 Distinguish these outcomes in the report:
 

@@ -116,6 +116,19 @@ or policy changes. Keep shell builtins and host file tools on their existing
 interfaces. Use pipefail or collect all stage statuses for pipeline execution.
 ```
 
+For OpenCode, also append this rule to `AGENTS.md`. Its internal task-tracking
+tools count as tool calls for the stop requirement, even when they only record
+that a task was refused:
+
+```markdown
+In OpenCode, a preflight assistant response must contain exactly one tool
+request: that preflight. Submit task-tracking or other housekeeping tools in
+an earlier, separate response, never alongside a potentially refused call.
+After the first refusal, stop ALL tool use and return a text report only.
+Do not call todowrite, update task status, or perform cleanup/bookkeeping
+through another tool after refusal. Describe unfinished tasks in the report.
+```
+
 For a custom configuration, replace the opening configuration sentence with
 actual canonical bindings and ACL paths. State that the selected `--acl` must
 appear before `--` in every task exec, including the first preflight. For
@@ -172,6 +185,7 @@ for a controlled denial test without changing your normal ACL.
 | The first command is bare `ls` or `sed` | Confirm the project instructions loaded before task tools. Add the step 3 rule and retain project configuration sources. Installing a Skill alone does not enforce routing. Stop the task and inspect what already ran. |
 | Preview and execution share one shell call | Keep them in separate tool calls with model inspection between them. Shell short-circuiting cannot perform that inspection. |
 | cat/head previews are submitted together | Require one stage per assistant response. Two serial tool calls in one response are still a batch; stop and correct the routing instructions. |
+| OpenCode updates todos after an ACL refusal | Apply the OpenCode rule in step 3. Return the refusal report as text without any further tools, including task tracking. A stopped CLI pipeline alone does not satisfy the strict all-tool stop check. |
 | The command has no binding or native grammar | Inspect `native_ready` and the concrete preflight. Install matching reviewed rules or use advertised module JSON only for a grammar gap when its normal checks permit the same operation. Do not use raw fallback. |
 | A required ACL is absent or omitted | Restore the operator-selected policy/configuration. Carry its path into every call. If a call already omitted it, stop and report the error rather than counting a retry as success. |
 | apexe returns `ACL_DENIED`, a path/schema refusal or unresolved approval | Stop without requesting later stages or using another tool to finish the denied operation. Report the reason for operator review. Do not widen policy to make the task pass. |

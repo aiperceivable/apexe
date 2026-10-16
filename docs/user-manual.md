@@ -2193,6 +2193,7 @@ For Claude Code, Codex, pi and OpenCode, follow the
    which OpenCode also discovers.
 3. Copy the [project instruction template](agent-skill.md#3-declare-the-projects-execution-route)
    into `CLAUDE.md` or `AGENTS.md`, selecting the real configuration before task tools.
+   For OpenCode, include that section's task-tracking stop rule as well.
 4. Start a fresh session and ask for an ordinary directory listing and pipeline.
    Inspect actual calls, output and status using the guide's acceptance checks.
 
