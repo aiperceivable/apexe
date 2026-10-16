@@ -211,8 +211,12 @@ def run(apexe, surface, remote):
     specification = json.loads((directory / "openapi.json").read_text(encoding="utf-8"))
     with tempfile.TemporaryDirectory(prefix="apexe-openapi-example-") as temporary, api_server(specification) as api:
         root = Path(temporary)
+        # The upstream API and the remote specification are loopback fixtures.
+        # Keep them direct even when the workstation has a system proxy,
+        # matching the environment scripts/runtime_validation.py builds.
         environment = {"HOME":str(root), "PATH":os.defpath, "RUST_LOG":"error", "LC_ALL":"C",
-                       "APEXE_OPENAPI_TOKEN":api["api_token"], "APEXE_AUTH_TOKEN":secrets.token_urlsafe(24)}
+                       "APEXE_OPENAPI_TOKEN":api["api_token"], "APEXE_AUTH_TOKEN":secrets.token_urlsafe(24),
+                       "NO_PROXY":"127.0.0.1,localhost,::1", "no_proxy":"127.0.0.1,localhost,::1"}
         source = api["url"] + "/openapi.json" if remote else str(directory / "openapi.json")
         shared = ["--openapi", source, "--openapi-base-url", api["url"], "--acl", str(directory / "acl.yaml")]
         if remote:
