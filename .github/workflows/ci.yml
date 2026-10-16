@@ -129,7 +129,13 @@ jobs:
 
       - name: Install macOS runtime prerequisites
         if: runner.os == 'macOS'
-        run: brew install fish jq
+        run: brew install fish jq docker
+
+      - name: Check scanner integration prerequisites
+        # Scanning uses CLI help and version output; no Docker daemon is needed.
+        run: |
+          git --version
+          docker --version
 
       - name: Install apdev-rs
         run: cargo install apdev-rs
