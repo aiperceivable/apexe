@@ -12,6 +12,107 @@ correct final answer alone are insufficient evidence of routing.
 The [recorded runs](#recorded-runs) below provide a versioned baseline and
 preserve the first failure for comparison after host, model or Skill upgrades.
 
+## Repository runner
+
+[`scripts/validate_agent_skill.py`](../scripts/validate_agent_skill.py) runs this
+procedure with Python's standard library. It extracts the ordinary prompt,
+three ACLs and common project template from the published documentation,
+freezes them with the Skill, and creates private disposable projects.
+It does not initialize bindings or replace user Skill installations.
+
+First review ls/cat/head bindings and configure the four hosts normally.
+OpenCode requires an available local Ollama model; override its model tag if
+your machine uses a different one. Prepare a candidate run without model calls:
+
+```bash
+python3 scripts/validate_agent_skill.py prepare \
+  --scope project \
+  --report-dir /tmp/apexe-agent-verification \
+  --codex-model gpt-5.6-sol \
+  --opencode-model ollama/qwen3.8-code-64k
+```
+
+The command prints `run_dir` and the corresponding `review.md`. Review that
+file before running hosts: it contains the frozen Skill, ordinary prompt,
+project declarations, ACLs and requested models. Remote hosts send those
+materials and their normal context to their configured provider. The runner
+inherits client credentials without copying environment values into receipts.
+
+Set `agent_run` to the printed absolute run directory, then execute:
+
+```bash
+agent_run=/absolute/run_dir/from/prepare
+python3 scripts/validate_agent_skill.py run --run-dir "$agent_run" --agents all
+```
+
+For the configured DeepSeek Claude terminal, run in Bash and first execute
+`source ~/.bash_deepseek`; the Python runner does not read or source that file.
+Other users retain their usual Claude provider configuration. Requested model
+overrides are optional (`--claude-model`, `--codex-model`, `--pi-model`); the
+receipt records observed models separately. OpenCode is restricted to an
+`ollama/` model and a loopback endpoint, defaulting to
+`http://127.0.0.1:11434/v1`; use `--opencode-endpoint` to change the local port.
+
+Use `--agents claude`, `--agents codex,pi,opencode` or another subset to launch
+hosts separately. Select the same subset during `prepare` if only those hosts
+will be verified. Each scenario defaults to a 1,200-second timeout; `run
+--timeout SECONDS` changes it. Bindings default to `~/.apexe/bindings`;
+`--bindings-dir PATH` during preparation selects another reviewed directory.
+The selected directory is an explicit override on every Agent exec stage,
+so a host's different default configuration cannot silently replace it.
+The runner checks native eligibility before launching a host and records
+those operator preflights separately from Agent task requests.
+
+After candidate results pass, update the user Skill using step 5, then prepare
+a **new** run with `--scope user` and repeat the three scenarios for all four
+hosts. This phase contains no project Skill copies or candidate-only discovery
+overrides. The prepared manifest and fixtures cannot be edited before a retry;
+prepare a fresh run instead. Reusing an existing host attempt is refused.
+
+Each run directory contains:
+
+| Artifact | Purpose |
+| --- | --- |
+| `manifest.json`, `manifest.sha256`, `source-*.md`, `review.md` | Frozen input, Skill/document/validator hashes and materials for review |
+| `projects/AGENT/SCENARIO/` | Separate directory, input, project declaration and explicit ACL for each scenario |
+| `prerequisites/AGENT/` | Operator native readiness checks, outside Agent task traces |
+| `attempts/AGENT/SCENARIO/` | Agent/apexe versions, launch arguments, raw stdout/stderr, normalized native trace and immutable scenario receipt |
+| `rollout.jsonl` or `actual-model.json` inside an attempt | Owned Codex native rollout or OpenCode assistant model metadata |
+| `receipt.json`, `report.md` | Aggregate counts and per-host/scenario results |
+
+The parent report directory retains `first-failure.json` and, separately,
+`first-routing-failure.json` using exclusive creation. Later passes cannot
+overwrite these markers or earlier run directories. All failed attempts,
+including missing prerequisites and unsupported native formats, retain their
+individual receipts and available logs.
+
+The audit checks full Skill evidence, project configuration, selected ACL and
+binding overrides, native routing, completed matching previews, separate
+inspection turns, actual output/status and **every** tool after refusal.
+For Claude's automatic project loading, the launch selects `user,project`,
+the native initialization cwd must match, and the frozen `CLAUDE.md` must
+remain unchanged; the complete Skill body still requires native evidence.
+Native tools, including host tracking tools, remain available. Agent final
+text or a configured model name cannot establish a pass. Missing Codex rollout,
+OpenCode export or an unrecognized command/event format remains unverified.
+Recorded shell and JavaScript are parsed, never executed by the auditor.
+
+Exit codes are **0** for a complete passing prepared matrix, **1** for an
+observed routing failure, and **2** for an incomplete matrix, prerequisite
+failure, unsupported evidence or setup error. A successful subset of an
+all-host preparation therefore returns 2 until the remaining hosts complete.
+Regenerate the summary from saved scenario receipts without calling models:
+
+```bash
+python3 scripts/validate_agent_skill.py report --run-dir "$agent_run"
+```
+
+Keep the private run directory outside source control: native logs can contain
+normal host context. Archive a reviewed compact receipt when publishing a new
+dated baseline below. The repository's script tests use deterministic fake
+clients and native-format regression cases; normal CI does not invoke paid
+model services or prove new model compliance.
+
 ## 1. Record prerequisites and isolate the candidate
 
 Record the source `skills/apexe/SKILL.md` content and SHA-256, host version,

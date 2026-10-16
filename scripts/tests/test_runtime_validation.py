@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
+from urllib.request import getproxies_environment, proxy_bypass_environment
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runtime_validation import (
@@ -73,6 +74,15 @@ def covered_cases():
 
 
 class CoverageTests(unittest.TestCase):
+    def test_isolated_runtime_routes_loopback_fixtures_directly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with RuntimeValidation(sys.executable, Path(directory) / 'report.json') as session:
+                with patch.dict(os.environ, session.environment, clear=True):
+                    exemptions = getproxies_environment()
+                    for host in ['127.0.0.1:8123', 'localhost:8123', '::1']:
+                        self.assertTrue(proxy_bypass_environment(host, exemptions), host)
+                    self.assertFalse(proxy_bypass_environment('example.com', exemptions))
+
     def test_example_acl_refusal_cannot_be_satisfied_by_a_schema_error(self):
         check_acl_refusal(
             {

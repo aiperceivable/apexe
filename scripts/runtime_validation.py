@@ -287,6 +287,9 @@ class RuntimeValidation:
             "APEXE_OFFLINE": "true",
             "APEXE_OVERLAY_DIRS": "",
             "SHELL": "/bin/bash",
+            # Keep loopback fixtures direct even when the workstation has a system proxy.
+            "NO_PROXY": "127.0.0.1,localhost,::1",
+            "no_proxy": "127.0.0.1,localhost,::1",
         }
         self.report["workspace"] = str(self.root)
         source = self.repository / "examples/openapi_import/demo.py"
