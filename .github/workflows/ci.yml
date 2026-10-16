@@ -9,6 +9,13 @@ on:
   pull_request:
     branches: ["main"]
 
+# A superseded run on `main` is the only record that a commit ever got a full
+# pass, so cancellation is confined to the refs where a newer commit genuinely
+# replaces the older one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   test:
     name: Test on Rust ${{ matrix.rust }}
@@ -29,16 +36,20 @@ jobs:
           toolchain: ${{ matrix.rust }}
           components: rustfmt, clippy
 
-      - name: Cache cargo registry & build
+      # Registry and git checkouts only. A debug `target` directory reaches
+      # multiple gigabytes and costs minutes to download and extract, and the
+      # artifacts it restores belong to the revision before the one under test:
+      # the part every push invalidates. The `-registry-` segment deliberately
+      # breaks from the older entries that carried `target`.
+      - name: Cache cargo registry
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-registry-
 
       - name: Install apdev-rs
         run: cargo install apdev-rs
@@ -140,18 +151,27 @@ jobs:
       - name: Install apdev-rs
         run: cargo install apdev-rs
 
-      - name: Cache cargo registry & build
+      # Same registry-only policy as the `test` job, in its own key namespace:
+      # this checkout puts `target` under `apexe/`, so a restore-key shared with
+      # the other job could only ever pull an entry whose paths do not apply
+      # here.
+      - name: Cache cargo registry
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            apexe/target
-          key: ${{ runner.os }}-cargo-corpus-${{ hashFiles('apexe/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-corpus-${{ hashFiles('apexe/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-registry-corpus-
 
+      # macOS compiles this half of the matrix and nothing else does, so it runs
+      # the whole gate set. On Linux the `test` job has already run fmt, clippy,
+      # check-chars and build against the same OS and toolchain, and repeating
+      # them here only doubled the wall clock. `build` stays in the Linux set
+      # because `test-examples` runs the compiled example binaries.
       - name: Run complete quality and runtime gates
+        if: runner.os == 'macOS'
         working-directory: apexe
         # Set but missing panics rather than skipping, so a checkout that
         # silently produced nothing fails here instead of passing quietly.
@@ -159,6 +179,16 @@ jobs:
           APEXE_TEST_CORPUS: ${{ github.workspace }}/cli-permissions/overlays
           APEXE_RUNTIME_REQUIRED_SHELLS: ${{ matrix.shells }}
         run: make check
+
+      - name: Run corpus and runtime gates
+        if: runner.os == 'Linux'
+        working-directory: apexe
+        # Same contract as the macOS step above: the corpus and shell list are
+        # set, so a checkout that produced nothing fails rather than skips.
+        env:
+          APEXE_TEST_CORPUS: ${{ github.workspace }}/cli-permissions/overlays
+          APEXE_RUNTIME_REQUIRED_SHELLS: ${{ matrix.shells }}
+        run: make build test test-scripts test-examples
 
       - name: Run opt-in real environment tests
         working-directory: apexe
