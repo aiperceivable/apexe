@@ -6,6 +6,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- `apexe env --enable --replace-unowned` regenerates the entry point and the
+  activation helpers when the installation record that proves this apexe owns
+  them is gone. `--reload` and `--disable` read that record first, so losing it
+  previously left the installation unrecoverable with no way out but deleting
+  files by hand. The flag is scoped to apexe's reserved names; a file sitting on
+  a command name is never replaced by it.
+
+### Changed
+
+- **`apexe agent <host> --write` refuses to point a host at a launcher that is
+  not installed.** For pi and OpenCode, `shell` / `shellPath` is a hard
+  dependency: a missing `apexe-sh` does not fall back to the system shell, it
+  stops the host from running any command, and the operator sees an `EACCES`
+  from the host rather than anything naming apexe. `--check` already refused on
+  the same problems; `--write` printed them and wrote anyway. Codex and Claude
+  Code keep the system shell and are unaffected.
+- `apexe env --disable` reports any host still configured to use the entry point
+  it has just removed. It does not refuse: an uninstall has to remain possible.
+- Dependency floors moved to apcore 0.32.3, apcore-mcp 0.23.2, apcore-cli 0.12.5,
+  apcore-a2a 0.8.4 and apcore-toolkit 0.14.1. No call sites change: apcore
+  0.32.1-0.32.3 are fixes only and its new cancellation scope APIs are additive,
+  and apcore-mcp 0.23.x keeps the descriptor's runtime input schema, which is
+  the side apexe's MCP builder already used.
+
+### Fixed
+
+- Ownership of an installed entry point and command shim no longer depends on
+  `.apexe-shims.json` alone. A link whose target is this executable is what
+  apexe writes for both, so the link now proves what created it and an
+  installation whose record was lost is rebuilt in place.
+- `make test-examples` builds the examples before validating them. It consumed
+  `target/debug/examples/<name>`, which only a build produces and only as a
+  by-product of the most recent one, so running the gate named by `AGENTS.md` on
+  any other tree failed for all three Rust examples.
+
 ## [0.10.0] - 2026-11-06
 
 ### Added
