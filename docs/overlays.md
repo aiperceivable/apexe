@@ -37,12 +37,19 @@ own invocation — so it keeps the flat spelling it always had:
   "annotations": { "readonly": true } }
 ```
 
-`schema_version` names the file format generation, not the spelling: a flat file
-is valid at `"2.0"` too, and there is no reason to migrate one. If you do bump
-the version, leave the flags where they are.
+`schema_version` names the file format generation, not the spelling: this build
+also accepts a flat file at `"2.0"`, and there is no reason to migrate one. If
+you do bump the version, leave the flags where they are.
 
 Only a tool **with subcommands** needs to say which of them are open, and that
 requires `"2.0"`:
+
+> **Status: preview, not yet a published format.** This build loads 2.0 files,
+> but `tool-overlay.schema.json` still pins `1.0`/`1.1` and — because it sets
+> `additionalProperties: false` — rejects both `commands` and `global_flags`.
+> Use 2.0 files only for local experiments (`apexe scan --overlay`,
+> `~/.apexe/overlays/`); do not add one to the corpus until the schema and
+> [overlay-consumers.md](overlay-consumers.md) describe the same surface.
 
 ```json
 { "schema_version": "2.0", "command": "git", "variant": "apple", "mode": "authoritative",
@@ -58,7 +65,7 @@ requires `"2.0"`:
 | Field | Meaning |
 |---|---|
 | `flags` / `positional_args` / `annotations` (flat) | The tool's own route. Equivalent to one `commands` entry with `path: []`, without the nesting — so a single-command tool never needs `commands[]`, at any version. Refused for a tool whose scan found subcommands, where one flat block would close all of them. |
-| `commands[]` | The open routes of a tool with subcommands. Optional, requires `schema_version: "2.0"`, and meaningless for a tool that has none. |
+| `commands[]` | The open routes of a tool with subcommands. Optional, requires `schema_version: "2.0"` (preview; see the status note above), and meaningless for a tool that has none. |
 | `path` | Subcommand path after the tool name; `[]` is the tool's own invocation; `["stash","push"]` may create a route the scanner missed. |
 | `mode` (file) | Default for every route: `authoritative` (replace that route's scanned grammar) or `merge` (add to it). |
 | `mode` (route) | Per-route override. |

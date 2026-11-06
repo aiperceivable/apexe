@@ -207,7 +207,9 @@ apexe agent codex --write
 - Codex has no shell file; `--write` runs `apexe env --reload --shell zsh`.
 
 The writer refuses invalid JSON and OpenCode refuses when `opencode.jsonc`
-already exists. Review the file after writing.
+already exists. For OpenCode and pi it also refuses when `apexe-sh` is not
+installed, because both start every command through that path. Review the file
+after writing.
 
 ## Experimental persistent session
 
@@ -296,6 +298,8 @@ Scanned routes also carry `"tier":"scanned"`.
   starts a shell, but no command is governed.
 - `apexe sh --check` fails when the entry point or manifest is missing and
   warns when no ACL is loaded.
+- `apexe env --disable` warns when OpenCode or pi still points at the removed
+  `apexe-sh`; re-enable the installation or remove the host setting.
 - Login shells may reset `PATH`; keep the managed startup block after
   `path_helper` or use the hook.
 - A host upgrade can change config discovery or shell behavior. Re-run the

@@ -299,7 +299,7 @@ this order:
 The consequence is easy to misread when reviewing `acl.yaml`: **an allow there is
 necessary and not sufficient.** A `cli.git.log` entry left behind by a wider
 earlier scan does not make `git log` runnable while the git overlay declares only
-`status`. The refusal says so — it names the closed route, asks for a
+`status`. The refusal says so — it names the closed route, asks for a preview
 `commands[]` entry plus a rescan, and reports `details.layer: coverage` in the
 `--error-format json` envelope, so it is distinguishable from an ACL denial
 (`general_invalid_input` rather than `general_internal_error`).
@@ -431,10 +431,12 @@ stderr before a plan can be produced.
 
 `approval_required` reports the preflight approval requirement; for flag-derived
 annotations it can be a static ceiling. The execution gate weighs the actual
-arguments and may stand down when none escalate. Local execution has no MCP
-client to prompt, so calls actually needing interactive approval are refused;
-dry-run can inspect them but cannot obtain approval. `--as` is an asserted
-simulation identity. Module mode supplies
+arguments and may stand down when none escalate. Native local execution prompts
+on the controlling terminal (`/dev/tty`) and accepts `y`/`yes`; a
+non-interactive stdin is refused with a remedy instead of blocking. Captured
+module execution has no interactive client, so a call that still needs approval
+is refused. Dry-run can inspect the requirement but cannot obtain approval.
+`--as` is an asserted simulation identity. Module mode supplies
 no stdin; reviewed native commands inherit stdin only when their overlay declares
 `streaming_stdin_safe`. PTY sessions remain unsupported.
 
@@ -662,6 +664,10 @@ activation scripts; use `--log-stderr` to mirror those diagnostics. A direct
 `--disable` call cannot restore the parent shell; source
 `~/.apexe/bin/apexe-deactivate.sh` (or the printed custom helper) to restore
 its saved environment, even after uninstall.
+`--disable` also warns when OpenCode or pi still points at the `apexe-sh` entry
+point it just removed; those hosts start every command through that path, so
+they will fail until `apexe env --enable` restores it or the host setting is
+removed.
 With `--shim-dir`, use the same directory for enabling, reloading and disabling.
 Enable, reload, disable and check are mutually exclusive operations.
 
@@ -1008,7 +1014,7 @@ argument to the real shell and does not accept apexe options.
 | Option | Default | Behavior |
 |---|---|---|
 | `--shell <PATH>` | `APEXE_REAL_SHELL`, then `SHELL` when it is not `apexe-sh`, then `/bin/bash` or `/bin/sh` | Real shell to execute |
-| `--check` | off | Print launcher, entry-point, manifest, ACL and coverage diagnostics, then exit |
+| `--check` | off | Print launcher, entry-point, manifest, ACL, environment-policy and coverage diagnostics, then exit |
 | `--format <text\|json>` | `text` | Diagnostic format; requires `--check` |
 | `--locked` | off | Restrict `PATH` to the shim directory plus `--allow-path` entries. Reduces accidental discovery of ungoverned binaries; not a sandbox |
 | `--allow-path <DIR>` | none | Extra directory kept on `PATH` when `--locked` is used; repeatable |
@@ -1035,9 +1041,12 @@ commands outside it. `APEXE_SHELL_LOCKED=1` and `APEXE_SHELL_ALLOW_PATH` provide
 the same setting to `apexe-sh`, which forwards all arguments to the shell.
 
 `--check` reports a failure when the entry point or manifest is missing. A
-missing ACL is a warning: shim-routed commands run without access control.
-Bindings that exist but are not shim-eligible are listed as coverage warnings
-with the reason each was excluded; they are not executed by the launcher.
+missing ACL is a warning: shim-routed commands run without access control. It
+also prints the local environment policy and the dynamic-loader denylist
+(`LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`), so the output shows what a governed
+child inherits and what is stripped. Bindings that exist but are not
+shim-eligible are listed as coverage warnings with the reason each was excluded;
+they are not executed by the launcher.
 Host configuration snippets are printed for OpenCode (`shell`), pi
 (`shellPath`), Codex and Claude Code.
 
@@ -1092,6 +1101,12 @@ does not execute commands itself.
 apexe hook claude
 ```
 
+`--persistent` is experimental. It keeps one detached session per host session
+id and project directory, so compound commands, pipelines and shell state
+survive between calls; it exits after 30 minutes idle
+(`APEXE_SESSION_IDLE_SECONDS`) and stops with `APEXE_SESSION_STOP=1 apexe sh -c
+stop`. See [Shell Integration](agent-shell.md#experimental-persistent-session).
+
 For Claude Code, configure it as a `PreToolUse` hook matching `Bash`. A simple
 external command is rewritten to `apexe sh -c '<command>'` with
 `permissionDecision: "allow"`; Claude Code still evaluates its own deny/ask
@@ -1139,17 +1154,20 @@ apexe agent opencode --mcp-only --write
 
 `--write` is atomic and merges into existing JSON. It refuses to overwrite a
 file that is not valid JSON, and OpenCode refuses when an `opencode.jsonc`
-already exists. Codex has no shell file to write: `agent codex --write` runs
+already exists. For OpenCode and pi it also refuses when the installed
+`apexe-sh` entry point is missing, because both start every command through
+that path. Codex has no shell file to write: `agent codex --write` runs
 `apexe env --reload --shell zsh` instead. Claude Code project scope writes
 `.claude/settings.json`; MCP-only also writes `.mcp.json` at the project root
 and adds `Bash` to `permissions.deny`. OpenCode MCP-only sets
 `tools.bash: false`. Codex MCP-only prints a `config.toml` snippet; pi has no
 stable MCP-only profile in the tested version.
 
-The command never writes host configuration. OpenCode and pi output a complete
-JSON object to merge into their settings file. Codex output describes the
-login-shell PATH activation that must exist in `.zprofile`/`.zshrc`; Claude Code
-output describes the `PreToolUse` hook or the launch-environment PATH setup.
+Without `--write`, the command never touches host configuration. OpenCode and pi
+output a complete JSON object to merge into their settings file. Codex output
+describes the login-shell PATH activation that must exist in
+`.zprofile`/`.zshrc`; Claude Code output describes the `PreToolUse` hook or the
+launch-environment PATH setup.
 `--check` reports a missing host configuration as a warning and fails only when
 the launcher itself is not ready. Config detection is best-effort: a file that
 exists but is not configured is reported without its contents.
@@ -1371,7 +1389,9 @@ An overlay is a curated, human-reviewed description of one tool variant, keyed b
 
 The default corpus needs no separate install step. Install another managed corpus
 with `apexe init --overlays <REPOSITORY>`, load one explicit overlay with `apexe scan <tool> --overlay <PATH>` (JSON or YAML), add a corpus directory through `overlay_dirs` or `APEXE_OVERLAY_DIRS`, or place a local correction under `~/.apexe/overlays/`. The format is defined by [`tool-overlay.schema.json`](https://github.com/aiperceivable/cli-permissions/blob/main/schemas/tool-overlay.schema.json), which ships with
-the corpus rather than with apexe. See the [cli-permissions example](../examples/cli_permissions/README.md) for an operator walkthrough, [`docs/overlay-consumers.md`](overlay-consumers.md) for reading overlays from
+the corpus rather than with apexe. That schema still pins `1.0`/`1.1`; the
+`commands[]`/`global_flags` 2.0 surface is a preview accepted by this build
+only. See the [cli-permissions example](../examples/cli_permissions/README.md) for an operator walkthrough, [`docs/overlay-consumers.md`](overlay-consumers.md) for reading overlays from
 outside apexe, and [`docs/overlays.md`](overlays.md) for the full authoring and verification procedure — writing a `verified` overlay from memory instead of a real installation is exactly what it warns against.
 
 ---

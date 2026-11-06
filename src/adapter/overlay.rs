@@ -2135,8 +2135,9 @@ mod tests {
             .as_array()
             .cloned()
             .unwrap_or_default();
-        // A corpus checkout that still pins the previous format has not been
-        // migrated; that is a corpus TODO, not drift in this build.
+        // The 2.0 route extension is a preview: the published schema still
+        // pins 1.0/1.1 until that format is agreed, so its absence is not
+        // drift in this build. See docs/overlays.md.
         let declared = |version: &str| versions.iter().any(|entry| entry == version);
         if !declared(OVERLAY_SCHEMA_VERSION) {
             return;

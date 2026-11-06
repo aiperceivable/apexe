@@ -107,8 +107,9 @@ Put apexe options before `--`, then the command and its arguments. Native calls
 preserve child streams and exit status. The shell owns pipelines and
 redirections; each external stage above enters apexe independently. stdin is
 inherited only with an explicit reviewed capability. Local execution loads the
-default ACL when present and uses caller `local`; approval-required local calls
-fail closed. See the [exec reference](user-manual.md#47-apexe-exec).
+default ACL when present and uses caller `local`. Native local calls that need
+approval prompt on the controlling terminal; a non-interactive process is
+refused with a remedy. See the [exec reference](user-manual.md#47-apexe-exec).
 
 For Claude Code, Codex, pi or OpenCode, start with
 [Shell Integration](agent-shell.md): OpenCode and pi can use `apexe-sh`, Codex
@@ -142,8 +143,10 @@ File/stdin input accepts one JSON object up to 1 MiB. `--error-format json`
 adds a versioned error envelope on stderr while retaining existing stdout and
 exit status behavior. Inline `--input` remains available.
 `--as` changes only a dry-run simulation, and cannot impersonate a caller during
-execution. Local calls requiring interactive approval must use an MCP client
-and a server configured for approval instead.
+execution. Captured module execution has no interactive approval path, so a
+call that still requires approval is refused; use native local execution or an
+MCP client connected to a server started with `--enable-approval` when a human
+decision is needed.
 
 ## 5. Optionally activate your shell
 

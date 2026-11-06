@@ -192,9 +192,12 @@ Two traps worth stating, both drawn from the shipped corpus:
   only as good as the author's closure check.
 - **No freshness guarantee.** `checked_on` is a date, not a promise; a tool that
   released since then may have changed.
-- **No subcommand tree** in the current version: an overlay describes one
-  command's own surface. A tool with subcommands needs one overlay per
-  invocable command.
+- **No subcommand tree** in the published format: an overlay describes one
+  command's own surface, so a tool with subcommands needs one overlay per
+  invocable command. apexe additionally accepts a preview `commands[]`
+  extension at `schema_version: "2.0"`; it is not in
+  `tool-overlay.schema.json`, so a second consumer should ignore it rather than
+  depend on it.
 
 ## 8. What the format does not settle
 

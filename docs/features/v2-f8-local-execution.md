@@ -180,8 +180,9 @@ Commands absent from registered bindings are refused by default. The native-only
 `CliModule` named `unmanaged.<executable-basename>` holds fixed argv in memory;
 serialized binding metadata cannot turn on this raw execution path. It is
 registered with the same executor construction, ACL and audit stack. `allow`
-still requires ACL permission. `approval` enters the existing handler and
-refuses when no interactive client can provide approval.
+still requires ACL permission. `approval` enters the existing handler; native
+local execution prompts on `/dev/tty`, and a non-interactive stdin is refused
+with a remedy.
 
 Unmanaged arguments have no typed path guard or grammar constraints. They are
 passed as literal argv, with null stdin, timeout and environment scrubbing.
@@ -356,10 +357,11 @@ ACL override or the current default ACL using the same rules as `apexe exec`.
 A present but unreadable or malformed policy fails closed; an absent policy
 produces a warning. Prefix/tag filters gate execution as well as installation.
 
-Approval remains enabled. This local surface has no MCP client capable of
-answering elicitation, so approval-required calls are refused. No arbitrary
-caller override is accepted. Route and argument-resolution refusals also create
-audit records without storing raw argument tokens.
+Approval remains enabled. Native local execution, PATH shims and `apexe sh`
+prompt on the controlling terminal (`/dev/tty`); captured module execution has
+no interactive client, so approval-required calls there are refused. No
+arbitrary caller override is accepted. Route and argument-resolution refusals
+also create audit records without storing raw argument tokens.
 
 ## 7. Execution I/O
 

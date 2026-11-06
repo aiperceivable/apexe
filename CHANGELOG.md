@@ -72,7 +72,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   0.32.1-0.32.3 are fixes only and its new cancellation scope APIs are additive,
   and apcore-mcp 0.23.x keeps the descriptor's runtime input schema, which is
   the side apexe's MCP builder already used.
-- An overlay now declares **the routes it opens**. A tool with no subcommands
+- **Preview: an overlay can declare the routes it opens.** A tool with no subcommands
   keeps its flat `flags` spelling unchanged — at any `schema_version`, including
   2.0, since the version names the format generation and not the spelling; a
   single-command tool never needs `commands[]`. A tool with subcommands declares
@@ -92,7 +92,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   files are the flat spelling, which still means exactly one route. Verified on
   `git`: a one-route `commands: [{path: ["status"], ...}]` overlay makes
   `apexe exec -- git status --short` reviewed and native while the other 141
-  routes stay closed and remain listed as inventory.
+  routes stay closed and remain listed as inventory. **This is a preview, not a
+  published format.** `tool-overlay.schema.json` still pins `1.0`/`1.1` and
+  rejects `commands[]` and `global_flags` as unknown properties, and
+  `docs/overlay-consumers.md` still specifies a single-command surface, so a
+  2.0 file validates nowhere outside this build. Use it locally through
+  `apexe scan --overlay` or `~/.apexe/overlays/`, and do not add a 2.0 file to
+  the corpus until the schema and the consumer document describe the same
+  surface.
 - Grammar trust is recorded per route instead of per tool. `apexe scan` stamps
   `metadata.grammar: reviewed|scanned` on every binding: `reviewed` only when
   every flag the route can emit came from a curated overlay, `scanned`

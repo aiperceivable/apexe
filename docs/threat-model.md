@@ -642,7 +642,8 @@ describes the shipped stdin and shim boundaries:
   applies. Timeout, environment scrubbing and audit remain, but schema-derived
   path checks cannot run. stdin is null. Arbitrary programs can start subprocesses
   or access files directly, so this option requires external containment for
-  agents. `approval` refuses local calls without a connected approval client.
+  agents. `approval` still requires ACL permission; native local execution
+  prompts on `/dev/tty`, and a non-interactive call is refused.
 - **stdin is an ungoverned input channel.** Every control in §4 acts on
   argv. An inherited stdin is not schema-validated, not path-checked and not
   recorded — and for any tool that reads a program from stdin (`python -`,

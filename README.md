@@ -333,18 +333,70 @@ are described in the [exec reference](docs/user-manual.md#47-apexe-exec).
 
 ### `apexe env`
 
-Install and activate eligible external-command shims:
+Install and activate eligible external-command shims, optionally widening them
+to scanned routes:
 
 ```bash
 apexe env --enable
+apexe env --enable --scanned readonly
+apexe env --enable --replace-unowned
 source ~/.apexe/bin/apexe-activate.sh
 apexe env --check
 source ~/.apexe/bin/apexe-deactivate.sh
 ```
 
-The namespaced helpers are installed with apexe; no source checkout is needed.
-See the [env reference](docs/user-manual.md#48-apexe-env) for shell support and
-activation boundaries.
+`--scanned off|readonly|all` admits bindings without a reviewed overlay; a
+scanned route replays the validated original argv. `--replace-unowned`
+regenerates the reserved `apexe-sh` and activation helpers after a lost
+ownership record. The namespaced helpers are installed with apexe; no source
+checkout is needed. See the [env reference](docs/user-manual.md#48-apexe-env)
+for shell support and activation boundaries.
+
+### `apexe sh`
+
+Run a real shell with the installed shim environment, or diagnose launcher
+readiness:
+
+```bash
+apexe sh --check
+apexe sh --check --format json
+apexe sh -c 'ls -la'
+apexe sh --locked --allow-path /usr/bin -c 'ls'
+```
+
+`apexe-sh` is the stable entry point installed by `apexe env --enable` for hosts
+that select a shell by path. `--locked` restricts command lookup to the shim
+directory plus explicit `--allow-path` entries; it is not a sandbox. See the
+[sh reference](docs/user-manual.md#411-apexe-sh).
+
+### `apexe hook`
+
+Translate a host pre-tool hook event into a governed execution request:
+
+```bash
+apexe hook claude
+apexe hook claude --persistent
+```
+
+Claude Code `PreToolUse` Bash calls are rewritten through `updatedInput`;
+stateful builtins, pipelines and compound commands rely on PATH shims.
+`--persistent` keeps cwd, variables, functions and aliases across calls and is
+experimental. See the [hook reference](docs/user-manual.md#412-apexe-hook).
+
+### `apexe agent`
+
+Print or write host configuration for OpenCode, pi, Codex or Claude Code:
+
+```bash
+apexe agent opencode
+apexe agent --check pi --format json
+apexe agent opencode --write
+apexe agent claude --mcp-only --write
+```
+
+`--write` merges into the host's JSON atomically and refuses invalid files;
+OpenCode and pi also refuse when `apexe-sh` is not installed. See the
+[agent reference](docs/user-manual.md#413-apexe-agent).
 
 ### `apexe serve`
 
