@@ -23,6 +23,74 @@ There is deliberately **no `apexe overlay verify` command**. See [What cannot be
 
 ---
 
+## The declared surface
+
+An overlay is a **permission**: it declares the routes a tool may execute through
+apexe, and nothing else. A tool with no subcommands has exactly one route — its
+own invocation — so it keeps the flat spelling it always had:
+
+```json
+{ "schema_version": "1.1", "command": "ls", "variant": "bsd",
+  "mode": "authoritative", "confidence": "high",
+  "flags": [ { "short": "-l", "type": "boolean", "description": "List in long format." } ],
+  "positional_args": [ { "name": "file", "type": "path", "variadic": true } ],
+  "annotations": { "readonly": true } }
+```
+
+`schema_version` names the file format generation, not the spelling: a flat file
+is valid at `"2.0"` too, and there is no reason to migrate one. If you do bump
+the version, leave the flags where they are.
+
+Only a tool **with subcommands** needs to say which of them are open, and that
+requires `"2.0"`:
+
+```json
+{ "schema_version": "2.0", "command": "git", "variant": "apple", "mode": "authoritative",
+  "global_flags": [ { "short": "-C", "type": "path", "value_name": "path" } ],
+  "commands": [
+    { "path": [], "flags": [ { "long": "--version", "type": "boolean" } ] },
+    { "path": ["status"], "flags": [ { "short": "-s", "long": "--short", "type": "boolean" } ],
+      "annotations": { "readonly": true } },
+    { "path": ["stash", "push"], "mode": "merge", "flags": [ { "long": "--include-untracked" } ] }
+  ] }
+```
+
+| Field | Meaning |
+|---|---|
+| `flags` / `positional_args` / `annotations` (flat) | The tool's own route. Equivalent to one `commands` entry with `path: []`, without the nesting — so a single-command tool never needs `commands[]`, at any version. Refused for a tool whose scan found subcommands, where one flat block would close all of them. |
+| `commands[]` | The open routes of a tool with subcommands. Optional, requires `schema_version: "2.0"`, and meaningless for a tool that has none. |
+| `path` | Subcommand path after the tool name; `[]` is the tool's own invocation; `["stash","push"]` may create a route the scanner missed. |
+| `mode` (file) | Default for every route: `authoritative` (replace that route's scanned grammar) or `merge` (add to it). |
+| `mode` (route) | Per-route override. |
+| `global_flags` | Tool-level options inherited by every route and rendered before the subcommand (`git -C <dir> status`). Not the same list as `path: []`. |
+| `annotations` (route) | Behavioural assertions for that route. Inside `commands[]` there is no file-level form: it leaked onto every subcommand before. |
+
+Consequences worth stating plainly:
+
+- **Declaring is permitting, not describing.** A route with eight declared flags
+  refuses the ninth. That is the point: the refusal is the permission boundary,
+  and extending it means editing the file. `git log` has 111 options, so a real
+  overlay declares the ones the operator means to allow.
+- **Undeclared routes are evidence, not stubs.** They are dropped from the
+  registry and listed in `metadata.scan_inventory` and by
+  `apexe list --diagnostics`. They cannot be executed, advertised to an agent,
+  or restored by `--scanned`; `--scanned` lowers the grammar bar for *declared*
+  routes and never widens the set.
+- **Partial coverage is a legitimate configuration.** Opening `git status` and
+  leaving everything else closed is the ordinary way to use a governance layer;
+  `apexe env` prints the admitted route count per command, and calls to
+  undeclared routes are refused with the reason.
+- **The ACL is a second gate, not the gate.** A `cli.<tool>.<route>` grant in
+  `acl.yaml` is necessary and not sufficient: `apexe exec` and the shims resolve
+  the invocation against this declared surface *before* policy is evaluated, so
+  an allow for a route left closed here is refused as a coverage gap, not as a
+  policy denial (`details.layer: coverage` in the JSON envelope, and
+  `general_invalid_input` rather than `general_internal_error`). Two reports
+  keep the pair honest: `apexe list --diagnostics` shows the routes each overlay
+  left closed and any ACL target that matches no loaded module, and
+  [the user manual](user-manual.md#coverage-and-policy-are-two-gates) documents
+  the order in which the two gates are evaluated.
+
 ## Initializing from a corpus and packaging it
 
 ```bash

@@ -265,6 +265,17 @@ mod tests {
     }
 
     #[test]
+    fn test_pipeline_routes_click_help_to_click_parser() {
+        // Regression: GNU's can_parse short-circuited its Commands:/Options
+        // exclusions with `||` and claimed Click help at priority 100, so
+        // Click's `--x / --no-x` toggles were never extracted.
+        let pipeline = ParserPipeline::new(None);
+        let click = "Usage: flask run [OPTIONS]\n\nOptions:\n  --debug / --no-debug  Enable debug\n  --host TEXT           Host\n\nCommands:\n  run  Run the app\n";
+        let result = pipeline.parse(click, "flask");
+        assert_eq!(result.help_format, crate::models::HelpFormat::Click);
+    }
+
+    #[test]
     fn test_pipeline_extracts_git_style_grouped_subcommands() {
         // git introduces its command list in prose and splits it into blank
         // line separated groups; both previously defeated subcommand extraction.

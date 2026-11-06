@@ -1,16 +1,36 @@
 ---
 name: apexe
-description: Route external CLI commands through native apexe exec in an apexe-configured environment. Resolve project policy before task commands, preserve the selected ACL, inspect each preflight in a separate response, and stop all tools on refusal, including task tracking. Compatible with Claude Code, Codex, pi and OpenCode; env is optional.
+description: Fallback routing and governance guidance for apexe exec when the host has no apexe shell, PATH shim, or PreToolUse hook integration. Do not wrap commands when host-level integration already routes them. Resolve project policy, preserve the selected ACL, inspect preflights separately, and stop apexe exec routing on refusal.
 license: Apache-2.0
 ---
 
 # apexe
 
-Route external CLI execution through `apexe exec -- <command> <arguments>`
-using your host's existing terminal tool. Apply this route to ordinary tasks
-in an apexe-configured environment even when the user does not mention apexe.
-No MCP server or shell activation is needed. Requires apexe 0.9 or later,
-installed bindings and matching reviewed grammar for native mode.
+This Skill is the fallback for environments without host-level apexe
+integration. It routes external CLI execution through
+`apexe exec -- <command> <arguments>` using the host's existing terminal tool.
+
+Use it only when the host shell is not `apexe-sh`, PATH shims are not active,
+and no `PreToolUse` hook routes Bash calls through apexe. When host integration
+is active, run commands normally; wrapping them in `apexe exec` causes double
+governance and can bypass a persistent session. The fallback needs no MCP
+server or shell activation. Requires apexe 0.9 or later, installed bindings and
+matching reviewed grammar for native mode.
+
+## Precedence
+
+Before routing anything, determine the host integration:
+
+1. Host shell is `apexe-sh`, PATH shims are active, or a `PreToolUse` hook
+   routes Bash calls through apexe: run commands normally. Do **not** wrap them
+   in `apexe exec`.
+2. No host integration, or the user explicitly asks for `apexe exec`: use the
+   fallback route described below.
+3. If both are active, host integration wins. Wrapping a host-routed command
+   causes double governance and can bypass a persistent session.
+
+Host integration is configured by the operator through `apexe agent` and
+`apexe env`; this Skill does not configure it.
 
 For every preflight, submit exactly one tool request in that assistant response:
 the preflight itself. Put task tracking or other housekeeping in an earlier,
@@ -23,10 +43,11 @@ host serialization does not give the model a chance to inspect the first result.
 Do not use a batch tool, parallel dispatch or a loop that queues later stages.
 On refusal, stop with no remaining stages or other tools requested or queued.
 
-## Stop all tools after refusal
+## Stop apexe exec routing after refusal
 
-On the first governance or required host-permission refusal, stop ALL tool use
-for that task and return a text report only. This includes `todowrite`,
+On the first governance refusal from an `apexe exec` call, or a required
+host-permission refusal that prevents loading the selected project policy or
+ACL, stop ALL tool use for that task and return a text report only. This includes `todowrite`,
 `update_plan`, task-status changes, file readers/editors, discovery commands,
 cleanup and bookkeeping tools, even if their purpose is to mark work refused
 or cancel unfinished steps. Describe completed and unfinished work in the
@@ -86,6 +107,10 @@ error and any operation that already ran. Repeating it with the correct ACL
 does not repair the earlier execution or make the task compliant.
 
 ## Select the execution route
+
+Apply the precedence section first. If the host already routes commands through
+`apexe-sh`, PATH shims, or a `PreToolUse` hook, run the command normally and do
+not wrap it. The rest of this section applies only to the fallback route.
 
 An environment is in scope when the operator or project instructions declare
 apexe-governed CLI execution and identify the intended configuration, or the
@@ -217,8 +242,9 @@ argument and path checks; report the current stage's decision briefly. Only
 after admission may a new assistant response request the next stage. Separate
 terminal calls in the same response, or inside a host batch, still violate this
 rule. Do not request a later stage before the previous result is available.
-On the first governance refusal, stop all tools and return only the text report
-as specified above; do not preflight or execute remaining stages.
+On the first governance refusal from an `apexe exec` call, stop all tools and
+return only the text report as specified above; do not preflight or execute
+remaining stages.
 
 Preflight reports `valid`, `mode`, `module_id`, `acl_decision`,
 `approval_required`, `checks`, resolved `binary_path`, `argv` and typed path
@@ -314,12 +340,14 @@ A grammar-only gap may use the admitted JSON alternative above; it is not
 permission to bypass policy, schema or path refusal. `--as` is a dry-run
 assertion, not authenticated impersonation or execution approval.
 
-## Optional shell integration
+## Shell integration precedence
 
-Use `env` for an authorized existing-script or shell workflow that benefits
-from governed native command names. Explicit exec remains the default and
-works even without shims. Enabling writes shims and managed shell startup
-blocks; it cannot change the parent shell.
+When the host shell or hook already routes commands, do not use explicit exec;
+let the host integration govern the call. Use `env` for an authorized existing
+script or shell workflow that benefits from governed native command names.
+Explicit exec remains the fallback when no host integration is active.
+Enabling writes shims and managed shell startup blocks; it cannot change the
+parent shell.
 
 ```bash
 # One-time setup when shell integration is requested.

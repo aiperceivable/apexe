@@ -75,8 +75,9 @@ pub fn extract_version_from_line(line: &str) -> Option<String> {
 /// Extract the binary path from a scanned module's `exec://{binary_path}
 /// {command_parts...}` target. Mirrors the parsing `CliModule::from_scanned`
 /// does, without constructing a whole `CliModule` just to read one field.
-pub fn extract_binary_path(target: &str) -> Option<&str> {
-    target.strip_prefix("exec://")?.split_whitespace().next()
+pub fn extract_binary_path(target: &str) -> Option<String> {
+    let stripped = target.strip_prefix("exec://")?;
+    shell_words::split(stripped).ok()?.into_iter().next()
 }
 
 /// Whether `binary_path` is reachable on this machine right now.
@@ -107,7 +108,7 @@ pub fn binary_is_reachable(binary_path: &str) -> bool {
 /// [`CliModule::from_scanned`](crate::module::CliModule::from_scanned) would
 /// refuse it too.
 pub fn target_is_available(target: &str) -> bool {
-    extract_binary_path(target).is_some_and(binary_is_reachable)
+    extract_binary_path(target).is_some_and(|binary| binary_is_reachable(&binary))
 }
 
 #[cfg(test)]
@@ -195,9 +196,17 @@ mod tests {
     fn test_extract_binary_path_strips_scheme_and_command_parts() {
         assert_eq!(
             extract_binary_path("exec:///usr/bin/git cat-file -p"),
-            Some("/usr/bin/git")
+            Some("/usr/bin/git".to_string())
         );
-        assert_eq!(extract_binary_path("exec:///bin/ls"), Some("/bin/ls"));
+        assert_eq!(
+            extract_binary_path("exec:///bin/ls"),
+            Some("/bin/ls".to_string())
+        );
+        // Quoted paths survive; the old split_whitespace reader truncated them.
+        assert_eq!(
+            extract_binary_path("exec://'/Applications/My App/bin/tool' run"),
+            Some("/Applications/My App/bin/tool".to_string())
+        );
     }
 
     #[test]

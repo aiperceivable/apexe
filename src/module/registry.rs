@@ -105,6 +105,12 @@ pub struct ExecutorOptions<'a> {
     /// choose between logging credentials and logging nothing.
     pub log_arguments: bool,
     pub enable_approval: bool,
+    /// Prompt on the controlling terminal instead of an MCP client.
+    ///
+    /// Set by local CLI execution and only honoured for `Passthrough` I/O;
+    /// MCP/A2A and captured module execution keep their existing client-based
+    /// or store-based approval path.
+    pub local_approval: bool,
     /// Short-circuit calls to a (module, caller) pair after repeated
     /// failures, instead of letting every caller keep hammering a hanging
     /// or broken CLI tool. Only failures that say the wrapped binary is
@@ -171,9 +177,10 @@ pub(crate) fn build_executor_from_modules_with_io(
     let available = filter_available(admitted);
 
     let registry = Arc::new(Registry::new());
+    let local_io = matches!(io, super::ExecutionIo::Passthrough { .. });
     register_modules_with_io(&available, &registry, opts.timeout_ms, audit.clone(), io);
     tracing::info!(count = registry.count(), "Registered CLI modules");
-    finish_executor(opts, registry, audit)
+    finish_executor(opts, registry, audit, local_io)
 }
 
 /// Register an ephemeral unmanaged invocation with the same governance stack.
@@ -191,7 +198,40 @@ pub(crate) fn build_executor_for_unmanaged(
     let mut descriptor = build_descriptor(scanned);
     descriptor.output_schema = apcore::Module::output_schema(&module);
     registry.register(&scanned.module_id, Box::new(module), descriptor)?;
-    finish_executor(opts, registry, audit)
+    finish_executor(opts, registry, audit, true)
+}
+
+/// Build a single-module executor for a scanned route.
+///
+/// The caller's original argv is bound through `with_fixed_argv`, so schema
+/// parsing validates and classifies the call but never reorders or rewrites
+/// the command line. This is the execution guarantee behind the `scanned`
+/// tier.
+#[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+pub(crate) fn build_executor_for_scanned(
+    opts: &ExecutorOptions<'_>,
+    scanned: &ScannedModule,
+    argv: Vec<String>,
+    io: crate::module::ExecutionIo,
+) -> Result<Arc<Executor>, ModuleError> {
+    let audit = opts
+        .audit_path
+        .map(|path| Arc::new(crate::governance::AuditManager::new(path)));
+    let module = CliModule::from_scanned(scanned, opts.timeout_ms)?
+        .with_fixed_argv(argv)?
+        .with_execution_io(io)
+        .with_audit(audit.clone())
+        .with_audit_tier("scanned");
+    let mut descriptor = build_descriptor(scanned);
+    descriptor.output_schema = apcore::Module::output_schema(&module);
+    let registry = Arc::new(Registry::new());
+    registry.register(&scanned.module_id, Box::new(module), descriptor)?;
+    finish_executor(
+        opts,
+        registry,
+        audit,
+        matches!(io, crate::module::ExecutionIo::Passthrough { .. }),
+    )
 }
 
 /// Import HTTP operations before installing ACL, so both sources are governed.
@@ -214,7 +254,27 @@ pub async fn build_executor_with_openapi(
     let registry = Arc::new(Registry::new());
     register_modules(&available, &registry, opts.timeout_ms, audit.clone());
     crate::openapi::register_operations(&registry, opts, openapi, audit.clone()).await?;
-    finish_executor(opts, registry, audit)
+    finish_executor(opts, registry, audit, false)
+}
+
+/// Build the apcore config used by the shared executor.
+///
+/// `ExecutorOptions::timeout_ms` was previously applied only to `CliModule`,
+/// while apcore's pipeline used `Config::default()` (30 s per call / 60 s per
+/// chain). The outer timer is armed first, so any configured timeout above
+/// 30 s was silently truncated to 30 s. Give the outer deadline a one-second
+/// grace over the module timer: the module then times out first, marks the
+/// error retryable, and records its outcome.
+fn config_for_timeouts(timeout_ms: u64) -> Config {
+    let mut config = Config::default();
+    if timeout_ms > 0 {
+        config.executor.default_timeout = timeout_ms.saturating_add(1_000);
+        config.executor.global_timeout = config
+            .executor
+            .global_timeout
+            .max(timeout_ms.saturating_mul(2));
+    }
+    config
 }
 
 #[allow(clippy::result_large_err)] // Match the crate-wide ModuleError boundary.
@@ -222,6 +282,7 @@ fn finish_executor(
     opts: &ExecutorOptions<'_>,
     registry: Arc<Registry>,
     audit: Option<Arc<crate::governance::AuditManager>>,
+    local_io: bool,
 ) -> Result<Arc<Executor>, ModuleError> {
     // Snapshot the ids that survived registration (a module whose `CliModule`
     // failed to build is logged and skipped), taken before the registry moves
@@ -229,10 +290,10 @@ fn finish_executor(
     // `discoverable: false` is still callable by id and so still needs an ACL.
     let registered_ids: Vec<String> = registry.module_ids_full(true);
 
-    let mut executor = Executor::new(registry, Config::default());
+    let mut executor = Executor::new(registry, config_for_timeouts(opts.timeout_ms));
     install_middleware(&executor, opts, audit.clone());
     install_acl(&mut executor, opts, &registered_ids, audit.as_ref())?;
-    install_approval_handler(&mut executor, opts, audit.clone());
+    install_approval_handler(&mut executor, opts, audit.clone(), local_io);
 
     Ok(Arc::new(executor))
 }
@@ -376,42 +437,70 @@ fn install_acl(
 }
 
 /// Attach the approval gate `--enable-approval` asks for, or do nothing.
+fn require_human_with_acl(
+    gate: crate::module::approval::ApprovalGate,
+    opts: &ExecutorOptions<'_>,
+) -> crate::module::approval::ApprovalGate {
+    if opts.acl_path.is_some() {
+        gate.always_prompt()
+    } else {
+        gate
+    }
+}
+
 fn install_approval_handler(
     executor: &mut Executor,
     opts: &ExecutorOptions<'_>,
     audit: Option<Arc<crate::governance::AuditManager>>,
+    local_io: bool,
 ) {
     if !opts.enable_approval {
         return;
     }
-    match &opts.approval_store {
-        Some(store) => {
-            // Wrapped, not bare: an out-of-band decline reaches no middleware
-            // either (see `ApprovalGate::wrapping`), so a store-backed
-            // deployment would otherwise have no refusal record at all.
-            executor.set_approval_handler(Box::new(ApprovalGate::wrapping(
+    if let Some(store) = &opts.approval_store {
+        // Wrapped, not bare: an out-of-band decline reaches no middleware
+        // either (see `ApprovalGate::wrapping`), so a store-backed deployment
+        // would otherwise have no refusal record at all.
+        executor.set_approval_handler(Box::new(require_human_with_acl(
+            ApprovalGate::wrapping(
                 Box::new(StorageBackedApprovalHandler::new(store.clone())),
                 audit.clone(),
-            )));
-            tracing::info!(
-                store_backed = true,
-                "Approval handler enabled for destructive commands"
-            );
-        }
-        None => {
-            // See `ApprovalGate`: the connected client is prompted when it
-            // supports MCP elicitation, and refused with a reason naming the
-            // remedy when it does not.
-            executor.set_approval_handler(Box::new(ApprovalGate::with_audit(audit.clone())));
-            tracing::info!(
-                "Approval gate enabled: a call to a module marked `requires_approval` prompts \
-                 the connected MCP client for a human decision. A client that declared no \
-                 elicitation support cannot be prompted, so its calls are refused — use \
-                 `--acl` for a per-caller boundary, or embed apexe as a library with an \
-                 ApprovalStore for out-of-band approvals."
-            );
-        }
+            ),
+            opts,
+        )));
+        tracing::info!(
+            store_backed = true,
+            "Approval handler enabled for destructive commands"
+        );
+        return;
     }
+    if local_io && opts.local_approval {
+        executor.set_approval_handler(Box::new(require_human_with_acl(
+            ApprovalGate::wrapping(
+                Box::new(crate::module::approval::LocalApprovalHandler::new()),
+                audit.clone(),
+            ),
+            opts,
+        )));
+        tracing::info!(
+            "Local approval handler enabled: a call to a module marked `requires_approval` \
+             prompts on the controlling terminal. A non-interactive process is refused with \
+             a remedy instead of blocking."
+        );
+        return;
+    }
+    // See `ApprovalGate`: the connected client is prompted when it supports MCP
+    // elicitation, and refused with a reason naming the remedy when it does not.
+    executor.set_approval_handler(Box::new(require_human_with_acl(
+        ApprovalGate::with_audit(audit.clone()),
+        opts,
+    )));
+    tracing::info!(
+        "Approval gate enabled: a call to a module marked `requires_approval` prompts the \
+         connected MCP client for a human decision. A client that declared no elicitation \
+         support cannot be prompted, so its calls are refused — use `--acl` for a per-caller \
+         boundary, or embed apexe as a library with an ApprovalStore for out-of-band approvals."
+    );
 }
 
 /// Install the structured-logging middleware appropriate to `log_arguments`.
@@ -633,6 +722,7 @@ mod tests {
             enable_logging: true,
             log_arguments: true,
             enable_approval: false,
+            local_approval: false,
             enable_circuit_breaker: true,
             enable_retry: true,
             approval_store: None,
@@ -1201,5 +1291,15 @@ mod tests {
             result.is_err(),
             "requires_approval module should not execute before approval"
         );
+    }
+
+    #[test]
+    fn test_config_for_timeouts_keeps_the_outer_deadline_behind_the_module_timer() {
+        // Regression: Config::default() capped every configured timeout at
+        // 30 s and made the outer apcore timer fire before CliModule's own.
+        let config = config_for_timeouts(45_000);
+        assert_eq!(config.executor.default_timeout, 46_000);
+        assert!(config.executor.global_timeout >= 90_000);
+        assert_eq!(config_for_timeouts(0).executor.default_timeout, 30_000);
     }
 }

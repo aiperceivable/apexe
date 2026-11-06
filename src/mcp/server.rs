@@ -324,6 +324,7 @@ impl McpServerBuilder {
             enable_logging: self.enable_logging,
             log_arguments: self.log_arguments,
             enable_approval: self.enable_approval,
+            local_approval: false,
             enable_circuit_breaker: self.enable_circuit_breaker,
             enable_retry: self.enable_retry,
             approval_store: self.approval_store.clone(),

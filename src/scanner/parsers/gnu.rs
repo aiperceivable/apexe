@@ -8,15 +8,17 @@ use crate::scanner::protocol::{CliParser, ParsedHelp};
 // Precompiled once (parsers run per subcommand on the recursive scan hot path).
 // INVARIANT: every pattern is a compile-time constant valid regex.
 static HAS_GNU_OPTS_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^\s{1,}-\w,?\s+--\w").expect("valid static regex"));
+    LazyLock::new(|| Regex::new(r"(?m)^\s*-\w,?\s+--\w").expect("valid static regex"));
+static USAGE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?mi)^\s*usage:?\s").expect("valid static regex"));
 static FLAG_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?m)^\s{1,}(-([a-zA-Z0-9]),?\s+)?(--([a-z][\w-]*))((?:[=\s])([A-Z_]+|<[^>]+>))?\s{2,}(.+)",
+        r"(?m)^\s*(-([a-zA-Z0-9]),?\s+)?(--([a-z][\w-]*))((?:[=\s])([A-Z_]+|<[^>]+>))?\s{2,}(.+)",
     )
     .expect("valid static regex")
 });
 static SHORT_ONLY_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)^\s{1,}-([a-zA-Z0-9])(?:,?\s+--[\w-]+)?(?:\s([A-Z_]+|<[^>]+>))?\s{2,}(.+)")
+    Regex::new(r"(?m)^\s*-([a-zA-Z0-9])(?:,?\s+--[\w-]+)?(?:\s([A-Z_]+|<[^>]+>))?\s{2,}(.+)")
         .expect("valid static regex")
 });
 static DEFAULT_RE: LazyLock<Regex> =
@@ -59,11 +61,21 @@ impl CliParser for GnuHelpParser {
         if help_text.trim().is_empty() {
             return false;
         }
-        let has_usage = help_text.contains("Usage:") || help_text.contains("usage:");
+        let has_usage = USAGE_RE.is_match(help_text);
         let has_gnu_opts = HAS_GNU_OPTS_RE.is_match(help_text);
         let not_cobra = !super::cobra::CobraHelpParser.can_parse(help_text, tool_name);
         let not_clap = !help_text.contains("SUBCOMMANDS:");
-        has_usage && (has_gnu_opts || !help_text.contains("Commands:")) && not_cobra && not_clap
+        // Click/argparse help also carries `[OPTIONS]` + `Options:`. Claiming it
+        // here prevented ClickHelpParser (priority 110) from ever seeing the
+        // text, losing Click's `--x / --no-x` toggles.
+        let not_click = !(help_text.contains("[OPTIONS]")
+            && help_text.contains("Options:")
+            && help_text.contains("Commands:"));
+        has_usage
+            && (has_gnu_opts || !help_text.contains("Commands:"))
+            && not_cobra
+            && not_clap
+            && not_click
     }
 
     fn parse(&self, help_text: &str, _tool_name: &str) -> anyhow::Result<ParsedHelp> {
@@ -190,18 +202,29 @@ fn build_flag(
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string());
 
-    let enum_values = ENUM_RE
-        .captures(&description)
-        .and_then(|c| c.get(1))
-        .map(|m| {
-            m.as_str()
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .collect::<Vec<_>>()
-        });
+    let enum_values = value_name.as_ref().and_then(|_| {
+        let captured = ENUM_RE.captures(&description)?;
+        let values: Vec<String> = captured[1]
+            .split(',')
+            .map(|value| value.trim().to_string())
+            .collect();
+        // Only a comma-separated choice list is an enum. Prose braces like
+        // perl's `while (<>) { ... }` produced an enum of `...`.
+        let looks_like_choices = values.len() >= 2
+            && values
+                .iter()
+                .all(|value| !value.is_empty() && !value.chars().any(char::is_whitespace));
+        looks_like_choices.then_some(values)
+    });
 
-    let required = description.to_lowercase().contains("required");
-    let repeatable = description.contains("can be repeated") || description.contains("...");
+    let lowered_description = description.to_lowercase();
+    let required = lowered_description.contains("required")
+        && !lowered_description.contains("not required")
+        && !lowered_description.contains("optional");
+    let repeatable = value_name
+        .as_deref()
+        .is_some_and(|value| value.contains("..."))
+        || description.contains("can be repeated");
 
     let actual_type = if enum_values.is_some() {
         ValueType::Enum
@@ -346,6 +369,36 @@ mod tests {
     use super::*;
 
     // T13: GnuHelpParser can_parse
+    #[test]
+    fn test_gnu_accepts_a_bare_usage_header_and_column_zero_flags() {
+        let help = "Usage\n  cmake [options] <path-to-source>\n\n  -S <path>  Source directory\n  -B <path>  Build directory\n";
+        let parser = GnuHelpParser;
+        assert!(parser.can_parse(help, "cmake"));
+        let parsed = parser.parse(help, "cmake").unwrap();
+        assert!(parsed
+            .flags
+            .iter()
+            .any(|flag| flag.short_name.as_deref() == Some("-S")));
+    }
+
+    #[test]
+    fn test_gnu_prose_braces_and_ellipsis_do_not_retype_flags() {
+        let help = "Usage: perl [OPTIONS]\n\n  -n   assume \"while (<>) { ... }\" loop\n\n  --random-wait  wait from 0.5*WAIT...1.5*WAIT secs\n";
+        let flags = extract_flags(help);
+        let short = flags
+            .iter()
+            .find(|flag| flag.short_name.as_deref() == Some("-n"))
+            .expect("-n was parsed");
+        assert_eq!(short.value_type, ValueType::Boolean);
+        assert!(!short.repeatable);
+        let long = flags
+            .iter()
+            .find(|flag| flag.long_name.as_deref() == Some("--random-wait"))
+            .expect("--random-wait was parsed");
+        assert_eq!(long.value_type, ValueType::Boolean);
+        assert!(!long.repeatable);
+    }
+
     #[test]
     fn test_can_parse_gnu_help() {
         let parser = GnuHelpParser;

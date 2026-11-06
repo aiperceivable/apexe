@@ -14,7 +14,8 @@ boundaries you must review.
 
 | Goal | Guide |
 | --- | --- |
-| Connect Claude Code, Codex, pi or OpenCode in four steps | [Agent quick integration](agent-skill.md#quick-integration) |
+| Connect Claude Code, Codex, pi or OpenCode in four steps (Skill fallback) | [Agent quick integration](agent-skill.md#quick-integration) |
+| Use `apexe sh` as the host shell, PATH shims or a Claude Code hook | [Shell Integration](agent-shell.md) |
 | Resolve Skill discovery, routing, native coverage or ACL problems | [Agent troubleshooting](agent-skill.md#troubleshooting) |
 | Initialize CLI coverage, review its ACL, and choose local execution or MCP/A2A | [Quick Start](quickstart.md) |
 | Execute CLI commands with module JSON, reviewed native argv or PATH shims | [Local execution example](../examples/local_execution/README.md) |

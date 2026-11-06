@@ -141,7 +141,7 @@ pub(crate) fn binding_digest(module: &ScannedModule) -> anyhow::Result<String> {
 pub(crate) fn binary_digest(module: &ScannedModule) -> anyhow::Result<String> {
     let binary = crate::scanner::resolver::extract_binary_path(&module.target)
         .ok_or_else(|| anyhow::anyhow!("Not a CLI target"))?;
-    file_digest(std::path::Path::new(binary))
+    file_digest(std::path::Path::new(&binary))
 }
 
 pub(crate) fn file_digest(path: &std::path::Path) -> anyhow::Result<String> {

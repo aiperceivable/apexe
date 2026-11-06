@@ -19,9 +19,24 @@ impl ScanCache {
         variant: ToolVariant,
         tool_version: Option<&str>,
     ) -> Option<ScannedCLITool> {
+        self.get_with_depth(tool_name, variant, tool_version, 0)
+    }
+
+    /// Retrieve a cached result produced at a specific discovery depth.
+    ///
+    /// Depth changes the subcommand tree, so a result scanned with
+    /// `--depth 1` must not answer a `--depth 3` request. Keeping the default
+    /// `get` at depth 0 preserves the existing test helpers' behaviour.
+    pub fn get_with_depth(
+        &self,
+        tool_name: &str,
+        variant: ToolVariant,
+        tool_version: Option<&str>,
+        depth: u32,
+    ) -> Option<ScannedCLITool> {
         let path = self
             .cache_dir
-            .join(cache_key(tool_name, variant, tool_version));
+            .join(cache_key(tool_name, variant, tool_version, depth));
 
         let contents = std::fs::read_to_string(&path).ok()?;
         serde_json::from_str(&contents).ok()
@@ -29,10 +44,18 @@ impl ScanCache {
 
     /// Store scan result in cache.
     pub fn put(&self, tool: &ScannedCLITool) -> anyhow::Result<()> {
+        self.put_with_depth(tool, 0)
+    }
+
+    /// Store a scan result together with the depth that produced it.
+    pub fn put_with_depth(&self, tool: &ScannedCLITool, depth: u32) -> anyhow::Result<()> {
         std::fs::create_dir_all(&self.cache_dir)?;
-        let path =
-            self.cache_dir
-                .join(cache_key(&tool.name, tool.variant, tool.version.as_deref()));
+        let path = self.cache_dir.join(cache_key(
+            &tool.name,
+            tool.variant,
+            tool.version.as_deref(),
+            depth,
+        ));
         let json = serde_json::to_string_pretty(tool)?;
         std::fs::write(&path, json)?;
         Ok(())
@@ -115,13 +138,19 @@ const SCAN_FORMAT_VERSION: u32 = 4;
 /// worse than a cache miss. [`SCAN_FORMAT_VERSION`] is part of it for the
 /// mirror-image reason: the same binary parsed by a different scanner is a
 /// different result.
-fn cache_key(tool_name: &str, variant: ToolVariant, tool_version: Option<&str>) -> String {
+fn cache_key(
+    tool_name: &str,
+    variant: ToolVariant,
+    tool_version: Option<&str>,
+    depth: u32,
+) -> String {
     format!(
-        "{}@{}_{}_v{}.scan.json",
+        "{}@{}_{}_v{}_d{}.scan.json",
         tool_name,
         variant.as_str(),
         tool_version.unwrap_or("unknown"),
-        SCAN_FORMAT_VERSION
+        SCAN_FORMAT_VERSION,
+        depth
     )
 }
 
@@ -326,14 +355,31 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_key_includes_command_variant_version_and_scan_format() {
+    fn test_cache_key_includes_command_variant_version_scan_format_and_depth() {
         assert_eq!(
-            cache_key("ls", ToolVariant::Bsd, Some("9.4")),
-            format!("ls@bsd_9.4_v{SCAN_FORMAT_VERSION}.scan.json")
+            cache_key("ls", ToolVariant::Bsd, Some("9.4"), 1),
+            format!("ls@bsd_9.4_v{SCAN_FORMAT_VERSION}_d1.scan.json")
         );
         assert_eq!(
-            cache_key("ls", ToolVariant::Unknown, None),
-            format!("ls@unknown_unknown_v{SCAN_FORMAT_VERSION}.scan.json")
+            cache_key("ls", ToolVariant::Unknown, None, 3),
+            format!("ls@unknown_unknown_v{SCAN_FORMAT_VERSION}_d3.scan.json")
+        );
+    }
+
+    #[test]
+    fn test_a_shallow_scan_does_not_answer_a_deeper_request() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = ScanCache::new(tmp.path().to_path_buf());
+        let tool = make_tool("docker", Some("27.0"));
+        cache.put_with_depth(&tool, 1).unwrap();
+        assert!(cache
+            .get_with_depth("docker", ToolVariant::Unknown, Some("27.0"), 1)
+            .is_some());
+        assert!(
+            cache
+                .get_with_depth("docker", ToolVariant::Unknown, Some("27.0"), 3)
+                .is_none(),
+            "a depth-1 tree must not satisfy a depth-3 request"
         );
     }
 

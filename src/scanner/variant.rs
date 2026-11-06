@@ -91,6 +91,15 @@ const GNU_BOILERPLATE_WORDS: &[&str] = &[
 static APPLE_TARGET_TRIPLE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[a-z0-9_.]+-apple-[a-z0-9_.]+").expect("valid static regex"));
 
+/// A `<arch>-<vendor>-<bsd-os>` build triple. Like the Apple triple, it names
+/// where the binary was built, not which userland it implements: GNU bash on
+/// FreeBSD prints `(amd64-portbld-freebsd13.2)` and must stay GNU.
+// INVARIANT: a compile-time constant, valid regex.
+static BSD_TARGET_TRIPLE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[a-z0-9_.]+-[a-z0-9_.-]*-(?:freebsd|openbsd|netbsd|dragonfly)[a-z0-9_.]*")
+        .expect("valid static regex")
+});
+
 /// The host platform this build is running on.
 ///
 /// Reports [`std::env::consts::OS`] verbatim (normalised to lower case by
@@ -208,11 +217,13 @@ fn tokens(output: &str) -> impl Iterator<Item = &str> {
 /// A token *prefix* test rather than a substring test: `bsdtar` must count and
 /// a build path such as `/opt/notbsdish/src` must not.
 fn mentions_bsd(output: &str) -> bool {
-    tokens(output).any(|token| {
+    let stripped = BSD_TARGET_TRIPLE_RE.replace_all(output, " ");
+    let matched = tokens(&stripped).any(|token| {
         BSD_BANNER_TOKEN_PREFIXES
             .iter()
             .any(|marker| token.starts_with(marker))
-    })
+    });
+    matched
 }
 
 /// Whether a lowercased banner carries a `GNU <package>` pair.
@@ -554,6 +565,26 @@ mod tests {
         assert!(!mentions_apple(
             "gnu bash, version 3.2.57(1)-release (arm64-apple-darwin25)"
         ));
+    }
+
+    #[test]
+    fn test_classify_variant_freebsd_target_triple_is_not_a_bsd_port() {
+        // GNU bash built on FreeBSD names the build target. The token
+        // `freebsd13` must not outrank the explicit `GNU bash` marker.
+        let probe = outcome(
+            true,
+            "GNU bash, version 5.2.15(1)-release (amd64-portbld-freebsd13.2)",
+        );
+        assert_eq!(
+            classify_variant(Some(&probe), Some(&Platform::new("freebsd"))),
+            ToolVariant::Gnu
+        );
+        // A real BSD banner still classifies as BSD.
+        let real = outcome(true, "grep (BSD grep, GNU compatible) 2.6.0-FreeBSD");
+        assert_eq!(
+            classify_variant(Some(&real), Some(&Platform::new("macos"))),
+            ToolVariant::Bsd
+        );
     }
 
     #[test]

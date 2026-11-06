@@ -32,12 +32,14 @@ esac
 {body}
 """, encoding="utf-8")
     binary.chmod(0o755)
-    overlay = {"schema_version": "1.1", "command": name, "variant": "unknown",
+    overlay = {"schema_version": "2.0", "command": name, "variant": "unknown",
                "mode": "authoritative", "confidence": "low", "description": "Synthetic verification demo",
-               "flags": [{"long": "--dry-run", "type": "boolean"}],
-               "positional_args": [{"name": "file", "type": "path", "required": True}],
-               "annotations": {"readonly": False, "idempotent": not destructive,
-                               "destructive": destructive, "requires_approval": destructive, "open_world": False}}
+               "commands": [{"path": [],
+                             "flags": [{"long": "--dry-run", "type": "boolean"}],
+                             "positional_args": [{"name": "file", "type": "path", "required": True}],
+                             "annotations": {"readonly": False, "idempotent": not destructive,
+                                             "destructive": destructive,
+                                             "requires_approval": destructive, "open_world": False}}]}
     (root / "overlays" / (name + ".json")).write_text(json.dumps(overlay), encoding="utf-8")
     return binary
 

@@ -456,10 +456,21 @@ fn overlay_flag(overlay: &str, long: &str) -> serde_json::Value {
         .join(format!("{overlay}.json"));
     let raw = std::fs::read_to_string(&path).expect("overlay should be readable");
     let doc: serde_json::Value = serde_json::from_str(&raw).expect("overlay should parse");
-    doc["flags"]
+    // The corpus uses the flat spelling: one route, the tool's own.
+    let flat = doc["flags"].as_array().cloned().unwrap_or_default();
+    let scoped: Vec<serde_json::Value> = doc["commands"]
         .as_array()
-        .expect("flags")
-        .iter()
+        .map(|routes| {
+            routes
+                .iter()
+                .flat_map(|route| route["flags"].as_array().cloned().unwrap_or_default())
+                .collect()
+        })
+        .unwrap_or_default();
+    let globals = doc["global_flags"].as_array().cloned().unwrap_or_default();
+    flat.into_iter()
+        .chain(scoped)
+        .chain(globals)
         .find(|flag| flag["long"] == long)
         .unwrap_or_else(|| panic!("{}: no flag named {long}", path.display()))
         .clone()

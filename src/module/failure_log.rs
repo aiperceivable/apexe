@@ -71,10 +71,11 @@ const STALE_ENTRY_AGE: std::time::Duration = std::time::Duration::from_secs(3600
 /// against corrupting every refusal tally; closing it needs a channel from the
 /// module to the middleware that apcore does not currently offer.
 fn module_records_its_own_outcome(code: ErrorCode) -> bool {
-    matches!(
-        code,
-        ErrorCode::ModuleTimeout | ErrorCode::ModuleExecuteError
-    )
+    // `ModuleTimeout` is deliberately NOT suppressed: it may be raised by
+    // apcore's outer deadline before `CliModule::abandon_run` runs, and the
+    // module no longer writes its own timeout row. `ModuleExecuteError` is
+    // written by the module, so the middleware would duplicate it.
+    matches!(code, ErrorCode::ModuleExecuteError)
 }
 
 /// Emits a payload-free record for every call that ends in failure.
@@ -229,6 +230,23 @@ impl Middleware for FailureLogMiddleware {
                 // `CliModule` already wrote an `execution`/`error` row for this
                 // very trace; a `refusal` row on top would claim the binary
                 // never ran. See `module_records_its_own_outcome`.
+                return Ok(None);
+            }
+            if error.code == ErrorCode::ModuleTimeout {
+                // apcore's outer deadline can drop the module future before
+                // `CliModule::abandon_run` runs. Record the timeout as an
+                // execution error with the same shape the module would have
+                // written, rather than as a refusal (the binary did start).
+                audit
+                    .log_execution(
+                        module_id,
+                        &ctx.trace_id,
+                        crate::governance::audit_caller_id(ctx),
+                        "error",
+                        -1,
+                        duration_ms as u64,
+                    )
+                    .await;
                 return Ok(None);
             }
             // The authenticated principal, not `ctx.caller_id` — that field

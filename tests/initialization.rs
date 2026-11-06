@@ -82,11 +82,11 @@ impl Fixture {
         self.git(&["commit", "--quiet", "-m", "Test rules"]);
     }
     fn overlay(&self, command: &str, variant: &str) {
-        let overlay = json!({"schema_version":"1.1","command":command,"variant":variant,
+        let overlay = json!({"schema_version":"2.0","command":command,"variant":variant,
             "mode":"authoritative","confidence":"low","cross_flag_ordering":false,
             "short_flag_bundling":false,"streaming_stdin_safe":false,
-            "flags":[{"long":"--ready","type":"boolean","description":"Test operation"}],
-            "annotations":{"readonly":true,"destructive":false,"idempotent":true,"requires_approval":false,"open_world":false}});
+            "commands":[{"path":[],"flags":[{"long":"--ready","type":"boolean","description":"Test operation"}],
+            "annotations":{"readonly":true,"destructive":false,"idempotent":true,"requires_approval":false,"open_world":false}}]});
         std::fs::write(
             self.repository.join(format!("overlays/{command}.json")),
             serde_json::to_vec(&overlay).unwrap(),
@@ -321,7 +321,7 @@ fn test_init_refresh_updates_managed_bindings_only() {
         &std::fs::read(fixture.repository.join("overlays/toy.json")).unwrap(),
     )
     .unwrap();
-    overlay["flags"][0]["long"] = json!("--changed");
+    overlay["commands"][0]["flags"][0]["long"] = json!("--changed");
     std::fs::write(
         fixture.repository.join("overlays/toy.json"),
         serde_json::to_vec(&overlay).unwrap(),
@@ -590,7 +590,7 @@ fn test_init_json_preference_controls_captured_output_and_preserves_native_outpu
         executable(&fixture.binary, "case \"$1\" in --version) echo 'toy 1.0';; --help) printf 'Usage: toy [OPTIONS]\\nOptions:\\n  --json  Print JSON output\\n';; --json) echo '{\"mode\":\"json\"}';; *) echo plain;; esac");
         let path = fixture.repository.join("overlays/toy.json");
         let mut overlay: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        overlay["flags"][0]["long"] = json!("--json");
+        overlay["commands"][0]["flags"][0]["long"] = json!("--json");
         std::fs::write(&path, serde_json::to_vec(&overlay).unwrap()).unwrap();
         fixture.commit();
         std::fs::create_dir_all(fixture.home.join(".apexe")).unwrap();

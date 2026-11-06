@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Install the shared apexe Agent Skill from a source checkout."""
+"""Install the shared apexe Agent Skill fallback from a source checkout.
+
+Use this only when the host cannot be configured with apexe-sh, PATH shims or a
+PreToolUse hook. Host integration is configured with `apexe agent`.
+"""
 
 import argparse
 from pathlib import Path
@@ -56,7 +60,10 @@ def write_skill(destination: Path, content: bytes) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog="Prefer `apexe agent <host>` for shell/hook integration; this installer is the fallback.",
+    )
     parser.add_argument("--agent", choices=[*AGENT_DIRECTORIES, "all"], default="all",
                         help="Target agent; Codex and pi share the Agent Skills directory")
     parser.add_argument("--scope", choices=["project", "user"], default="project",

@@ -18,8 +18,32 @@ enum FlagPosition {
 
 struct Parser<'a> {
     schema: &'a Value,
+    /// Flags usable after the declared subcommand path, and the only flags a
+    /// root-level module has.
     flags: BTreeMap<String, Property<'a>>,
+    /// Flags that may only precede the subcommand (tool-level options).
+    ///
+    /// Kept in a second map because a real tool reuses the same spelling on both
+    /// sides: `git -C <dir> diff -C` is one command in which `-C` means two
+    /// different things, and `git -v` is the version while `git status -v` is
+    /// verbose. One flat map turned every such tool into "Flag '-v' names two
+    /// properties" for every call, which is the tool's grammar being rejected,
+    /// not the caller's arguments.
+    global_flags: BTreeMap<String, Property<'a>>,
     operands: Vec<Property<'a>>,
+}
+
+/// Whether a property describes a tool-level option, which must precede the
+/// subcommand.
+///
+/// `before-operands` covers the options the scanner renders ahead of the
+/// operands (`git -C <path> status`, `find -maxdepth 2 <paths>`); for a command
+/// with subcommands those are tool-level options too.
+fn is_global_property(schema: &Value) -> bool {
+    matches!(
+        schema["x-apexe-flag-position"].as_str(),
+        Some("before-subcommand") | Some("before-operands")
+    )
 }
 
 fn invalid(message: impl Into<String>) -> ModuleError {
@@ -69,7 +93,7 @@ impl CommandMatcher {
                 .ok_or_else(|| invalid("Native argv requires declared properties"))?;
             for (name, value) in properties {
                 if value["x-apexe-positional"].as_u64().is_some()
-                    || !root && value["x-apexe-flag-position"] != "before-subcommand"
+                    || !root && !is_global_property(value)
                 {
                     continue;
                 }
@@ -190,6 +214,7 @@ impl<'a> Parser<'a> {
         let mut parser = Self {
             schema,
             flags: BTreeMap::new(),
+            global_flags: BTreeMap::new(),
             operands: vec![],
         };
         for (name, value) in properties {
@@ -201,9 +226,13 @@ impl<'a> Parser<'a> {
                 parser.operands.push(property);
                 continue;
             }
-            let names = declared_flags(property)?;
-            for literal in names {
-                if let Some(previous) = parser.flags.insert(literal.clone(), property) {
+            let target = if is_global_property(value) {
+                &mut parser.global_flags
+            } else {
+                &mut parser.flags
+            };
+            for literal in declared_flags(property)? {
+                if let Some(previous) = target.insert(literal.clone(), property) {
                     if previous.name != name {
                         return Err(invalid(format!("Flag '{literal}' names two properties")));
                     }
@@ -296,8 +325,8 @@ impl<'a> Parser<'a> {
         } else {
             (token, None)
         };
-        if let Some(property) = self.flags.get(literal) {
-            return self.consume(*property, attached, argv, cursor, input, position);
+        if let Some(property) = self.lookup(literal, position) {
+            return self.consume(property, attached, argv, cursor, input, position);
         }
         if token.starts_with("--") || self.schema["x-apexe-short-flag-bundling"] != true {
             return Err(invalid(format!(
@@ -307,18 +336,42 @@ impl<'a> Parser<'a> {
         for (offset, character) in token[1..].char_indices() {
             let literal = format!("-{character}");
             let property = self
-                .flags
-                .get(&literal)
+                .lookup(&literal, position)
                 .ok_or_else(|| invalid(format!("Undeclared flag '{literal}' in '{token}'")))?;
             let tail = &token[1 + offset + character.len_utf8()..];
             let value_option = !boolean_only(property.schema);
             let attached = (value_option && !tail.is_empty()).then_some(tail);
-            self.consume(*property, attached, argv, cursor, input, position)?;
+            self.consume(property, attached, argv, cursor, input, position)?;
             if value_option {
                 break;
             }
         }
         Ok(())
+    }
+
+    /// Resolve one flag spelling for the phase the call is in.
+    ///
+    /// Each phase prefers its own namespace, then falls back to the other so
+    /// [`Parser::consume`] can report "wrong side of the subcommand" rather
+    /// than the less useful "undeclared flag".
+    fn lookup(&self, literal: &str, position: FlagPosition) -> Option<Property<'a>> {
+        match position {
+            FlagPosition::Root => self
+                .flags
+                .get(literal)
+                .or_else(|| self.global_flags.get(literal))
+                .copied(),
+            FlagPosition::BeforeCommand => self
+                .global_flags
+                .get(literal)
+                .or_else(|| self.flags.get(literal))
+                .copied(),
+            FlagPosition::AfterCommand => self
+                .flags
+                .get(literal)
+                .or_else(|| self.global_flags.get(literal))
+                .copied(),
+        }
     }
 
     #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
@@ -331,7 +384,7 @@ impl<'a> Parser<'a> {
         input: &mut Map<String, Value>,
         position: FlagPosition,
     ) -> Result<(), ModuleError> {
-        let global = property.schema["x-apexe-flag-position"] == "before-subcommand";
+        let global = is_global_property(property.schema);
         if matches!(position, FlagPosition::BeforeCommand) && !global
             || matches!(position, FlagPosition::AfterCommand) && global
         {
@@ -561,6 +614,53 @@ mod tests {
             }});
             assert!(resolve_argv(&args(&["a", "b"]), &schema).is_err());
         }
+    }
+    /// A tool that reuses one spelling on both sides of the subcommand, as git
+    /// does: `-v` is the version before `status` and verbose after it, and `-C`
+    /// is a tool-level directory before the subcommand and a copy count after
+    /// it.
+    fn two_sided_schema() -> Value {
+        json!({"type":"object","x-apexe-short-flag-bundling":false,"x-apexe-end-of-options":true,"properties":{
+            "verbose":{"type":"boolean","x-apexe-flag":"-v"},
+            "version":{"type":"boolean","x-apexe-flag":"--version","x-apexe-flag-aliases":["-v","--version"],"x-apexe-flag-position":"before-subcommand"},
+            "dir":{"type":"string","x-apexe-flag":"-C","x-apexe-flag-position":"before-operands"},
+            "copies":{"type":"integer","x-apexe-flag":"-C"}
+        }})
+    }
+    #[test]
+    fn test_resolve_argv_routes_one_spelling_by_its_side_of_the_subcommand() {
+        assert_eq!(
+            resolve_command_argv(
+                &args(&["-C", "/tmp", "status", "-C", "2", "-v"]),
+                &two_sided_schema(),
+                &args(&["status"])
+            )
+            .unwrap(),
+            json!({"dir":"/tmp","copies":2,"verbose":true})
+        );
+        assert_eq!(
+            resolve_command_argv(
+                &args(&["-v", "status"]),
+                &two_sided_schema(),
+                &args(&["status"])
+            )
+            .unwrap(),
+            json!({"version":true})
+        );
+    }
+    #[test]
+    fn test_resolve_argv_refuses_a_tool_level_flag_after_the_subcommand() {
+        let error = resolve_command_argv(
+            &args(&["status", "--version"]),
+            &two_sided_schema(),
+            &args(&["status"]),
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains("wrong side of the subcommand"),
+            "{}",
+            error.message
+        );
     }
     #[test]
     fn test_resolve_argv_routes_original_hyphenated_subcommand_with_global_option() {

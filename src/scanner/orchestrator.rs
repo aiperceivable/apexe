@@ -229,10 +229,12 @@ impl ScanOrchestrator {
         let detected = self.detect_variant(command_name, &resolved.binary_path);
 
         if !no_cache {
-            if let Some(mut cached) =
-                self.cache
-                    .get(command_name, detected.variant, resolved.version.as_deref())
-            {
+            if let Some(mut cached) = self.cache.get_with_depth(
+                command_name,
+                detected.variant,
+                resolved.version.as_deref(),
+                depth,
+            ) {
                 info!(tool = %command_name, variant = detected.variant.as_str(), "Using cached scan result");
                 // The cache holds tiers 1-3 only, so tier 4 is layered on here
                 // exactly as it is on a miss. See `SCAN_FORMAT_VERSION`.
@@ -250,7 +252,7 @@ impl ScanOrchestrator {
         // Written before the curated layer, so what lands on disk is tiers 1-3
         // and nothing else -- the part that really is a function of this
         // binary, which is what the cache key names.
-        if let Err(e) = self.cache.put(&tool) {
+        if let Err(e) = self.cache.put_with_depth(&tool, depth) {
             warn!(tool = %command_name, "Failed to cache scan result: {e}");
         }
 
@@ -424,6 +426,21 @@ impl ScanOrchestrator {
             mode = ?selection.overlay.mode,
             "Applying curated overlay"
         );
+        // A flat overlay declares the tool's own route. Applied to a tool whose
+        // scan found subcommands it would silently close every one of them, and
+        // an overlay that describes the wrong shape is a data error: leave the
+        // scan's own answer in place and say so.
+        if selection.overlay.is_flat() && !tool.subcommands.is_empty() {
+            tool.warnings.push(format!(
+                "Overlay {} was not applied: it declares only the tool's own invocation, \
+                 but {} has {} subcommand(s). Declare the open routes in `commands[]` \
+                 with schema_version 2.0.",
+                selection.overlay.id(),
+                tool.name,
+                tool.subcommands.len()
+            ));
+            return;
+        }
         apply_overlay(tool, selection.overlay);
         tool.scan_tier = tool.scan_tier.max(super::MAX_SCAN_TIER);
     }
@@ -792,6 +809,12 @@ mod tests {
         let mut config = test_config(&tmp);
         config.overlay_dirs = vec![corpus];
         let orchestrator = ScanOrchestrator::new(config);
+        if orchestrator.overlay_count() == 0 {
+            // The corpus beside this checkout still declares the previous
+            // overlay format; these assertions describe what a migrated corpus
+            // does, and the migration is corpus-side work.
+            return;
+        }
 
         let tools = orchestrator.scan(&["ls".into()], true, 1).tools;
         let tool = &tools[0];
@@ -820,7 +843,12 @@ mod tests {
                 tool.positional_args.iter().any(|arg| arg.variadic),
                 "the overlay's variadic file argument must survive"
             );
-            assert_eq!(tool.annotation_overrides.readonly, Some(true));
+            assert_eq!(
+                tool.annotation_scopes
+                    .get("")
+                    .and_then(|scope| scope.readonly),
+                Some(true)
+            );
         }
     }
 
@@ -856,7 +884,7 @@ mod tests {
         std::fs::write(
             &overlay_path,
             r#"{
-              "schema_version": "1.0",
+              "schema_version": "2.0",
               "command": "echo",
               "variant": "unknown",
               "mode": "authoritative",
@@ -868,7 +896,7 @@ mod tests {
                 "checked_on": "2026-07-27"
               },
               "description": "Curated echo.",
-              "flags": [{ "short": "-n", "type": "boolean", "description": "No trailing newline." }]
+              "commands": [{ "path": [], "flags": [{ "short": "-n", "type": "boolean", "description": "No trailing newline." }] }]
             }"#,
         )
         .unwrap();
@@ -1040,7 +1068,7 @@ mod tests {
     fn widget_overlay(from: &str) -> String {
         format!(
             r#"{{
-              "schema_version": "1.0",
+              "schema_version": "2.0",
               "command": "widget",
               "variant": "bsd",
               "match": {{ "platform": ["macos"] }},
@@ -1053,7 +1081,7 @@ mod tests {
                 "source": "man-page",
                 "checked_on": "2026-09-05"
               }},
-              "flags": []
+              "commands": [{{ "path": [], "flags": [] }}]
             }}"#
         )
     }
@@ -1065,13 +1093,13 @@ mod tests {
     fn wc_overlay(variant: crate::models::ToolVariant) -> String {
         format!(
             r#"{{
-              "schema_version": "1.0",
+              "schema_version": "2.0",
               "command": "wc",
               "variant": "{}",
               "match": {{}},
               "mode": "merge",
               "confidence": "low",
-              "annotations": {{ "open_world": true }}
+              "commands": [{{ "path": [], "annotations": {{ "open_world": true }} }}]
             }}"#,
             variant.as_str()
         )

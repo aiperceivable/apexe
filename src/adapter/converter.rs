@@ -61,17 +61,30 @@ impl CliToolConverter {
 
     /// Build ScannedModules from a ScannedCLITool without applying DisplayResolver.
     fn build_modules(&self, tool: &ScannedCLITool) -> Vec<ScannedModule> {
-        let mut leaves: Vec<(Vec<String>, Option<&ScannedCommand>)> = Vec::new();
+        // `(path, command, is_root)`. The root is emitted when the tool has no
+        // subcommands (nothing else to serve) or when an overlay declared it —
+        // `path: []` is a route like any other, and its flags are not globals.
+        let mut leaves: Vec<(Vec<String>, Option<&ScannedCommand>, bool)> = Vec::new();
 
-        if tool.subcommands.is_empty() {
-            leaves.push((vec![], None));
-        } else {
-            self.collect_leaves(&tool.subcommands, &mut vec![], &mut leaves);
+        if let Some(root) = tool.root_command.as_ref() {
+            leaves.push((vec![], Some(root), true));
+        } else if tool.subcommands.is_empty() {
+            leaves.push((vec![], None, true));
+        }
+        if !tool.subcommands.is_empty() {
+            self.collect_leaves(
+                &tool.subcommands,
+                &mut vec![],
+                &tool.declared_paths,
+                &mut leaves,
+            );
         }
 
         leaves
             .iter()
-            .map(|(path, command_opt)| self.build_single_module(tool, path, command_opt.as_ref()))
+            .map(|(path, command_opt, is_root)| {
+                self.build_single_module(tool, path, command_opt.as_ref(), *is_root)
+            })
             .collect()
     }
 
@@ -83,10 +96,19 @@ impl CliToolConverter {
     /// ("git commit"), so prefixing the binary path spelled the tool name twice
     /// and produced `git git commit`.
     fn build_target(tool: &ScannedCLITool, path: &[String]) -> String {
+        // The target is a whitespace-delimited string, so a binary path with a
+        // space must be shell-quoted. Readers split it with `shell_words` for
+        // the same reason; plain `split_whitespace` used to truncate
+        // `/Applications/My App/bin/tool` into a different executable.
+        let binary = shell_words::quote(&tool.binary_path);
         if path.is_empty() {
-            format!("exec://{}", tool.binary_path)
+            format!("exec://{binary}")
         } else {
-            format!("exec://{} {}", tool.binary_path, path.join(" "))
+            let parts: Vec<String> = path
+                .iter()
+                .map(|part| shell_words::quote(part).into_owned())
+                .collect();
+            format!("exec://{binary} {}", parts.join(" "))
         }
     }
 
@@ -113,11 +135,13 @@ impl CliToolConverter {
         tool: &ScannedCLITool,
         path: &[String],
         command_opt: Option<&&ScannedCommand>,
+        is_root: bool,
     ) -> ScannedModule {
         let mut segments = vec![self.namespace.clone(), sanitize_id_segment(&tool.name)];
         segments.extend(path.iter().map(|segment| sanitize_id_segment(segment)));
 
-        let fields = Self::extract_command_fields(tool, command_opt);
+        let path_key = path.join(" ");
+        let fields = Self::extract_command_fields(tool, command_opt, is_root, &path_key);
         let help_format_name =
             help_format_to_tag(command_opt.map_or(HelpFormat::Unknown, |c| c.help_format));
 
@@ -146,6 +170,18 @@ impl CliToolConverter {
             "confidence".into(),
             json!(Self::source_confidence(tool, command_opt)),
         );
+        module.metadata.insert(
+            crate::models::GRAMMAR_KEY.into(),
+            json!(Self::grammar_tier(tool, command_opt).as_str()),
+        );
+        if !tool.undeclared_paths.is_empty() {
+            // Evidence lives with the declared surface, not in the registry: a
+            // route nobody declared is neither executable nor advertised, and
+            // this list is what lets a diagnostic answer "was it scanned?".
+            module
+                .metadata
+                .insert("scan_inventory".into(), json!(tool.undeclared_paths));
+        }
         if let Some(source) = tool.source_contracts.get(&module.module_id) {
             module
                 .metadata
@@ -173,6 +209,41 @@ impl CliToolConverter {
                     metadata.insert("json_flag".into(), json!(flag));
                 }
             }
+        }
+    }
+
+    /// Whether this route's whole argv surface is a curated assertion.
+    ///
+    /// `reviewed` means every flag the route can emit — its own and the tool's
+    /// globals — came out of an overlay, and that there is at least one such
+    /// flag. Zero flags is `scanned`, not vacuously reviewed: nothing about the
+    /// route was read, so calling it reviewed would assert the empty set.
+    ///
+    /// An `authoritative` overlay is reviewed whatever the per-flag provenance
+    /// says, because in that mode the overlay *is* the surface; the flags it
+    /// contributes are `Overlay` by construction.
+    fn grammar_tier(
+        tool: &ScannedCLITool,
+        command: Option<&&ScannedCommand>,
+    ) -> crate::models::GrammarTier {
+        let authoritative = tool
+            .shim_contract
+            .as_ref()
+            .is_some_and(|contract| contract.authoritative);
+        let mut any_flag = false;
+        let mut curated = true;
+        for flag in tool
+            .global_flags
+            .iter()
+            .chain(command.into_iter().flat_map(|command| command.flags.iter()))
+        {
+            any_flag = true;
+            curated &= flag.sources.contains(&crate::models::FlagSource::Overlay);
+        }
+        if authoritative || (any_flag && curated) {
+            crate::models::GrammarTier::Reviewed
+        } else {
+            crate::models::GrammarTier::Scanned
         }
     }
 
@@ -270,12 +341,15 @@ impl CliToolConverter {
     fn extract_command_fields(
         tool: &ScannedCLITool,
         command_opt: Option<&&ScannedCommand>,
+        is_root: bool,
+        path_key: &str,
     ) -> CommandFields {
         // Borrowed, not cloned: `raw_help` holds a whole help text, and this
         // runs once per module. `synth` outlives the borrow because it is
         // declared here and initialized only on the branch that needs it.
         let synth;
         let (command, position): (&ScannedCommand, _) = match command_opt {
+            Some(command) if is_root => (command, schema::CommandPosition::Root),
             Some(command) => (command, schema::CommandPosition::Subcommand),
             None => {
                 synth = synthesize_root_command(tool);
@@ -316,7 +390,10 @@ impl CliToolConverter {
             output_schema: schema::build_output_schema(command),
             annotations: apply_annotation_overrides(
                 mark_escalating_params(annotations::infer(command), &input_schema),
-                tool,
+                tool.annotation_scopes
+                    .get(path_key)
+                    .cloned()
+                    .unwrap_or_default(),
             ),
             documentation: Self::command_documentation(&command.raw_help),
             examples: command.examples.clone(),
@@ -375,15 +452,17 @@ impl CliToolConverter {
         &self,
         commands: &'a [ScannedCommand],
         path: &mut Vec<String>,
-        leaves: &mut Vec<(Vec<String>, Option<&'a ScannedCommand>)>,
+        declared: &[Vec<String>],
+        leaves: &mut Vec<(Vec<String>, Option<&'a ScannedCommand>, bool)>,
     ) {
         for cmd in commands {
             path.push(cmd.name.clone());
-            if cmd.subcommands.is_empty() {
-                leaves.push((path.clone(), Some(cmd)));
-            } else {
-                self.collect_leaves(&cmd.subcommands, path, leaves);
+            // A declared parent (`git stash` next to `git stash push`) is a
+            // route in its own right; the scanner only ever emits leaves.
+            if cmd.subcommands.is_empty() || declared.contains(path) {
+                leaves.push((path.clone(), Some(cmd), false));
             }
+            self.collect_leaves(&cmd.subcommands, path, declared, leaves);
             path.pop();
         }
     }
@@ -429,9 +508,9 @@ fn synthesize_root_command(tool: &ScannedCLITool) -> ScannedCommand {
 /// Only fields the overlay actually set are replaced.
 fn apply_annotation_overrides(
     mut annotations: ModuleAnnotations,
-    tool: &ScannedCLITool,
+    overrides: crate::models::AnnotationOverrides,
 ) -> ModuleAnnotations {
-    let overrides = &tool.annotation_overrides;
+    let overrides = &overrides;
     if let Some(readonly) = overrides.readonly {
         annotations.readonly = readonly;
     }
@@ -675,6 +754,36 @@ mod tests {
         }
     }
 
+    /// Grammar trust is stamped per route, from that route's own flags.
+    #[test]
+    fn test_grammar_tier_is_stamped_per_route_from_flag_provenance() {
+        use crate::models::{FlagSource, ScannedFlag, ShimContract, ToolVariant, GRAMMAR_KEY};
+
+        let mut command = command_accepting("status", &["--short"]);
+        command.flags[0].sources = vec![FlagSource::Overlay];
+        command.flags[0].description = "show status concisely".into();
+        let mut tool = make_tool("git", vec![command]);
+        tool.shim_contract = Some(ShimContract {
+            authoritative: false,
+            variant: ToolVariant::Unknown,
+            short_flag_bundling: None,
+            streaming_stdin_safe: false,
+            cross_flag_ordering: Some(false),
+        });
+
+        let curated = CliToolConverter::new().convert(&tool);
+        assert_eq!(curated[0].metadata[GRAMMAR_KEY], json!("reviewed"));
+
+        // One heuristic flag anywhere in the route's surface demotes it.
+        tool.subcommands[0].flags.push(ScannedFlag {
+            long_name: Some("--guessed".into()),
+            sources: vec![FlagSource::ManPage],
+            ..Default::default()
+        });
+        let mixed = CliToolConverter::new().convert(&tool);
+        assert_eq!(mixed[0].metadata[GRAMMAR_KEY], json!("scanned"));
+    }
+
     /// The ceiling: a reader that merely *accepts* `--all` is still marked, so
     /// apcore runs the gate at all — but the basis says why, so the gate can
     /// stand down for the calls that send nothing escalating.
@@ -731,10 +840,13 @@ mod tests {
     #[test]
     fn test_an_overlay_assertion_clears_a_flag_basis() {
         let mut tool = make_tool("git", vec![command_accepting("push", &["--force"])]);
-        tool.annotation_overrides = crate::models::AnnotationOverrides {
-            requires_approval: Some(true),
-            ..Default::default()
-        };
+        tool.annotation_scopes.insert(
+            "push".to_string(),
+            crate::models::AnnotationOverrides {
+                requires_approval: Some(true),
+                ..Default::default()
+            },
+        );
         let modules = CliToolConverter::new().convert(&tool);
         let annotations = modules[0].annotations.as_ref().unwrap();
 
@@ -844,13 +956,16 @@ mod tests {
         // states otherwise must win, because it was reviewed and the inference
         // was a guess.
         let mut tool = make_tool("rm", vec![]);
-        tool.annotation_overrides = crate::models::AnnotationOverrides {
-            readonly: Some(true),
-            destructive: Some(false),
-            idempotent: Some(true),
-            requires_approval: Some(false),
-            open_world: None,
-        };
+        tool.annotation_scopes.insert(
+            String::new(),
+            crate::models::AnnotationOverrides {
+                readonly: Some(true),
+                destructive: Some(false),
+                idempotent: Some(true),
+                requires_approval: Some(false),
+                open_world: None,
+            },
+        );
         let modules = CliToolConverter::new().convert(&tool);
         let annotations = modules[0].annotations.as_ref().unwrap();
 
@@ -882,10 +997,13 @@ mod tests {
             "inference must call sed closed-world, or this test proves nothing"
         );
 
-        tool.annotation_overrides = crate::models::AnnotationOverrides {
-            open_world: Some(true),
-            ..Default::default()
-        };
+        tool.annotation_scopes.insert(
+            String::new(),
+            crate::models::AnnotationOverrides {
+                open_world: Some(true),
+                ..Default::default()
+            },
+        );
         let modules = CliToolConverter::new().convert(&tool);
         let annotations = modules[0].annotations.as_ref().unwrap();
         assert!(annotations.open_world);
@@ -906,10 +1024,13 @@ mod tests {
             "curl must be inferred open-world, or this test proves nothing"
         );
 
-        tool.annotation_overrides = crate::models::AnnotationOverrides {
-            open_world: Some(false),
-            ..Default::default()
-        };
+        tool.annotation_scopes.insert(
+            String::new(),
+            crate::models::AnnotationOverrides {
+                open_world: Some(false),
+                ..Default::default()
+            },
+        );
         let modules = CliToolConverter::new().convert(&tool);
         assert!(!modules[0].annotations.as_ref().unwrap().open_world);
     }
@@ -917,7 +1038,7 @@ mod tests {
     #[test]
     fn test_absent_annotation_overrides_leave_inference_alone() {
         let tool = make_tool("delete", vec![]);
-        assert!(tool.annotation_overrides.is_empty());
+        assert!(tool.annotation_scopes.is_empty());
         let modules = CliToolConverter::new().convert(&tool);
         let annotations = modules[0].annotations.as_ref().unwrap();
         assert!(annotations.destructive, "inference must still apply");

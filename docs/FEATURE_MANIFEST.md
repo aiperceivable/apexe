@@ -8,7 +8,7 @@ locally, and serves CLI and imported OpenAPI operations through MCP and A2A.
 Configured access controls, approval checks and audit records accompany the
 execution path.
 
-**Version:** 0.9.0.
+**Version:** 0.10.0.
 
 **Status:** CLI discovery, initialization, binding/Skill generation, local
 module execution, reviewed native argv and PATH shims, MCP/A2A serving, OpenAPI
@@ -23,11 +23,14 @@ git/docker scan tests and the macOS native example are opt-in.
 |---|---|---|
 | CLI discovery and schemas | `scanner`, `adapter`; `scan` | Help, man pages, completions, variant-aware overlays, JSON Schema and annotations |
 | Reviewed source initialization | `corpus`, `cli::init`; `init` | Cached Git rules, revision pinning, offline use, refresh and binding/policy preservation |
-| Terminal-agent execution routing | `skills/apexe/SKILL.md`, `scripts/install_agent_skill.py` | Shared Claude Code/Codex/pi/OpenCode Skill; external CLI commands default to native exec from the first terminal call in configured environments, optional env and governed JSON alternatives |
+| Terminal-agent execution routing | `skills/apexe/SKILL.md`, `scripts/install_agent_skill.py` | Fallback Claude Code/Codex/pi/OpenCode Skill for hosts without shell/hook integration; host integration uses `apexe agent` and `apexe sh`, and the Skill routes exec only when no host integration is active |
 | Binding and agent guidance output | `output`; `scan --skills-dir` | YAML bindings and optional Claude Skills; Rust API tool-definition export |
 | Discovery and policy inspection | `list --verbose`, `policy` | Module schemas, annotations, ACL context, validated evidence and filesystem boundary checks |
 | Local execution | `cli::exec`, `module`; `exec` | Module JSON and reviewed native argv; preflight dry-run, child status and native streams |
-| Shell integration | `cli::env`, `shim`, `shell_init`; `env` | Eligible external-command PATH shims, startup activation, refresh, removal and diagnostics |
+| Shell integration | `cli::env`, `shim`, `shell_init`; `env` | Eligible external-command PATH shims, startup activation, refresh, removal and diagnostics; `--scanned` routes execute the original argv after schema validation |
+| Agent shell launcher | `cli::sh`; `sh` | Executes a real shell with the installed shim environment; readiness diagnostics and host config snippets. Not a full-governance boundary |
+| Host hook translation | `cli::hook`; `hook` | Rewrites simple Claude Code Bash calls to `apexe sh -c` through `updatedInput`; stateful and compound commands rely on PATH shims |
+| Host configuration helper | `cli::agent`; `agent` | Prints OpenCode/pi/Codex/Claude Code setup and checks launcher/host readiness; never writes host files |
 | MCP serving | `mcp`; `serve` | stdio, streamable HTTP, legacy SSE, structured results, Explorer, client snippets and optional metrics |
 | A2A serving | `a2a`; `a2a` | Authenticated agent server and agent card over the shared executor |
 | HTTP API import | `openapi`; `serve/a2a --openapi` | OpenAPI 3.0/3.1 file/URL import at startup; supported JSON proxy operations |
@@ -45,7 +48,7 @@ execution is not OS-sandboxed. The current native BSD pilot covers cat/head/ls;
 builtins and absolute paths can bypass PATH shims.
 
 > The section headings below tagged "(v0.1.0 …)" record when each piece first
-> landed; the crate is now **0.9.0**. For the authoritative current state see
+> landed; the crate is now **0.10.0**. For the authoritative current state see
 > [`CHANGELOG.md`](../CHANGELOG.md) and [`docs/user-manual.md`](user-manual.md).
 
 ## Architecture
@@ -117,7 +120,7 @@ src/
 │   └── overlay      ToolOverlay: curated flag/arg descriptions, apply_overlay
 ├── auth             Transport authentication for the HTTP-family MCP/A2A
 │                    transports (token/JWT, loopback-bind detection)
-├── cli/             clap CLI entry point (scan/serve/a2a/exec/env/verify/init/list/config/policy)
+├── cli/             clap CLI entry point (scan/serve/a2a/exec/sh/hook/agent/env/verify/init/list/config/policy)
 │   ├── init         Reviewed source bootstrap, binding ownership and starter ACL
 │   ├── exec         Module JSON and native argv through shared governance
 │   ├── config_set   Persistent log-level updates preserving other settings

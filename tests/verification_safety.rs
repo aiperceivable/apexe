@@ -22,12 +22,18 @@ impl Fixture {
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
         let overlay = home.path().join("fixture-overlay.json");
         let cases = home.path().join("cases.json");
-        std::fs::write(&overlay, json!({"schema_version":"1.1","command":"verification-fixture",
+        std::fs::write(
+            &overlay,
+            json!({"schema_version":"2.0","command":"verification-fixture",
             "variant":"unknown","mode":"authoritative","confidence":"low",
-            "description":"Synthetic verification fixture", "flags":[{"long":"--dry-run","type":"boolean"}],
+            "description":"Synthetic verification fixture",
+            "commands":[{"path":[],"flags":[{"long":"--dry-run","type":"boolean"}],
             "positional_args":[{"name":"file","type":"path","required":true}],
             "annotations":{"readonly":false,"idempotent":!destructive,"destructive":destructive,
-                "requires_approval":destructive,"open_world":false}}).to_string()).unwrap();
+                "requires_approval":destructive,"open_world":false}}]})
+            .to_string(),
+        )
+        .unwrap();
         let fixture = Self {
             home,
             binary,
@@ -392,7 +398,7 @@ fn test_digest_pinned_dry_run_supports_fixture_free_boolean_input() {
     let fixture = Fixture::new("printf 'dry-run\\n'", true);
     let mut overlay: Value =
         serde_json::from_slice(&std::fs::read(&fixture.overlay).unwrap()).unwrap();
-    overlay["positional_args"] = json!([]);
+    overlay["commands"][0]["positional_args"] = json!([]);
     std::fs::write(&fixture.overlay, overlay.to_string()).unwrap();
     fixture
         .command()
@@ -420,7 +426,7 @@ fn test_readonly_annotations_cannot_earn_evidence_for_fixture_writes() {
     let fixture = Fixture::new("printf changed > \"$2\"; printf 'dry-run\\n'", false);
     let mut overlay: Value =
         serde_json::from_slice(&std::fs::read(&fixture.overlay).unwrap()).unwrap();
-    overlay["annotations"]["readonly"] = json!(true);
+    overlay["commands"][0]["annotations"]["readonly"] = json!(true);
     std::fs::write(&fixture.overlay, overlay.to_string()).unwrap();
     fixture
         .command()

@@ -8,7 +8,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 0.9.0 |
+| **Version** | 0.10.0 |
 | **Date** | 2026-10-15 |
 | **Platform** | macOS / Linux |
 
@@ -157,6 +157,15 @@ apexe scan git --skills-dir ./out      # also write .claude/skills/cli.git.*/SKI
 apexe scan ls --overlay ~/.apexe/overlays/ls-gnu.json  # apply a curated overlay
 ```
 
+ACL rules are merged into `<config_dir>/acl.yaml`, never rewritten wholesale:
+modules from earlier scans keep their membership and hand-authored rules are
+preserved. For the tools named on this command line, however, a grant whose
+route the fresh scan no longer produces is retired. That is what keeps the
+policy in step with a curated overlay that narrows its declared surface —
+without it the old `allow` outlives its module and reactivates silently if the
+route is reopened. `apexe list --diagnostics` reports any grant left without a
+module.
+
 ### 4.2 `apexe serve`
 
 Starts an MCP server exposing scanned tools to AI agents.
@@ -262,7 +271,8 @@ apexe list [OPTIONS]
 | `--format <FMT>` | `table` | Output format: `table` or `json` |
 | `--bindings-dir <DIR>` | `~/.apexe/bindings/` | Directory to read binding files from |
 | `--verbose` | off | Print each module's behavioral annotations and, with `--acl`, the ACL decision an unauthenticated caller would get |
-| `--acl <PATH>` | `<config_dir>/acl.yaml` if present | ACL policy file to evaluate against in `--verbose` output. Read-only report — does not enable enforcement anywhere |
+| `--acl <PATH>` | `<config_dir>/acl.yaml` if present | ACL policy file to evaluate against in `--verbose` output, and to check for targets that match no loaded module in `--diagnostics`. Read-only report — does not enable enforcement anywhere |
+| `--diagnostics` | off | Show the scan inventory — routes a curated overlay left out of the declared surface — and, when a policy is loaded, the ACL targets that match no module on disk. See [Coverage and policy are two gates](#coverage-and-policy-are-two-gates) |
 | `--available-only` | off | Only list modules whose binary is reachable on this machine right now. `apexe serve`/`apexe a2a` apply this check unconditionally; here it is opt-in so the plain listing still shows everything ever scanned — see [Availability Filtering](#availability-filtering) |
 
 For terminal agents and CI, `apexe list --verbose --format json` returns an
@@ -275,6 +285,32 @@ Plain `list --format json` returns an array of module IDs and descriptions.
 Successful JSON listings keep these shapes when empty: `[]`, or an envelope
 whose `modules` array is empty. Human onboarding messages are emitted only in
 table mode. `--available-only` follows the same rule when it filters everything.
+
+#### Coverage and policy are two gates
+
+A route executes only when **both** gates admit it, and they are evaluated in
+this order:
+
+1. **Coverage** — is the route part of the declared surface? `apexe exec` and the
+   shims resolve the invocation against the reviewed grammar first. A route a
+   curated overlay left closed never reaches policy evaluation at all.
+2. **Policy** — the loaded ACL decides whether this caller may run it.
+
+The consequence is easy to misread when reviewing `acl.yaml`: **an allow there is
+necessary and not sufficient.** A `cli.git.log` entry left behind by a wider
+earlier scan does not make `git log` runnable while the git overlay declares only
+`status`. The refusal says so — it names the closed route, asks for a
+`commands[]` entry plus a rescan, and reports `details.layer: coverage` in the
+`--error-format json` envelope, so it is distinguishable from an ACL denial
+(`general_invalid_input` rather than `general_internal_error`).
+
+`apexe list --diagnostics` prints both halves of that picture: the routes each
+overlay left closed, and the ACL targets that match no loaded module. The second
+list is usually a merge artefact — `apexe scan` keeps grants for tools it did not
+touch, and now drops the grants of a tool it *did* rescan when the route is gone
+— and it is the one place those dead entries can be seen without reading the
+policy by hand. `--scanned` lowers the grammar bar for declared routes; it cannot
+widen the set.
 
 ### 4.5 `apexe config`
 
@@ -387,7 +423,7 @@ pipeline stage that needs governance. Child flags such as `--help`, `--man` or
 `--timeout` belong after the separator.
 
 Real execution uses the fixed `local` ACL caller. No ACL file means no access
-control, with a warning. Timeout, environment scrubbing and audit remain active.
+control, with a warning. Timeout, the captured-environment allowlist and audit remain active.
 Dry-run prints `mode` (`module`, `native`, or `unmanaged`) and governance checks;
 ACL-denied plans omit binary and argv details. Invalid governance checks produce
 nonzero exit status. Command lookup and native grammar errors are reported on
@@ -413,11 +449,11 @@ apexe exec --unmanaged approval --dry-run -- my-tool --version
 ```
 
 Unmanaged calls use module ID `unmanaged.<executable-basename>` and the same
-executor, local caller, ACL, approval gate, timeout, environment scrubbing and
+executor, local caller, ACL, approval gate, timeout, environment policy and
 audit. `allow` does not override an ACL denial. Review and add a rule for that
-module ID when your ACL defaults to deny. `approval` requires a human decision
-and therefore refuses actual local execution with the current noninteractive
-approval handler.
+module ID when your ACL defaults to deny. `approval` requires a human decision:
+local native execution prompts on the controlling terminal and refuses when
+stdin is not a terminal.
 
 Unmanaged argv is passed literally without schema reconstruction. No argument
 path typing is available, so schema-based path checks do not apply; dry-run
@@ -466,6 +502,7 @@ use the shell-specific setup below.
 | `--acl <PATH>` | default ACL when present | Explicit policy path to store in the manifest |
 | `--tags <TAGS>` | absent | Require every listed tag |
 | `--prefix <PREFIX>` | absent | Restrict the eligible module IDs |
+| `--scanned <off\|readonly\|all>` | `off` | Also route bindings without a reviewed overlay. `readonly` admits only readonly, non-destructive, closed-world modules; `all` admits any current binding |
 | `--shell <SHELL>` | detected for `--enable`; `sh` for printed activation | Choose `sh`, `bash`, `zsh`, `fish` or `powershell` |
 
 `--enable` detects the shell from `SHELL` and integrates startup configuration
@@ -479,9 +516,17 @@ reviewed `ls` to an installation previously covering `cat` and `head` needs
 reload. Existing bindings are read during execution, so parameter descriptions
 or schemas alone normally do not require rebuilding the shim list.
 
+`--scanned` widens coverage beyond reviewed overlays. A scanned route parses
+and validates the caller's argv against the scanned schema, then executes the
+**original argv**; it never rebuilds or reorders the command line. Schema
+inference is not a reviewed contract, so path-guard coverage for arguments the
+scanner did not type may be incomplete. Use `readonly` for the conservative
+subset and `all` only after reviewing the bindings. `apexe sh --check` lists
+scanned routes separately from verified ones.
+
 For an existing installation, reload retains its binding directory, binding
-pattern, explicit ACL path, prefix and tags unless command-line options override
-them. It preserves startup files by default and does not need shell detection.
+pattern, explicit ACL path, prefix, tags and scanned policy unless command-line
+options override them. It preserves startup files by default and does not need shell detection.
 An explicit `--shell` or `--rc-file` also updates startup configuration. When
 there is no installed manifest, including after disable, reload automatically
 performs enable with the current settings and flags. The source helpers also
@@ -490,7 +535,7 @@ call requires sourcing a helper or opening a new terminal.
 
 | Shell | Default startup file |
 |-------|----------------------|
-| zsh | `$ZDOTDIR/.zshrc`, or `~/.zshrc` when `ZDOTDIR` is unset |
+| zsh | `.zshrc` and `.zprofile` under `$ZDOTDIR`, or under `~` when `ZDOTDIR` is unset; covers interactive and noninteractive login shells |
 | bash | `~/.bashrc` and the first existing login file among `.bash_profile`, `.bash_login`, `.profile`; creates `.bash_profile` if none exists |
 | fish | `$XDG_CONFIG_HOME/fish/config.fish`, or `~/.config/fish/config.fish` |
 | sh / dash | `~/.profile`, loaded by login shells |
@@ -513,6 +558,16 @@ file symlinks. It is idempotent and records ownership in
 `<shim-dir>/.apexe-shell-init.json`. Disable removes only the recorded blocks,
 preserving user edits outside them and leaving startup files in place. A managed
 block changed by hand is refused; restore or remove that block before retrying.
+
+For Codex CLI with zsh, use `apexe env --reload --shell zsh`, then restart
+Codex so its shell snapshot reflects the updated startup files. This also
+upgrades installations that previously configured only `.zshrc`, retaining
+the installed bindings, ACL and filters. Codex's ordinary `/bin/zsh -lc`
+calls then activate shims through `.zprofile`, after system PATH setup;
+commands need no per-call wrapper. Use `--shim-dir` for a custom installation.
+Setting `SHELL=apexe-sh` alone does not select Codex's shell. This integration
+was checked with Codex CLI 0.145.0 on macOS, with shell snapshots both enabled
+and disabled; later user startup code can still change PATH.
 
 New terminals calculate activation using their current PATH. An apexe subprocess
 cannot modify the parent shell, so source a helper to change an existing terminal.
@@ -655,8 +710,9 @@ A child exit code reaches the shell unchanged; a POSIX signal returns `128 +
 signal`. POSIX children restore default SIGPIPE, so an upstream pipeline stage
 exits quietly when its reader closes. The timeout still bounds execution;
 the captured-output byte cap does not apply to passthrough. ACL, approval,
-path checks, environment scrubbing and audit stay active. A call requiring
-approval is refused because this local surface has no MCP client to prompt.
+path checks, local environment inheritance and audit stay active. A call
+requiring approval prompts on the controlling terminal; a non-interactive
+process is refused with a remedy instead of blocking.
 The shim uses the current `default_timeout` / `APEXE_TIMEOUT` configuration.
 
 Activation is idempotent. Scanners and wrapped children remove managed shim
@@ -920,6 +976,167 @@ For uncommitted local rule development, use `overlay_dirs` or an invocation-loca
 `APEXE_OVERLAY_DIRS` instead of installing a Git snapshot. Selection precedence
 and author verification requirements remain documented in
 [Authoring Tool Overlays](overlays.md).
+
+### 4.11 `apexe sh`
+
+Run a shell with the installed shim environment, or report launcher readiness.
+This is the integration point for terminal agents that can be configured to use
+a shell executable. `apexe sh` prepares `PATH` and the apexe environment
+variables, then replaces itself with the real shell through `exec`. It does not
+parse `-c` strings, proxy output, or remain in the process tree.
+
+`apexe env --enable` also installs `apexe-sh` in the shim directory. Hosts that
+only accept a shell path can use that absolute path. `apexe-sh` forwards every
+argument to the real shell and does not accept apexe options.
+
+| Option | Default | Behavior |
+|---|---|---|
+| `--shell <PATH>` | `APEXE_REAL_SHELL`, then `SHELL` when it is not `apexe-sh`, then `/bin/bash` or `/bin/sh` | Real shell to execute |
+| `--check` | off | Print launcher, entry-point, manifest, ACL and coverage diagnostics, then exit |
+| `--format <text\|json>` | `text` | Diagnostic format; requires `--check` |
+| `--locked` | off | Restrict `PATH` to the shim directory plus `--allow-path` entries. Reduces accidental discovery of ungoverned binaries; not a sandbox |
+| `--allow-path <DIR>` | none | Extra directory kept on `PATH` when `--locked` is used; repeatable |
+
+```bash
+apexe sh --check
+apexe sh --check --format json
+apexe sh -c 'ls -la'
+apexe sh -- /path/to/script.sh
+apexe sh --locked -c 'ls'
+apexe sh --locked --allow-path /bin -c 'ls'
+```
+
+Local shim execution inherits the caller's environment, so credential helpers
+that depend on `GH_TOKEN`, `AWS_PROFILE`, `KUBECONFIG` or `SSH_AUTH_SOCK` keep
+working. Dynamic-loader variables such as `LD_PRELOAD` and `DYLD_*` are removed
+before the child starts. Child processes started by a governed command keep the
+shim directory on `PATH`, so descendant commands can still resolve through the
+same shims.
+
+`--locked` is a restricted command search path, not a guarantee. Absolute
+paths, shell builtins, functions, `sudo` and interpreters can still run
+commands outside it. `APEXE_SHELL_LOCKED=1` and `APEXE_SHELL_ALLOW_PATH` provide
+the same setting to `apexe-sh`, which forwards all arguments to the shell.
+
+`--check` reports a failure when the entry point or manifest is missing. A
+missing ACL is a warning: shim-routed commands run without access control.
+Bindings that exist but are not shim-eligible are listed as coverage warnings
+with the reason each was excluded; they are not executed by the launcher.
+Host configuration snippets are printed for OpenCode (`shell`), pi
+(`shellPath`), Codex and Claude Code.
+
+```json
+// opencode.json
+{ "$schema": "https://opencode.ai/config.json", "shell": "/home/me/.apexe/bin/apexe-sh" }
+```
+
+```json
+// pi settings.json
+{ "shellPath": "/home/me/.apexe/bin/apexe-sh" }
+```
+
+```bash
+# Claude Code: start it with the shim directory already on PATH
+PATH="$HOME/.apexe/bin:$PATH" claude
+```
+
+Claude Code 2.1.318 rejects `apexe-sh` as `SHELL` or `CLAUDE_CODE_SHELL` and
+falls back to `/bin/zsh`. Its shell snapshot copies the launch environment's
+`PATH`, so startup-file edits alone are not enough: activate shims in the
+launching terminal or set `PATH` explicitly.
+
+Commands marked `requires_approval` prompt on the controlling terminal when
+stdin is interactive; a non-interactive process is refused with the remedy
+instead of hanging. MCP/A2A keeps its client-based elicitation path. Routes
+installed with `apexe env --scanned` execute the original argv after schema
+validation; `--check` lists them separately and records `tier: scanned` in the
+execution audit.
+
+The launcher only changes command lookup order. Commands with a reviewed shim
+are governed; builtins, functions, absolute paths, `sudo`, interpreter-internal
+execution and commands without a shim are not. Login shells (`-l`) may rebuild
+`PATH` from profile files after `path_helper`; use the managed startup block
+written by `apexe env --enable`. This is not a sandbox and does not guarantee
+that every command in the shell passes through apexe.
+
+### 4.12 `apexe hook`
+
+Translate a host hook event into a governed execution request. The command
+reads one JSON event from stdin and writes the host's hook response to stdout.
+It is intended for hosts that support a pre-tool hook; it is not a shell and
+does not execute commands itself.
+
+| Argument / option | Default | Behavior |
+|---|---|---|
+| `<HOST>` | required | Hook protocol; currently `claude` |
+| `--persistent` | off | Route every Bash call through a persistent governed shell session, preserving cwd, variables, functions and aliases |
+
+```bash
+# Claude Code PreToolUse hook
+apexe hook claude
+```
+
+For Claude Code, configure it as a `PreToolUse` hook matching `Bash`. A simple
+external command is rewritten to `apexe sh -c '<command>'` with
+`permissionDecision: "allow"`; Claude Code still evaluates its own deny/ask
+rules against the rewritten command. The original `tool_input` fields are
+preserved. A command that is already routed through `apexe`/`apexe-sh` is left
+unchanged, so the hook does not recurse.
+
+Shell builtins that change session state (`cd`, `export`, `set`, `alias`, …),
+pipelines, redirections, command substitution and compound commands are left
+unchanged: a one-shot `apexe sh -c` would not preserve their semantics. Those
+commands continue to rely on the installed PATH shims. The hook denies the call
+when the shim manifest is missing and tells the operator to run
+`apexe env --enable`.
+
+The hook uses `updatedInput`; the tested Claude Code 2.1.318 release
+(verified 2026-11-05) executes the rewritten command. Verify the current host
+version before relying on enforcement; without `updatedInput` support the hook
+can only deny or ask.
+
+### 4.13 `apexe agent`
+
+Print the supported host configuration, or check the launcher and host
+configuration without changing any files. This is the quickest way to copy the
+correct `apexe-sh` path into OpenCode or pi, and to see the PATH/hook guidance
+for Codex and Claude Code.
+
+| Argument / option | Default | Behavior |
+|---|---|---|
+| `<HOST>` | required | `opencode`, `pi`, `codex` or `claude` |
+| `--check` | off | Check launcher readiness and the host configuration file or environment |
+| `--format <text\|json>` | `text` | Diagnostic format; requires `--check` |
+| `--write` | off | Write the host configuration instead of printing it; preserves other keys and refuses invalid JSON |
+| `--scope <project\|user>` | `project` (pi: `user`) | Configuration scope for `--write` |
+| `--mcp-only` | off | Generate an MCP-only deployment instead of shell configuration |
+
+```bash
+apexe agent opencode
+apexe agent --check pi
+apexe agent --check codex --format json
+apexe agent --check claude
+apexe agent opencode --write
+apexe agent claude --write
+apexe agent opencode --mcp-only --write
+```
+
+`--write` is atomic and merges into existing JSON. It refuses to overwrite a
+file that is not valid JSON, and OpenCode refuses when an `opencode.jsonc`
+already exists. Codex has no shell file to write: `agent codex --write` runs
+`apexe env --reload --shell zsh` instead. Claude Code project scope writes
+`.claude/settings.json`; MCP-only also writes `.mcp.json` at the project root
+and adds `Bash` to `permissions.deny`. OpenCode MCP-only sets
+`tools.bash: false`. Codex MCP-only prints a `config.toml` snippet; pi has no
+stable MCP-only profile in the tested version.
+
+The command never writes host configuration. OpenCode and pi output a complete
+JSON object to merge into their settings file. Codex output describes the
+login-shell PATH activation that must exist in `.zprofile`/`.zshrc`; Claude Code
+output describes the `PreToolUse` hook or the launch-environment PATH setup.
+`--check` reports a missing host configuration as a warning and fails only when
+the launcher itself is not ready. Config detection is best-effort: a file that
+exists but is not configured is reported without its contents.
 
 ## 5. Configuration
 
@@ -1606,7 +1823,7 @@ Every `CliModule` call uses the process controls in `module::executor` and
 OS filesystem or network containment. There is no normal-execution `--sandbox`
 toggle. Imported HTTP operations use a proxy instead of this subprocess path.
 
-- **Environment scrubbing**: the subprocess does **not** inherit apexe's full environment. The env is cleared and only a base allowlist is passed through (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TZ`, `TMPDIR`), so secrets in apexe's environment (API tokens, cloud credentials) can't leak to — or be surfaced by — a wrapped tool. File-based credentials under `$HOME` still work. (Per-tool credential-env passthrough is planned as an opt-in config knob.)
+- **Environment policy**: captured subprocesses (MCP/A2A and module JSON) do **not** inherit apexe's full environment. The env is cleared and only a base allowlist is passed through (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TZ`, `TMPDIR`), so secrets in apexe's environment cannot leak to — or be surfaced by — a wrapped tool. Local native exec, PATH shims and `apexe sh` instead inherit the caller's environment so credential helpers (`GH_TOKEN`, `AWS_PROFILE`, `KUBECONFIG`, `SSH_AUTH_SOCK`) keep working; `LD_PRELOAD`, `LD_LIBRARY_PATH` and `DYLD_*` are removed. This is a trust decision, not a sandbox: a local wrapped tool can use the caller's credentials.
 - **No shell**: arguments are passed as direct argv and handed to `execve` — no shell is spawned anywhere on the execution path, so shell metacharacters are inert data and pass through unchanged. (`curl --data '{"a":1}'` and every `jq` filter depend on that.) A caller-supplied value is rejected only for NUL and the five line terminators, which would corrupt the audit trail's framing, and for a leading `-`, which the wrapped tool would parse as an option the caller was not granted — see `CONTROL_CHARS` and `validate_argument_value` in `src/module/executor.rs`. The shell-metacharacter blacklist that remains (`BINDING_INJECTION_CHARS`) applies only to `json_flag` and the command path read out of a *binding file*, which is a build-time artifact rather than caller input.
 - **Captured output cap**: module JSON and server CLI calls cap stdout/stderr at 64 MiB each (`executor::DEFAULT_MAX_OUTPUT_BYTES`). A command that exceeds it gets `stdout_truncated`/`stderr_truncated: true` in the result. Native exec/shims inherit output streams instead of capturing them, so this cap does not apply there.
 - **Timeout kills the process**: the child is spawned with `kill_on_drop(true)`; when `--timeout`/`default_timeout` elapses, the subprocess is actually terminated rather than left running as an orphan.
@@ -1658,6 +1875,13 @@ prompt is reported with a remedy rather than as `Elicitation returned no
 response`. A human's own "no" is passed through verbatim.
 
 For a per-caller boundary that needs no human at all, use `--acl` (§9.2).
+
+Local execution (`apexe exec` native argv, PATH shims and `apexe sh`) uses a
+terminal handler instead of MCP elicitation. It prompts on `/dev/tty` and
+accepts `y`/`yes`; a stdin that is not a terminal is refused with a remedy so an
+agent cannot hang. The prompt waits 60 seconds by default;
+`APEXE_APPROVAL_TIMEOUT_SECONDS` overrides it with a minimum of 1. Captured
+module JSON and server calls keep the MCP path.
 
 For approval flows where the approver isn't in the session (e.g. a Slack bot),
 `apexe`'s `ExecutorOptions`/`McpServerBuilder`/`A2aServerBuilder` accept an

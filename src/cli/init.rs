@@ -272,6 +272,7 @@ fn scan_options(config: &ApexeConfig, tools: Vec<String>) -> super::ScanArgs {
         skills_dir: None,
         overlay: None,
         verify: true,
+        prune: false,
         dry_run: false,
     }
 }

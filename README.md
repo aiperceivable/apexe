@@ -20,13 +20,13 @@ and applies configured access rules and approval checks before execution.
 Calls leave audit records. Your CLI binaries keep working as they are; scanning
 requires no LLM or changes to their source code.
 
-For terminal-capable AI agents, install the shared [apexe Agent Skill](docs/agent-skill.md)
-to route external CLI commands through native `apexe exec -- <command> ...`
-by default in apexe-configured environments. The agent resolves project policy
-before its first task command and carries an explicit ACL into every preflight,
-execution and pipeline stage. Activate eligible
-external commands through PATH shims when shell integration is useful, or use
-MCP/A2A for protocol clients. Servers can also import HTTP operations from an
+For terminal-capable AI agents, start with the [Shell Integration guide](docs/agent-shell.md):
+OpenCode and pi can use `apexe-sh` directly, Codex uses login-shell PATH shims,
+and Claude Code uses a `PreToolUse` hook. Install the shared
+[apexe Agent Skill](docs/agent-skill.md) only as a fallback when the host cannot
+be configured with a shell or hook; it routes external CLI commands through
+native `apexe exec -- <command> ...` and carries an explicit ACL into every
+preflight, execution and pipeline stage. Use MCP/A2A for protocol clients. Servers can also import HTTP operations from an
 OpenAPI document, alongside CLI modules, using
 the same executor for schema validation, configured ACLs and auditing.
 
@@ -37,7 +37,8 @@ the same executor for schema validation, configured ACLs and auditing.
 | Prepare installed CLI coverage | `apexe init`, `apexe list --verbose` | Matching reviewed rules, typed bindings and a starter ACL to inspect |
 | Run a CLI command locally | `apexe exec` | Module JSON with captured output, or reviewed native argv with passthrough streams |
 | Keep native command names in your shell | `apexe env` | PATH shims for eligible external commands, activation helpers and installation checks |
-| Route a terminal agent's external CLI commands | [Agent Skill](docs/agent-skill.md) + `apexe exec -- ...` | Default native execution routing in configured environments for Claude Code, Codex, pi and OpenCode |
+| Configure a terminal agent's shell or hook | [Shell Integration](docs/agent-shell.md), `apexe agent` | `apexe-sh` for OpenCode/pi, login-shell PATH for Codex, `PreToolUse` hook for Claude Code |
+| Route CLI commands when the host cannot be configured | [Agent Skill](docs/agent-skill.md) + `apexe exec -- ...` | Fallback native execution routing for Claude Code, Codex, pi and OpenCode |
 | Connect a protocol client or import an HTTP API | `apexe serve`, `apexe a2a` | CLI modules and optional imported OpenAPI operations over MCP or A2A |
 | Check a CLI contract after changes | `apexe verify` | Source drift reports and optional digest-bound evidence from explicit behavioral cases |
 | Cover a custom CLI | `apexe scan` | Deterministic discovery, YAML bindings, generated ACL rules and optional Claude Skills |
@@ -80,14 +81,17 @@ apexe exec -- ls -la
   executions, refusals and ACL decisions without recording input values.
 - **Check paths and bound subprocesses** — Always check schema-typed filesystem
   paths against system and credential boundaries. Execute CLI argv without a
-  shell, scrub the child environment, enforce timeouts and cap captured output.
+  shell, scrub captured/server child environments, inherit the caller's
+  environment for local shell execution, enforce timeouts and cap captured
+  output.
   Servers also offer retry and circuit breaking; local execution disables both.
 - **Verify CLI contracts** — Detect source drift against the pre-overlay
   baseline. Optional readonly, isolated and explicitly authorized dry-run cases
   test concrete invocations; recorded evidence is invalidated by changed
   bindings, binaries or case files. Verification does not certify every invocation.
-- **Support integrations** — Install the shared Agent Skill for Claude Code,
-  Codex, pi and OpenCode; export YAML bindings and optional per-module Claude Skills,
+- **Support integrations** — Configure host shell/hook integration with
+  `apexe agent`; install the shared Agent Skill as a fallback for hosts that
+  cannot be configured; export YAML bindings and optional per-module Claude Skills,
   embed the Rust library, and export OpenAI tool definitions programmatically.
   Structured CLI errors and module guidance help callers inspect and correct failures.
 
@@ -224,22 +228,30 @@ does not imply native eligibility. When matching native grammar is unavailable,
 use module JSON if its checks permit; a server is not required for local use.
 See the [Quick Start guide](docs/quickstart.md) for the full workflow.
 
-### Claude Code, Codex, pi and OpenCode: Agent Skill + native exec
+### Claude Code, Codex, pi and OpenCode: shell/hook first, Skill fallback
 
-Follow the [four-step Agent quick integration](docs/agent-skill.md#quick-integration):
-prepare and review CLI coverage/ACL, install the shared Skill, declare the
-route in `CLAUDE.md` or `AGENTS.md`, then check an ordinary listing and pipeline.
-From an apexe source checkout, install for your user:
+Start with [Shell Integration](docs/agent-shell.md): OpenCode and pi can use
+`apexe-sh` directly, Codex uses login-shell PATH shims, and Claude Code uses a
+`PreToolUse` hook. Use `apexe agent <host>` to print or write the host
+configuration.
+
+The shared Agent Skill is the fallback for hosts that cannot be configured with
+a shell or hook. Follow the [four-step Agent quick integration](docs/agent-skill.md#quick-integration)
+only in that case: prepare and review CLI coverage/ACL, install the Skill,
+declare the route in `CLAUDE.md` or `AGENTS.md`, then check an ordinary listing
+and pipeline. From an apexe source checkout, install for your user:
 
 ```bash
 python3 scripts/install_agent_skill.py --scope user
 ```
 
 Claude Code uses `~/.claude/skills/apexe`; Codex and pi share
-`~/.agents/skills/apexe`, which OpenCode also discovers. In a configured
-project, the Skill routes ordinary CLI requests through `apexe exec -- ...`,
-with inspected preflights, the selected ACL on every call and immediate stopping
-on refusal. No MCP server or shim activation is needed; `env` is optional.
+`~/.agents/skills/apexe`, which OpenCode also discovers. In a project without
+host integration, the Skill routes ordinary CLI requests through
+`apexe exec -- ...`, with inspected preflights, the selected ACL on every call
+and immediate stopping on apexe exec refusal. Do not install it alongside an
+active `apexe-sh`/PATH/hook integration: the Skill tells the agent to run host
+routed commands normally instead of double-wrapping them.
 
 Installing the Skill alone does not enroll projects or intercept unrestricted
 shell tools. Copy the [project instruction template](docs/agent-skill.md#3-declare-the-projects-execution-route)
@@ -844,7 +856,9 @@ enable/reload prints their full paths. See the
 `--enable` installs shims and configures startup in one step, detecting the shell
 from `SHELL`; use `--shell` and `--rc-file` for a
 custom startup layout. bash, zsh and fish load shims in new interactive
-terminals; sh uses its login profile. PowerShell requires
+terminals; bash and zsh also activate in noninteractive login shells, including
+Codex terminal calls. Existing zsh installations can add login activation with
+`apexe env --reload --shell zsh`, then restart Codex. sh uses its login profile. PowerShell requires
 `apexe env --enable --shell powershell --rc-file "$PROFILE"` in the target host.
 Enabling preserves existing configuration and avoids duplicate blocks. Once
 enabled, use native commands directly without repeating setup. `--reload`

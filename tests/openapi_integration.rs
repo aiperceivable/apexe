@@ -90,6 +90,7 @@ fn options(dir: &TempDir) -> ExecutorOptions<'_> {
         enable_logging: false,
         log_arguments: false,
         enable_approval: false,
+        local_approval: false,
         enable_circuit_breaker: false,
         enable_retry: false,
         approval_store: None,

@@ -198,9 +198,7 @@ pub fn infer_value_type(placeholder: &str) -> ValueType {
         // narrowness is supposed to prevent.
         "seconds" | "fractional seconds" | "secs" | "milliseconds" | "ms" => ValueType::Float,
         "float" | "decimal" => ValueType::Float,
-        "num" | "number" | "count" | "n" | "port" | "int" | "integer" | "size" => {
-            ValueType::Integer
-        }
+        "num" | "number" | "count" | "n" | "port" | "int" | "integer" => ValueType::Integer,
         "file" | "filename" | "file name" | "path" | "dir" | "directory" => ValueType::Path,
         "url" | "uri" => ValueType::Url,
         _ => ValueType::String,
@@ -355,7 +353,9 @@ mod tests {
         assert_eq!(flag_value_type(Some("FILE")), ValueType::Path);
         assert_eq!(flag_value_type(Some("file")), ValueType::Path);
         // The entries that used to exist in only one of the copies.
-        assert_eq!(flag_value_type(Some("SIZE")), ValueType::Integer);
+        // `SIZE` accepts a unit suffix (`10M`, `1G`) in coreutils, so Integer
+        // would reject documented values; it falls through to String.
+        assert_eq!(flag_value_type(Some("SIZE")), ValueType::String);
         assert_eq!(flag_value_type(Some("FLOAT")), ValueType::Float);
         assert_eq!(flag_value_type(Some("DECIMAL")), ValueType::Float);
         assert_eq!(flag_value_type(Some("INTEGER")), ValueType::Integer);

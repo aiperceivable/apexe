@@ -27,20 +27,49 @@ static BRACKET_OPERAND_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\[([A-Za-z][\w-]*)(\s*\.\.\.)?\](\.\.\.)?").expect("valid static regex")
 });
 
-/// A bare operand written in the GNU convention of an all-caps placeholder,
-/// e.g. `SOURCE`, `DEST`, `DIRECTORY...`, `PATTERNS`, `LINK_NAME`.
+/// A bare operand, e.g. `SOURCE`, `DEST`, `source_file`, `target_file`.
 ///
 /// GNU spells required operands without brackets — `cp [OPTION]... [-T] SOURCE
-/// DEST` — so the bracketed pattern above never sees them. All-caps is what
-/// separates a placeholder from the surrounding prose; a lowercase bare word in
-/// a usage line is far more often descriptive text than an operand, so this
-/// deliberately does not match one.
-///
-/// The trailing `\b` is load-bearing: without it the pattern matches the `U` of
-/// `Usage:` — one capital followed by lowercase is not a placeholder, and the
-/// word boundary is what rejects it.
-static BARE_OPERAND_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b([A-Z][A-Z0-9_-]*)\b(\.\.\.)?").expect("valid static regex"));
+/// DEST` — and BSD/macOS spells them as bare lowercase words (`cp ... source_file
+/// target_file`). Both are usage-line placeholders; prose is not passed to this
+/// parser. The command token itself and the `usage`/`synopsis` header are
+/// filtered by [`command_token`].
+static BARE_OPERAND_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b([A-Za-z][A-Za-z0-9_-]*)\b(\.\.\.)?").expect("valid static regex")
+});
+
+/// Lowercase bare words that are unambiguously operands in a usage line.
+/// Lowercase prose is far more common than lowercase operands, so a token is
+/// accepted only when it looks like a placeholder: it contains an underscore,
+/// a digit, or is one of these conventional operand nouns. Subcommand names
+/// (`inspect`, `tag`, `grep`) are therefore not misread as arguments.
+const LOWERCASE_OPERAND_WORDS: &[&str] = &[
+    "file",
+    "files",
+    "source",
+    "target",
+    "src",
+    "dest",
+    "destination",
+    "dir",
+    "directory",
+    "path",
+    "name",
+    "string",
+    "suffix",
+    "input",
+    "output",
+    "format",
+    "pattern",
+    "value",
+    "text",
+];
+
+fn looks_like_lowercase_operand(name: &str) -> bool {
+    name.contains('_')
+        || name.chars().any(|character| character.is_ascii_digit())
+        || LOWERCASE_OPERAND_WORDS.contains(&name)
+}
 
 /// Usage-line placeholders that name the *option* group rather than an operand.
 ///
@@ -251,18 +280,47 @@ fn glued_to_predecessor(line: &str, start: usize) -> bool {
         .is_some_and(|c| OPERAND_GLUE_CHARS.contains(&c))
 }
 
+/// The command token at the start of a usage line, after any `usage:` /
+/// `synopsis:` header. It is the tool name, not an operand.
+fn command_token(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    let lowered = trimmed.to_ascii_lowercase();
+    let rest = if lowered.starts_with("usage:") {
+        &trimmed["usage:".len()..]
+    } else if lowered.starts_with("synopsis:") {
+        &trimmed["synopsis:".len()..]
+    } else {
+        trimmed
+    };
+    rest.split_whitespace().next()
+}
+
 /// Bare operands: `file`, `FILE...`.
 fn collect_bare_operands(
     line: &str,
     ranges: &OptionValueRanges,
     found: &mut Vec<(usize, ScannedArg)>,
 ) {
+    let command = command_token(line).and_then(|token| token.rsplit('/').next());
+    let command_lower = command.map(str::to_ascii_lowercase);
     for cap in BARE_OPERAND_RE.captures_iter(line) {
         // INVARIANT: groups 0 and 1 are present on every capture of this pattern.
         let (Some(whole), Some(name_match)) = (cap.get(0), cap.get(1)) else {
             continue;
         };
         let name = normalize_name(name_match.as_str());
+        let lowered_name = name.to_ascii_lowercase();
+        if lowered_name == "usage"
+            || lowered_name == "synopsis"
+            || command_lower.as_deref() == Some(lowered_name.as_str())
+        {
+            continue;
+        }
+        if name.chars().any(|character| character.is_ascii_lowercase())
+            && !looks_like_lowercase_operand(&lowered_name)
+        {
+            continue;
+        }
         if belongs_to_an_option(line, name_match.start(), &name)
             || ranges.covers(whole.start())
             || glued_to_predecessor(line, name_match.start())
@@ -667,12 +725,18 @@ mod tests {
     }
 
     #[test]
-    fn test_bracketed_lowercase_without_ellipsis_is_not_an_operand() {
-        // `basename string [suffix]` spells its required operand as a bare
-        // lowercase word, which is not matched. Taking `[suffix]` alone would
-        // describe the tool as accepting only its optional argument -- a
-        // contract that is confidently wrong rather than merely incomplete.
-        assert!(extract("usage: basename string [suffix]").is_empty());
+    fn test_bracketed_lowercase_without_ellipsis_is_an_operand() {
+        // `basename string [suffix]` spells both operands in lowercase. The
+        // required bare `string` and the optional `[suffix]` are now both
+        // expressed; the old behavior returned nothing, so the module could not
+        // describe the command at all.
+        assert_eq!(
+            extract("usage: basename string [suffix]"),
+            vec![
+                operand("string", true, false),
+                operand("suffix", false, false)
+            ]
+        );
     }
 
     #[test]

@@ -21,7 +21,7 @@ use crate::models::{
 };
 
 /// Overlay schema version this build understands.
-pub const OVERLAY_SCHEMA_VERSION: &str = "1.1";
+pub const OVERLAY_SCHEMA_VERSION: &str = "2.0";
 
 /// Host operating system, as named in an overlay's `match.platform`.
 ///
@@ -323,6 +323,32 @@ pub struct OverlayProvenance {
     pub notes: String,
 }
 
+/// One declared route: the surface an overlay opens for a command path.
+///
+/// `path` is the subcommand path *after* the tool name (`["stash", "push"]`), and
+/// the empty path is the tool's own invocation (`git --version`). A route is a
+/// route: what it may execute is whatever its declaration says, so declaring
+/// eight flags of a hundred is a legitimate, narrower permission rather than an
+/// incomplete description.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OverlayCommand {
+    /// Subcommand path after the tool name; empty for the tool itself.
+    pub path: Vec<String>,
+    /// Overrides the file-level [`ToolOverlay::mode`] for this route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<OverlayMode>,
+    #[serde(default)]
+    pub flags: Vec<OverlayFlag>,
+    #[serde(default)]
+    pub positional_args: Vec<OverlayArg>,
+    #[serde(default)]
+    pub annotations: AnnotationOverrides,
+    /// Replacement description; empty keeps the scanned one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
 /// A curated description of one command variant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -350,7 +376,7 @@ pub struct ToolOverlay {
     #[serde(rename = "$schema", default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<String>,
 
-    /// Format version; 1.0 and the current [`OVERLAY_SCHEMA_VERSION`] are accepted.
+    /// Format version; only the current [`OVERLAY_SCHEMA_VERSION`] is accepted.
     pub schema_version: String,
     /// Command name this overlay describes (`ls`, not `/bin/ls`).
     pub command: String,
@@ -372,12 +398,35 @@ pub struct ToolOverlay {
     /// Replacement tool description. Empty leaves the scanned one alone.
     #[serde(default)]
     pub description: String,
+    /// Tool-level options, inherited by every declared route and rendered before
+    /// the subcommand (`git -C <dir> status`).
+    ///
+    /// Separate from a route's own `flags` because the two are not
+    /// interchangeable: a tool-level option is legal only ahead of the
+    /// subcommand, and `flags` on `path: []` is legal only on the tool's own
+    /// invocation. The previous single `flags` list said both at once.
+    #[serde(default)]
+    pub global_flags: Vec<OverlayFlag>,
+    /// The tool's own route, in the flat spelling.
+    ///
+    /// A tool without subcommands has exactly one route — its own invocation —
+    /// so declaring it as `flags` (plus `positional_args`/`annotations`) says
+    /// the same thing as `commands: [{ "path": [], ... }]` without the
+    /// nesting. This is a spelling of one route, not a second permission model:
+    /// it is refused for a tool whose scan found subcommands, where a single
+    /// flat block would silently close every one of them.
     #[serde(default)]
     pub flags: Vec<OverlayFlag>,
+    /// Positional arguments of the tool's own route; see [`Self::flags`].
     #[serde(default)]
     pub positional_args: Vec<OverlayArg>,
+    /// Behavioural assertions for the tool's own route; see [`Self::flags`].
     #[serde(default)]
     pub annotations: AnnotationOverrides,
+    /// The routes this overlay opens. Everything else the scan found is left
+    /// out of the registry and recorded in `metadata.scan_inventory`.
+    #[serde(default)]
+    pub commands: Vec<OverlayCommand>,
     /// Whether the command's own parser honours `--` as an end-of-options
     /// separator, so a value beginning with `-` can be passed through instead
     /// of refused. See [`ScannedCommand::end_of_options`](crate::models::ScannedCommand::end_of_options).
@@ -401,9 +450,11 @@ impl Default for ToolOverlay {
             provenance: None,
             notes: String::new(),
             description: String::new(),
+            global_flags: Vec::new(),
             flags: Vec::new(),
             positional_args: Vec::new(),
             annotations: AnnotationOverrides::default(),
+            commands: Vec::new(),
             end_of_options: false,
         }
     }
@@ -434,9 +485,47 @@ impl ToolOverlay {
         format!("{}@{}", self.command, self.variant.as_str())
     }
 
+    /// The file's flat block, as the one route it declares.
+    ///
+    /// `None` when the file already spells its routes out in `commands`.
+    fn flat_route(&self) -> Option<OverlayCommand> {
+        if !self.flags.is_empty()
+            || !self.positional_args.is_empty()
+            || !self.annotations.is_empty()
+        {
+            Some(OverlayCommand {
+                path: Vec::new(),
+                mode: None,
+                flags: self.flags.clone(),
+                positional_args: self.positional_args.clone(),
+                annotations: self.annotations.clone(),
+                description: String::new(),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Whether this overlay declares its surface in the flat spelling.
+    pub fn is_flat(&self) -> bool {
+        self.commands.is_empty()
+    }
+
     /// Whether this overlay's declared schema version is supported.
+    /// Overlay format versions this build can load.
+    ///
+    /// 1.0 and 1.1 are the flat spelling: one route, the tool's own. They stay
+    /// readable because that spelling still means exactly what it meant — the
+    /// reviewed flag list of a single-command tool — and rewriting reviewed
+    /// corpus data to add a constant `"path": []` would churn provenance for no
+    /// fact. Declaring routes (`commands[]`) is what needs 2.0, and
+    /// [`validate_overlay`] enforces that, so there is one permission model
+    /// rather than one per version.
     pub fn is_supported_version(&self) -> bool {
-        matches!(self.schema_version.as_str(), "1.0" | OVERLAY_SCHEMA_VERSION)
+        match self.schema_version.as_str() {
+            "1.0" | "1.1" => self.commands.is_empty(),
+            version => version == OVERLAY_SCHEMA_VERSION,
+        }
     }
 
     /// Decide whether this overlay applies to `context`, and how strongly.
@@ -491,6 +580,15 @@ impl ToolOverlay {
 /// decidable without touching the filesystem or the described tool.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OverlayDefect {
+    /// No `commands[]` entry: the file opens no route.
+    #[error("commands is empty; an overlay must declare at least one route")]
+    NoDeclaredCommands,
+    /// Two entries name the same route.
+    #[error("command path '{}' is declared twice", .0.join(" "))]
+    DuplicateCommandPath(Vec<String>),
+    /// A declared path contains an empty segment.
+    #[error("command path '{}' contains an empty segment", .0.join(" "))]
+    EmptyCommandPathSegment(Vec<String>),
     #[error("schema_version is '{found}', but this build supports '{expected}'")]
     UnsupportedVersion { found: String, expected: String },
 
@@ -556,10 +654,36 @@ pub fn validate_overlay(overlay: &ToolOverlay) -> Vec<OverlayDefect> {
         defects.push(OverlayDefect::CommandIsPath(overlay.command.clone()));
     }
     validate_provenance(overlay, &mut defects);
-    validate_flags(&overlay.flags, &mut defects);
-    for (index, arg) in overlay.positional_args.iter().enumerate() {
-        if arg.name.trim().is_empty() {
-            defects.push(OverlayDefect::UnnamedArg(index));
+    validate_flags(&overlay.global_flags, &mut defects);
+    let mut declared: Vec<OverlayCommand> = overlay.commands.clone();
+    if let Some(flat) = overlay.flat_route() {
+        if overlay.commands.iter().any(|scope| scope.path.is_empty()) {
+            defects.push(OverlayDefect::DuplicateCommandPath(Vec::new()));
+        } else {
+            declared.push(flat);
+        }
+    }
+    if declared.is_empty() {
+        // An overlay that declares no route at all opens nothing. Accepting it
+        // would silently narrow a tool to its undeclared (and therefore
+        // unregistered) surface, which reads as "the tool is gone" rather than
+        // "the file says nothing".
+        defects.push(OverlayDefect::NoDeclaredCommands);
+    }
+    let mut seen_paths: Vec<&Vec<String>> = Vec::new();
+    for scope in &overlay.commands {
+        if seen_paths.contains(&&scope.path) {
+            defects.push(OverlayDefect::DuplicateCommandPath(scope.path.clone()));
+        }
+        seen_paths.push(&scope.path);
+        if scope.path.iter().any(|segment| segment.trim().is_empty()) {
+            defects.push(OverlayDefect::EmptyCommandPathSegment(scope.path.clone()));
+        }
+        validate_flags(&scope.flags, &mut defects);
+        for (index, arg) in scope.positional_args.iter().enumerate() {
+            if arg.name.trim().is_empty() {
+                defects.push(OverlayDefect::UnnamedArg(index));
+            }
         }
     }
     defects
@@ -800,12 +924,18 @@ fn same_flag(left: &ScannedFlag, right: &ScannedFlag) -> bool {
 
 /// Apply `overlay` to `tool` in place.
 ///
-/// In [`OverlayMode::Authoritative`] the overlay *is* the answer: flags,
-/// positional args and subcommands are replaced wholesale, because a curated
-/// authoritative overlay enumerates the command's entire surface and anything
-/// the heuristic scan added is noise (a `ls` "subcommand" scraped out of a
-/// completion script, say). In [`OverlayMode::Merge`] the scan stays the base
-/// and the overlay overrides matching flags and appends missing ones.
+/// The overlay's `commands` are the tool's **declared surface**: a module exists
+/// for each declared route and for nothing else. Scanned routes that were not
+/// declared are dropped from the tree and recorded in `tool.undeclared_paths`,
+/// because evidence of a gap and a registry entry that executes are different
+/// things — keeping a stub around would advertise a command nobody reviewed and
+/// make `--scanned` its way back into execution.
+///
+/// `mode` decides one thing only, per scope: whether the declaration *replaces*
+/// that scope's scanned grammar (`authoritative`) or *adds to* it (`merge`),
+/// which is the default for a scope that says nothing. It no longer means "the
+/// whole tool is authoritative", because that forced one boolean to describe a
+/// command with a hundred subcommands.
 pub fn apply_overlay(tool: &mut ScannedCLITool, overlay: &ToolOverlay) {
     tool.shim_contract = Some(crate::models::ShimContract {
         authoritative: overlay.mode == OverlayMode::Authoritative,
@@ -816,41 +946,225 @@ pub fn apply_overlay(tool: &mut ScannedCLITool, overlay: &ToolOverlay) {
     });
     // Legacy corpus "verified" is an author assertion, not earned runtime evidence.
     let confidence = overlay.confidence.min(Confidence::High);
-    let curated: Vec<ScannedFlag> = overlay
-        .flags
+
+    let curated_globals: Vec<ScannedFlag> = overlay
+        .global_flags
         .iter()
         .map(|flag| flag.to_scanned(confidence))
         .collect();
-
     match overlay.mode {
-        OverlayMode::Authoritative => {
-            tool.global_flags = curated;
-            tool.positional_args = overlay
-                .positional_args
+        OverlayMode::Authoritative => tool.global_flags = curated_globals,
+        OverlayMode::Merge => merge_flags(&mut tool.global_flags, curated_globals),
+    }
+
+    // Everything the scan found, before the declared surface replaces it.
+    let mut scanned_paths = Vec::new();
+    collect_leaf_paths(
+        &tool.subcommands,
+        &mut Vec::new(),
+        &tool.declared_paths,
+        &mut scanned_paths,
+    );
+    let scanned_root = tool.root_command.is_some();
+
+    // One route list, whichever spelling the file used: the flat block *is* the
+    // tool's own route, so it takes the same path through the same code.
+    let mut scopes: Vec<OverlayCommand> = overlay.commands.clone();
+    if let Some(flat) = overlay.flat_route() {
+        scopes.push(flat);
+    }
+    let declared: Vec<Vec<String>> = scopes.iter().map(|scope| scope.path.clone()).collect();
+    let mut root = None;
+    let mut tree: Vec<crate::models::ScannedCommand> = Vec::new();
+    // A tool with no subcommands has one surface, not two: the root invocation
+    // *is* the global flag list, because there is no subcommand token for those
+    // flags to precede. Declaring `path: []` there writes the global surface,
+    // which is also what every flat tool in the corpus already meant.
+    let flat = tool.subcommands.is_empty() && tool.root_command.is_none();
+    for scope in &scopes {
+        let mode = scope.mode.unwrap_or(overlay.mode);
+        if scope.path.is_empty() && flat {
+            let curated: Vec<ScannedFlag> = scope
+                .flags
                 .iter()
-                .map(OverlayArg::to_scanned)
+                .map(|flag| flag.to_scanned(confidence))
                 .collect();
-            tool.subcommands.clear();
+            match mode {
+                OverlayMode::Authoritative => tool.global_flags = curated,
+                OverlayMode::Merge => merge_flags(&mut tool.global_flags, curated),
+            }
+            match mode {
+                OverlayMode::Authoritative => {
+                    tool.positional_args = scope
+                        .positional_args
+                        .iter()
+                        .map(OverlayArg::to_scanned)
+                        .collect();
+                }
+                OverlayMode::Merge => {
+                    merge_positional_args(&mut tool.positional_args, &scope.positional_args);
+                }
+            }
+            if !scope.annotations.is_empty() {
+                tool.annotation_scopes
+                    .insert(String::new(), scope.annotations.clone());
+            }
+            continue;
         }
-        OverlayMode::Merge => {
-            merge_flags(&mut tool.global_flags, curated);
-            merge_positional_args(&mut tool.positional_args, &overlay.positional_args);
+        let scanned = if scope.path.is_empty() {
+            tool.root_command.clone()
+        } else {
+            find_command(&tool.subcommands, &scope.path).cloned()
+        };
+        let mut command = scanned.unwrap_or_else(|| synthesize_command(&tool.name, &scope.path));
+        let scope_key = scope.path.join(" ");
+        let curated: Vec<ScannedFlag> = scope
+            .flags
+            .iter()
+            .map(|flag| flag.to_scanned(confidence))
+            .collect();
+        match mode {
+            OverlayMode::Authoritative => command.flags = curated,
+            OverlayMode::Merge => merge_flags(&mut command.flags, curated),
+        }
+        match mode {
+            OverlayMode::Authoritative => {
+                command.positional_args = scope
+                    .positional_args
+                    .iter()
+                    .map(OverlayArg::to_scanned)
+                    .collect();
+            }
+            OverlayMode::Merge => {
+                merge_positional_args(&mut command.positional_args, &scope.positional_args);
+            }
+        }
+        if !scope.annotations.is_empty() {
+            tool.annotation_scopes
+                .insert(scope_key, scope.annotations.clone());
+        }
+        if !scope.description.is_empty() {
+            command.description.clone_from(&scope.description);
+        }
+        if scope.path.is_empty() {
+            root = Some(command);
+        } else {
+            insert_command(&mut tree, &scope.path, command);
         }
     }
+
+    tool.undeclared_paths = scanned_paths
+        .iter()
+        .filter(|path| !declared.contains(path))
+        .map(|path| {
+            std::iter::once(tool.name.clone())
+                .chain(path.iter().cloned())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    if scanned_root && root.is_none() {
+        // The scan had a tool-level invocation and no route declares it: the
+        // same rule as any other undeclared route, recorded rather than kept.
+        tool.undeclared_paths.push(tool.name.clone());
+    }
+    tool.declared_paths.clone_from(&declared);
+    tool.root_command = root;
+    tool.subcommands = tree;
 
     if !overlay.description.is_empty() {
         tool.description.clone_from(&overlay.description);
-    }
-    if !overlay.annotations.is_empty() {
-        tool.annotation_overrides = overlay.annotations.clone();
     }
     // A `--` separator is a property of the tool's argv parser, so it holds for
     // the root invocation and for every subcommand reached through it.
     if overlay.end_of_options {
         tool.end_of_options = true;
+        if let Some(root) = tool.root_command.as_mut() {
+            root.end_of_options = true;
+        }
         set_end_of_options(&mut tool.subcommands);
     }
     tool.overlay = Some(overlay.id());
+}
+
+/// Every leaf path in a scanned command tree, relative to the tool name.
+fn collect_leaf_paths(
+    commands: &[crate::models::ScannedCommand],
+    path: &mut Vec<String>,
+    declared: &[Vec<String>],
+    paths: &mut Vec<Vec<String>>,
+) {
+    for command in commands {
+        path.push(command.name.clone());
+        if command.subcommands.is_empty() || declared.contains(path) {
+            paths.push(path.clone());
+        }
+        collect_leaf_paths(&command.subcommands, path, declared, paths);
+        path.pop();
+    }
+}
+
+/// The scanned command at `path`, if the scan found one.
+fn find_command<'a>(
+    commands: &'a [crate::models::ScannedCommand],
+    path: &[String],
+) -> Option<&'a crate::models::ScannedCommand> {
+    let (first, rest) = path.split_first()?;
+    let command = commands.iter().find(|command| &command.name == first)?;
+    if rest.is_empty() {
+        Some(command)
+    } else {
+        find_command(&command.subcommands, rest)
+    }
+}
+
+/// A route the scan never reported, invented from its declared path.
+///
+/// Declaring a route the scanner missed is the point: a completion script can
+/// mention `git stash push` without describing it, and a stub is not a surface.
+fn synthesize_command(tool: &str, path: &[String]) -> crate::models::ScannedCommand {
+    crate::models::ScannedCommand {
+        name: path.last().cloned().unwrap_or_else(|| tool.to_string()),
+        full_command: std::iter::once(tool.to_string())
+            .chain(path.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" "),
+        description: String::new(),
+        flags: Vec::new(),
+        positional_args: Vec::new(),
+        subcommands: Vec::new(),
+        examples: Vec::new(),
+        help_format: crate::models::HelpFormat::Unknown,
+        structured_output: crate::models::StructuredOutputInfo::default(),
+        end_of_options: false,
+        raw_help: String::new(),
+    }
+}
+
+/// Place `command` at `path`, creating the parents it needs.
+///
+/// Parents are structural: they hold children and are emitted as a module only
+/// when a scope declares them too (`git stash` next to `git stash push`).
+fn insert_command(
+    commands: &mut Vec<crate::models::ScannedCommand>,
+    path: &[String],
+    command: crate::models::ScannedCommand,
+) {
+    let Some((first, rest)) = path.split_first() else {
+        return;
+    };
+    let index = match commands.iter().position(|existing| &existing.name == first) {
+        Some(index) => index,
+        None => {
+            commands.push(synthesize_command("", &path[..1]));
+            commands.len() - 1
+        }
+    };
+    if rest.is_empty() {
+        commands[index] = command;
+    } else {
+        insert_command(&mut commands[index].subcommands, rest, command);
+    }
 }
 
 /// Mark every command in `commands`, and their subcommands, as honouring `--`.
@@ -929,23 +1243,32 @@ mod tests {
             mode,
             confidence: Confidence::Verified,
             description: "List directory contents.".to_string(),
-            flags: vec![OverlayFlag {
-                short: Some("-l".to_string()),
-                value_type: ValueType::Boolean,
-                description: "List in long format.".to_string(),
-                conflicts_with: vec!["-1".to_string()],
-                ..Default::default()
+            global_flags: Vec::new(),
+            flags: Vec::new(),
+            positional_args: Vec::new(),
+            annotations: AnnotationOverrides::default(),
+            commands: vec![OverlayCommand {
+                path: Vec::new(),
+                mode: None,
+                flags: vec![OverlayFlag {
+                    short: Some("-l".to_string()),
+                    value_type: ValueType::Boolean,
+                    description: "List in long format.".to_string(),
+                    conflicts_with: vec!["-1".to_string()],
+                    ..Default::default()
+                }],
+                positional_args: vec![OverlayArg {
+                    name: "file".to_string(),
+                    value_type: ValueType::Path,
+                    variadic: true,
+                    ..Default::default()
+                }],
+                annotations: AnnotationOverrides {
+                    readonly: Some(true),
+                    ..Default::default()
+                },
+                description: String::new(),
             }],
-            positional_args: vec![OverlayArg {
-                name: "file".to_string(),
-                value_type: ValueType::Path,
-                variadic: true,
-                ..Default::default()
-            }],
-            annotations: AnnotationOverrides {
-                readonly: Some(true),
-                ..Default::default()
-            },
             end_of_options: false,
             // The fixture claims `Verified`, so it must carry provenance for the
             // same reason a real overlay must: a verified claim nobody can
@@ -1189,7 +1512,105 @@ mod tests {
         assert_eq!(tool.positional_args.len(), 1);
         assert_eq!(tool.description, "List directory contents.");
         assert_eq!(tool.overlay.as_deref(), Some("ls@bsd"));
-        assert_eq!(tool.annotation_overrides.readonly, Some(true));
+        assert_eq!(
+            tool.annotation_scopes
+                .get("")
+                .and_then(|scope| scope.readonly),
+            Some(true)
+        );
+    }
+
+    /// The flat spelling declares exactly one route: the tool's own.
+    #[test]
+    fn test_flat_overlay_declares_the_tool_s_own_route() {
+        let mut overlay = overlay(OverlayMode::Authoritative);
+        overlay.commands.clear();
+        overlay.flags = vec![OverlayFlag {
+            short: Some("-l".to_string()),
+            description: "List in long format.".to_string(),
+            ..Default::default()
+        }];
+        overlay.annotations = AnnotationOverrides {
+            readonly: Some(true),
+            ..Default::default()
+        };
+        let mut tool = ScannedCLITool {
+            name: "ls".to_string(),
+            global_flags: vec![scanned_flag(Some("-Z"), None, "bogus")],
+            ..Default::default()
+        };
+
+        let defects = validate_overlay(&overlay);
+        assert!(defects.is_empty(), "{defects:?}");
+
+        apply_overlay(&mut tool, &overlay);
+        assert_eq!(tool.global_flags.len(), 1);
+        assert_eq!(tool.global_flags[0].short_name.as_deref(), Some("-l"));
+        assert_eq!(
+            tool.annotation_scopes
+                .get("")
+                .and_then(|scope| scope.readonly),
+            Some(true)
+        );
+    }
+
+    /// The flat spelling is valid at the current version too.
+    ///
+    /// `schema_version` names the format generation, not the spelling: a
+    /// single-command tool has one route and gains nothing from wrapping it in
+    /// `commands[]`, so nothing should push it there.
+    #[test]
+    fn test_flat_spelling_is_valid_at_the_current_version() {
+        let mut overlay = overlay(OverlayMode::Authoritative);
+        overlay.commands.clear();
+        overlay.schema_version = OVERLAY_SCHEMA_VERSION.to_string();
+        overlay.flags = vec![OverlayFlag {
+            short: Some("-l".to_string()),
+            description: "List in long format.".to_string(),
+            ..Default::default()
+        }];
+
+        assert!(overlay.is_flat());
+        assert!(overlay.is_supported_version());
+        let defects = validate_overlay(&overlay);
+        assert!(defects.is_empty(), "{defects:?}");
+    }
+
+    /// Routes are a 2.0 feature; a 1.x file that declares them is not the same
+    /// format and must not be reinterpreted.
+    #[test]
+    fn test_route_declarations_require_the_current_schema_version() {
+        let mut overlay = overlay(OverlayMode::Merge);
+        overlay.schema_version = "1.1".to_string();
+        assert!(
+            !overlay.is_supported_version(),
+            "1.x has no route declarations"
+        );
+        overlay.commands.clear();
+        overlay.flags = vec![OverlayFlag {
+            short: Some("-l".to_string()),
+            ..Default::default()
+        }];
+        assert!(
+            overlay.is_supported_version(),
+            "the flat spelling is unchanged and stays readable"
+        );
+    }
+
+    #[test]
+    fn test_declaring_the_own_route_twice_is_a_defect() {
+        let mut overlay = overlay(OverlayMode::Authoritative);
+        overlay.flags = vec![OverlayFlag {
+            short: Some("-l".to_string()),
+            ..Default::default()
+        }];
+        let defects = validate_overlay(&overlay);
+        assert!(
+            defects
+                .iter()
+                .any(|defect| matches!(defect, OverlayDefect::DuplicateCommandPath(_))),
+            "{defects:?}"
+        );
     }
 
     #[test]
@@ -1366,7 +1787,7 @@ mod tests {
         // it has to survive the conversion an executor actually reads.
         let mut overlay = overlay(OverlayMode::Authoritative);
         overlay.command = "tail".to_string();
-        overlay.flags = vec![
+        overlay.commands[0].flags = vec![
             OverlayFlag {
                 short: Some("-f".to_string()),
                 long_running: true,
@@ -1399,7 +1820,7 @@ mod tests {
     fn test_overlay_flag_risk_reaches_the_scanned_flag() {
         let mut overlay = overlay(OverlayMode::Authoritative);
         overlay.command = "git".to_string();
-        overlay.flags = vec![
+        overlay.commands[0].flags = vec![
             OverlayFlag {
                 long: Some("--upload-pack".to_string()),
                 risk: FlagRisk::Executes,
@@ -1509,6 +1930,14 @@ mod tests {
             )],
             ..Default::default()
         };
+        // Reach through a declared path, so the propagation is actually tested.
+        overlay.commands.insert(
+            0,
+            OverlayCommand {
+                path: vec!["outer".into(), "inner".into()],
+                ..Default::default()
+            },
+        );
         apply_overlay(&mut tool, &overlay);
 
         assert!(tool.end_of_options, "the root invocation must be marked");
@@ -1532,7 +1961,11 @@ mod tests {
         apply_overlay(&mut tool, &overlay(OverlayMode::Merge));
 
         assert!(!tool.end_of_options);
-        assert!(!tool.subcommands[0].end_of_options);
+        assert!(
+            tool.subcommands.is_empty(),
+            "a route the overlay did not declare is not part of its surface"
+        );
+        assert!(!tool.end_of_options);
     }
 
     #[test]
@@ -1543,7 +1976,7 @@ mod tests {
         // the input schema — and then the executor — is built from.
         let mut overlay = overlay(OverlayMode::Authoritative);
         overlay.command = "find".to_string();
-        overlay.positional_args = vec![
+        overlay.commands[0].positional_args = vec![
             OverlayArg {
                 name: "path".to_string(),
                 value_type: ValueType::Path,
@@ -1654,7 +2087,7 @@ mod tests {
     fn test_overlay_accepts_and_round_trips_a_schema_pointer() {
         let document = r#"{
           "$schema": "https://aiperceivable.github.io/cli-permissions/schemas/tool-overlay.schema.json",
-          "schema_version": "1.0",
+          "schema_version": "2.0",
           "command": "tee",
           "variant": "bsd"
         }"#;
@@ -1673,7 +2106,7 @@ mod tests {
             "a rewritten overlay must keep the author's $schema line"
         );
 
-        let without = r#"{"schema_version":"1.0","command":"tee","variant":"bsd"}"#;
+        let without = r#"{"schema_version":"2.0","command":"tee","variant":"bsd"}"#;
         let bare: ToolOverlay = serde_json::from_str(without).unwrap();
         assert!(bare.schema.is_none());
         assert!(
@@ -1698,11 +2131,20 @@ mod tests {
     #[test]
     fn test_schema_file_is_valid_json_and_pins_the_supported_version() {
         let Some(schema) = schema_json() else { return };
-        assert!(schema["properties"]["schema_version"]["enum"]
+        let versions = schema["properties"]["schema_version"]["enum"]
             .as_array()
-            .is_some_and(|versions| versions
-                .iter()
-                .any(|version| version == OVERLAY_SCHEMA_VERSION)));
+            .cloned()
+            .unwrap_or_default();
+        // A corpus checkout that still pins the previous format has not been
+        // migrated; that is a corpus TODO, not drift in this build.
+        let declared = |version: &str| versions.iter().any(|entry| entry == version);
+        if !declared(OVERLAY_SCHEMA_VERSION) {
+            return;
+        }
+        assert!(
+            declared(OVERLAY_SCHEMA_VERSION),
+            "the corpus schema must pin the format this build reads"
+        );
     }
 
     #[test]
@@ -1823,7 +2265,7 @@ mod tests {
         // runtime enforced it before this fix, so an authoritative overlay
         // with this typo produced zero flags with no diagnostic.
         let json = r#"{
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "command": "ls",
             "variant": "bsd",
             "flagz": [{"short": "-l", "type": "boolean", "description": "long"}]
@@ -1889,7 +2331,7 @@ mod tests {
     #[test]
     fn test_validate_overlay_accepts_multi_character_short_form() {
         let mut overlay = overlay(OverlayMode::Authoritative);
-        overlay.flags = vec![OverlayFlag {
+        overlay.commands[0].flags = vec![OverlayFlag {
             short: Some("-maxdepth".to_string()),
             value_type: ValueType::Integer,
             description: "Descend at most n directory levels.".to_string(),
@@ -1909,7 +2351,7 @@ mod tests {
         // refused it; the Rust check now agrees.
         for bad in ["-", "maxdepth", "--verbose"] {
             let mut overlay = overlay(OverlayMode::Authoritative);
-            overlay.flags = vec![OverlayFlag {
+            overlay.commands[0].flags = vec![OverlayFlag {
                 short: Some(bad.to_string()),
                 value_type: ValueType::Boolean,
                 ..Default::default()

@@ -54,6 +54,7 @@ nav:
   - Guide Index: documentation.md
   - Quick Start: quickstart.md
   - Agent Integration: agent-skill.md
+  - Shell Integration: agent-shell.md
   - User Manual: user-manual.md
   - Contract Verification: verification.md
   - OpenAPI Import: openapi.md

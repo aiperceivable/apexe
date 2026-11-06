@@ -389,7 +389,7 @@ pub(crate) fn is_effective(value: &Value) -> bool {
 /// Only *effective* values count, by the same rule the rest of argv building
 /// uses: `{"upload_pack": false}` renders no flag, so it is not sending one.
 #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
-fn reject_exec_parameters(
+pub(crate) fn reject_exec_parameters(
     kwargs: &serde_json::Map<String, Value>,
     input_schema: Option<&Value>,
 ) -> Result<(), ModuleError> {
@@ -898,6 +898,19 @@ async fn read_up_to<R: tokio::io::AsyncRead + Unpin>(
         }
         buf.extend_from_slice(&chunk[..n]);
     }
+    if buf.len() >= max_len {
+        // Keep draining after the cap. Returning here left the read end open,
+        // so a child with more output than the pipe buffer blocked in write()
+        // forever; `join!` then waited on `child.wait()` until the outer
+        // timeout fired and the captured (truncated) output was thrown away.
+        let mut scratch = [0u8; READ_CHUNK_SIZE];
+        loop {
+            let n = reader.read(&mut scratch).await?;
+            if n == 0 {
+                break;
+            }
+        }
+    }
     Ok(buf)
 }
 
@@ -911,6 +924,20 @@ async fn read_up_to<R: tokio::io::AsyncRead + Unpin>(
 /// through is intended as a future opt-in config knob.)
 const ENV_ALLOWLIST: &[&str] = &[
     "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TERM", "TZ", "TMPDIR",
+];
+
+/// Environment variables removed from locally executed commands.
+///
+/// Local shell execution inherits the caller's environment so credential
+/// helpers (`GH_TOKEN`, `AWS_PROFILE`, `KUBECONFIG`, `SSH_AUTH_SOCK`) keep
+/// working. Dynamic-loader hooks are removed because they change which code the
+/// child loads; they are not a credential boundary.
+pub(crate) const LOCAL_ENV_DENYLIST: &[&str] = &[
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FRAMEWORK_PATH",
 ];
 
 /// Whether an environment variable is allowed through to a wrapped subprocess.
@@ -954,6 +981,7 @@ pub(super) fn spawn_with_io(
     args: &[String],
     io: super::ExecutionIo,
 ) -> Result<tokio::process::Child, ModuleError> {
+    let local = matches!(io, super::ExecutionIo::Passthrough { .. });
     let mut command = Command::new(binary_path);
     command
         .args(args)
@@ -964,7 +992,6 @@ pub(super) fn spawn_with_io(
         // in principle no longer share. Setting it from the same value the
         // guard resolves against makes the two impossible to disagree.
         .current_dir(crate::governance::path_guard::active().root())
-        .env_clear()
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -978,15 +1005,25 @@ pub(super) fn spawn_with_io(
         }
         restore_sigpipe(&mut command);
     }
-    for (key, value) in std::env::vars() {
-        if is_allowed_env(&key) {
-            if key == "PATH" {
-                command.env(
-                    key,
-                    crate::runtime_path::clean_path(std::ffi::OsStr::new(&value)),
-                );
-            } else {
-                command.env(key, value);
+    if local {
+        // Local execution is the caller's own shell: inherit its environment
+        // and keep the shim directory on PATH so descendant commands can still
+        // resolve through the same governance layer.
+        for key in LOCAL_ENV_DENYLIST {
+            command.env_remove(key);
+        }
+    } else {
+        command.env_clear();
+        for (key, value) in std::env::vars() {
+            if is_allowed_env(&key) {
+                if key == "PATH" {
+                    command.env(
+                        key,
+                        crate::runtime_path::clean_path(std::ffi::OsStr::new(&value)),
+                    );
+                } else {
+                    command.env(key, value);
+                }
             }
         }
     }
@@ -2464,14 +2501,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_subprocess_truncates_large_output() {
-        // `seq 1 500` terminates on its own (unlike `yes`, which never stops)
-        // and its ~2KB of output comfortably fits in the OS pipe buffer, so
-        // the process can finish writing (and exit) even though we stop
-        // reading well before EOF -- avoiding the write-blocks-forever
-        // deadlock a larger range would hit against the 64-byte cap.
+        // Regression: the reader stopped at the cap and never drained, so a
+        // child with more output than the OS pipe buffer blocked in write()
+        // and the call died on the timeout with no captured output. 20 000
+        // lines is well beyond a 64-byte cap and beyond the pipe buffer.
         let result = execute_subprocess(
             "seq",
-            &["1".to_string(), "500".to_string()],
+            &["1".to_string(), "20000".to_string()],
             None,
             5000,
             /* max_output_bytes */ 64,
@@ -2480,6 +2516,7 @@ mod tests {
         .unwrap();
         assert!(result.stdout.len() <= 64);
         assert!(result.stdout_truncated);
+        assert_eq!(result.exit_code, 0);
     }
 
     #[tokio::test]

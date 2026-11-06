@@ -147,10 +147,21 @@ without the flag enforces no access control at all. What *is* fail-closed about
 the flag itself: passing `--acl` with a path that does not exist refuses to
 start rather than continuing unguarded. See §5.3.
 
-### 4.5 Environment scrubbing
+### 4.5 Environment policy
 
-Every subprocess runs with `env_clear()` and a base allowlist plus `LC_*` locale
-variables. Secrets in the parent environment do not reach wrapped tools.
+Two policies, selected by execution surface:
+
+- **Captured** (MCP/A2A and module JSON): `env_clear()` plus a base allowlist
+  and `LC_*` locale variables. Secrets in the parent environment do not reach
+  wrapped tools.
+- **Local** (native `exec`, PATH shims, `apexe sh`): inherits the caller's
+  environment so credential helpers such as `GH_TOKEN`, `AWS_PROFILE`,
+  `KUBECONFIG` and `SSH_AUTH_SOCK` keep working. `LD_PRELOAD`,
+  `LD_LIBRARY_PATH` and `DYLD_*` are removed before the child starts.
+
+The local policy is a trust decision, not isolation: a wrapped tool can read
+and use the caller's credentials, and commands it starts inherit the same
+environment.
 
 ### 4.6 Resource bounds
 
@@ -601,6 +612,17 @@ format number is what the runtime compares. Existing bindings remain loadable:
 a warning identifies the gap, but does not repair missing markers or certify
 that a tool still matches its schema. Re-run `apexe scan` after a format warning.
 
+Trust in a binding's grammar is stamped per route, not per tool:
+`metadata.grammar` is `reviewed` only when every flag the route can emit came
+from a curated overlay, and `scanned` otherwise — including a route that
+declares no flags at all, since nothing about it was read. `metadata.grammar`
+replaces `shim_contract.authoritative` as the gate for a `Verified` shim route
+and for native `apexe exec`, which admits reviewed routes only; a binding
+written before the stamp falls back to the tool-level contract, the stricter of
+the two. The distinction exists because one boolean per tool cannot describe a
+command with 142 subcommands: it made `git` either wholly reviewed or not at
+all, and neither answer is true.
+
 ### 5.11 Local execution and the remaining Stage 2 boundaries
 
 Module-mode `apexe exec` executes declared modules with captured output and
@@ -635,6 +657,14 @@ describes the shipped stdin and shim boundaries:
   lookup. This is §5.1 applied locally: against a human the shim is an audit
   trail, not enforcement; it is a real boundary only where `PATH` and the
   filesystem are controlled externally (a container, a CI runner image).
+- **A host pre-tool hook is fail-open and rewrites only simple commands.**
+  `apexe hook claude` can deny a `Bash` call and rewrite a simple external
+  command to `apexe sh -c '<command>'`, but Claude Code treats a hook that
+  cannot start, exits with a code other than 2, or emits an unknown protocol as
+  a warning and runs the original command (verified with 2.1.318 on
+  2026-11-05). It leaves builtins, pipelines and compound commands unchanged,
+  so those still depend on PATH shims. Treat it as one routing layer, not as
+  the boundary.
 - **`--as` asserts a principal, it does not authenticate one.** F8 constrains it
   to `--dry-run` for that reason, and audit records from a preflight mark the
   principal as asserted.

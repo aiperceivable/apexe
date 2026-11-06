@@ -65,7 +65,7 @@ def validate_scan(session, fixture):
     fixture.overlay.write_text(
         json.dumps(
             {
-                "schema_version": "1.1",
+                "schema_version": "2.0",
                 "command": "toy",
                 "variant": "unknown",
                 "mode": "authoritative",
@@ -74,25 +74,30 @@ def validate_scan(session, fixture):
                 "cross_flag_ordering": False,
                 "short_flag_bundling": False,
                 "streaming_stdin_safe": False,
-                "flags": [
+                "commands": [
                     {
-                        "long": "--ready",
-                        "type": "boolean",
-                        "description": "Print readiness",
-                    },
-                    {
-                        "long": "--wait",
-                        "type": "boolean",
-                        "description": "Pause execution",
-                    },
+                        "path": [],
+                        "flags": [
+                            {
+                                "long": "--ready",
+                                "type": "boolean",
+                                "description": "Print readiness",
+                            },
+                            {
+                                "long": "--wait",
+                                "type": "boolean",
+                                "description": "Pause execution",
+                            },
+                        ],
+                        "annotations": {
+                            "readonly": True,
+                            "destructive": False,
+                            "idempotent": True,
+                            "requires_approval": False,
+                            "open_world": False,
+                        },
+                    }
                 ],
-                "annotations": {
-                    "readonly": True,
-                    "destructive": False,
-                    "idempotent": True,
-                    "requires_approval": False,
-                    "open_world": False,
-                },
             }
         )
     )
@@ -116,6 +121,7 @@ def validate_scan(session, fixture):
             "--overlay",
             fixture.overlay,
             "--verify",
+            "--prune",
         ]
         session.run(
             "scan output " + fmt,
@@ -190,6 +196,11 @@ def validate_list(session, fixture):
                 ],
                 check=contains("cli.toy"),
             )
+    session.run(
+        "list diagnostics",
+        ["list", "--bindings-dir", fixture.bindings, "--diagnostics"],
+        check=contains("Scan inventory"),
+    )
 
 
 def validate_execution(session, fixture):
@@ -431,6 +442,138 @@ def validate_shells(session, fixture):
                         False, "Required shell not installed: " + shell
                     ),
                 )
+
+
+def validate_agent_shell(session, fixture):
+    shim = session.root / "shims-agent-shell"
+    session.run(
+        "agent shell env enable",
+        [
+            "env",
+            "--enable",
+            "--shim-dir",
+            shim,
+            "--bindings-dir",
+            fixture.bindings,
+            "--acl",
+            fixture.acl,
+            "--tags",
+            "cli",
+            "--prefix",
+            "cli.toy",
+        ],
+    )
+    environment = {**session.environment, "APEXE_SHIM_DIR": str(shim)}
+    for fmt in ["text", "json"]:
+        session.run(
+            "agent shell check " + fmt,
+            ["sh", "--check", "--format", fmt],
+            env=environment,
+        )
+    session.run(
+        "agent shell explicit shell",
+        ["sh", "--check", "--shell", session.shell_executable("sh") or "/bin/sh"],
+        env=environment,
+    )
+    session.run(
+        "agent shell locked check",
+        ["sh", "--check", "--locked"],
+        env=environment,
+    )
+    session.run(
+        "agent shell locked allow path",
+        ["sh", "--check", "--locked", "--allow-path", "/bin"],
+        env=environment,
+    )
+    session.run(
+        "agent shell forwards argv",
+        ["sh", "-c", "toy --ready"],
+        env=environment,
+        check=contains("ready"),
+    )
+    hook_event = '{"tool_name":"Bash","tool_input":{"command":"toy --ready"}}'
+    session.run(
+        "agent shell hook claude",
+        ["hook", "claude"],
+        env=environment,
+        stdin=hook_event,
+        check=contains("updatedInput"),
+    )
+    persistent_event = (
+        '{"tool_name":"Bash","tool_input":{"command":"pwd"},'
+        '"session_id":"s1","cwd":"/tmp"}'
+    )
+    session.run(
+        "agent shell hook claude persistent",
+        ["hook", "claude", "--persistent"],
+        env=environment,
+        stdin=persistent_event,
+        check=contains("APEXE_SESSION_SOCKET"),
+    )
+    for host in ["opencode", "pi", "codex", "claude"]:
+        session.run(
+            "agent install " + host,
+            ["agent", host],
+            env=environment,
+        )
+    for fmt in ["text", "json"]:
+        session.run(
+            "agent check opencode " + fmt,
+            ["agent", "--check", "opencode", "--format", fmt],
+            env=environment,
+        )
+    session.run(
+        "agent write opencode",
+        ["agent", "opencode", "--write"],
+        env=environment,
+    )
+    session.run(
+        "agent write opencode project",
+        ["agent", "opencode", "--write", "--scope", "project"],
+        env=environment,
+    )
+    session.run(
+        "agent write pi user",
+        ["agent", "pi", "--write", "--scope", "user"],
+        env=environment,
+    )
+    session.run(
+        "agent mcp only opencode",
+        ["agent", "opencode", "--mcp-only"],
+        env=environment,
+    )
+    session.run(
+        "agent mcp only write opencode",
+        ["agent", "opencode", "--mcp-only", "--write"],
+        env=environment,
+    )
+    session.run(
+        "agent mcp only write claude",
+        ["agent", "claude", "--mcp-only", "--write"],
+        env=environment,
+    )
+    session.run("agent shell env disable", ["env", "--disable", "--shim-dir", shim])
+    for policy in ["off", "readonly", "all"]:
+        scanned_shim = session.root / ("shims-scanned-" + policy)
+        session.run(
+            "agent shell scanned " + policy,
+            [
+                "env",
+                "--enable",
+                "--shim-dir",
+                scanned_shim,
+                "--bindings-dir",
+                fixture.bindings,
+                "--acl",
+                fixture.acl,
+                "--scanned",
+                policy,
+            ],
+        )
+        session.run(
+            "agent shell scanned disable " + policy,
+            ["env", "--disable", "--shim-dir", scanned_shim],
+        )
 
 
 def validate_initialization(session, fixture):
@@ -1025,6 +1168,7 @@ def validate_cli(session):
     validate_policy(session, fixture)
     validate_source_verification(session, fixture)
     validate_shells(session, fixture)
+    validate_agent_shell(session, fixture)
     validate_initialization(session, fixture)
     validate_client_configuration(session, fixture)
     validate_stdio(session, fixture)

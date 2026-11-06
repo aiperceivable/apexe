@@ -136,8 +136,8 @@ fn test_verify_authoritative_overlay_cannot_hide_source_drift() {
     let home = TempDir::new().unwrap();
     let binary = script(&home, "before");
     let overlay = home.path().join("overlay.json");
-    std::fs::write(&overlay, json!({"schema_version":"1.1","command":"drift-fixture","variant":"unknown","mode":"authoritative","confidence":"high",
-        "flags":[{"long":"--before","type":"string","description":"Fixture option"}]}).to_string()).unwrap();
+    std::fs::write(&overlay, json!({"schema_version":"2.0","command":"drift-fixture","variant":"unknown","mode":"authoritative","confidence":"high",
+        "commands":[{"path":[],"flags":[{"long":"--before","type":"string","description":"Fixture option"}]}]}).to_string()).unwrap();
     command(&home)
         .args([
             "scan",

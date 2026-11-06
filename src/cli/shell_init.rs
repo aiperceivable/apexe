@@ -105,7 +105,11 @@ fn startup_paths(shell: Shell, rc_file: Option<&Path>) -> anyhow::Result<Vec<Pat
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot locate home directory"))?;
     match shell {
         Shell::Sh => Ok(vec![home.join(".profile")]),
-        Shell::Zsh => Ok(vec![environment_directory("ZDOTDIR", &home)?.join(".zshrc")]),
+        Shell::Zsh => {
+            let directory = environment_directory("ZDOTDIR", &home)?;
+            // Agent hosts also start noninteractive login shells, which skip .zshrc.
+            Ok(vec![directory.join(".zshrc"), directory.join(".zprofile")])
+        }
         Shell::Bash => {
             let mut login = home.join(".bash_profile");
             for name in [".bash_profile", ".bash_login", ".profile"] {

@@ -9,10 +9,8 @@ use crate::scanner::protocol::{CliParser, ParsedHelp};
 // recompiling these on every call is wasteful. INVARIANT: every pattern is a
 // compile-time constant valid regex, so `Regex::new` never fails.
 static COMMAND_SECTION_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?m)^(Available Commands|Common Commands|Management Commands|Swarm Commands|Commands):",
-    )
-    .expect("valid static regex")
+    Regex::new(r"(?mi)^(?:[a-z][\w /'-]*\s+)?commands(?: \([^)]*\))?:\s*$")
+        .expect("valid static regex")
 });
 static CMD_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?m)^[ \t]{2,}([a-z][\w-]*)\*?[ \t]+\S").expect("valid static regex")

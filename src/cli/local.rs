@@ -51,6 +51,7 @@ pub(super) fn options<'a>(
         enable_logging: true,
         log_arguments: false,
         enable_approval: true,
+        local_approval: true,
         enable_circuit_breaker: false,
         enable_retry: false,
         approval_store: None,

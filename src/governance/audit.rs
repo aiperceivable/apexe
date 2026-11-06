@@ -110,6 +110,10 @@ pub(crate) struct ExecutionRecord<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error_code: Option<ErrorCode>,
     pub(crate) duration_ms: u64,
+    /// Execution tier. `Some("scanned")` marks a call admitted without a
+    /// reviewed overlay; omitted for verified routes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) tier: Option<&'a str>,
 }
 
 /// Appends governance events to a JSONL audit log.
@@ -140,6 +144,32 @@ impl AuditManager {
         exit_code: i32,
         duration_ms: u64,
     ) {
+        self.log_execution_with_tier(
+            module_id,
+            trace_id,
+            caller_id,
+            status,
+            exit_code,
+            duration_ms,
+            None,
+        )
+        .await;
+    }
+
+    /// Record an execution with an explicit route tier.
+    // The parameter list mirrors `ExecutionRecord`; a builder would add a type
+    // just to move the same fields one call deeper.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn log_execution_with_tier(
+        &self,
+        module_id: &str,
+        trace_id: &str,
+        caller_id: Option<&str>,
+        status: &str,
+        exit_code: i32,
+        duration_ms: u64,
+        tier: Option<&str>,
+    ) {
         self.append(&ExecutionRecord {
             timestamp: Self::now(),
             event: "execution",
@@ -151,6 +181,7 @@ impl AuditManager {
             exit_code: Some(exit_code),
             error_code: None,
             duration_ms,
+            tier,
         })
         .await;
     }
@@ -204,6 +235,7 @@ impl AuditManager {
             exit_code: None,
             error_code: Some(error_code),
             duration_ms,
+            tier: None,
         })
         .await;
     }

@@ -134,6 +134,13 @@ fn infer_open_world(command: &ScannedCommand) -> bool {
     if OPEN_WORLD_TOOLS.iter().any(|tool| executable == *tool) {
         return true;
     }
+    // The subcommand table only applies to actual subcommands. `install`,
+    // `sync` and `login` are also stock local executables; applying the table
+    // to the synthesized root command marked `/bin/sync` as open-world and put
+    // it in the default deny rule.
+    if command.full_command.split_whitespace().nth(1).is_none() {
+        return false;
+    }
     let name_lower = command.name.to_lowercase();
     OPEN_WORLD_SUBCOMMANDS.iter().any(|sub| name_lower == *sub)
 }
@@ -303,6 +310,18 @@ mod tests {
         assert!(infer(&make_command_for("git push")).open_world);
         assert!(infer(&make_command_for("git clone")).open_world);
         assert!(!infer(&make_command_for("git commit")).open_world);
+    }
+
+    #[test]
+    fn test_open_world_subcommand_table_does_not_match_a_root_executable() {
+        // `install`, `sync` and `login` are also stock local executables; the
+        // subcommand table must not mark the root command as networked.
+        for executable in ["sync", "install", "login"] {
+            assert!(
+                !infer(&make_command_for(executable)).open_world,
+                "{executable} is a local executable, not a networked subcommand"
+            );
+        }
     }
 
     #[test]

@@ -1,20 +1,26 @@
 mod activation;
+mod agent;
 mod config_gen;
 mod config_set;
 mod env;
 mod exec;
+mod hook;
 mod init;
 mod list_output;
 mod local;
+mod sh;
 mod shell;
 mod shell_init;
 mod shim;
 mod source_scripts;
 mod verify;
+pub use agent::AgentArgs;
 pub use config_set::ConfigAction;
 pub use env::EnvArgs;
 pub use exec::{ExecArgs, UnmanagedPolicy};
+pub use hook::HookArgs;
 pub use init::{InitArgs, ReportFormat};
+pub use sh::{is_entry_invocation, run_entry, ShArgs};
 pub use verify::VerifyArgs;
 
 use std::path::PathBuf;
@@ -73,6 +79,25 @@ pub struct Cli {
     pub command: Commands,
 }
 
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    clap::ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ScannedPolicy {
+    #[default]
+    Off,
+    Readonly,
+    All,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Scan CLI tools and generate apcore binding files.
@@ -87,6 +112,15 @@ pub enum Commands {
     /// Execute governed CLI commands with native argv or module JSON input.
     #[command(display_order = 30)]
     Exec(ExecArgs),
+    /// Run a shell with the apexe shim environment, or check launcher readiness.
+    #[command(display_order = 35)]
+    Sh(ShArgs),
+    /// Translate a host hook event into a governed execution request.
+    #[command(display_order = 36)]
+    Hook(HookArgs),
+    /// Print host configuration or check launcher readiness for one host.
+    #[command(display_order = 37)]
+    Agent(AgentArgs),
     /// Enable, reload, disable or check governed shims, or print shell activation.
     #[command(display_order = 40)]
     Env(EnvArgs),
@@ -125,7 +159,11 @@ impl Cli {
     /// Execute with an already resolved configuration, applying CLI overrides.
     pub fn run_with_config(self, config: ApexeConfig) -> anyhow::Result<i32> {
         let config = config.with_timeout_override(self.timeout);
-        if !matches!(&self.command, Commands::Env(args) if args.check) {
+        if !matches!(&self.command, Commands::Env(args) if args.check)
+            && !matches!(&self.command, Commands::Sh(_))
+            && !matches!(&self.command, Commands::Hook(_))
+            && !matches!(&self.command, Commands::Agent(_))
+        {
             config.ensure_dirs()?;
         }
         install_path_guard(&config)?;
@@ -135,6 +173,9 @@ impl Cli {
             Commands::Serve(args) => args.execute(&config),
             Commands::A2a(args) => args.execute(&config),
             Commands::Exec(args) => return args.execute(&config),
+            Commands::Sh(args) => return args.execute(&config),
+            Commands::Hook(args) => Ok(args.execute(&config)?),
+            Commands::Agent(args) => Ok(args.execute(&config)?),
             Commands::Env(args) => args.execute(&config),
             Commands::Verify(args) => args.execute(&config),
             Commands::Init(args) => args.execute(&config),
@@ -238,6 +279,18 @@ pub struct ScanArgs {
     #[arg(long)]
     pub verify: bool,
 
+    /// Delete scan-generated bindings for the scanned tools that this run did
+    /// not write.
+    ///
+    /// `scan` never removed anything, so a route an overlay no longer declares
+    /// kept its binding file and stayed in `apexe list` — the declared surface
+    /// was true at scan time and false on disk. Only files this build generated
+    /// (`metadata.generated_by` starts with `apexe `) and that belong to a tool
+    /// scanned in this run are considered, so a hand-authored binding is never
+    /// touched.
+    #[arg(long)]
+    pub prune: bool,
+
     /// Report what would be written without creating or overwriting anything.
     ///
     /// Covers all three deliverables — bindings, the ACL policy and any
@@ -281,6 +334,9 @@ impl ScanArgs {
         // a non-zero exit, not a swallowed warning — otherwise `apexe scan`
         // reports success with no bindings (or, worse, no ACL policy) written.
         self.write_bindings(&modules, &output_dir)?;
+        if self.prune {
+            self.prune_stale_bindings(&modules, &output_dir, &Self::scanned_tool_names(&outcome))?;
+        }
         self.write_acl(&modules, config)?;
         self.write_skills(&modules)?;
         let scanned_count = outcome.tools.len();
@@ -322,6 +378,13 @@ impl ScanArgs {
         ))
     }
 
+    /// The tool names a scan run covered, for `--prune`.
+    fn scanned_tool_names(
+        outcome: &crate::scanner::ScanOutcome,
+    ) -> std::collections::BTreeSet<String> {
+        outcome.tools.iter().map(|tool| tool.name.clone()).collect()
+    }
+
     /// One `  tool: reason` line per failure, in the order they were requested.
     fn render_failures(failures: &[crate::scanner::ScanFailure]) -> String {
         failures
@@ -329,6 +392,85 @@ impl ScanArgs {
             .map(|failure| format!("  {}: {}", failure.tool, failure.error))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Remove scan-generated bindings for scanned tools that this run did not
+    /// rewrite.
+    ///
+    /// `scan` never removed anything, so a route a curated overlay no longer
+    /// declares kept its binding file: the declared surface was true at scan
+    /// time and false on disk. Only files this build generated
+    /// (`metadata.generated_by` starts with `apexe `) and that belong to a tool
+    /// scanned in this run are considered, so a hand-authored binding survives.
+    fn prune_stale_bindings(
+        &self,
+        written: &[apcore_toolkit::ScannedModule],
+        output_dir: &std::path::Path,
+        tools: &std::collections::BTreeSet<String>,
+    ) -> anyhow::Result<()> {
+        if self.dry_run || tools.is_empty() {
+            return Ok(());
+        }
+        let mut paths: std::collections::BTreeMap<String, std::path::PathBuf> =
+            std::collections::BTreeMap::new();
+        for entry in std::fs::read_dir(output_dir)? {
+            let path = entry?.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if let Some(module_id) = name.strip_suffix(".binding.yaml") {
+                paths.insert(module_id.to_string(), path);
+            }
+        }
+        let kept: std::collections::BTreeSet<&str> = written
+            .iter()
+            .map(|module| module.module_id.as_str())
+            .collect();
+        let existing = crate::output::load_modules_from_dir(output_dir, None)
+            .map_err(|error| anyhow::anyhow!("Failed to read {}: {error}", output_dir.display()))?;
+        let mut pruned: Vec<String> = Vec::new();
+        for module in existing {
+            if kept.contains(module.module_id.as_str()) {
+                continue;
+            }
+            let tool = module
+                .metadata
+                .get("command_path")
+                .and_then(|path| path.as_array())
+                .and_then(|path| path.first())
+                .and_then(|name| name.as_str());
+            if tool.is_none_or(|tool| !tools.contains(tool)) {
+                continue;
+            }
+            let generated_here = module
+                .metadata
+                .get("generated_by")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|producer| producer.starts_with("apexe "));
+            if !generated_here {
+                tracing::warn!(
+                    module_id = %module.module_id,
+                    "Kept a binding this build did not generate"
+                );
+                continue;
+            }
+            let Some(path) = paths.get(&module.module_id) else {
+                continue;
+            };
+            std::fs::remove_file(path)
+                .map_err(|error| anyhow::anyhow!("Failed to prune {}: {error}", path.display()))?;
+            pruned.push(module.module_id);
+        }
+        for module_id in &pruned {
+            tracing::info!(module_id = %module_id, "Pruned a binding this scan no longer declares");
+        }
+        if !pruned.is_empty() {
+            println!(
+                "Pruned {} binding(s) this scan no longer declares.",
+                pruned.len()
+            );
+        }
+        Ok(())
     }
 
     pub(super) fn write_bindings(
@@ -405,7 +547,11 @@ impl ScanArgs {
     /// replacing it wholesale — `apexe scan` covers only the tools named on
     /// this command line, so overwriting would discard every earlier scan's
     /// rules (and any the operator hand-authored). See
-    /// [`AclManager::merge_default`](crate::governance::AclManager::merge_default).
+    /// [`AclManager::merge_default`](crate::governance::AclManager::merge_default),
+    /// which also drops the grants belonging to a tool this batch rescanned but
+    /// no longer produces: an overlay that closes a route stops producing its
+    /// module, and a merge that only removed `batch_ids` entries kept an allow
+    /// for a route that no longer existed.
     pub(super) fn write_acl(
         &self,
         modules: &[apcore_toolkit::ScannedModule],
@@ -690,6 +836,10 @@ impl ServeArgs {
             .allow_deprecated_sse(self.allow_deprecated_sse)
             .audit_path(config.audit_log.clone());
 
+        if let Some(pattern) = config.bindings_pattern.as_deref() {
+            builder = builder.bindings_pattern(pattern);
+        }
+
         // Only load ACL when explicitly specified via --acl flag.
         // Without --acl, the server runs without access control (all tools allowed).
         if let Some(ref acl_path) = self.acl {
@@ -743,8 +893,40 @@ impl ServeArgs {
     }
 }
 
-/// Split a comma-separated `--tags` value, refusing an empty token.
+/// Validate `--cors-origin` values before they reach tower-http.
 ///
+/// `AllowOrigin::list` panics on `*`, and an origin without a scheme never
+/// matches a browser `Origin` header. Both are rejected here so the operator
+/// gets a structured error instead of a process abort or a silently inert
+/// configuration.
+fn validate_cors_origins(origins: &[String]) -> anyhow::Result<()> {
+    for origin in origins {
+        let trimmed = origin.trim();
+        anyhow::ensure!(
+            trimmed != "*",
+            "--cors-origin '*' is not supported: the CORS layer cannot combine a wildcard with an \
+             explicit origin list. Pass the concrete origins an operator browser will send \
+             (e.g. https://app.example.com), or omit --cors-origin to disable CORS."
+        );
+        let parsed = url::Url::parse(trimmed).map_err(|error| {
+            anyhow::anyhow!(
+                "--cors-origin '{origin}' is not a valid origin (expected scheme://host[:port]): \
+                 {error}"
+            )
+        })?;
+        anyhow::ensure!(
+            matches!(parsed.scheme(), "http" | "https"),
+            "--cors-origin '{origin}' must use http:// or https://"
+        );
+        anyhow::ensure!(
+            parsed.host_str().is_some(),
+            "--cors-origin '{origin}' must include a host"
+        );
+    }
+    Ok(())
+}
+
+/// Split a comma-separated `--tags` value, refusing an empty token.///
 /// `--tags readonly,` splits to `["readonly", ""]`, and
 /// [`ModuleFilter::admits`](crate::module::ModuleFilter::admits) requires
 /// *every* token. No module carries an empty tag and none can be made to, so
@@ -872,6 +1054,7 @@ impl A2aArgs {
     }
 
     fn build_server(&self, config: &ApexeConfig) -> anyhow::Result<crate::a2a::A2aServerBuilder> {
+        validate_cors_origins(&self.cors_origin)?;
         let bindings_dir = self
             .bindings_dir
             .clone()
@@ -902,6 +1085,10 @@ impl A2aArgs {
                 allow_unauthenticated_bind: self.allow_unauthenticated_bind,
             })
             .audit_path(config.audit_log.clone());
+
+        if let Some(pattern) = config.bindings_pattern.as_deref() {
+            builder = builder.bindings_pattern(pattern);
+        }
 
         if let Some(ref tags_str) = self.tags {
             builder = builder.tags(parse_tag_list(tags_str)?);
@@ -944,7 +1131,18 @@ pub struct ListArgs {
     #[arg(long)]
     pub verbose: bool,
 
-    /// ACL policy file to evaluate against in `--verbose` output.
+    /// Show the scan inventory: routes an overlay declared out of the surface.
+    ///
+    /// These are evidence, not modules. `list` shows what may execute; this
+    /// shows what the scanner found and the overlay left closed, which is the
+    /// only way to tell "the scan never saw it" from "somebody decided not to
+    /// permit it". Without an overlay the inventory is empty and the listing is
+    /// the whole scan.
+    #[arg(long)]
+    pub diagnostics: bool,
+
+    /// ACL policy file to evaluate against in `--verbose` output, and to
+    /// check for targets that match no loaded module in `--diagnostics`.
     ///
     /// Defaults to `<config_dir>/acl.yaml` -- where `apexe scan` writes one --
     /// when that file exists. This is a read-only report: unlike `--acl` on
@@ -989,12 +1187,145 @@ impl ListArgs {
             }
         }
 
-        if self.verbose {
+        if self.diagnostics {
+            self.print_diagnostics(&modules, config)?;
+        } else if self.verbose {
             self.print_verbose(&modules, config)?;
         } else {
             self.print_modules(&modules)?;
         }
         Ok(())
+    }
+
+    /// Report the routes an overlay left closed, per tool, and any ACL target
+    /// that matches no loaded module.
+    ///
+    /// Every module carries the same `scan_inventory` for its tool, so the
+    /// grouping is by module rather than by file: one entry per declared route
+    /// with the tool's full closed list would repeat the list N times.
+    ///
+    /// The ACL half exists because a grant naming a module that is not here has
+    /// nowhere else to surface. Generated rules outlive the bindings they were
+    /// derived from: an overlay that narrows its declared surface stops
+    /// producing modules, and an operator reading `acl.yaml` otherwise sees
+    /// permissions nothing can exercise until a route is reopened.
+    fn print_diagnostics(
+        &self,
+        modules: &[apcore_toolkit::ScannedModule],
+        config: &ApexeConfig,
+    ) -> anyhow::Result<()> {
+        let closed = Self::closed_routes(modules);
+        let acl = self.unmatched_acl_targets(modules, config)?;
+        if self.format == "json" {
+            if let Some(targets) = &acl {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "scan_inventory": closed,
+                        "unmatched_acl_targets": targets,
+                    }))?
+                );
+            } else {
+                // No policy loaded: byte-identical to the report this command
+                // has always printed, so an existing consumer keeps working.
+                println!("{}", serde_json::to_string_pretty(&closed)?);
+            }
+            return Ok(());
+        }
+        Self::print_closed_routes(&closed);
+        if let Some(targets) = &acl {
+            Self::print_unmatched_acl_targets(targets);
+        }
+        Ok(())
+    }
+
+    /// Group every tool's closed routes, as recorded by its last scan.
+    fn closed_routes(
+        modules: &[apcore_toolkit::ScannedModule],
+    ) -> std::collections::BTreeMap<String, Vec<String>> {
+        let mut reported: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for module in modules {
+            let Some(closed) = module
+                .metadata
+                .get("scan_inventory")
+                .and_then(|value| serde_json::from_value::<Vec<String>>(value.clone()).ok())
+            else {
+                continue;
+            };
+            let tool = module
+                .metadata
+                .get("command_path")
+                .and_then(|value| value.as_array())
+                .and_then(|path| path.first())
+                .and_then(|name| name.as_str())
+                .unwrap_or(module.module_id.as_str())
+                .to_string();
+            reported.entry(tool).or_insert(closed);
+        }
+        reported
+    }
+
+    fn print_closed_routes(reported: &std::collections::BTreeMap<String, Vec<String>>) {
+        println!("Scan inventory (scanned routes a curated overlay left closed):");
+        if reported.is_empty() {
+            println!(
+                "  none. Every module either came from an overlay that declared nothing else, \
+                 or from a scan with no overlay at all."
+            );
+            return;
+        }
+        for (tool, closed) in reported {
+            println!("{tool}: {} scanned route(s) not declared", closed.len());
+            for route in closed {
+                println!("  {route}");
+            }
+        }
+    }
+
+    /// ACL target patterns that match none of the loaded modules.
+    ///
+    /// `None` when no policy is loaded — there is nothing to check, and an
+    /// empty report would change this command's output for every installation
+    /// that never wrote an ACL. Reuses
+    /// [`validate_acl_rules`](crate::governance::validate_acl_rules) so this
+    /// report can never disagree with the startup check.
+    fn unmatched_acl_targets(
+        &self,
+        modules: &[apcore_toolkit::ScannedModule],
+        config: &ApexeConfig,
+    ) -> anyhow::Result<Option<Vec<crate::governance::UnmatchedTarget>>> {
+        let Some(path) = self.resolve_acl_path(config) else {
+            return Ok(None);
+        };
+        let manager = crate::governance::AclManager::from_config(&path)
+            .map_err(|e| anyhow::anyhow!("Failed to load ACL '{}': {e}", path.display()))?;
+        let acl = manager.into_inner();
+        let registered: Vec<String> = modules
+            .iter()
+            .map(|module| module.module_id.clone())
+            .collect();
+        Ok(Some(
+            crate::governance::validate_acl_rules(acl.rules(), &registered).unmatched_targets,
+        ))
+    }
+
+    fn print_unmatched_acl_targets(targets: &[crate::governance::UnmatchedTarget]) {
+        println!("ACL targets with no loaded module (grants that cannot match anything):");
+        if targets.is_empty() {
+            println!("  none.");
+            return;
+        }
+        for target in targets {
+            let negation = if target.negated { "$not " } else { "" };
+            println!(
+                "  rule {} ({}): {negation}{}",
+                target.rule_index, target.effect, target.pattern
+            );
+            if !target.suggestions.is_empty() {
+                println!("    did you mean: {}?", target.suggestions.join(" or "));
+            }
+        }
     }
 
     fn print_empty(&self, config: &ApexeConfig, message: &str) -> anyhow::Result<()> {
@@ -1494,6 +1825,7 @@ mod tests {
         let args = ScanArgs {
             offline: true,
             verify: false,
+            prune: false,
             dry_run: false,
             tools: vec!["echo".to_string()],
             output_dir: None,
@@ -1844,6 +2176,76 @@ mod tests {
         );
     }
 
+    /// `--prune` removes only what this build generated for a scanned tool.
+    #[test]
+    fn test_prune_stale_bindings_spares_handwritten_and_unrelated_bindings() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let module = |id: &str, tool: &str, generated: bool| {
+            let mut module = apcore_toolkit::ScannedModule::new(
+                id.to_string(),
+                "prune fixture".to_string(),
+                serde_json::json!({"type": "object", "properties": {}}),
+                serde_json::json!({"type": "object"}),
+                vec!["test".to_string()],
+                "exec:///nonexistent/binary".to_string(),
+            );
+            module
+                .metadata
+                .insert("command_path".into(), serde_json::json!([tool, "sub"]));
+            if generated {
+                module
+                    .metadata
+                    .insert("generated_by".into(), serde_json::json!("apexe 0.10.0"));
+            }
+            module
+        };
+        // kept, stale-but-generated, hand-authored, and another tool entirely
+        let modules = vec![
+            module("cli.git.status", "git", true),
+            module("cli.git.stash", "git", true),
+            module("cli.git.handmade", "git", false),
+            module("cli.ls", "ls", true),
+        ];
+        crate::output::YamlOutput::without_verification()
+            .write(&modules, dir.path(), false)
+            .unwrap();
+
+        let mut args = scan_args(false);
+        args.prune = true;
+        let kept = [module("cli.git.status", "git", true)];
+        let tools = std::collections::BTreeSet::from(["git".to_string()]);
+        args.prune_stale_bindings(&kept, dir.path(), &tools)
+            .unwrap();
+
+        let remaining: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(
+            remaining
+                .iter()
+                .any(|name| name.starts_with("cli.git.status")),
+            "a binding this run wrote must survive: {remaining:?}"
+        );
+        assert!(
+            !remaining
+                .iter()
+                .any(|name| name.starts_with("cli.git.stash")),
+            "a stale generated binding must be pruned: {remaining:?}"
+        );
+        assert!(
+            remaining
+                .iter()
+                .any(|name| name.starts_with("cli.git.handmade")),
+            "a hand-authored binding must survive: {remaining:?}"
+        );
+        assert!(
+            remaining.iter().any(|name| name.starts_with("cli.ls")),
+            "a tool this run did not scan must survive: {remaining:?}"
+        );
+    }
+
     fn scan_args(verify: bool) -> ScanArgs {
         let cli = Cli::try_parse_from(
             ["apexe", "scan", "ls"]
@@ -2099,6 +2501,7 @@ mod tests {
             .unwrap();
 
         let args = ListArgs {
+            diagnostics: false,
             format: "table".to_string(),
             bindings_dir: Some(tmp.path().to_path_buf()),
             verbose: false,
@@ -2128,6 +2531,7 @@ mod tests {
             ..ApexeConfig::default()
         };
         let args = ListArgs {
+            diagnostics: false,
             format: "table".to_string(),
             bindings_dir: None,
             verbose: true,
@@ -2148,6 +2552,7 @@ mod tests {
             ..ApexeConfig::default()
         };
         let args = ListArgs {
+            diagnostics: false,
             format: "table".to_string(),
             bindings_dir: None,
             verbose: true,
@@ -2165,6 +2570,7 @@ mod tests {
             ..ApexeConfig::default()
         };
         let args = ListArgs {
+            diagnostics: false,
             format: "table".to_string(),
             bindings_dir: None,
             verbose: true,
@@ -2338,6 +2744,7 @@ mod tests {
         let args = ScanArgs {
             offline: true,
             verify: false,
+            prune: false,
             dry_run: false,
             tools: vec!["nonexistent_tool_xyz_12345".to_string()],
             output_dir: None,
@@ -2368,6 +2775,7 @@ mod tests {
         let args = ScanArgs {
             offline: true,
             verify: false,
+            prune: false,
             dry_run: false,
             tools: vec!["echo".to_string()],
             output_dir: None,
@@ -2407,6 +2815,7 @@ mod tests {
         let args = ScanArgs {
             offline: true,
             verify: false,
+            prune: false,
             dry_run: false,
             tools: vec!["ls".to_string()],
             output_dir: None,
@@ -2459,6 +2868,7 @@ mod tests {
         .unwrap();
 
         let args = ListArgs {
+            diagnostics: false,
             format: "table".to_string(),
             bindings_dir: Some(tmp.path().to_path_buf()),
             verbose: false,
@@ -2598,5 +3008,15 @@ mod tests {
             configured.iter().all(|p| p.ends_with("secret-data")),
             "every stored spelling must name the configured path: {configured:?}"
         );
+    }
+
+    #[test]
+    fn test_cors_origin_validation_rejects_wildcard_and_schemeless_values() {
+        // tower-http panics on a wildcard passed through AllowOrigin::list, and
+        // a scheme-less origin can never match a browser Origin header.
+        assert!(validate_cors_origins(&["https://app.example.com".to_string()]).is_ok());
+        assert!(validate_cors_origins(&["http://localhost:3000".to_string()]).is_ok());
+        assert!(validate_cors_origins(&["*".to_string()]).is_err());
+        assert!(validate_cors_origins(&["localhost:3000".to_string()]).is_err());
     }
 }

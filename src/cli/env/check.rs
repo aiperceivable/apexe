@@ -111,6 +111,7 @@ pub(super) fn execute(directory: &Path, config: &ApexeConfig) -> anyhow::Result<
     });
     if let Some(manifest) = manifest {
         check_links(directory, &manifest, &mut report);
+        check_entry_point(directory, &manifest, &mut report);
         check_activation(directory, &manifest, &mut report);
         check_persistent_scripts(directory, &manifest, &mut report);
         let registered = check_bindings(&manifest, config, &mut report);
@@ -284,6 +285,23 @@ fn check_links(directory: &Path, manifest: &Manifest, report: &mut Report) {
     }
 }
 
+fn check_entry_point(directory: &Path, manifest: &Manifest, report: &mut Report) {
+    let entry = entry_path(directory, crate::cli::sh::ENTRY_NAME);
+    report.record(
+        "LINKS apexe-sh",
+        (|| {
+            anyhow::ensure!(
+                owned(&entry, manifest),
+                "{} is missing or not an owned link to {}; reinstall shims",
+                entry.display(),
+                manifest.executable.display()
+            );
+            require_executable(&entry)
+        })(),
+        |_| format!("{} -> {}", entry.display(), manifest.executable.display()),
+    );
+}
+
 fn resolve_entry(directory: &Path, name: &str) -> anyhow::Result<PathBuf> {
     // Inspect the caller's PATH, not runtime_path::search_path(), which strips shims.
     let resolved = which::which_in(name, std::env::var_os("PATH"), std::env::current_dir()?)?;
@@ -379,6 +397,38 @@ fn check_bindings(
     )?;
     for (name, routes) in &manifest.commands {
         for route in routes {
+            let matching: Vec<_> = modules
+                .iter()
+                .filter(|module| module.module_id == route.module_id)
+                .collect();
+            // `--reload` deliberately retains removed or filtered routes as
+            // tombstones. They refuse execution by design, so `--check` must
+            // not report a healthy installation as permanently broken; say
+            // `Warn` and give the remedy that actually clears the route.
+            if route.tombstone {
+                if matching.is_empty() {
+                    report.add(
+                        Status::Warn,
+                        &format!("BINDINGS {}", route.module_id),
+                        format!(
+                            "{} is retained as a tombstone; it refuses execution. Run `apexe env --disable` then `apexe env --enable` to clear it, or restore the binding and reload",
+                            route.module_id
+                        ),
+                    );
+                    continue;
+                }
+                if !manifest.filter.admits(matching[0]) {
+                    report.add(
+                        Status::Warn,
+                        &format!("BINDINGS {}", route.module_id),
+                        format!(
+                            "{} is excluded by the installed filter; the retained route refuses execution. Reload with the intended --prefix/--tags or clear the route",
+                            route.module_id
+                        ),
+                    );
+                    continue;
+                }
+            }
             report.record(
                 &format!("BINDINGS {}", route.module_id),
                 check_route(
@@ -388,7 +438,14 @@ fn check_bindings(
                     &modules,
                     executor.registry().has(&route.module_id),
                 ),
-                |_| "Route, native executable and overlay contract are current".into(),
+                |_| match route.tier {
+                    crate::cli::shim::RouteTier::Verified => {
+                        "Route, native executable and overlay contract are current".into()
+                    }
+                    crate::cli::shim::RouteTier::Scanned => {
+                        "Route, native executable and scanned tier are current".into()
+                    }
+                },
             );
         }
     }
@@ -438,16 +495,19 @@ fn check_route(
         "{} is excluded by the installed filter; reload shims",
         route.module_id
     );
-    crate::cli::shim::eligible(module)?;
+    match route.tier {
+        crate::cli::shim::RouteTier::Verified => crate::cli::shim::eligible(module)?,
+        crate::cli::shim::RouteTier::Scanned => crate::cli::shim::scannable(module)?,
+    }
     anyhow::ensure!(
         crate::cli::shim::command_path(module)? == route.command_path,
         "{name} command_path changed; rescan and reload shims"
     );
     let binary = crate::scanner::resolver::extract_binary_path(&module.target)
         .ok_or_else(|| anyhow::anyhow!("Invalid CLI target for {}", route.module_id))?;
-    require_executable(Path::new(binary))?;
+    require_executable(Path::new(&binary))?;
     anyhow::ensure!(
-        Some(Path::new(binary).canonicalize()?) != manifest.executable.canonicalize().ok(),
+        Some(Path::new(&binary).canonicalize()?) != manifest.executable.canonicalize().ok(),
         "Binding targets the shim executable; rescan with a clean PATH"
     );
     anyhow::ensure!(

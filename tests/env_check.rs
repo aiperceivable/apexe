@@ -305,6 +305,27 @@ fn test_env_check_reports_missing_corrupt_or_empty_bindings() {
 }
 
 #[test]
+fn test_env_check_warns_on_a_retained_tombstone() {
+    let fixture = Fixture::new();
+    std::fs::remove_file(
+        fixture
+            .home
+            .path()
+            .join(".apexe/bindings/cli.cat.binding.yaml"),
+    )
+    .unwrap();
+    fixture.change_manifest(|manifest| {
+        manifest["commands"]["cat"][0]["tombstone"] = json!(true);
+    });
+    fixture
+        .check()
+        .assert()
+        .success()
+        .stdout(contains("[WARN] BINDINGS cli.cat"))
+        .stdout(contains("tombstone"));
+}
+
+#[test]
 fn test_env_check_reports_stale_route_and_unavailable_native_binary() {
     for target in ["exec:///bin/cat", "exec:///missing-cat"] {
         let fixture = Fixture::new();

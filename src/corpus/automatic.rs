@@ -115,7 +115,7 @@ mod tests {
         let package = catalog::package_path(&store.root, name);
         let overlays = package.join(corpus.snapshot.as_str()).join("overlays");
         std::fs::create_dir_all(&overlays).unwrap();
-        std::fs::write(overlays.join("fixture.json"), r#"{"schema_version":"1.1","command":"fixture","variant":"unknown","mode":"merge","confidence":"low","flags":[]}"#).unwrap();
+        std::fs::write(overlays.join("fixture.json"), r#"{"schema_version":"2.0","command":"fixture","variant":"unknown","mode":"merge","confidence":"low","commands":[{"path":[],"flags":[]}]}"#).unwrap();
         catalog::write_owner(&store.root, &corpus).unwrap();
         catalog::save(
             &store.root,

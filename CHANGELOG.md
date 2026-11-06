@@ -6,6 +6,147 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
+## [0.10.0] - 2026-11-06
+
+### Added
+- `apexe sh` runs a real shell with the installed shim environment through
+  `exec`, forwards arguments verbatim, and diagnoses readiness with
+  `--check [--format text|json]`. `apexe env --enable` installs the stable
+  `apexe-sh` entry point for hosts that select a shell by path. This launcher
+  changes command lookup order only; it is not a sandbox or a full-governance
+  boundary.
+- Local shim and native execution now inherit the caller's environment so
+  credential helpers (`GH_TOKEN`, `AWS_PROFILE`, `KUBECONFIG`,
+  `SSH_AUTH_SOCK`) keep working; dynamic-loader hooks (`LD_PRELOAD`,
+  `DYLD_*`) are removed before the child starts. Captured MCP/A2A execution
+  keeps the existing scrubbed allowlist. Descendant commands started by a
+  locally executed tool keep the shim directory on `PATH`.
+- `apexe sh --locked [--allow-path DIR]` restricts `PATH` to the shim
+  directory plus explicit directories. `apexe-sh` reads
+  `APEXE_SHELL_LOCKED` and `APEXE_SHELL_ALLOW_PATH`. This is a restricted
+  command search path, not a sandbox or a full-governance boundary.
+- `apexe sh --check` reports the local environment policy and denylist.
+- `apexe agent <host>` prints OpenCode, pi, Codex or Claude Code setup using
+  the installed `apexe-sh` path; `--check` reports launcher and host readiness.
+  `--write` merges the configuration atomically, and `--mcp-only` generates an
+  MCP-only deployment for OpenCode or Claude Code (Codex prints TOML).
+- `apexe hook claude --persistent` routes every Bash call through a detached
+  governed shell session that preserves cwd, variables, functions and aliases
+  across calls. Experimental; scoped to the host session id and project
+  directory, with an idle timeout and an explicit stop command.
+- `apexe hook claude` translates Claude Code `PreToolUse` Bash events. Simple
+  external commands are rewritten to `apexe sh -c '<command>'` through
+  `updatedInput`; stateful builtins, pipelines and compound commands are left
+  to the installed PATH shims. Missing shims are denied with a remedy.
+- `apexe env --enable --scanned <off|readonly|all>` installs routes for
+  bindings without a reviewed overlay. A scanned route parses and validates the
+  caller's argv, then executes the original argv without rebuilding or
+  reordering it; executions are audited with `tier: scanned`. `readonly`
+  admits only readonly, non-destructive, closed-world modules.
+- `apexe sh --check` lists modules that have a binding but are not
+  shim-eligible, with the exclusion reason, so coverage gaps are visible
+  without enabling a `scanned` execution tier.
+- Local native, shim and `apexe sh` execution now resolves `requires_approval`
+  modules with a `/dev/tty` prompt (`y`/`yes`) and a bounded wait. A
+  non-interactive stdin is refused with a remedy instead of blocking; MCP/A2A
+  and captured module execution keep their client or store based approval path.
+
+### Changed
+- An overlay now declares **the routes it opens**. A tool with no subcommands
+  keeps its flat `flags` spelling unchanged — at any `schema_version`, including
+  2.0, since the version names the format generation and not the spelling; a
+  single-command tool never needs `commands[]`. A tool with subcommands declares
+  `commands[]` (`path`, `mode`, `flags`, `positional_args`, `annotations`) and
+  says `schema_version: "2.0"`. `global_flags` are the tool-level options
+  inherited by every route and rendered before the subcommand, which the old
+  single `flags` list conflated with the tool's own invocation. `mode` may be
+  set per route (`authoritative` replaces that route's scanned grammar, `merge`
+  adds to it). Behavioural `annotations` exist per route only: the file-level
+  form marked `git push` readonly whenever the file said `readonly: true`.
+  Routes the overlay does not declare are dropped from the registry and recorded
+  in `metadata.scan_inventory`, shown by `apexe list --diagnostics`: they are not
+  executable, not advertised, and `--scanned` cannot restore them, because
+  declaring is permitting rather than describing. A flat overlay applied to a
+  tool whose scan found subcommands is refused with a warning instead of
+  silently closing every route. The reviewed corpus needs no change: 1.0/1.1
+  files are the flat spelling, which still means exactly one route. Verified on
+  `git`: a one-route `commands: [{path: ["status"], ...}]` overlay makes
+  `apexe exec -- git status --short` reviewed and native while the other 141
+  routes stay closed and remain listed as inventory.
+- Grammar trust is recorded per route instead of per tool. `apexe scan` stamps
+  `metadata.grammar: reviewed|scanned` on every binding: `reviewed` only when
+  every flag the route can emit came from a curated overlay, `scanned`
+  otherwise, including a route that declares no flags at all. `eligible()` and
+  native `apexe exec` now read that stamp, so a reviewed route can be executed
+  under a `mode: merge` overlay — previously it took an `authoritative` overlay
+  for the whole tool, which also erased every subcommand
+  (`ToolOverlay` has no subcommand scope), leaving git-shaped tools with no
+  usable path at all. A binding written before the stamp falls back to
+  `shim_contract.authoritative`, which is the stricter of the two. `apexe exec`
+  admits reviewed routes only: a `--scanned` shim policy is a shim policy, not a
+  way to make native execution accept heuristics. Refusals now say what is
+  actually missing — `has no reviewed grammar for this route` instead of `has no
+  matching authoritative overlay`, and an unmatched shim path names the binding
+  that exists and the policy that withheld it instead of advising a rescan that
+  cannot help.
+
+### Fixed
+- A grant for a route a rescan no longer produces is retired. `merge_default`
+  replaced only the ids in the current batch, so a curated overlay that narrowed
+  its declared surface left the closed route's allow in the generated rule with
+  nothing to match: dormant until the route was reopened, at which point it
+  granted access nobody had reviewed. Exact ids belonging to the tools this
+  batch produced modules for are now dropped; a glob, and a tool the batch never
+  touched, keep their membership, so incremental scans stay non-destructive.
+- `apexe list --diagnostics` also reports ACL targets that match no loaded
+  module, next to the routes each overlay left closed. Those grants are usually
+  a merge artefact and had no reporting surface before: the operator read a
+  permission in `acl.yaml` that no module could exercise. An installation with
+  no policy keeps the document it always got — a bare map of tool to closed
+  routes.
+- A coverage refusal reports `general_invalid_input` with `details.layer:
+  coverage` instead of `general_internal_error`. The route is decided against
+  the declared surface before the ACL is evaluated, so `--error-format json`
+  could not tell this refusal from a fault inside apexe and an agent had no
+  remedy to apply. The last-resort route-miss message also stops describing
+  `apexe exec` as a shim, and now offers the overlay remedy before a rescan.
+- A tool that reuses one flag spelling on both sides of its subcommand is no
+  longer unparseable. `adapter::argv::Parser` kept one flat spelling map per
+  module, so `git -v` (the version) and `git status -v` (verbose) collided and
+  every call to any `git` route failed with `Flag '-v' names two properties`
+  before a single argument was read. Tool-level spellings (`before-subcommand`
+  and `before-operands`) now live in their own namespace and are resolved by
+  the side of the subcommand the token appears on, which is the distinction the
+  parser already enforced on the value side; `CommandMatcher` uses the same
+  rule so `git -C <dir> status` locates `status` at all.
+- `x-apexe-exec` is enforced on scanned routes. A `Scanned` route replays the
+  caller's argv instead of rendering module input, so `git -c
+  core.pager=<cmd> status` never reached `reject_exec_parameters` and ran the
+  value as a command — the one guarantee the marker exists to keep. The check
+  now runs on the parsed input that both tiers produce.
+- A native or shim route is no longer refused because a *sibling* route is
+  unusable, and a refusal now names the command path the caller selected.
+  `route_candidates` validated every route of a command before any of them had
+  been matched, so a single binding without an authoritative overlay refused
+  the whole command and blamed whichever module sorted first: `apexe exec --
+  git status` failed as `cli.git.add has no matching authoritative overlay`,
+  for a module the caller never asked for. Eligibility is now evaluated on the
+  selected route only (`check_route`) and its refusal is prefixed with
+  `Route '<command path>'`, so `git status` reports `cli.git.status` and `git
+  add` reports `cli.git.add`. A route whose module is gone is likewise only
+  reported when that route is the one selected.
+- Zsh activation now configures `.zprofile` alongside `.zshrc`, including
+  custom `ZDOTDIR` locations, so noninteractive login shells used by Codex
+  automatically resolve eligible commands through shims. Upgrade existing
+  startup configuration with `apexe env --reload --shell zsh` and restart
+  Codex. Owned-block validation and cleanup apply to both files.
+- `apexe sh --check` includes Codex and Claude Code startup guidance instead of
+  the generic `SHELL=apexe-sh` example. Claude Code rejects `apexe-sh` as
+  `SHELL`/`CLAUDE_CODE_SHELL` and falls back to `/bin/zsh`; start it with the
+  shim directory already on `PATH`.
+
+---
+
 ## [0.9.0] - 2026-10-15
 
 ### Added

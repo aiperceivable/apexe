@@ -1,5 +1,70 @@
 use serde::{Deserialize, Serialize};
 
+/// Binding metadata key recording how far this route's grammar was reviewed.
+///
+/// Trust used to be one boolean per tool (`shim_contract.authoritative`), which
+/// is the wrong granularity for a command with subcommands: `git` can have its
+/// `status` grammar reviewed and 130 heuristic siblings, and a single flag
+/// cannot say that. Each module is stamped on its own so eligibility, the shim
+/// tier and `apexe exec` can decide per route.
+pub const GRAMMAR_KEY: &str = "grammar";
+
+/// How a route's argv surface was established.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GrammarTier {
+    /// Every flag the route can emit is a curated overlay assertion.
+    Reviewed,
+    /// At least one flag is heuristic, or the route declares none at all.
+    Scanned,
+}
+
+impl GrammarTier {
+    /// The value written to [`GRAMMAR_KEY`].
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GrammarTier::Reviewed => "reviewed",
+            GrammarTier::Scanned => "scanned",
+        }
+    }
+}
+
+/// The route's recorded grammar tier, or `None` for a binding written before
+/// the stamp existed.
+///
+/// `None` is deliberately distinguishable from `Scanned`: a caller that requires
+/// reviewed grammar falls back to the tool-level contract for an old binding
+/// rather than silently demoting it, and a caller that tolerates heuristics does
+/// not have to guess.
+pub fn grammar_tier(
+    metadata: &std::collections::HashMap<String, serde_json::Value>,
+) -> Option<GrammarTier> {
+    match metadata
+        .get(GRAMMAR_KEY)
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("reviewed") => Some(GrammarTier::Reviewed),
+        Some("scanned") => Some(GrammarTier::Scanned),
+        _ => None,
+    }
+}
+
+/// Whether this route's grammar counts as reviewed.
+///
+/// Falls back to the tool-level `shim_contract.authoritative` for a binding
+/// written before [`GRAMMAR_KEY`] existed, which keeps the older, stricter rule
+/// in force rather than promoting a route nothing stamped.
+pub fn route_is_reviewed(metadata: &std::collections::HashMap<String, serde_json::Value>) -> bool {
+    match grammar_tier(metadata) {
+        Some(tier) => tier == GrammarTier::Reviewed,
+        None => metadata
+            .get("shim_contract")
+            .and_then(|contract| contract.get("authoritative"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+    }
+}
+
 /// Type classification for CLI flag/argument values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -299,7 +364,7 @@ pub struct StructuredOutputInfo {
 }
 
 /// A single CLI command or subcommand with its parsed metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScannedCommand {
     /// Command name (e.g., "commit").
     pub name: String,
@@ -379,6 +444,39 @@ pub struct ScannedCLITool {
     /// Identifier of the curated overlay applied to this scan, if any.
     #[serde(default)]
     pub overlay: Option<String>,
+    /// The tool's own invocation, when an overlay declared it (`path: []`).
+    ///
+    /// Distinct from [`Self::global_flags`]: `git --version` is a root flag,
+    /// `git -C repo status` is a global one, and merging the two made every
+    /// root flag legal on either side of the subcommand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_command: Option<ScannedCommand>,
+    /// Behavioural assertions an overlay made, keyed by route.
+    ///
+    /// The key is the subcommand path joined by a single space (`"stash push"`),
+    /// and the empty string is the tool's own invocation. Per route rather than
+    /// per tool because the tool-level version leaked: `annotations: {readonly:
+    /// true}` on a `git` overlay marked `git push` readonly, which the generated
+    /// ACL then auto-allowed.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub annotation_scopes: std::collections::BTreeMap<String, AnnotationOverrides>,
+    /// Routes that are part of the declared surface even when they have
+    /// children of their own.
+    ///
+    /// `git stash` is both a command and the parent of `git stash push`; the
+    /// scanner only ever emits leaves, so a declared parent would otherwise
+    /// vanish from the registry the moment one child was declared.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declared_paths: Vec<Vec<String>>,
+    /// Scanned routes the overlay did not declare, recorded as evidence.
+    ///
+    /// They are deliberately *not* modules: an authoritative surface opens a
+    /// set of routes, and a route nobody declared is not executable, not
+    /// advertisable and not recoverable through `--scanned`. Keeping the list
+    /// is what lets diagnostics answer "was this never scanned, or was it
+    /// scanned and left out?" without putting a stub back in the registry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub undeclared_paths: Vec<String>,
     /// Tree of discovered commands.
     pub subcommands: Vec<ScannedCommand>,
     /// Flags available on all subcommands.
@@ -399,9 +497,6 @@ pub struct ScannedCLITool {
     pub examples: Vec<String>,
     /// Global structured output capability.
     pub structured_output: StructuredOutputInfo,
-    /// Behavioral annotations asserted by an overlay, overriding inference.
-    #[serde(default)]
-    pub annotation_overrides: AnnotationOverrides,
     /// Whether the tool honours `--`; propagated to every command it owns.
     /// See [`ScannedCommand::end_of_options`].
     #[serde(default)]
@@ -609,7 +704,7 @@ mod tests {
     }
 
     #[test]
-    fn test_annotation_overrides_empty_by_default() {
+    fn test_annotation_scopes_empty_by_default() {
         assert!(AnnotationOverrides::default().is_empty());
         assert!(!AnnotationOverrides {
             readonly: Some(true),
@@ -932,5 +1027,37 @@ mod tests {
         let json = serde_json::to_string(&tool).unwrap();
         let back: ScannedCLITool = serde_json::from_str(&json).unwrap();
         assert!(back.version.is_none());
+    }
+}
+
+#[cfg(test)]
+mod grammar_tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn metadata(grammar: Option<&str>, authoritative: bool) -> HashMap<String, serde_json::Value> {
+        let mut map = HashMap::new();
+        if let Some(grammar) = grammar {
+            map.insert(GRAMMAR_KEY.into(), json!(grammar));
+        }
+        map.insert(
+            "shim_contract".into(),
+            json!({"authoritative": authoritative}),
+        );
+        map
+    }
+
+    #[test]
+    fn test_route_is_reviewed_prefers_the_route_stamp() {
+        assert!(route_is_reviewed(&metadata(Some("reviewed"), false)));
+        assert!(!route_is_reviewed(&metadata(Some("scanned"), true)));
+    }
+
+    #[test]
+    fn test_route_is_reviewed_falls_back_to_the_tool_contract() {
+        assert!(route_is_reviewed(&metadata(None, true)));
+        assert!(!route_is_reviewed(&metadata(None, false)));
+        assert!(!route_is_reviewed(&HashMap::new()));
     }
 }

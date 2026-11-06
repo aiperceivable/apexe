@@ -1,3 +1,4 @@
+use super::sh::ENTRY_NAME;
 use super::shell::Shell;
 use super::shim::{Manifest, Route, MANIFEST_VERSION};
 use crate::config::ApexeConfig;
@@ -47,6 +48,13 @@ pub struct EnvArgs {
     /// Include only modules whose ID starts with this prefix.
     #[arg(long, value_name = "PREFIX")]
     pub prefix: Option<String>,
+    /// Include bindings without a reviewed overlay: off, readonly, or all.
+    ///
+    /// Scanned routes execute the caller's original argv after strict schema
+    /// validation; they never rebuild and reorder the command line. `readonly`
+    /// admits only modules annotated readonly, non-destructive and closed-world.
+    #[arg(long, value_enum)]
+    pub scanned: Option<super::ScannedPolicy>,
     /// Shell syntax (activation: sh; enabling: detected from SHELL).
     #[arg(long, value_enum)]
     pub shell: Option<Shell>,
@@ -89,6 +97,7 @@ impl EnvArgs {
         let previous = super::shim::read_manifest(directory)?;
         self.bindings_dir = self.bindings_dir.or(Some(previous.bindings_dir));
         self.acl = self.acl.or(previous.acl);
+        self.scanned = self.scanned.or(Some(previous.scanned));
         self.prefix = self.prefix.or(previous.filter.prefix);
         self.tags = self.tags.or_else(|| {
             previous
@@ -132,7 +141,11 @@ impl EnvArgs {
             crate::output::load_modules_from_dir(&bindings, config.bindings_pattern.as_deref())?;
         let executor =
             crate::module::registry::build_executor_from_modules(&options, modules.clone())?;
-        let commands = collect_routes(&modules, |id| executor.registry().has(id))?;
+        let commands = collect_routes(
+            &modules,
+            |id| executor.registry().has(id),
+            self.scanned.unwrap_or_default(),
+        )?;
         Ok(Manifest {
             version: MANIFEST_VERSION,
             executable: std::env::current_exe()?.canonicalize()?,
@@ -141,6 +154,7 @@ impl EnvArgs {
             acl: self.acl.as_deref().map(std::path::absolute).transpose()?,
             filter,
             commands,
+            scanned: self.scanned.unwrap_or_default(),
             activation_script: None,
             deactivation_script: None,
             source_scripts_dir: None,
@@ -151,6 +165,7 @@ impl EnvArgs {
 fn collect_routes(
     modules: &[apcore_toolkit::ScannedModule],
     registered: impl Fn(&str) -> bool,
+    scanned: super::ScannedPolicy,
 ) -> anyhow::Result<BTreeMap<String, Vec<Route>>> {
     let mut commands: BTreeMap<String, Vec<Route>> = BTreeMap::new();
     let mut binaries = BTreeMap::new();
@@ -158,14 +173,26 @@ fn collect_routes(
         if !registered(&module.module_id) {
             continue;
         }
-        if let Err(error) = super::shim::eligible(module) {
-            tracing::warn!(module_id = %module.module_id, %error, "Excluding module from shims");
-            continue;
-        }
+        let tier = match super::shim::eligible(module) {
+            Ok(()) => super::shim::RouteTier::Verified,
+            Err(error) => {
+                if super::shim::scanned_admits(module, scanned) {
+                    super::shim::RouteTier::Scanned
+                } else {
+                    tracing::warn!(
+                        module_id = %module.module_id,
+                        %error,
+                        ?scanned,
+                        "Excluding module from shims"
+                    );
+                    continue;
+                }
+            }
+        };
         let path = super::shim::command_path(module)?;
         let binary = crate::scanner::resolver::extract_binary_path(&module.target)
             .ok_or_else(|| anyhow::anyhow!("Invalid target"))?;
-        if let Some(previous) = binaries.insert(path[0].clone(), binary.to_owned()) {
+        if let Some(previous) = binaries.insert(path[0].clone(), binary.clone()) {
             anyhow::ensure!(
                 previous == binary,
                 "Shim name '{}' is claimed by different binaries",
@@ -181,11 +208,13 @@ fn collect_routes(
         routes.push(Route {
             module_id: module.module_id.clone(),
             command_path: path,
+            tier,
+            tombstone: false,
         });
     }
     anyhow::ensure!(
         !commands.is_empty(),
-        "No eligible shim modules; rescan using matching authoritative overlays"
+        "No shim-eligible modules; rescan using reviewed overlays or enable --scanned"
     );
     Ok(commands)
 }
@@ -241,6 +270,7 @@ fn install(directory: &Path, mut manifest: Manifest) -> anyhow::Result<()> {
     for name in manifest.commands.keys() {
         create_entry(&manifest.executable, &entry_path(&stage.0, name))?;
     }
+    create_entry(&manifest.executable, &entry_path(&stage.0, ENTRY_NAME))?;
     std::fs::write(stage.0.join(super::activation::NAME), script)?;
     std::fs::write(
         stage.0.join(super::activation::DEACTIVATE_NAME),
@@ -252,23 +282,80 @@ fn install(directory: &Path, mut manifest: Manifest) -> anyhow::Result<()> {
     )?;
     persistent.publish()?;
     publish_entries(directory, &stage.0, &manifest)?;
+    report_coverage(&manifest);
     tracing::info!(directory = %directory.display(), count = manifest.commands.len(), "Installed governed command shims");
     persistent.log_paths();
     Ok(())
 }
 
+/// Print what this installation admits, command by command.
+///
+/// Silence was the problem: an install that admitted one of `git`'s routes
+/// looked identical to one that admitted all of them, and the difference only
+/// surfaced later as a refusal. Printing the count next to each command makes
+/// partial coverage visible at the moment it is created.
+fn report_coverage(manifest: &Manifest) {
+    use std::io::IsTerminal;
+    // Only when a person is watching: `env --enable` is also how scripts and
+    // tests install shims, and a summary line there would land in pipelines and
+    // captured output that expect none.
+    if manifest.commands.is_empty() || !std::io::stdout().is_terminal() {
+        return;
+    }
+    println!(
+        "Installed {} command shim(s) ({} route(s)):",
+        manifest.commands.len(),
+        manifest.commands.values().map(Vec::len).sum::<usize>()
+    );
+    for (name, routes) in &manifest.commands {
+        let tiers: std::collections::BTreeMap<&str, usize> =
+            routes.iter().fold(Default::default(), |mut counts, route| {
+                let tier = match route.tier {
+                    super::shim::RouteTier::Verified => "reviewed",
+                    super::shim::RouteTier::Scanned => "scanned",
+                };
+                *counts.entry(tier).or_default() += 1;
+                counts
+            });
+        let detail: Vec<String> = tiers
+            .into_iter()
+            .map(|(tier, count)| format!("{count} {tier}"))
+            .collect();
+        println!("  {name}: {}", detail.join(", "));
+    }
+    println!(
+        "  Commands or subcommands that are not listed stay unmanaged: their calls are refused, \
+         never forwarded to the original binary."
+    );
+}
+
 fn retain_removed_routes(manifest: &mut Manifest, old: Option<&Manifest>) {
     if let Some(old) = old {
+        // A module that is still registered but changed its `command_path`
+        // must replace its old route, not keep both: the stale route makes
+        // `route_candidates` refuse every invocation of the shim. Only routes
+        // whose module disappeared are retained as tombstones.
+        let current_ids: std::collections::BTreeSet<String> = manifest
+            .commands
+            .values()
+            .flatten()
+            .map(|route| route.module_id.clone())
+            .collect();
         // Retain each missing command path as a tombstone, including removed
         // subcommands of a binary that still has other registered routes.
         for (name, routes) in &old.commands {
             let current = manifest.commands.entry(name.clone()).or_default();
             for route in routes {
+                if current_ids.contains(&route.module_id) {
+                    continue;
+                }
                 if !current
                     .iter()
                     .any(|entry| entry.command_path == route.command_path)
                 {
-                    current.push(route.clone());
+                    let mut retained = route.clone();
+                    retained.tombstone = true;
+                    current.push(retained);
                 }
             }
         }
@@ -292,12 +379,17 @@ fn publish_entries(directory: &Path, stage: &Path, manifest: &Manifest) -> anyho
         stage.join(super::activation::DEACTIVATE_NAME),
         directory.join(super::activation::DEACTIVATE_NAME),
     )?;
+    std::fs::rename(
+        entry_path(stage, ENTRY_NAME),
+        entry_path(directory, ENTRY_NAME),
+    )?;
     std::fs::rename(stage.join(MANIFEST_NAME), directory.join(MANIFEST_NAME))?;
     Ok(())
 }
 
 fn reserved_shim_name(name: &str) -> bool {
-    name == super::activation::NAME
+    name == ENTRY_NAME
+        || name == super::activation::NAME
         || name == super::activation::DEACTIVATE_NAME
         || super::source_scripts::reserved_name(name)
 }
@@ -324,6 +416,14 @@ fn verify_destinations(
         super::activation::DEACTIVATE_NAME,
         old.and_then(|manifest| manifest.deactivation_script.as_deref()),
     )?;
+    let entry = entry_path(directory, ENTRY_NAME);
+    if std::fs::symlink_metadata(&entry).is_ok() {
+        anyhow::ensure!(
+            old.is_some_and(|manifest| owned(&entry, manifest)),
+            "Refusing to overwrite unowned entry point {}",
+            entry.display()
+        );
+    }
     for name in manifest.commands.keys() {
         anyhow::ensure!(
             super::shim::valid_name(name),
@@ -374,6 +474,15 @@ fn uninstall(directory: &Path) -> anyhow::Result<()> {
         if script.is_some() && directory.join(name).try_exists()? {
             std::fs::remove_file(directory.join(name))?;
         }
+    }
+    let entry = entry_path(directory, ENTRY_NAME);
+    if std::fs::symlink_metadata(&entry).is_ok() {
+        anyhow::ensure!(
+            owned(&entry, &manifest),
+            "Refusing to remove unowned entry point {}",
+            entry.display()
+        );
+        std::fs::remove_file(entry)?;
     }
     std::fs::remove_file(directory.join(MANIFEST_NAME))?;
     Ok(())
@@ -432,4 +541,61 @@ fn paths_for_fish(path: &str) -> String {
         .map(|part| shell_words::quote(&part.to_string_lossy()).into_owned())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::shim::{Manifest, Route, RouteTier};
+
+    fn manifest_with(routes: Vec<Route>) -> Manifest {
+        let mut commands = std::collections::BTreeMap::new();
+        commands.insert("git".to_string(), routes);
+        Manifest {
+            version: crate::cli::shim::MANIFEST_VERSION,
+            executable: PathBuf::from("/usr/bin/apexe"),
+            bindings_dir: PathBuf::from("/tmp/bindings"),
+            bindings_pattern: None,
+            acl: None,
+            filter: crate::module::ModuleFilter::default(),
+            commands,
+            scanned: crate::cli::ScannedPolicy::Off,
+            activation_script: None,
+            deactivation_script: None,
+            source_scripts_dir: None,
+        }
+    }
+
+    fn route(module_id: &str, command_path: &[&str]) -> Route {
+        Route {
+            module_id: module_id.into(),
+            command_path: command_path.iter().map(|part| (*part).into()).collect(),
+            tier: RouteTier::Verified,
+            tombstone: false,
+        }
+    }
+
+    #[test]
+    fn test_retain_removed_routes_replaces_a_changed_command_path() {
+        // The same module id surviving with a new command_path must replace
+        // the old route; keeping both made every invocation of the shim fail
+        // with "command_path changed".
+        let mut current = manifest_with(vec![route("cli.git.status", &["git", "status"])]);
+        let old = manifest_with(vec![route("cli.git.status", &["git", "st"])]);
+        retain_removed_routes(&mut current, Some(&old));
+        assert_eq!(current.commands["git"].len(), 1);
+        assert_eq!(
+            current.commands["git"][0].command_path,
+            vec!["git".to_string(), "status".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_retain_removed_routes_marks_a_removed_module_as_tombstone() {
+        let mut current = manifest_with(Vec::new());
+        let old = manifest_with(vec![route("cli.git.gone", &["git", "gone"])]);
+        retain_removed_routes(&mut current, Some(&old));
+        assert_eq!(current.commands["git"].len(), 1);
+        assert!(current.commands["git"][0].tombstone);
+    }
 }

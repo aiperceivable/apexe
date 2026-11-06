@@ -47,6 +47,7 @@ pub struct CliModule {
     max_output_bytes: usize,
     /// Optional execution-audit sink (F5 §4.3). `None` disables audit.
     audit: Option<Arc<AuditManager>>,
+    audit_tier: Option<&'static str>,
 }
 
 impl CliModule {
@@ -65,6 +66,7 @@ impl CliModule {
             timeout_ms: config.timeout_ms,
             max_output_bytes: config.max_output_bytes,
             audit: None,
+            audit_tier: None,
         }
     }
 
@@ -73,6 +75,12 @@ impl CliModule {
     /// unchanged.
     pub fn with_audit(mut self, audit: Option<Arc<AuditManager>>) -> Self {
         self.audit = audit;
+        self
+    }
+
+    /// Record the route tier in the execution audit record.
+    pub fn with_audit_tier(mut self, tier: &'static str) -> Self {
+        self.audit_tier = Some(tier);
         self
     }
 
@@ -113,15 +121,20 @@ impl CliModule {
                 format!("Invalid target format: {target}"),
             )
         })?;
-        let parts: Vec<&str> = stripped.split_whitespace().collect();
+        let parts: Vec<String> = shell_words::split(stripped).map_err(|error| {
+            ModuleError::new(
+                ErrorCode::GeneralInvalidInput,
+                format!("Invalid target quoting: {error}"),
+            )
+        })?;
         if parts.is_empty() {
             return Err(ModuleError::new(
                 ErrorCode::GeneralInvalidInput,
                 "Empty target".to_string(),
             ));
         }
-        let binary_path = parts[0].to_string();
-        let command_parts: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
+        let binary_path = parts[0].clone();
+        let command_parts: Vec<String> = parts[1..].to_vec();
         let json_flag = module
             .metadata
             .get("json_flag")
@@ -275,13 +288,14 @@ impl CliModule {
     ) {
         if let Some(ref audit) = self.audit {
             audit
-                .log_execution(
+                .log_execution_with_tier(
                     &self.module_id,
                     &ctx.trace_id,
                     crate::governance::audit_caller_id(ctx),
                     status,
                     exit_code,
                     duration_ms,
+                    self.audit_tier,
                 )
                 .await;
         }
@@ -304,7 +318,13 @@ impl CliModule {
         ctx: &Context<Value>,
         elapsed_ms: u64,
     ) -> ModuleError {
-        self.audit_execution(ctx, "error", -1, elapsed_ms).await;
+        // Timeouts are recorded by `FailureLogMiddleware` so an apcore-level
+        // deadline (which drops this future before `abandon_run` runs) still
+        // leaves exactly one refusal row. Other execution errors keep their
+        // execution row here and suppress the middleware duplicate.
+        if error.code != ErrorCode::ModuleTimeout {
+            self.audit_execution(ctx, "error", -1, elapsed_ms).await;
+        }
         if error.code == ErrorCode::ModuleTimeout {
             error.with_retryable(self.annotations.idempotent)
         } else {

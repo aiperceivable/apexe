@@ -144,7 +144,120 @@ fn test_enable_zsh_respects_zdotdir() {
         .assert()
         .success();
     assert!(directory.join(".zshrc").exists());
+    assert!(directory.join(".zprofile").exists());
     assert!(!fixture.path(".zshrc").exists());
+    assert!(!fixture.path(".zprofile").exists());
+}
+
+#[test]
+fn test_enable_zsh_login_profile_is_idempotent_and_restored_on_disable() {
+    let fixture = Fixture::new();
+    let original = "# Existing login settings\nexport PATH=/usr/bin:/bin";
+    fixture.write(".zprofile", original);
+    for _ in 0..2 {
+        fixture
+            .command()
+            .args(["env", "--enable"])
+            .assert()
+            .success();
+    }
+    let installed = fixture.read(".zprofile");
+    assert!(installed.starts_with(&format!("{original}\n")));
+    assert_eq!(installed.matches("# >>> apexe shims").count(), 1);
+    fixture
+        .command()
+        .args(["env", "--disable"])
+        .assert()
+        .success();
+    assert_eq!(fixture.read(".zprofile"), original);
+}
+
+#[test]
+fn test_reload_zsh_upgrades_interactive_only_startup_and_preserves_policy() {
+    let fixture = Fixture::new();
+    fixture.write("policy.yaml", "rules: []\ndefault_effect: deny\n");
+    fixture
+        .command()
+        .args(["env", "--enable", "--acl", "policy.yaml"])
+        .assert()
+        .success();
+    let original_manifest: serde_json::Value =
+        serde_json::from_str(&fixture.read(".apexe/bin/.apexe-shims.json")).unwrap();
+    let interactive = fixture.read(".zshrc");
+    let state_path = fixture.path(".apexe/bin/.apexe-shell-init.json");
+    let mut state: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    state["files"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|file| !file["path"].as_str().unwrap().ends_with("/.zprofile"));
+    std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    fixture.write(".zprofile", "# Existing login profile\n");
+    fixture
+        .command()
+        .args(["env", "--reload", "--shell", "zsh"])
+        .assert()
+        .success();
+    assert!(fixture.read(".zprofile").contains("# >>> apexe shims"));
+    assert_eq!(fixture.read(".zshrc"), interactive);
+    let manifest: serde_json::Value =
+        serde_json::from_str(&fixture.read(".apexe/bin/.apexe-shims.json")).unwrap();
+    assert_eq!(manifest["acl"], original_manifest["acl"]);
+    fixture
+        .command()
+        .args(["env", "--disable"])
+        .assert()
+        .success();
+    assert_eq!(fixture.read(".zprofile"), "# Existing login profile\n");
+}
+
+#[test]
+fn test_disable_zsh_refuses_modified_login_block_before_removing_shims() {
+    let fixture = Fixture::new();
+    fixture
+        .command()
+        .args(["env", "--enable"])
+        .assert()
+        .success();
+    let original = fixture.read(".zprofile");
+    let modified = original.replace("--shell sh", "--shell fish");
+    assert_ne!(modified, original);
+    fixture.write(".zprofile", &modified);
+    fixture
+        .command()
+        .args(["env", "--disable"])
+        .assert()
+        .failure()
+        .stderr(contains("was modified"));
+    assert!(fixture.path(".apexe/bin/cat").exists());
+    assert!(fixture.read(".zshrc").contains("# >>> apexe shims"));
+    assert_eq!(fixture.read(".zprofile"), modified);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn test_enable_zsh_noninteractive_login_routes_commands_after_profile_path_reset() {
+    let fixture = Fixture::new();
+    fixture.write(".zprofile", "export PATH=/usr/bin:/bin\n");
+    fixture
+        .command()
+        .args(["env", "--enable"])
+        .assert()
+        .success();
+    Command::new("/bin/zsh")
+        .env("HOME", fixture.home.path())
+        .env("ZDOTDIR", fixture.home.path())
+        .env("PATH", "/usr/bin:/bin")
+        .env_remove("APEXE_SHIM_DIR")
+        .current_dir(fixture.home.path())
+        .args(["-lc", "command -v cat; cat"])
+        .assert()
+        .success()
+        .stdout(format!("{}/cat\n", fixture.path(".apexe/bin").display()))
+        .stderr("");
+    let audit = fixture.read(".apexe/audit.jsonl");
+    assert!(audit.contains("\"module_id\":\"cli.cat\""));
+    assert!(audit.contains("\"status\":\"success\""));
 }
 
 #[test]
@@ -607,7 +720,7 @@ fn test_enable_without_eligible_modules_does_not_configure_shell() {
             .args(["env", flag])
             .assert()
             .failure()
-            .stderr(contains("No eligible shim modules"));
+            .stderr(contains("No shim-eligible modules"));
     }
     assert!(!fixture.path(".zshrc").exists());
     assert!(!fixture.path(".apexe/bin/.apexe-shell-init.json").exists());

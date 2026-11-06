@@ -110,12 +110,15 @@ inherited only with an explicit reviewed capability. Local execution loads the
 default ACL when present and uses caller `local`; approval-required local calls
 fail closed. See the [exec reference](user-manual.md#47-apexe-exec).
 
-For Claude Code, Codex, pi or OpenCode, continue with the
-[four-step Agent quick integration](agent-skill.md#quick-integration). It covers
+For Claude Code, Codex, pi or OpenCode, start with
+[Shell Integration](agent-shell.md): OpenCode and pi can use `apexe-sh`, Codex
+uses login-shell PATH shims, and Claude Code uses a `PreToolUse` hook. If the
+host cannot be configured with a shell or hook, use the
+[four-step Agent Skill fallback](agent-skill.md#quick-integration). It covers
 user/project Skill installation, a copyable `CLAUDE.md`/`AGENTS.md` rule and
 acceptance using ordinary listing and pipeline requests. Installing the Skill
 alone does not enroll every project. No MCP server or shim activation is needed
-for native exec. Use [Agent troubleshooting](agent-skill.md#troubleshooting)
+for the fallback native exec route. Use [Agent troubleshooting](agent-skill.md#troubleshooting)
 when the observed tool calls differ; contributors can use the separate
 [maintainer verification procedure](agent-skill-verification.md).
 

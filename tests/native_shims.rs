@@ -1285,7 +1285,7 @@ fn test_enable_disable_keeps_startup_when_shim_ownership_fails() {
 }
 
 #[test]
-fn test_child_path_strips_shims_and_preserves_absolute_binary() {
+fn test_child_path_keeps_shims_for_local_execution() {
     let fixture = Fixture::new();
     let helper = fixture.script("path-bin", "printf '%s' \"$PATH\"");
     fixture.write(
@@ -1309,7 +1309,7 @@ fn test_child_path_strips_shims_and_preserves_absolute_binary() {
         .success()
         .get_output()
         .clone();
-    assert!(!String::from_utf8_lossy(&output.stdout).contains(fixture.shims().to_str().unwrap()));
+    assert!(String::from_utf8_lossy(&output.stdout).contains(fixture.shims().to_str().unwrap()));
 }
 
 #[test]
@@ -1753,7 +1753,7 @@ fn test_shim_approval_required_is_refused_without_spawning() {
         .shim("approval")
         .assert()
         .failure()
-        .stderr(predicates::str::contains("no MCP elicitation support"));
+        .stderr(predicates::str::contains("no controlling terminal"));
     assert!(!marker.exists());
 }
 

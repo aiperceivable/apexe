@@ -119,10 +119,7 @@ impl VerifyArgs {
         for module in modules {
             let binary = crate::scanner::resolver::extract_binary_path(&module.target)
                 .ok_or_else(|| anyhow::anyhow!("Verification currently requires CLI bindings"))?;
-            groups
-                .entry(binary.into())
-                .or_default()
-                .push(module.clone());
+            groups.entry(binary).or_default().push(module.clone());
         }
         let mut report = Vec::new();
         let mut scanner = crate::scanner::ScanOrchestrator::new(config.clone());

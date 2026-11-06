@@ -99,6 +99,10 @@ fn run(format: ErrorFormat) -> anyhow::Result<i32> {
     apcore_cli::set_docs_url(Some("https://github.com/aiperceivable/apexe".to_string()));
 
     let raw_os_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if apexe::cli::is_entry_invocation(&raw_os_args) {
+        let _logging_guard = logging::init(None, false, false)?;
+        return run_with_logging(ErrorFormat::Text, || apexe::cli::run_entry(&raw_os_args));
+    }
     if apexe::cli::is_shim_invocation(&raw_os_args) {
         let _logging_guard = logging::init(None, false, false)?;
         return run_with_logging(ErrorFormat::Text, || apexe::cli::run_shim(&raw_os_args));

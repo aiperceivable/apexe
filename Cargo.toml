@@ -1,6 +1,6 @@
 [package]
 name = "apexe"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 description = "Governed CLI execution and OpenAPI tools for humans and AI agents"
 license = "Apache-2.0"

@@ -112,7 +112,12 @@ async fn execute_case(
     plan: Option<&isolation::IsolationPlan>,
     timeout: u64,
 ) -> anyhow::Result<()> {
-    let command = case_command(case, prepared, plan, timeout)?;
+    let readonly = case.mode != CaseMode::Isolated
+        || module
+            .annotations
+            .as_ref()
+            .is_some_and(|annotations| annotations.readonly);
+    let command = case_command(case, prepared, plan, timeout, readonly)?;
     let output = capture(command, timeout.saturating_add(2)).await?;
     let output: Value = serde_json::from_slice(&output)?;
     anyhow::ensure!(
@@ -141,6 +146,7 @@ fn case_command(
     prepared: &PreparedCase,
     plan: Option<&isolation::IsolationPlan>,
     timeout: u64,
+    readonly: bool,
 ) -> anyhow::Result<tokio::process::Command> {
     let executable = std::env::current_exe()?;
     let mut command = plan.map_or_else(
@@ -159,7 +165,17 @@ fn case_command(
         .env("HOME", &prepared.home)
         // Keep temporary paths inside the case's OS-isolated workspace and
         // preserve its path-guard exemption after clearing the host environment.
-        .env("TMPDIR", &prepared.work)
+        // Readonly/dry-run cases mount `work` read-only, so point TMPDIR at the
+        // writable home there; writable isolated cases keep `work`, which is
+        // both writable and the path-guard's temp exemption.
+        .env(
+            "TMPDIR",
+            if readonly {
+                &prepared.home
+            } else {
+                &prepared.work
+            },
+        )
         .env("PATH", crate::runtime_path::search_path())
         .env("LC_ALL", "C")
         .env("RUST_LOG", "error")

@@ -28,7 +28,9 @@
 //!   landing on the *ungoverned* default — strictly worse than either
 //!   alternative. A human's own "no" is left verbatim; it is already clear.
 
+use std::io::IsTerminal;
 use std::sync::Arc;
+use std::time::Duration;
 
 use apcore::approval::{ApprovalHandler, ApprovalRequest, ApprovalResult};
 use apcore::{ErrorCode, ModuleError};
@@ -211,6 +213,11 @@ pub struct ApprovalGate {
     /// `trace_id`, so the grant is already in the trail; a refusal is the
     /// outcome that would otherwise leave none.
     audit: Option<Arc<crate::governance::AuditManager>>,
+    /// When an ACL is installed, an `allow` rule can carry
+    /// `approval: required`. apcore does not expose why the gate was invoked,
+    /// so flag-based stand-down cannot distinguish "module annotation only"
+    /// from "the operator's ACL demanded a human". In that case always prompt.
+    always_prompt: bool,
 }
 
 impl ApprovalGate {
@@ -238,7 +245,20 @@ impl ApprovalGate {
         inner: Box<dyn ApprovalHandler>,
         audit: Option<Arc<crate::governance::AuditManager>>,
     ) -> Self {
-        Self { inner, audit }
+        Self {
+            inner,
+            audit,
+            always_prompt: false,
+        }
+    }
+
+    /// Require a human decision even when the module's flag-derived basis
+    /// would otherwise stand the gate down. Use this when an ACL is installed:
+    /// a matching `allow + approval: required` rule is an operator promise that
+    /// cannot be inferred from the module annotations alone.
+    pub fn always_prompt(mut self) -> Self {
+        self.always_prompt = true;
+        self
     }
 
     /// Record one approval-gate refusal.
@@ -303,7 +323,7 @@ impl ApprovalHandler for ApprovalGate {
         &self,
         request: &ApprovalRequest,
     ) -> Result<ApprovalResult, ModuleError> {
-        if !needs_prompt(request) {
+        if !self.always_prompt && !needs_prompt(request) {
             tracing::debug!(
                 module_id = %request.module_id,
                 "Approval gate stood down: this call carries no escalating argument"
@@ -400,6 +420,168 @@ impl ApprovalHandler for ApprovalGate {
             .await;
         Ok(result)
     }
+}
+
+/// Prompt for approval on the controlling terminal.
+///
+/// Local CLI execution has no MCP client to elicit a decision from. The prompt
+/// goes to `/dev/tty` rather than stdout or stderr so a wrapped command's
+/// captured streams stay clean. A process whose stdin is not a terminal is
+/// refused with a remedy instead of blocking an agent that cannot answer.
+#[derive(Debug)]
+pub struct LocalApprovalHandler {
+    timeout: Duration,
+    /// Test-only canned answer; `None` opens `/dev/tty`.
+    answer: Option<String>,
+}
+
+impl Default for LocalApprovalHandler {
+    fn default() -> Self {
+        let timeout = std::env::var("APEXE_APPROVAL_TIMEOUT_SECONDS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|seconds| *seconds > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(Duration::from_secs(60));
+        Self {
+            timeout,
+            answer: None,
+        }
+    }
+}
+
+impl LocalApprovalHandler {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[cfg(test)]
+    fn with_answer(answer: &str) -> Self {
+        Self {
+            timeout: Duration::from_secs(1),
+            answer: Some(answer.into()),
+        }
+    }
+
+    fn prompt_text(request: &ApprovalRequest) -> String {
+        let description = request
+            .description
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(request.action.as_str());
+        format!(
+            "\nApproval required for module '{}': {description}\nApprove? [y/N] ",
+            request.module_id
+        )
+    }
+
+    fn decide(answer: &str) -> ApprovalResult {
+        match answer.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => ApprovalResult::approved("local-terminal"),
+            _ => ApprovalResult::rejected("Rejected at the local approval prompt"),
+        }
+    }
+
+    fn no_terminal() -> ApprovalResult {
+        ApprovalResult::rejected(
+            "This call is marked `requires_approval` and no controlling terminal is available to \
+             ask. Run it from an interactive terminal, use `--acl` to grant this caller access, or \
+             configure an ApprovalStore for out-of-band decisions.",
+        )
+    }
+}
+
+#[async_trait]
+impl ApprovalHandler for LocalApprovalHandler {
+    async fn request_approval(
+        &self,
+        request: &ApprovalRequest,
+    ) -> Result<ApprovalResult, ModuleError> {
+        if let Some(answer) = &self.answer {
+            return Ok(Self::decide(answer));
+        }
+        if !std::io::stdin().is_terminal() {
+            return Ok(Self::no_terminal());
+        }
+        let prompt = Self::prompt_text(request);
+        let timeout = self.timeout;
+        let outcome =
+            tokio::task::spawn_blocking(move || prompt_on_terminal(&prompt, timeout)).await;
+        match outcome {
+            Ok(Ok(Some(answer))) => Ok(Self::decide(&answer)),
+            Ok(Ok(None)) => Ok(ApprovalResult::rejected(format!(
+                "The local approval prompt timed out after {} seconds; this is not a human \
+                 declining.",
+                timeout.as_secs()
+            ))),
+            Ok(Err(error)) => Ok(ApprovalResult::rejected(format!(
+                "No controlling terminal is available to ask ({error}). Run it from an interactive \
+                 terminal, use `--acl`, or configure an ApprovalStore for out-of-band decisions."
+            ))),
+            Err(error) => Ok(ApprovalResult::rejected(format!(
+                "The local approval prompt failed before an answer was read: {error}"
+            ))),
+        }
+    }
+
+    async fn check_approval(&self, _approval_id: &str) -> Result<ApprovalResult, ModuleError> {
+        Ok(ApprovalResult::rejected(
+            "Local terminal approval has no out-of-band lookup",
+        ))
+    }
+}
+
+#[cfg(unix)]
+fn prompt_on_terminal(prompt: &str, timeout: Duration) -> std::io::Result<Option<String>> {
+    use std::io::{BufRead, Write};
+    use std::os::unix::io::AsRawFd;
+
+    let mut terminal = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")?;
+    write!(terminal, "{prompt}")?;
+    terminal.flush()?;
+
+    let mut read_set: libc::fd_set = unsafe { std::mem::zeroed() };
+    // SAFETY: `read_set` is zeroed storage for one fd_set and the descriptor
+    // is open for the lifetime of this call.
+    unsafe {
+        libc::FD_SET(terminal.as_raw_fd(), &mut read_set);
+    }
+    let mut wait = libc::timeval {
+        tv_sec: timeout.as_secs() as libc::time_t,
+        tv_usec: timeout.subsec_micros() as libc::suseconds_t,
+    };
+    // SAFETY: `read_set` and `wait` are valid for the duration of the call;
+    // `select` writes only into the descriptor set.
+    let ready = unsafe {
+        libc::select(
+            terminal.as_raw_fd() + 1,
+            &mut read_set,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut wait,
+        )
+    };
+    if ready == 0 {
+        return Ok(None);
+    }
+    if ready < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    let mut answer = String::new();
+    std::io::BufReader::new(terminal.try_clone()?).read_line(&mut answer)?;
+    Ok(Some(answer))
+}
+
+#[cfg(not(unix))]
+fn prompt_on_terminal(_prompt: &str, _timeout: Duration) -> std::io::Result<Option<String>> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "terminal approval is only supported on Unix",
+    ))
 }
 
 #[cfg(test)]
@@ -685,6 +867,23 @@ mod tests {
             .await
             .expect("the gate answers rather than erroring");
         assert_eq!(result.status, "rejected");
+    }
+
+    #[tokio::test]
+    async fn test_local_approval_accepts_yes_and_rejects_other_answers() {
+        for (answer, approved) in [
+            ("y", true),
+            ("YES", true),
+            ("n", false),
+            ("", false),
+            ("maybe", false),
+        ] {
+            let result = LocalApprovalHandler::with_answer(answer)
+                .request_approval(&request("cli.rm"))
+                .await
+                .expect("the local handler answers rather than erroring");
+            assert_eq!(result.status == "approved", approved, "answer {answer:?}");
+        }
     }
 
     #[tokio::test]

@@ -153,7 +153,15 @@ pub fn extract_man_examples(text: &str, tool_name: &str) -> Vec<String> {
     for line in body.lines() {
         let trimmed = line.trim();
         let candidate = if let Some(rest) = trimmed.strip_prefix("$ ") {
-            rest.trim()
+            let rest = rest.trim();
+            // A prompt line is still prose unless it invokes the tool. Real
+            // pages interleave setup commands (`$ cat input.mtree`) with the
+            // tool's own invocations; accepting every `$` line published
+            // another command as a usage of this one.
+            if !invokes_tool(rest, tool_name) {
+                continue;
+            }
+            rest
         } else if trimmed == tool_name
             || trimmed
                 .strip_prefix(tool_name)
@@ -175,6 +183,16 @@ pub fn extract_man_examples(text: &str, tool_name: &str) -> Vec<String> {
         }
     }
     examples
+}
+
+/// Whether a shell command line invokes `tool_name` in any pipeline segment.
+fn invokes_tool(command: &str, tool_name: &str) -> bool {
+    command.split(['|', ';', '&']).any(|segment| {
+        segment.split_whitespace().next().is_some_and(|word| {
+            let base = word.rsplit('/').next().unwrap_or(word);
+            base == tool_name
+        })
+    })
 }
 
 /// Whether `text` is a man page rather than ordinary `--help` output.
@@ -779,6 +797,25 @@ EXAMPLES
         assert_eq!(
             extract_man_examples(man_text, "tar"),
             vec!["tar -czf file.tar.gz source.c source.h".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_extract_man_examples_prompt_lines_must_invoke_the_tool() {
+        // macOS `man tar` interleaves setup commands with tar invocations.
+        let man_text = "\
+EXAMPLES
+     $ cat input.mtree
+     #mtree
+     $ tar -cvf output.tar @input.mtree
+     $ cat output.tar | tar -tvf -
+";
+        assert_eq!(
+            extract_man_examples(man_text, "tar"),
+            vec![
+                "tar -cvf output.tar @input.mtree".to_string(),
+                "cat output.tar | tar -tvf -".to_string()
+            ]
         );
     }
 

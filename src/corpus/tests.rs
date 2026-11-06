@@ -79,12 +79,12 @@ impl Fixture {
     fn write_overlay(&self, subdir: &str, name: &str, flag: &str) {
         let directory = self.repository.join(subdir);
         std::fs::create_dir_all(&directory).unwrap();
-        let overlay = json!({"schema_version":"1.1","command":name,"variant":"unknown",
+        let overlay = json!({"schema_version":"2.0","command":name,"variant":"unknown",
             "mode":"authoritative","confidence":"low", "cross_flag_ordering":false,
             "short_flag_bundling":false,"streaming_stdin_safe":false,
-            "flags":[{"long":flag,"type":"boolean","description":"Test operation"}],
+            "commands":[{"path":[],"flags":[{"long":flag,"type":"boolean","description":"Test operation"}],
             "annotations":{"readonly":true,"destructive":false,"idempotent":true,
-                "requires_approval":false,"open_world":false}});
+                "requires_approval":false,"open_world":false}}]});
         std::fs::write(
             directory.join(format!("{name}.json")),
             serde_json::to_vec_pretty(&overlay).unwrap(),
@@ -643,8 +643,8 @@ fn test_scan_default_corpus_does_not_override_installed_team_corpus() {
     let fixture = Fixture::new();
     let path = fixture.repository.join("overlays/fixture.json");
     let mut overlay: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    overlay["annotations"]["readonly"] = json!(false);
-    overlay["annotations"]["destructive"] = json!(true);
+    overlay["commands"][0]["annotations"]["readonly"] = json!(false);
+    overlay["commands"][0]["annotations"]["destructive"] = json!(true);
     std::fs::write(path, serde_json::to_vec(&overlay).unwrap()).unwrap();
     fixture.commit();
     fixture.install(&["--name", "team-policy"]);

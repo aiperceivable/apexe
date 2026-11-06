@@ -1,9 +1,14 @@
-# Connect a terminal agent with the apexe Skill
+# Connect a terminal agent with the apexe Skill (fallback)
 
-Use the same [apexe Skill](../skills/apexe/SKILL.md) with Claude Code, Codex,
-pi or OpenCode. In a project configured for apexe, ordinary CLI requests use
-`apexe exec -- <command> <arguments>` through the agent's existing terminal
-tool. No MCP server or shell activation is required.
+Use this Skill when the host cannot be configured with `apexe-sh`, PATH shims,
+or a `PreToolUse` hook. For host-level integration — OpenCode and pi with
+`apexe-sh`, Codex through login-shell PATH shims, and Claude Code through a
+`PreToolUse` hook — start with [Shell Integration](agent-shell.md).
+
+In a project without host integration, the same
+[apexe Skill](../skills/apexe/SKILL.md) routes ordinary CLI requests through
+`apexe exec -- <command> <arguments>` using the agent's existing terminal tool.
+No MCP server or shell activation is required for that fallback.
 
 Follow the four steps below, then use [troubleshooting](#troubleshooting) if
 the observed commands differ. Contributors testing a Skill change should use
@@ -99,7 +104,9 @@ Do not load instructions with bare sed, cat, head or an interpreter. Stop
 if required instructions are missing, truncated or refused by the host.
 
 Follow the Skill for ordinary CLI tasks, including initial directory listing
-and readonly probes. Use native `apexe exec -- <command> ...` by default.
+and readonly probes. When this fallback route is active, use native
+`apexe exec -- <command> ...`. If the host already routes commands through
+`apexe-sh`, PATH shims, or a hook, run the command normally instead.
 Record the selected working directory, bindings and ACL before any task call.
 Carry any explicitly selected ACL (--acl before --) and binding override into
 EVERY preflight, execution, pipeline stage and retry; never try defaults first.
