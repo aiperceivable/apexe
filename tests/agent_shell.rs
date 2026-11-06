@@ -893,6 +893,84 @@ fn test_agent_write_preserves_existing_opencode_keys() {
 }
 
 #[test]
+fn test_agent_write_refuses_when_launcher_is_not_installed() {
+    let fixture = Fixture::new();
+    let settings = fixture.home.path().join(".pi/agent/settings.json");
+
+    fixture
+        .command()
+        .args(["agent", "pi", "--write", "--scope", "user"])
+        .assert()
+        .failure()
+        .stderr(contains("apexe env --enable"));
+
+    assert!(
+        !settings.exists(),
+        "a host that starts every command through apexe-sh must not be pointed at a launcher that is not installed"
+    );
+}
+
+#[test]
+fn test_agent_write_refuses_when_entry_point_is_not_the_launcher() {
+    let fixture = Fixture::new();
+    fixture.enable();
+    // The incident this guards: the entry point went missing, and it was filled
+    // in by hand with a shell script instead of by `apexe env --enable`. The file
+    // is executable and delegates to a real shell, so nothing looks broken until
+    // every command runs outside apexe.
+    std::fs::remove_file(fixture.entry_point()).unwrap();
+    std::fs::write(fixture.entry_point(), "#!/bin/sh\nexec /bin/zsh \"$@\"\n").unwrap();
+    let settings = fixture.home.path().join(".pi/agent/settings.json");
+
+    fixture
+        .command()
+        .args(["agent", "pi", "--write", "--scope", "user"])
+        .assert()
+        .failure()
+        .stderr(contains("apexe env --enable"));
+
+    assert!(!settings.exists());
+}
+
+#[test]
+fn test_agent_write_configures_path_based_host_without_launcher() {
+    // The refusal is scoped to hosts that select a shell by path. Claude Code
+    // keeps the system shell and only gains hook commands, so a missing entry
+    // point must not block writing its configuration.
+    let fixture = Fixture::new();
+
+    fixture
+        .command()
+        .args(["agent", "claude", "--write"])
+        .assert()
+        .success()
+        .stdout(contains("Wrote"));
+}
+
+#[test]
+fn test_env_disable_warns_when_host_still_selects_launcher() {
+    // Disabling removes apexe-sh. A host already configured to it cannot start a
+    // command afterwards, and nothing else in the output says so.
+    let fixture = Fixture::new();
+    fixture.enable();
+    fixture
+        .command()
+        .args(["agent", "pi", "--write", "--scope", "user"])
+        .assert()
+        .success();
+
+    fixture
+        .command()
+        .args(["env", "--disable"])
+        .assert()
+        .success()
+        .stderr(contains("still selects"))
+        .stderr(contains("apexe env --enable"));
+
+    assert!(!fixture.entry_point().exists());
+}
+
+#[test]
 fn test_agent_write_refuses_invalid_json() {
     let fixture = Fixture::new();
     fixture.enable();

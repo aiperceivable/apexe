@@ -75,7 +75,11 @@ impl EnvArgs {
                 .unwrap_or(&config.config_dir.join("bin")),
         )?;
         if self.disable {
-            return super::shell_init::disable(&directory, || uninstall(&directory));
+            let result = super::shell_init::disable(&directory, || uninstall(&directory));
+            if result.is_ok() {
+                super::agent::warn_if_host_selects_removed_launcher(&directory);
+            }
+            return result;
         }
         if self.reload && directory.join(MANIFEST_NAME).try_exists()? {
             return self.refresh(&directory, config);

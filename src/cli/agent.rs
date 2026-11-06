@@ -5,7 +5,7 @@ use serde_json::{json, Map, Value};
 
 use crate::config::ApexeConfig;
 
-use super::sh::{self, CheckFormat, CheckReport};
+use super::sh::{self, CheckFormat, CheckReport, ENTRY_NAME};
 
 /// Print host configuration or check the installed launcher for one host.
 #[derive(Debug, clap::Args)]
@@ -89,6 +89,25 @@ fn install(
         eprintln!("Problem: {problem}");
     }
     if write {
+        if selects_shell_by_path(host) {
+            // REFUSAL, not a warning: these hosts start every command through
+            // the entry point, so writing `shellPath` at a launcher that is not
+            // installed does not degrade to the system shell — it breaks the
+            // host's own command execution, which is reported to the user as an
+            // unrelated `EACCES` long after apexe ran. An operator who reinstalls
+            // `apexe env --enable` afterwards gets a working host; one who instead
+            // fills the gap by hand gets a file that is not the launcher and
+            // silently runs commands outside apexe.
+            anyhow::ensure!(
+                report.problems.is_empty(),
+                "refusing to write {} configuration: {} problem(s) mean apexe-sh is not \
+                 installed, and this host starts every command through it. Run 'apexe env \
+                 --enable', then 'apexe agent --check {}'.",
+                host_name(host),
+                report.problems.len(),
+                host_name(host)
+            );
+        }
         return write_host(host, scope, &report);
     }
     match host {
@@ -98,6 +117,17 @@ fn install(
         AgentHost::Claude => println!("{}", report.host_config.claude_code),
     }
     Ok(())
+}
+
+/// Whether the host selects its shell by path, rather than loading shims from
+/// `PATH` or a hook.
+///
+/// Only these hosts hand `apexe-sh` to something that spawns it directly, so
+/// only these hosts are bricked by an entry point that is absent. Codex and
+/// Claude Code cannot replace their shell; their configuration names a shim
+/// directory or a hook command and keeps working through the system shell.
+fn selects_shell_by_path(host: AgentHost) -> bool {
+    matches!(host, AgentHost::Opencode | AgentHost::Pi)
 }
 
 fn mcp(
@@ -463,6 +493,34 @@ fn host_text_configured(host: AgentHost, text: &str, shim_dir: &Path) -> bool {
             text.contains("env --shim-dir") || text.contains(shim_dir.to_string_lossy().as_ref())
         }
         AgentHost::Claude => text.contains("apexe hook claude"),
+    }
+}
+
+/// Report a host that disabling the shim directory leaves unable to start a
+/// command.
+///
+/// `env --disable` removes the `apexe-sh` entry point, and a host configured to
+/// use it as its shell does not fall back to the system shell: it loses the
+/// ability to run anything, and the failure surfaces as an `EACCES` from the
+/// host rather than as anything naming apexe. Disabling stays possible — an
+/// uninstall has to be — so this states the consequence instead of refusing.
+pub(crate) fn warn_if_host_selects_removed_launcher(shim_dir: &Path) {
+    const PATH_SELECTING: [AgentHost; 2] = [AgentHost::Opencode, AgentHost::Pi];
+    for host in PATH_SELECTING {
+        for path in config_candidates(host) {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if host_text_configured(host, &text, shim_dir) {
+                eprintln!(
+                    "Warning: {} still selects {} as its shell; disabling it broke that host. \
+                     Run 'apexe env --enable' to restore it, or remove the setting from {}.",
+                    host_name(host),
+                    shim_dir.join(ENTRY_NAME).display(),
+                    path.display()
+                );
+            }
+        }
     }
 }
 
