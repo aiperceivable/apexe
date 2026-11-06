@@ -518,6 +518,84 @@ fn test_enable_refuses_unowned_managed_block_without_changing_startup() {
 }
 
 #[test]
+fn test_enable_replace_unowned_recovers_after_lost_installation_record() {
+    // The incident: the installation record was gone and a hand-written script
+    // occupied the entry point. Every repair path is keyed on that record, so
+    // `--enable` could only ever say "unowned" — the environment was wedged with
+    // no way out but deleting files by hand.
+    let fixture = Fixture::new();
+    fixture
+        .command()
+        .args(["env", "--enable"])
+        .assert()
+        .success();
+    std::fs::remove_file(fixture.path(".apexe/bin/.apexe-shims.json")).unwrap();
+    std::fs::remove_file(fixture.path(".apexe/bin/apexe-sh")).unwrap();
+    fixture.write(".apexe/bin/apexe-sh", "#!/bin/sh\nexec /bin/zsh \"$@\"\n");
+
+    fixture
+        .command()
+        .args(["env", "--enable"])
+        .assert()
+        .failure()
+        .stderr(contains("--replace-unowned"));
+
+    fixture
+        .command()
+        .args(["env", "--enable", "--replace-unowned"])
+        .assert()
+        .success();
+
+    let entry = fixture.path(".apexe/bin/apexe-sh");
+    assert!(
+        std::fs::symlink_metadata(&entry)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the recovered entry point must be the launcher link again"
+    );
+    assert!(fixture.path(".apexe/bin/.apexe-shims.json").exists());
+    assert!(
+        std::fs::symlink_metadata(fixture.path(".apexe/bin/cat"))
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "installed command shims are recovered too, not left unowned by the missing record"
+    );
+    // The record is functional again: `--reload` is keyed on it and cannot run
+    // until the installation is whole.
+    fixture
+        .command()
+        .args(["env", "--reload"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_enable_replace_unowned_never_replaces_command_shims() {
+    let fixture = Fixture::new();
+    fixture
+        .command()
+        .args(["env", "--enable"])
+        .assert()
+        .success();
+    std::fs::remove_file(fixture.path(".apexe/bin/.apexe-shims.json")).unwrap();
+    let shim = fixture.path(".apexe/bin/cat");
+    assert!(shim.exists(), "the fixture installs a `cat` shim");
+    std::fs::remove_file(&shim).unwrap();
+    std::fs::write(&shim, "#!/bin/sh\nexec /bin/cat \"$@\"\n").unwrap();
+
+    // The override is scoped to apexe's own reserved names. A file sitting on a
+    // command name is the operator's, whatever else is missing.
+    fixture
+        .command()
+        .args(["env", "--enable", "--replace-unowned"])
+        .assert()
+        .failure()
+        .stderr(contains("unowned shim path"));
+}
+
+#[test]
 fn test_enable_validates_all_startup_files_before_writing_any() {
     let fixture = Fixture::new();
     fixture.write(".bashrc", "# Keep me\n");

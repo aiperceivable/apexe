@@ -593,6 +593,22 @@ without a checkout. For an older installation, run `apexe env --reload` once
 to generate the current helper paths in `bin`; previously installed helpers
 outside the shim directory are left untouched.
 
+If the installation record itself is lost while `apexe-sh` or the activation
+helpers remain on disk, nothing proves which of those files apexe wrote, and
+`apexe env --enable` refuses to touch them. `--reload` and `--disable` read the
+same record and fail the same way, so the installation cannot be repaired
+without deleting files by hand. The `--replace-unowned` flag states that those
+reserved names (`apexe-sh`, `apexe-activate.sh`, `apexe-deactivate.sh`) may be
+regenerated in that state:
+
+```bash
+apexe env --enable --replace-unowned
+```
+
+Command shims that are links to the apexe binary are recovered without the flag,
+because the link itself shows what wrote it. A file sitting on a command name is
+never replaced, whatever else is missing.
+
 These scripts work like Python venv activation by changing the current shell.
 apexe prepends command shims, while venv selects Python. The full namespaced
 paths distinguish the two; apexe does not define or replace the venv's

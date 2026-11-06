@@ -444,6 +444,60 @@ def validate_shells(session, fixture):
                 )
 
 
+def validate_shim_recovery(session, fixture):
+    """Recovering an installation whose ownership record was lost.
+
+    Deleting `.apexe-shims.json` while a file occupies the entry point is
+    unrecoverable by every other path: `--enable`, `--reload` and `--disable`
+    all prove ownership through that record. `--replace-unowned` is the way out.
+    """
+    shim = session.root / "shims-recovery"
+    rc = session.root / "rc-recovery"
+    install = [
+        "env",
+        "--enable",
+        "--shell",
+        "sh",
+        "--rc-file",
+        rc,
+        "--shim-dir",
+        shim,
+        "--bindings-dir",
+        fixture.bindings,
+        "--acl",
+        fixture.acl,
+        "--tags",
+        "cli",
+        "--prefix",
+        "cli.toy",
+    ]
+    session.run("env recovery enable", install)
+    (shim / ".apexe-shims.json").unlink()
+    (shim / "apexe-sh").unlink()
+    (shim / "apexe-sh").write_text('#!/bin/sh\nexec /bin/sh "$@"\n', encoding="utf-8")
+    session.run(
+        "env recovery refuses unowned entry point",
+        install,
+        code=1,
+        check=lambda result: require(
+            "--replace-unowned" in result.stderr,
+            "The refusal must name the recovery flag: " + result.stderr,
+        ),
+    )
+    session.run(
+        "env recovery replaces unowned entry point",
+        [*install[:2], "--replace-unowned", *install[2:]],
+        check=lambda result: require(
+            "Replacing unowned entry point" in result.stderr,
+            "The replacement must be reported: " + result.stderr,
+        ),
+    )
+    require(
+        (shim / "apexe-sh").is_symlink(),
+        "The repaired entry point must be a link to apexe",
+    )
+
+
 def validate_agent_shell(session, fixture):
     shim = session.root / "shims-agent-shell"
     session.run(
@@ -1168,6 +1222,7 @@ def validate_cli(session):
     validate_policy(session, fixture)
     validate_source_verification(session, fixture)
     validate_shells(session, fixture)
+    validate_shim_recovery(session, fixture)
     validate_agent_shell(session, fixture)
     validate_initialization(session, fixture)
     validate_client_configuration(session, fixture)

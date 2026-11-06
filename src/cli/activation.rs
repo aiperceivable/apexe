@@ -77,18 +77,26 @@ pub(super) fn verify_existing(
     directory: &Path,
     name: &str,
     expected: Option<&str>,
+    replace_unowned: bool,
 ) -> anyhow::Result<()> {
     let path = directory.join(name);
     match std::fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error).context("Cannot inspect activation script"),
         Ok(_) => {
-            let expected = expected.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Refusing to overwrite unowned activation script {}",
+            let Some(expected) = expected else {
+                // No record claims the file. `--replace-unowned` is the only
+                // way past this: without it the caller has no proof the script
+                // is a generated one, and deleting a stranger's file is worse
+                // than asking.
+                anyhow::ensure!(
+                    replace_unowned,
+                    "Refusing to overwrite unowned activation script {}; run 'apexe env \
+                     --enable --replace-unowned' to regenerate it",
                     path.display()
-                )
-            })?;
+                );
+                return Ok(());
+            };
             require_owned(directory, name, expected)
         }
     }
@@ -131,17 +139,25 @@ mod tests {
     #[test]
     fn test_verify_existing_accepts_missing_script_but_check_requires_it() {
         let root = tempfile::tempdir().unwrap();
-        verify_existing(root.path(), NAME, None).unwrap();
+        verify_existing(root.path(), NAME, None, false).unwrap();
         assert!(require_owned(root.path(), NAME, "expected").is_err());
+    }
+
+    #[test]
+    fn test_verify_existing_replaces_unowned_script_only_with_override() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(NAME), "a stranger's file").unwrap();
+        assert!(verify_existing(root.path(), NAME, None, false).is_err());
+        verify_existing(root.path(), NAME, None, true).unwrap();
     }
 
     #[test]
     fn test_verify_existing_refuses_directory_and_changed_content() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join(NAME)).unwrap();
-        assert!(verify_existing(root.path(), NAME, Some("expected")).is_err());
+        assert!(verify_existing(root.path(), NAME, Some("expected"), false).is_err());
         std::fs::write(root.path().join(DEACTIVATE_NAME), "changed").unwrap();
-        assert!(verify_existing(root.path(), DEACTIVATE_NAME, Some("expected")).is_err());
-        assert!(verify_existing(root.path(), DEACTIVATE_NAME, None).is_err());
+        assert!(verify_existing(root.path(), DEACTIVATE_NAME, Some("expected"), false).is_err());
+        assert!(verify_existing(root.path(), DEACTIVATE_NAME, None, false).is_err());
     }
 }

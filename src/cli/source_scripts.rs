@@ -89,7 +89,11 @@ impl PreparedScripts {
     }
 }
 
-pub(super) fn prepare(shim_dir: &Path, executable: &Path) -> anyhow::Result<PreparedScripts> {
+pub(super) fn prepare(
+    shim_dir: &Path,
+    executable: &Path,
+    replace_unowned: bool,
+) -> anyhow::Result<PreparedScripts> {
     let directory = script_directory(shim_dir)?;
     let previous = read_record(&directory)?;
     if let Some(previous) = &previous {
@@ -104,6 +108,7 @@ pub(super) fn prepare(shim_dir: &Path, executable: &Path) -> anyhow::Result<Prep
         previous
             .as_ref()
             .map(|value| value.record.activate.as_str()),
+        replace_unowned,
     )?;
     activation::verify_existing(
         &directory,
@@ -111,6 +116,7 @@ pub(super) fn prepare(shim_dir: &Path, executable: &Path) -> anyhow::Result<Prep
         previous
             .as_ref()
             .map(|value| value.record.deactivate.as_str()),
+        replace_unowned,
     )?;
     let record = Record {
         version: 1,
@@ -253,7 +259,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let shim_dir = root.path().join("bin");
         let executable = root.path().join("apexe");
-        let scripts = prepare(&shim_dir, &executable).unwrap();
+        let scripts = prepare(&shim_dir, &executable, false).unwrap();
         assert!(!scripts.directory().exists());
         scripts.publish().unwrap();
         check(scripts.directory(), &shim_dir, &executable).unwrap();
@@ -318,11 +324,14 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let shim_dir = root.path().join("bin");
         let executable = root.path().join("apexe");
-        let scripts = prepare(&shim_dir, &executable).unwrap();
+        let scripts = prepare(&shim_dir, &executable, false).unwrap();
         scripts.publish().unwrap();
         std::fs::remove_file(scripts.directory().join(ACTIVATE_NAME)).unwrap();
         assert!(check(scripts.directory(), &shim_dir, &executable).is_err());
-        prepare(&shim_dir, &executable).unwrap().publish().unwrap();
+        prepare(&shim_dir, &executable, false)
+            .unwrap()
+            .publish()
+            .unwrap();
         check(scripts.directory(), &shim_dir, &executable).unwrap();
         let mut stored = read_record(scripts.directory()).unwrap().unwrap().record;
         stored.shim_dir = root.path().join("another");
@@ -331,6 +340,6 @@ mod tests {
             serde_json::to_vec(&stored).unwrap(),
         )
         .unwrap();
-        assert!(prepare(&shim_dir, &executable).is_err());
+        assert!(prepare(&shim_dir, &executable, false).is_err());
     }
 }

@@ -22,6 +22,16 @@ pub struct EnvArgs {
     /// Remove owned shims and managed shell startup blocks.
     #[arg(long, conflicts_with_all = ["enable", "reload"])]
     pub disable: bool,
+    /// Replace the entry point and activation scripts when the record that
+    /// proves this apexe owns them is gone.
+    ///
+    /// Files this apexe provably created — links to its own executable — are
+    /// always recovered. This flag additionally allows replacing apexe's
+    /// reserved names (`apexe-sh`, the activation scripts) when nothing proves
+    /// they are apexe's. Command shims are never replaced by it.
+    #[arg(long)]
+    #[serde(default)]
+    pub replace_unowned: bool,
     /// Refresh shims with the stored configuration, enabling them if not installed.
     #[arg(long, group = "startup_config", conflicts_with_all = ["enable", "disable"])]
     #[serde(default)]
@@ -90,7 +100,7 @@ impl EnvArgs {
                 &directory,
                 self.shell,
                 self.rc_file.as_deref(),
-                || install(&directory, manifest),
+                || install(&directory, manifest, self.replace_unowned),
             );
         }
         super::shim::read_manifest(&directory)?;
@@ -115,10 +125,10 @@ impl EnvArgs {
         let manifest = self.plan(&config)?;
         if self.shell.is_some() || self.rc_file.is_some() {
             super::shell_init::initialize(directory, self.shell, self.rc_file.as_deref(), || {
-                install(directory, manifest)
+                install(directory, manifest, self.replace_unowned)
             })
         } else {
-            install(directory, manifest)
+            install(directory, manifest, self.replace_unowned)
         }
     }
 
@@ -231,12 +241,22 @@ fn entry_path(directory: &Path, name: &str) -> PathBuf {
 }
 
 fn owned(path: &Path, manifest: &Manifest) -> bool {
+    links_to_executable(path, &manifest.executable)
+}
+
+/// Whether `path` is a link to this executable.
+///
+/// This is the shape of every entry apexe creates, so it proves ownership on its
+/// own — without the installation record. The record is what made a lost
+/// `.apexe-shims.json` unrecoverable: every shim apexe had installed became
+/// "unowned" at once, including links that only apexe would have written.
+fn links_to_executable(path: &Path, executable: &Path) -> bool {
     #[cfg(unix)]
-    return std::fs::read_link(path).ok().as_ref() == Some(&manifest.executable);
+    return std::fs::read_link(path).ok().as_deref() == Some(executable);
     #[cfg(not(unix))]
     std::fs::read(path)
         .ok()
-        .zip(std::fs::read(&manifest.executable).ok())
+        .zip(std::fs::read(executable).ok())
         .is_some_and(|(left, right)| left == right)
 }
 
@@ -254,8 +274,9 @@ impl Drop for StagingDirectory {
     }
 }
 
-fn install(directory: &Path, mut manifest: Manifest) -> anyhow::Result<()> {
-    let persistent = super::source_scripts::prepare(directory, &manifest.executable)?;
+fn install(directory: &Path, mut manifest: Manifest, replace_unowned: bool) -> anyhow::Result<()> {
+    let persistent =
+        super::source_scripts::prepare(directory, &manifest.executable, replace_unowned)?;
     manifest.source_scripts_dir = Some(persistent.directory().to_path_buf());
     let script = super::activation::generate(directory, &manifest.executable)?;
     manifest.activation_script = Some(script.clone());
@@ -267,7 +288,7 @@ fn install(directory: &Path, mut manifest: Manifest) -> anyhow::Result<()> {
         None
     };
     retain_removed_routes(&mut manifest, old.as_ref());
-    verify_destinations(directory, &manifest, old.as_ref())?;
+    verify_destinations(directory, &manifest, old.as_ref(), replace_unowned)?;
     std::fs::create_dir_all(directory)?;
     let stage = StagingDirectory(directory.join(format!(".install-{}", uuid::Uuid::new_v4())));
     std::fs::create_dir(&stage.0)?;
@@ -402,6 +423,7 @@ fn verify_destinations(
     directory: &Path,
     manifest: &Manifest,
     old: Option<&Manifest>,
+    replace_unowned: bool,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         !manifest
@@ -414,20 +436,15 @@ fn verify_destinations(
         directory,
         super::activation::NAME,
         old.and_then(|manifest| manifest.activation_script.as_deref()),
+        replace_unowned,
     )?;
     super::activation::verify_existing(
         directory,
         super::activation::DEACTIVATE_NAME,
         old.and_then(|manifest| manifest.deactivation_script.as_deref()),
+        replace_unowned,
     )?;
-    let entry = entry_path(directory, ENTRY_NAME);
-    if std::fs::symlink_metadata(&entry).is_ok() {
-        anyhow::ensure!(
-            old.is_some_and(|manifest| owned(&entry, manifest)),
-            "Refusing to overwrite unowned entry point {}",
-            entry.display()
-        );
-    }
+    verify_entry(directory, manifest, old, replace_unowned)?;
     for name in manifest.commands.keys() {
         anyhow::ensure!(
             super::shim::valid_name(name),
@@ -435,10 +452,13 @@ fn verify_destinations(
         );
         let path = entry_path(directory, name);
         if std::fs::symlink_metadata(&path).is_ok() {
+            // Owned either because the record knows the name and the file still
+            // matches it, or because the file is a link to this executable.
+            let claimed = old.is_some_and(|manifest| {
+                manifest.commands.contains_key(name) && owned(&path, manifest)
+            });
             anyhow::ensure!(
-                old.is_some_and(
-                    |manifest| manifest.commands.contains_key(name) && owned(&path, manifest)
-                ),
+                claimed || links_to_executable(&path, &manifest.executable),
                 "Refusing to overwrite unowned shim path {}",
                 path.display()
             );
@@ -447,11 +467,60 @@ fn verify_destinations(
     Ok(())
 }
 
+/// Decide whether the entry point may be replaced.
+///
+/// A link to this executable is always replaceable — that is the launcher, and
+/// recreating it destroys nothing. Anything else at that path is the operator's
+/// and is only replaced under `--replace-unowned`.
+fn verify_entry(
+    directory: &Path,
+    manifest: &Manifest,
+    old: Option<&Manifest>,
+    replace_unowned: bool,
+) -> anyhow::Result<()> {
+    let entry = entry_path(directory, ENTRY_NAME);
+    if std::fs::symlink_metadata(&entry).is_err() {
+        return Ok(());
+    }
+    let ours = old.is_some_and(|manifest| owned(&entry, manifest))
+        || links_to_executable(&entry, &manifest.executable);
+    if ours {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        replace_unowned,
+        "Refusing to overwrite unowned entry point {}: it is {}, and no installation \
+         record ({}) claims it. Run 'apexe env --enable --replace-unowned' to replace \
+         it, or move it aside and retry.",
+        entry.display(),
+        describe_occupant(&entry),
+        directory.join(MANIFEST_NAME).display()
+    );
+    eprintln!(
+        "Replacing unowned entry point {} ({})",
+        entry.display(),
+        describe_occupant(&entry)
+    );
+    Ok(())
+}
+
+/// Name what occupies a path, so a refusal describes the obstacle rather than
+/// only the location.
+fn describe_occupant(path: &Path) -> String {
+    match std::fs::read_link(path) {
+        Ok(target) => format!("a symbolic link to {}", target.display()),
+        Err(_) => match std::fs::metadata(path) {
+            Ok(metadata) => format!("a regular file of {} bytes", metadata.len()),
+            Err(error) => format!("unreadable: {error}"),
+        },
+    }
+}
+
 fn uninstall(directory: &Path) -> anyhow::Result<()> {
     let manifest = super::shim::read_manifest(directory)?;
     for (name, script) in manifest_scripts(&manifest) {
         if let Some(script) = script {
-            super::activation::verify_existing(directory, name, Some(script))?;
+            super::activation::verify_existing(directory, name, Some(script), false)?;
         }
     }
     for name in manifest.commands.keys() {
