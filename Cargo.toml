@@ -16,11 +16,11 @@ categories = ["command-line-utilities", "development-tools"]
 anyhow = "1"
 axum = "0.8"
 async-trait = "0.1"
-apcore = "0.32.1"
-apcore-a2a = "0.8.3"
-apcore-cli = "0.12.4"
-apcore-mcp = "0.23.0"
-apcore-toolkit = { version = "0.14.0", default-features = false, features = ["http-proxy"] }
+apcore = "0.32.3"
+apcore-a2a = "0.8.4"
+apcore-cli = "0.12.5"
+apcore-mcp = "0.23.2"
+apcore-toolkit = { version = "0.14.1", default-features = false, features = ["http-proxy"] }
 # RFC 3339 timestamps for the governance audit records apexe writes itself
 # (see `governance::audit`). Already in the graph via apcore; declared here so
 # the format the audit trail promises has an owner in this manifest.

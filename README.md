@@ -111,11 +111,11 @@ OpenAPI import is a server feature; local exec and shims execute CLI commands.
 
 | Crate | Role |
 |-------|------|
-| [apcore](https://github.com/aiperceivable/apcore-rust) 0.32.1 | Module trait, Registry, ACL, ModuleError, Context |
-| [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit-rust) 0.14.0 | ScannedModule, YAMLWriter, DisplayResolver |
-| [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) 0.23.0 | MCP server with structured results, middleware, auth, Explorer UI |
-| [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust) 0.8.3 | A2A agent server sharing the same governed `Executor` |
-| [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) 0.12.4 | `--man` page generation |
+| [apcore](https://github.com/aiperceivable/apcore-rust) 0.32.3 | Module trait, Registry, ACL, ModuleError, Context |
+| [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit-rust) 0.14.1 | ScannedModule, YAMLWriter, DisplayResolver |
+| [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) 0.23.2 | MCP server with structured results, middleware, auth, Explorer UI |
+| [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust) 0.8.4 | A2A agent server sharing the same governed `Executor` |
+| [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) 0.12.5 | `--man` page generation |
 
 ---
 

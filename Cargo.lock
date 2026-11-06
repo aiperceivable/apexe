@@ -139,9 +139,9 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "apcore"
-version = "0.32.1"
+version = "0.32.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85829615f0b8962f2d04e6f5a15ba728463f3bd2b12d0a738a8271f7fda7ed5c"
+checksum = "53e2d064d713fbcdded65292833766c1bc32bf36ea06e8c503d85932e014ea04"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -167,9 +167,9 @@ dependencies = [
 
 [[package]]
 name = "apcore-a2a"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7e4931498333a17e02fcd62e3baa7038cdd321801d6d55c459705acf3d0f8eb"
+checksum = "2af28980e40531e45246345715dbf82bc576e7ac1ae6ee74c72d6c3a51cf1662"
 dependencies = [
  "apcore",
  "apcore-toolkit",
@@ -198,9 +198,9 @@ dependencies = [
 
 [[package]]
 name = "apcore-cli"
-version = "0.12.4"
+version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6500c483c9c0363e16094d96438835dec0db1e6c54b9c341e7acf5d25b4c680"
+checksum = "dd4df4670f8b091d852e656411a766cc8a8113939b2a9666a63b12790f0ffa20"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -234,9 +234,9 @@ dependencies = [
 
 [[package]]
 name = "apcore-mcp"
-version = "0.23.0"
+version = "0.23.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c5644180bc2a1d03225865ac10a67b1d2e5c68cf0090a69f1a7a990d4dc62d6"
+checksum = "1986ca9ae51c549ecf995015373dc59dad6c6985295d5bae9e0095343e1881e1"
 dependencies = [
  "apcore",
  "apcore-toolkit",
@@ -250,6 +250,7 @@ dependencies = [
  "mcp-embedded-ui",
  "referencing 0.28.3",
  "regex",
+ "rustix 1.1.4",
  "schemars",
  "serde",
  "serde_json",
@@ -262,17 +263,19 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "apcore-toolkit"
-version = "0.14.0"
+version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81e7fbb3ebd015104d66bcdfa271543599cc72c6a48e022290612689a56ef700"
+checksum = "898357c6fc0113cf95aed7ff0b9b18e762640c831587ba6ad03e7d07fc3626eb"
 dependencies = [
  "apcore",
  "async-trait",
  "chrono",
+ "futures-timer",
  "indexmap",
  "regex",
  "reqwest",
