@@ -38,7 +38,7 @@ test:
 test-scripts:
 	$(PYTHON) -m unittest discover -s scripts/tests -v
 
-test-examples:
+test-examples: build
 	$(PYTHON) scripts/validate_examples.py --apexe "$(TARGET_DIR)/debug/apexe" --corpus "$(CORPUS)" --report "$(RUNTIME_REPORT_DIR)/examples.json"
 
 fmt:

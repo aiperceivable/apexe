@@ -81,7 +81,8 @@ def run_rust_examples(session):
             )
             require(
                 executable.is_file(),
-                "Build examples with cargo build --all-features --examples",
+                "Missing {}: run 'make test-examples' (its build prerequisite) or "
+                "'cargo build --all-features --examples'".format(executable),
             )
             result = session.execute([], executable=str(executable), timeout=90)
             entry.update(
