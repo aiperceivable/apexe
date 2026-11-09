@@ -319,6 +319,8 @@ impl McpServerBuilder {
             filter: ModuleFilter {
                 prefix: self.prefix.clone(),
                 tags: self.tags.clone(),
+                also: Vec::new(),
+                exclude: Vec::new(),
             },
             audit_path: self.audit_path.as_deref(),
             enable_logging: self.enable_logging,

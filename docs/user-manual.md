@@ -505,6 +505,8 @@ use the shell-specific setup below.
 | `--tags <TAGS>` | absent | Require every listed tag |
 | `--prefix <PREFIX>` | absent | Restrict the eligible module IDs |
 | `--scanned <off\|readonly\|all>` | `off` | Also route bindings without a reviewed overlay. `readonly` admits only readonly, non-destructive, closed-world modules; `all` admits any current binding |
+| `--also <NAMES>` | absent | Admit these shim commands even when `--scanned` excludes them. Comma-separated command names (`node,python3`), matched against the name the shim installs. This is how an interpreter is governed without taking `all`: `node` is neither readonly nor destructive, so `readonly` skips it |
+| `--exclude <NAMES>` | absent | Refuse these shim commands even when the policy admits them |
 | `--shell <SHELL>` | detected for `--enable`; `sh` for printed activation | Choose `sh`, `bash`, `zsh`, `fish` or `powershell` |
 
 `--enable` detects the shell from `SHELL` and integrates startup configuration
@@ -518,6 +520,13 @@ reviewed `ls` to an installation previously covering `cat` and `head` needs
 reload. Existing bindings are read during execution, so parameter descriptions
 or schemas alone normally do not require rebuilding the shim list.
 
+`--also` and `--exclude` name individual commands and outrank the scanned
+policy in the direction they state. They persist in the manifest, so the
+activation script's `env --reload` keeps them, and a `--reload` without them
+retains the stored names for the same reason it retains the prefix and tags.
+Re-running `env --enable` without them clears them: `--enable` rebuilds the
+filter from its own arguments.
+
 `--scanned` widens coverage beyond reviewed overlays. A scanned route parses
 and validates the caller's argv against the scanned schema, then executes the
 **original argv**; it never rebuilds or reorders the command line. Schema
@@ -527,7 +536,8 @@ subset and `all` only after reviewing the bindings. `apexe sh --check` lists
 scanned routes separately from verified ones.
 
 For an existing installation, reload retains its binding directory, binding
-pattern, explicit ACL path, prefix, tags and scanned policy unless command-line
+pattern, explicit ACL path, prefix, tags, `--also`/`--exclude` names and scanned
+policy unless command-line
 options override them. It preserves startup files by default and does not need shell detection.
 An explicit `--shell` or `--rc-file` also updates startup configuration. When
 there is no installed manifest, including after disable, reload automatically

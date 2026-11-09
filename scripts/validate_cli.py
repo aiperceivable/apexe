@@ -444,6 +444,68 @@ def validate_shells(session, fixture):
                 )
 
 
+def validate_shim_names(session, fixture):
+    """`--also` and `--exclude` name individual commands.
+
+    `--scanned off` admits no heuristic route at all, so `--also toy,head` is the
+    only reason either is installed: the flag has to outrank the policy on its
+    own. `--reload --exclude head` then removes one while the stored `--also`
+    names are still in the manifest, which is the ordering an operator hits when
+    they narrow an existing installation.
+    """
+    bindings = session.root / "bindings-names"
+    session.run(
+        "scan names",
+        [
+            "scan",
+            "toy",
+            "head",
+            "--output-dir",
+            bindings,
+            "--depth",
+            "1",
+            "--no-cache",
+            "--offline",
+            "--overlay",
+            fixture.overlay,
+        ],
+    )
+    shim = session.root / "shims-names"
+    rc = session.root / "rc-names"
+    session.run(
+        "env enable also",
+        [
+            "env",
+            "--enable",
+            "--shell",
+            "sh",
+            "--rc-file",
+            rc,
+            "--shim-dir",
+            shim,
+            "--bindings-dir",
+            bindings,
+            "--acl",
+            fixture.acl,
+            "--scanned",
+            "off",
+            "--also",
+            "toy,head",
+        ],
+        check=lambda p: equal(
+            (shim / "toy").exists() and (shim / "head").exists(), True
+        ),
+    )
+    session.run(
+        "env reload exclude",
+        ["env", "--reload", "--shim-dir", shim, "--exclude", "head"],
+        check=lambda p: equal(
+            (shim / "toy").exists() and not (shim / "head").exists(), True
+        ),
+    )
+    session.run("env disable names", ["env", "--disable", "--shim-dir", shim])
+
+
 def validate_shim_recovery(session, fixture):
     """Recovering an installation whose ownership record was lost.
 
@@ -1222,6 +1284,7 @@ def validate_cli(session):
     validate_policy(session, fixture)
     validate_source_verification(session, fixture)
     validate_shells(session, fixture)
+    validate_shim_names(session, fixture)
     validate_shim_recovery(session, fixture)
     validate_agent_shell(session, fixture)
     validate_initialization(session, fixture)

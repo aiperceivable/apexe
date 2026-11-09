@@ -310,6 +310,8 @@ async fn test_user_manual_states_that_filters_gate_execution() {
         filter: ModuleFilter {
             prefix: Some("cli.git".to_string()),
             tags: None,
+            also: Vec::new(),
+            exclude: Vec::new(),
         },
         audit_path: None,
         enable_logging: false,

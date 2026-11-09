@@ -36,6 +36,19 @@ pub struct ModuleFilter {
     /// Keep only modules carrying *every* listed tag (AND logic), matching
     /// `Registry::list`'s own semantics.
     pub tags: Option<Vec<String>>,
+    /// Shim command names admitted even when the scanned policy excludes them.
+    ///
+    /// `--scanned readonly` admits only modules annotated readonly, which leaves
+    /// interpreters out: `node` and `python3` are neither readonly nor
+    /// destructive, so a workflow that needs them governed would otherwise have
+    /// to take `--scanned all` and every other heuristic route with it. Matched
+    /// against the shim command (`node`), not the module id, because that is the
+    /// name an operator reads on the command line.
+    #[serde(default)]
+    pub also: Vec<String>,
+    /// Shim command names refused even when the policy would admit them.
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
 
 impl ModuleFilter {
@@ -863,6 +876,8 @@ mod tests {
         opts.filter = ModuleFilter {
             prefix: Some("cli.git".to_string()),
             tags: None,
+            also: Vec::new(),
+            exclude: Vec::new(),
         };
         let executor = build_executor(&opts).unwrap();
 
@@ -883,6 +898,8 @@ mod tests {
         opts.filter = ModuleFilter {
             prefix: None,
             tags: Some(vec!["git".to_string()]),
+            also: Vec::new(),
+            exclude: Vec::new(),
         };
         let executor = build_executor(&opts).unwrap();
 
@@ -905,6 +922,8 @@ mod tests {
         opts.filter = ModuleFilter {
             prefix: Some("zzz.".to_string()),
             tags: None,
+            also: Vec::new(),
+            exclude: Vec::new(),
         };
         let executor = build_executor(&opts).unwrap();
 
@@ -983,6 +1002,8 @@ mod tests {
         opts.filter = ModuleFilter {
             prefix: None,
             tags: Some(vec!["git".to_string(), String::new()]),
+            also: Vec::new(),
+            exclude: Vec::new(),
         };
         let executor = build_executor(&opts).unwrap();
         assert_eq!(executor.registry().count(), 0);
@@ -1015,6 +1036,8 @@ mod tests {
         let one = ModuleFilter {
             prefix: None,
             tags: Some(vec!["readonly".to_string()]),
+            also: Vec::new(),
+            exclude: Vec::new(),
         };
         assert!(one.admits(&module));
 
@@ -1022,6 +1045,8 @@ mod tests {
         let both = ModuleFilter {
             prefix: None,
             tags: Some(vec!["readonly".to_string(), "git".to_string()]),
+            also: Vec::new(),
+            exclude: Vec::new(),
         };
         assert!(!both.admits(&module));
     }
@@ -1173,6 +1198,8 @@ mod tests {
         opts.filter = ModuleFilter {
             prefix: Some("cli.git".to_string()),
             tags: None,
+            also: Vec::new(),
+            exclude: Vec::new(),
         };
         assert!(
             build_executor(&opts).is_ok(),

@@ -626,6 +626,86 @@ fn test_shim_streams_raw_stdin_without_json_or_buffering() {
     assert!(audit.contains("local"));
 }
 
+/// A module the readonly policy excludes, which is what an interpreter looks
+/// like: neither readonly nor destructive, so `--scanned readonly` skips it.
+fn write_unannotated(fixture: &Fixture, id: &str, name: &str, binary: &str) {
+    let mut module = ScannedModule::new(
+        id.into(),
+        "Unannotated shim test".into(),
+        file_schema(),
+        json!({"type":"object"}),
+        vec!["pilot".into()],
+        format!("exec://{binary}"),
+    );
+    module.annotations = Some(ModuleAnnotations::default());
+    // No grammar stamp: the route is `legacy`, so `--scanned readonly` will not
+    // admit it and `--also` is the only way in. A stamped route would be
+    // `verified` and admitted regardless, which is not the case under test.
+    module.metadata.insert("command_path".into(), json!([name]));
+    module.metadata.insert("variant".into(), json!("unknown"));
+    module.metadata.insert("shim_contract".into(), json!({"authoritative":true,"variant":"unknown","short_flag_bundling":true,"streaming_stdin_safe":false,"cross_flag_ordering":false}));
+    module.input_schema["x-apexe-streaming-stdin-safe"] = json!(false);
+    module.input_schema["x-apexe-short-flag-bundling"] = json!(true);
+    module.input_schema["x-apexe-cross-flag-ordering"] = json!(false);
+    apexe::output::YamlOutput::without_verification()
+        .write(&[module], &fixture.bindings(), false)
+        .unwrap();
+}
+
+/// `--also` governs a command the scanned policy excludes, without admitting
+/// every other heuristic route (`--scanned all`). This is how an interpreter
+/// like `node` gets a shim at all: it is neither readonly nor destructive.
+#[test]
+fn test_enable_also_admits_a_command_the_policy_excludes() {
+    let fixture = Fixture::new();
+    write_unannotated(&fixture, "cli.node", "node", "/bin/cat");
+
+    // The policy alone refuses it: nothing is eligible.
+    fixture
+        .command()
+        .args(["env", "--enable", "--scanned", "readonly"])
+        .assert()
+        .failure();
+
+    fixture
+        .command()
+        .args(["env", "--enable", "--scanned", "readonly", "--also", "node"])
+        .assert()
+        .success();
+    assert!(fixture.shims().join("node").exists());
+
+    // The names persist, because the activation script runs `env --reload` in
+    // every new terminal and would otherwise drop the route again.
+    let manifest = std::fs::read_to_string(fixture.shims().join(".apexe-shims.json")).unwrap();
+    let manifest: Value = serde_json::from_str(&manifest).unwrap();
+    assert_eq!(manifest["filter"]["also"], json!(["node"]));
+    fixture
+        .command()
+        .args(["env", "--reload"])
+        .assert()
+        .success();
+    assert!(fixture.shims().join("node").exists());
+}
+
+/// `--exclude` refuses a command the policy would otherwise admit.
+#[test]
+fn test_enable_exclude_drops_an_admitted_command() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), false);
+    fixture.write("cli.head", "head", "/bin/cat", file_schema(), false);
+    fixture
+        .command()
+        .args(["env", "--enable", "--exclude", "cat"])
+        .assert()
+        .success();
+    assert!(!fixture.shims().join("cat").exists());
+    assert!(fixture.shims().join("head").exists());
+    let manifest = std::fs::read_to_string(fixture.shims().join(".apexe-shims.json")).unwrap();
+    let manifest: Value = serde_json::from_str(&manifest).unwrap();
+    assert_eq!(manifest["filter"]["exclude"], json!(["cat"]));
+    assert!(manifest["commands"].get("cat").is_none());
+}
+
 /// Issue #47: an unstamped binding whose only claim is the legacy tool-level
 /// `authoritative` flag must not be installed as reviewed.
 ///

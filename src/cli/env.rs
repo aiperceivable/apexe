@@ -58,6 +58,16 @@ pub struct EnvArgs {
     /// Include only modules whose ID starts with this prefix.
     #[arg(long, value_name = "PREFIX")]
     pub prefix: Option<String>,
+    /// Admit these shim commands even when the scanned policy excludes them.
+    ///
+    /// Comma-separated command names (`node,python3`), matched against the name
+    /// the shim installs, not the module id. Use it to govern an interpreter
+    /// under `--scanned readonly`, which admits only readonly commands.
+    #[arg(long, value_name = "NAMES")]
+    pub also: Option<String>,
+    /// Refuse these shim commands even when the policy would admit them.
+    #[arg(long, value_name = "NAMES")]
+    pub exclude: Option<String>,
     /// Include bindings without a reviewed overlay: off, readonly, or all.
     ///
     /// Scanned routes execute the caller's original argv after strict schema
@@ -125,6 +135,12 @@ impl EnvArgs {
         self.acl = self.acl.or(previous.acl);
         self.scanned = self.scanned.or(Some(previous.scanned));
         self.prefix = self.prefix.or(previous.filter.prefix);
+        if self.also.is_none() && !previous.filter.also.is_empty() {
+            self.also = Some(previous.filter.also.join(","));
+        }
+        if self.exclude.is_none() && !previous.filter.exclude.is_empty() {
+            self.exclude = Some(previous.filter.exclude.join(","));
+        }
         self.tags = self.tags.or_else(|| {
             previous
                 .filter
@@ -154,6 +170,18 @@ impl EnvArgs {
                 .as_deref()
                 .map(super::parse_tag_list)
                 .transpose()?,
+            also: self
+                .also
+                .as_deref()
+                .map(|raw| super::parse_command_list(raw, "--also"))
+                .transpose()?
+                .unwrap_or_default(),
+            exclude: self
+                .exclude
+                .as_deref()
+                .map(|raw| super::parse_command_list(raw, "--exclude"))
+                .transpose()?
+                .unwrap_or_default(),
         };
         let acl = super::local::acl_path(self.acl.as_deref(), config)?;
         let options = super::local::options(
@@ -171,6 +199,7 @@ impl EnvArgs {
             &modules,
             |id| executor.registry().has(id),
             self.scanned.unwrap_or_default(),
+            &filter,
         )?;
         Ok(Manifest {
             version: MANIFEST_VERSION,
@@ -192,6 +221,7 @@ fn collect_routes(
     modules: &[apcore_toolkit::ScannedModule],
     registered: impl Fn(&str) -> bool,
     scanned: super::ScannedPolicy,
+    filter: &ModuleFilter,
 ) -> anyhow::Result<BTreeMap<String, Vec<Route>>> {
     let mut commands: BTreeMap<String, Vec<Route>> = BTreeMap::new();
     let mut binaries = BTreeMap::new();
@@ -199,10 +229,25 @@ fn collect_routes(
         if !registered(&module.module_id) {
             continue;
         }
+        let path = super::shim::command_path(module)?;
+        if filter.exclude.iter().any(|name| name == &path[0]) {
+            tracing::info!(
+                command = %path[0],
+                module_id = %module.module_id,
+                "Excluded from shims by --exclude"
+            );
+            continue;
+        }
+        // `--also` names the command the operator wants governed. It outranks
+        // the scanned policy on purpose: `--scanned readonly` admits only
+        // readonly modules, and an interpreter is neither readonly nor
+        // destructive, so without this the only way to govern one is to admit
+        // every heuristic route with `--scanned all`.
+        let named = filter.also.iter().any(|name| name == &path[0]);
         let tier = match super::shim::eligible(module) {
             Ok(()) => super::shim::RouteTier::Verified,
             Err(error) => {
-                if super::shim::scanned_admits(module, scanned) {
+                if super::shim::scanned_admits(module, scanned) || named {
                     // Admitted, but say which kind of admission this is: a
                     // binding older than the grammar stamp is inherited trust,
                     // not an earned one (issue #47).
@@ -224,7 +269,6 @@ fn collect_routes(
                 }
             }
         };
-        let path = super::shim::command_path(module)?;
         let binary = crate::scanner::resolver::extract_binary_path(&module.target)
             .ok_or_else(|| anyhow::anyhow!("Invalid target"))?;
         if let Some(previous) = binaries.insert(path[0].clone(), binary.clone()) {
@@ -328,6 +372,7 @@ fn install(directory: &Path, mut manifest: Manifest, replace_unowned: bool) -> a
     )?;
     persistent.publish()?;
     publish_entries(directory, &stage.0, &manifest)?;
+    remove_stale_entries(directory, &manifest)?;
     report_coverage(&manifest);
     tracing::info!(directory = %directory.display(), count = manifest.commands.len(), "Installed governed command shims");
     persistent.log_paths();
@@ -476,6 +521,17 @@ fn retain_removed_routes(manifest: &mut Manifest, old: Option<&Manifest>) {
         // Retain each missing command path as a tombstone, including removed
         // subcommands of a binary that still has other registered routes.
         for (name, routes) in &old.commands {
+            // An operator who excluded this command did not lose a module: the
+            // route must go, not become a tombstone that keeps the link on disk
+            // and refuses every call. `--exclude` says so explicitly.
+            if manifest
+                .filter
+                .exclude
+                .iter()
+                .any(|excluded| excluded == name)
+            {
+                continue;
+            }
             let current = manifest.commands.entry(name.clone()).or_default();
             for route in routes {
                 if current_ids.contains(&route.module_id) {
@@ -516,6 +572,32 @@ fn publish_entries(directory: &Path, stage: &Path, manifest: &Manifest) -> anyho
         entry_path(directory, ENTRY_NAME),
     )?;
     std::fs::rename(stage.join(MANIFEST_NAME), directory.join(MANIFEST_NAME))?;
+    Ok(())
+}
+
+/// Remove command links this installation owns but the manifest no longer lists.
+///
+/// `env --reload --exclude head` narrows the set without the module disappearing
+/// from the bindings, so nothing else removes the link: it stayed on disk and
+/// kept resolving to a command the installation had just refused. A *removed
+/// module* is a different case and is unaffected — `retain_removed_routes` keeps
+/// its route in the manifest as a tombstone, so the link is listed and stays to
+/// refuse the call.
+fn remove_stale_entries(directory: &Path, manifest: &Manifest) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if reserved_shim_name(&name) || manifest.commands.contains_key(&name) {
+            continue;
+        }
+        let path = entry.path();
+        // Only links this apexe owns: a file an operator put there is theirs.
+        if !links_to_executable(&path, &manifest.executable) {
+            continue;
+        }
+        std::fs::remove_file(&path)?;
+        tracing::info!(command = %name, "Removed shim the manifest no longer lists");
+    }
     Ok(())
 }
 

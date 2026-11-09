@@ -940,6 +940,25 @@ fn validate_cors_origins(origins: &[String]) -> anyhow::Result<()> {
 /// never match anything, so no registry makes it correct. A tag that is merely
 /// unknown to *this* host stays a warning — one invocation is meant to be
 /// portable across differently scanned machines.
+/// Parse a comma-separated list of shim command names (`--also`, `--exclude`).
+///
+/// A stray comma would otherwise name the empty string, which matches no shim:
+/// the operator would see the flag silently do nothing. `flag` is only there so
+/// the message names the argument they typed.
+fn parse_command_list(raw: &str, flag: &str) -> anyhow::Result<Vec<String>> {
+    raw.split(',')
+        .map(|token| {
+            let name = token.trim();
+            if name.is_empty() {
+                anyhow::bail!(
+                    "{flag} '{raw}' contains an empty command name; remove the stray comma"
+                );
+            }
+            Ok(name.to_string())
+        })
+        .collect()
+}
+
 fn parse_tag_list(raw: &str) -> anyhow::Result<Vec<String>> {
     raw.split(',')
         .map(|token| {

@@ -9,6 +9,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 ## [Unreleased]
 
 ### Added
+- `apexe env --enable --also <NAMES>` / `--exclude <NAMES>` name individual shim
+  commands and outrank the scanned policy in the direction they state, so an
+  interpreter can be governed without `--scanned all`:
+  `--scanned readonly --also node,python3`. The names persist in the manifest,
+  because the activation script's `env --reload` runs in every new terminal and
+  would otherwise drop the route again.
 - `x-apexe-opaque-after` lets an overlay declare where a tool stops interpreting
   its own argv: everything from that operand onwards is forwarded verbatim. An
   interpreter's grammar is `interpreter <script> <argv for the script>`, so
