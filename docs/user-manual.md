@@ -1459,30 +1459,6 @@ restrict `json_output` to an object need a rescan, or `init --refresh` for
 unchanged init-owned bindings, before returning other JSON roots. Custom binding
 schemas remain authoritative and must describe the command's actual output.
 
-### Where a decision belongs
-
-Most policy belongs in a **data file**, because that is the only layer an
-operator can change without a release. Reach for code last.
-
-| Decision | Data file | What it cannot do |
-|---|---|---|
-| Allow or deny a module | `acl.yaml` rules — first match wins, so rule *order* is the policy | — |
-| Require approval for a module | `approval: required` on an `acl.yaml` rule | It can only **add** approval. An approval demanded by the module's annotation cannot be cancelled here; `apcore` unions the two sources |
-| Let a command write into a system directory | `config.yaml` → `allowed_paths`, with `additional_denied_paths` to re-deny a subtree inside it | The compiled-in baseline cannot be removed, only carved into. A reader is not held to the system list at all |
-| Grammar: flags, operands, where validation stops | A local overlay in `~/.apexe/overlays/` | It must match at least as strongly as the corpus file it amends, and it replaces that file wholesale |
-| Classification: `destructive`, `open_world`, `requires_approval`, `risk` | The same overlay's `annotations` | Same two limits |
-| What a *fresh* `apexe init` writes for everyone | `EXEC_WRAPPER_TOOLS` and the other lists in `src/adapter/annotations.rs` | This is the last resort: it changes a default, and every machine that has written its own data already outranks it |
-
-Two consequences worth knowing before choosing:
-
-- **Comments do not survive.** `apexe scan` re-serializes `acl.yaml` when the
-  policy changes, so a decision recorded only in a comment is lost. Record it as
-  a rule with a `description` instead: the description is what the audit trail
-  reports as `matched_rule`, so the *reason* is visible in every record.
-- **The local surface has one caller id: `local`.** Rules cannot distinguish the
-  operator's own shell from an agent running in it. That needs a caller
-  identity, not a rule condition.
-
 ### 7.1 Contract Keywords
 
 A generated schema is valid JSON Schema, plus a set of `x-` extension keywords
@@ -2137,6 +2113,30 @@ caught; and the mode is per module rather than per argument, so
 `cp /etc/hosts ~/backup` is refused even though the system path is only being
 read. See [`docs/threat-model.md`](threat-model.md) §4.8 and §5.8 for
 the full accounting.
+
+### 9.8 Where a decision belongs
+
+Most policy belongs in a **data file**, because that is the only layer an
+operator can change without a release. Reach for code last.
+
+| Decision | Data file | What it cannot do |
+|---|---|---|
+| Allow or deny a module | `acl.yaml` rules — first match wins, so rule *order* is the policy | — |
+| Require approval for a module | `approval: required` on an `acl.yaml` rule | It can only **add** approval. An approval demanded by the module's annotation cannot be cancelled here; `apcore` unions the two sources |
+| Let a command write into a system directory | `config.yaml` → `allowed_paths`, with `additional_denied_paths` to re-deny a subtree inside it | The compiled-in baseline cannot be removed, only carved into. A reader is not held to the system list at all |
+| Grammar: flags, operands, where validation stops | A local overlay in `~/.apexe/overlays/` | It must match at least as strongly as the corpus file it amends, and it replaces that file wholesale |
+| Classification: `destructive`, `open_world`, `requires_approval`, `risk` | The same overlay's `annotations` | Same two limits |
+| What a *fresh* `apexe init` writes for everyone | `EXEC_WRAPPER_TOOLS` and the other lists in `src/adapter/annotations.rs` | This is the last resort: it changes a default, and every machine that has written its own data already outranks it |
+
+Two consequences worth knowing before choosing:
+
+- **Comments do not survive.** `apexe scan` re-serializes `acl.yaml` when the
+  policy changes, so a decision recorded only in a comment is lost. Record it as
+  a rule with a `description` instead: the description is what the audit trail
+  reports as `matched_rule`, so the *reason* is visible in every record.
+- **The local surface has one caller id: `local`.** Rules cannot distinguish the
+  operator's own shell from an agent running in it. That needs a caller
+  identity, not a rule condition.
 
 ---
 
