@@ -378,6 +378,42 @@ fn test_activation_bootstrap_enables_disables_and_reenables_from_source() {
     );
 }
 
+/// `scripts/deactivate.sh` must not guess which installation to remove.
+///
+/// It used to fall through to `apexe env --disable` with the default directory
+/// when neither variable was set, so sourcing it from a shell whose HOME held a
+/// real installation disabled *that* one — twice, because the fallback ran
+/// again on the second source. Nothing in the helper's input named it.
+#[test]
+fn test_deactivation_helper_refuses_without_a_selected_directory() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    fixture.enable();
+    let output = Command::new("/bin/sh")
+        .env("HOME", fixture.home.path())
+        .env("SHELL", "/bin/sh")
+        .env("PATH", "/usr/bin:/bin")
+        .env_remove("APEXE_SHIM_DIR")
+        .current_dir(fixture.home.path())
+        .args(["-c", ". \"$1\"", "shell"])
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/deactivate.sh"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "sourcing with nothing selected is a no-op, not a failure"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("No apexe shim directory selected"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        fixture.shims().join(".apexe-shims.json").exists(),
+        "the installation must be untouched"
+    );
+}
+
 #[test]
 fn test_deactivation_bootstrap_restores_environment_after_manual_disable() {
     let fixture = Fixture::new();

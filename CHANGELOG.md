@@ -26,6 +26,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   `OverlayFlag` denies unknown fields.
 
 ### Changed
+- `scripts/deactivate.sh` no longer guesses which installation to remove. With
+  neither `_APEXE_ACTIVE_SHIM_DIR` nor `APEXE_SHIM_DIR` set it used to run
+  `apexe env --disable` against the default directory, so sourcing the helper
+  from a shell whose HOME held an installation disabled *that* installation
+  without being pointed at it — twice, because the second source fell through
+  again. It is now a no-op that says so. The installed
+  `apexe-deactivate.sh` is unaffected: it names its own directory.
 - A binding with no `metadata.grammar` stamp is no longer promoted to
   `reviewed` by the legacy tool-level `shim_contract.authoritative` (issue #47).
   It is reported as `legacy`: admitted like a scanned route, labelled in
