@@ -517,6 +517,29 @@ fn test_init_recreates_missing_acl_without_rewriting_bindings() {
     assert_eq!(policy.explain("cli.toy").effect, "allow");
 }
 
+/// A scan that changes no rule must not rewrite the policy file.
+///
+/// `write_acl` re-serializes the whole document, so an unnecessary write costs
+/// the operator every comment they wrote in `acl.yaml` — as a side effect of
+/// scanning a tool, which is not a policy action.
+#[test]
+fn test_a_scan_that_changes_no_rule_leaves_the_acl_file_untouched() {
+    let fixture = Fixture::new();
+    fixture.init(&[]);
+    let acl = fixture.home.join(".apexe/acl.yaml");
+    let mut commented = std::fs::read_to_string(&acl).unwrap();
+    commented.insert_str(0, "# operator note: why this policy exists\n");
+    std::fs::write(&acl, &commented).unwrap();
+
+    // Re-initialising re-scans the same tool, so the merged policy is identical.
+    fixture.init(&[]);
+    assert_eq!(
+        std::fs::read_to_string(&acl).unwrap(),
+        commented,
+        "an unchanged policy must be left byte-for-byte alone"
+    );
+}
+
 #[test]
 fn test_init_failed_refresh_retains_snapshot_bindings_and_acl() {
     let fixture = Fixture::new();

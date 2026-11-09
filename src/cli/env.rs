@@ -345,7 +345,7 @@ fn install(directory: &Path, mut manifest: Manifest, replace_unowned: bool) -> a
     manifest.source_scripts_dir = Some(persistent.directory().to_path_buf());
     let script = super::activation::generate(directory, &manifest.executable)?;
     manifest.activation_script = Some(script.clone());
-    let deactivation = super::activation::generate_deactivation(directory, &manifest.executable)?;
+    let deactivation = super::activation::generate_deactivation(directory)?;
     manifest.deactivation_script = Some(deactivation.clone());
     let old = if directory.join(MANIFEST_NAME).try_exists()? {
         Some(super::shim::read_manifest(directory)?)
@@ -445,15 +445,20 @@ fn report_acl_coverage(directory: &Path, config: &ApexeConfig) {
         .flatten()
         .map(|route| route.module_id.as_str())
         .collect();
+    // The shim surface calls as `local` (see `local::context`), so a policy
+    // scoped to `callers: ['local']` is the one that decides these calls. Asking
+    // `explain` — which evaluates as `@external` — reported every shim as denied
+    // the moment an operator scoped their allow rule to the local shell.
+    const SHIM_CALLER: &str = "local";
     let denied: Vec<&str> = module_ids
         .into_iter()
-        .filter(|module_id| acl.explain(module_id).effect != "allow")
+        .filter(|module_id| acl.explain_for(SHIM_CALLER, module_id).effect != "allow")
         .collect();
     if denied.is_empty() || !std::io::stderr().is_terminal() {
         return;
     }
     eprintln!(
-        "Installed shims the loaded ACL refuses ({}):",
+        "Installed shims the loaded ACL refuses for caller '{SHIM_CALLER}' ({}):",
         acl_path.display()
     );
     for module_id in denied {
@@ -461,6 +466,30 @@ fn report_acl_coverage(directory: &Path, config: &ApexeConfig) {
             "  {module_id}  ->  add an allow rule to {}, or leave the shim uninstalled",
             acl_path.display()
         );
+    }
+}
+
+#[cfg(test)]
+mod acl_coverage_tests {
+
+    /// A rule scoped to `callers: ['local']` decides the shim surface, so the
+    /// report must not evaluate as `@external` and call the whole installation
+    /// denied. Regression for exactly that: every shim was listed.
+    #[test]
+    fn test_acl_coverage_evaluates_as_the_local_caller() {
+        let root = tempfile::tempdir().unwrap();
+        let acl_path = root.path().join("acl.yaml");
+        std::fs::write(
+            &acl_path,
+            "rules:\n- callers: ['*']\n  targets: ['cli.rm']\n  effect: deny\n\
+             - callers: ['local']\n  targets: ['*']\n  effect: allow\ndefault_effect: deny\n",
+        )
+        .unwrap();
+        let acl = crate::governance::AclManager::from_config(&acl_path).unwrap();
+        assert_eq!(acl.explain_for("local", "cli.ls").effect, "allow");
+        assert_eq!(acl.explain_for("local", "cli.rm").effect, "deny");
+        // The generic caller keeps the default-deny it always had.
+        assert_eq!(acl.explain("cli.ls").effect, "deny");
     }
 }
 

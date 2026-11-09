@@ -379,6 +379,26 @@ impl AclManager {
         rule
     }
 
+    /// Whether `other` would render the same policy document as this manager.
+    ///
+    /// Used to skip a rewrite that changes nothing. `write_config` re-serializes
+    /// the whole file, so writing when no rule moved costs the operator every
+    /// comment and every ordering choice they made — and `apexe scan` rewrites
+    /// the ACL as a side effect of scanning a tool.
+    ///
+    /// Compares rule order as well: evaluation is first-match-wins, so the same
+    /// rules in a different order are a different policy.
+    pub fn same_document(&self, other: &Self) -> bool {
+        let render = |manager: &Self| {
+            serde_json::to_value(serde_json::json!({
+                "rules": manager.acl.rules(),
+                "default_effect": manager.default_effect,
+            }))
+            .ok()
+        };
+        render(self) == render(other)
+    }
+
     /// Write ACL to a YAML file.
     #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
     pub fn write_config(&self, path: &Path) -> Result<(), ModuleError> {
@@ -438,14 +458,24 @@ impl AclManager {
         // value has to agree with what `ACL::check_inner` resolves a `None`
         // caller to, and a private constant here could drift from it silently.
         const GENERIC_CALLER: &str = apcore::EXTERNAL_CALLER;
+        self.explain_for(GENERIC_CALLER, target_id)
+    }
+
+    /// [`Self::explain`] for a named caller.
+    ///
+    /// The shim surface calls as `local`, so a rule scoped to `callers:
+    /// ['local']` decides its calls and a diagnostic that only knows
+    /// `@external` reports every one of them as denied. Evaluating as the
+    /// caller that will actually run the command is the difference between a
+    /// report an operator can act on and one that names the whole installation.
+    pub fn explain_for(&self, caller_id: &str, target_id: &str) -> AclDecision {
         let rule_matches = |patterns: &[String], value: &str| {
             target_patterns(patterns)
                 .iter()
                 .any(|p| p.negated != match_pattern(p.pattern, value))
         };
         for (idx, rule) in self.acl.rules().iter().enumerate() {
-            if rule_matches(&rule.callers, GENERIC_CALLER) && rule_matches(&rule.targets, target_id)
-            {
+            if rule_matches(&rule.callers, caller_id) && rule_matches(&rule.targets, target_id) {
                 return AclDecision {
                     effect: rule.effect.clone(),
                     default_effect: self.default_effect.clone(),

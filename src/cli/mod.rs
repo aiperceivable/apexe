@@ -563,8 +563,18 @@ impl ScanArgs {
             return Ok(());
         }
         let acl_manager = if acl_path.exists() {
-            crate::governance::AclManager::merge_default(&acl_path, modules)
-                .map_err(|e| anyhow::anyhow!("Failed to load existing ACL for merge: {e}"))?
+            let existing = crate::governance::AclManager::from_config(&acl_path)
+                .map_err(|e| anyhow::anyhow!("Failed to load existing ACL: {e}"))?;
+            let merged = crate::governance::AclManager::merge_default(&acl_path, modules)
+                .map_err(|e| anyhow::anyhow!("Failed to load existing ACL for merge: {e}"))?;
+            // A scan that changes no rule must not rewrite the file: the write
+            // re-serializes the document and takes the operator's comments and
+            // ordering with it, as a side effect of scanning a tool.
+            if existing.same_document(&merged) {
+                info!(path = %acl_path.display(), "ACL policy unchanged; leaving the file untouched");
+                return Ok(());
+            }
+            merged
         } else {
             crate::governance::AclManager::generate_default(modules)
         };
