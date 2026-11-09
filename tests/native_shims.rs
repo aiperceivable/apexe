@@ -279,18 +279,25 @@ fn test_activation_script_name_is_reserved_from_shim_routes() {
 }
 
 #[test]
-fn test_deactivation_script_disables_shims_and_restores_original_environment() {
+/// `deactivate` leaves the governed shell; it does not uninstall apexe.
+///
+/// Python's `deactivate` restores the shell and leaves the venv on disk. This
+/// used to call `apexe env --disable`, so sourcing a per-shell helper removed
+/// every shim, the entry point and the startup blocks for the whole machine —
+/// a destructive, global action behind a name that reads like a local one.
+fn test_deactivation_script_restores_the_shell_without_uninstalling() {
     let fixture = Fixture::new();
     fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
     fixture.enable();
     Command::new("/bin/sh").env("HOME", fixture.home.path()).env("PATH", "/usr/bin:/bin")
         .env("APEXE_SHIM_DIR", "previous-value").current_dir(fixture.home.path())
-        .args(["-c", ". \"$1\" || exit; . \"$1\" || exit; . \"$2\" || exit; test \"$PATH\" = /usr/bin:/bin && test \"$APEXE_SHIM_DIR\" = previous-value && test -z \"${_APEXE_ACTIVE_SHIM_DIR+x}\"", "shell"])
+        .args(["-c", ". \"$1\" || exit; . \"$1\" || exit; . \"$2\" || exit; . \"$2\" || exit; test \"$PATH\" = /usr/bin:/bin && test \"$APEXE_SHIM_DIR\" = previous-value && test -z \"${_APEXE_ACTIVE_SHIM_DIR+x}\"", "shell"])
         .arg(fixture.shims().join("activate")).arg(fixture.shims().join("deactivate"))
         .assert().success();
-    assert!(!fixture.shims().join("cat").exists());
-    assert!(!fixture.shims().join("activate").exists());
-    assert!(!fixture.shims().join("deactivate").exists());
+    assert!(fixture.shims().join("cat").exists());
+    assert!(fixture.shims().join("activate").exists());
+    assert!(fixture.shims().join("deactivate").exists());
+    assert!(fixture.shims().join(".apexe-shims.json").exists());
 }
 
 #[test]
@@ -335,7 +342,11 @@ fn test_deactivation_handles_automatic_startup_activation() {
 }
 
 #[test]
-fn test_deactivation_keeps_current_environment_when_uninstall_is_refused() {
+/// A startup file changed behind apexe's back no longer blocks `deactivate`.
+///
+/// It used to, because leaving the shell ran the uninstall, and the uninstall
+/// refuses a startup block it cannot prove it wrote.
+fn test_deactivation_restores_the_shell_even_when_the_startup_block_changed() {
     let fixture = Fixture::new();
     fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
     fixture.enable();
@@ -346,8 +357,8 @@ fn test_deactivation_keeps_current_environment_when_uninstall_is_refused() {
     std::fs::write(startup, text).unwrap();
     Command::new("/bin/sh").env("HOME", fixture.home.path()).env("PATH", "/usr/bin:/bin")
         .env_remove("APEXE_SHIM_DIR").current_dir(fixture.home.path())
-        .args(["-c", ". \"$1\" || exit; if . \"$2\"; then exit 99; fi; test \"$APEXE_SHIM_DIR\" = \"$3\" && test \"$_APEXE_ACTIVE_SHIM_DIR\" = \"$3\"", "shell"])
-        .arg(fixture.shims().join("activate")).arg(fixture.shims().join("deactivate")).arg(fixture.shims())
+        .args(["-c", ". \"$1\" || exit; . \"$2\" || exit; test \"$PATH\" = /usr/bin:/bin && test -z \"${_APEXE_ACTIVE_SHIM_DIR+x}\"", "shell"])
+        .arg(fixture.shims().join("activate")).arg(fixture.shims().join("deactivate"))
         .assert().success();
     assert!(fixture.shims().join("cat").exists());
 }
@@ -367,14 +378,18 @@ fn test_activation_bootstrap_enables_disables_and_reenables_from_source() {
     std::fs::write(&startup, "# Keep startup text\n").unwrap();
     Command::new("/bin/sh").env("HOME", fixture.home.path()).env("SHELL", "/bin/sh")
         .env("PATH", &path).env_remove("APEXE_SHIM_DIR").current_dir(fixture.home.path())
-        .args(["-c", "original=$PATH; . \"$1\" || exit; . \"$1\" || exit; printf 'bootstrapped\\n' | cat; . \"$2\" || exit; . \"$2\" || exit; test \"$PATH\" = \"$original\" && test -z \"${APEXE_SHIM_DIR+x}\" || exit 99; . \"$1\" || exit; . \"$2\"", "shell"])
+        .args(["-c", "original=$PATH; . \"$1\" || exit; . \"$1\" || exit; printf 'bootstrapped\\n' | cat; . \"$2\" || exit; . \"$2\" || exit; test \"$PATH\" = \"$original\" && test -z \"${APEXE_SHIM_DIR+x}\" || exit 99; . \"$1\" || exit; test \"$(command -v cat)\" = \"$3\" || exit 98; . \"$2\"", "shell"])
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/activate.sh"))
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/deactivate.sh"))
+        .arg(fixture.shims().join("cat"))
         .assert().success().stdout("bootstrapped\n");
-    assert!(!fixture.shims().join(".apexe-shims.json").exists());
-    assert_eq!(
-        std::fs::read_to_string(startup).unwrap(),
-        "# Keep startup text\n"
+    assert!(fixture.shims().join(".apexe-shims.json").exists());
+    // The startup block is the installation's, not the shell's: leaving the
+    // shell leaves it exactly where `--enable` wrote it.
+    let configured = std::fs::read_to_string(&startup).unwrap();
+    assert!(
+        configured.starts_with("# Keep startup text\n# >>> apexe shims"),
+        "{configured}"
     );
 }
 
@@ -434,7 +449,7 @@ fn test_deactivation_bootstrap_restores_environment_after_manual_disable() {
 }
 
 #[test]
-fn test_persistent_source_scripts_reenable_after_uninstall_without_checkout() {
+fn test_persistent_source_scripts_survive_leaving_the_shell() {
     let fixture = Fixture::new();
     fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
     fixture.enable();
@@ -450,7 +465,7 @@ fn test_persistent_source_scripts_reenable_after_uninstall_without_checkout() {
     assert!(activate.is_file());
     assert!(deactivate.is_file());
     assert!(directory.join(".apexe-source-scripts.json").is_file());
-    assert!(!fixture.shims().join(".apexe-shims.json").exists());
+    assert!(fixture.shims().join(".apexe-shims.json").exists());
 }
 
 #[test]
@@ -580,7 +595,10 @@ fn test_persistent_source_scripts_isolate_custom_shim_installations() {
         .assert()
         .success();
     assert!(fixture.shims().join("cat").exists());
-    assert!(!custom.join("cat").exists());
+    // Leaving the shell through the custom installation's helper restores this
+    // shell only; both installations keep their links.
+    assert!(custom.join("cat").exists());
+    assert!(custom.join(".apexe-shims.json").exists());
 }
 
 #[test]

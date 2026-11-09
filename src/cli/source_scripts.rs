@@ -123,7 +123,7 @@ pub(super) fn prepare(
         shim_dir: shim_dir.to_path_buf(),
         executable: executable.to_path_buf(),
         activate: activation::generate(shim_dir, executable)?,
-        deactivate: activation::generate_deactivation(shim_dir, executable)?,
+        deactivate: activation::generate_deactivation(shim_dir)?,
     };
     let edits = plan_edits(&directory, &record, previous)?;
     Ok(PreparedScripts { directory, edits })
@@ -218,7 +218,7 @@ pub(super) fn check(directory: &Path, shim_dir: &Path, executable: &Path) -> any
     );
     anyhow::ensure!(
         record.activate == activation::generate(shim_dir, executable)?
-            && record.deactivate == activation::generate_deactivation(shim_dir, executable)?,
+            && record.deactivate == activation::generate_deactivation(shim_dir)?,
         "Persistent source scripts need an update; reload shims"
     );
     activation::require_owned(directory, ACTIVATE_NAME, &record.activate)?;

@@ -32,6 +32,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   `OverlayFlag` denies unknown fields.
 
 ### Changed
+- `deactivate` leaves the governed shell instead of uninstalling apexe. The
+  installed `deactivate` / `apexe-deactivate.sh` and `scripts/deactivate.sh`
+  used to run `apexe env --disable`, so sourcing a per-shell helper removed
+  every shim, the `apexe-sh` entry point and the managed startup blocks for the
+  whole machine — and a host configured to use the entry point loses its own
+  command execution with it. They now restore PATH and `APEXE_SHIM_DIR` for the
+  current shell and touch nothing on disk, matching what `deactivate` means in a
+  Python virtualenv. Uninstalling is `apexe env --disable`, which stays the one
+  command that removes an installation and records a `shim_disable` audit event.
 - `scripts/deactivate.sh` no longer guesses which installation to remove. With
   neither `_APEXE_ACTIVE_SHIM_DIR` nor `APEXE_SHIM_DIR` set it used to run
   `apexe env --disable` against the default directory, so sourcing the helper

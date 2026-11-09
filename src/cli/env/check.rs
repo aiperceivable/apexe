@@ -327,7 +327,7 @@ fn check_activation(directory: &Path, manifest: &Manifest, report: &mut Report) 
         (
             activation::DEACTIVATE_NAME,
             manifest.deactivation_script.as_deref(),
-            activation::generate_deactivation(directory, &manifest.executable),
+            activation::generate_deactivation(directory),
         ),
     ] {
         let label = format!("LINKS activation {name}");

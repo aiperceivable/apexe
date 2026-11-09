@@ -1,14 +1,20 @@
-# Source this file to disable shims and restore the saved terminal environment.
+# Source this file to leave the governed shell.
+#
+# Only this shell changes: PATH returns to what it was before activation and
+# commands stop resolving through the shim directory. Nothing on disk is
+# removed -- uninstalling is `apexe env --disable`, a separate and deliberate
+# action, because a helper named `deactivate` that takes the whole installation
+# down is one keystroke away from being run by accident.
 if [ -n "${_APEXE_ACTIVE_SHIM_DIR-}" ]; then
   if [ -f "$_APEXE_ACTIVE_SHIM_DIR/deactivate" ]; then
     . "$_APEXE_ACTIVE_SHIM_DIR/deactivate"
   else
-    # A manual --disable can remove the generated file before this shell restores.
+    # The generated file is gone (a manual --disable removes it), so restore
+    # this shell from the environment the activation saved.
     if [ "${_APEXE_PREVIOUS_PATH_SET+x}${_APEXE_PREVIOUS_PATH+x}${_APEXE_PREVIOUS_SHIM_DIR_SET+x}${_APEXE_PREVIOUS_SHIM_DIR+x}" != xxxx ]; then
-      printf '%s\n' 'Saved activation environment is incomplete; refusing to disable' >&2
+      printf '%s\n' 'Saved activation environment is incomplete; refusing to leave the governed shell' >&2
       return 1
     fi
-    if ! command apexe env --disable --shim-dir "$_APEXE_ACTIVE_SHIM_DIR"; then return 1; fi
     if [ "$_APEXE_PREVIOUS_PATH_SET" = x ]; then
       export PATH="$_APEXE_PREVIOUS_PATH"
     else
@@ -21,15 +27,14 @@ if [ -n "${_APEXE_ACTIVE_SHIM_DIR-}" ]; then
     fi
     unset _APEXE_ACTIVE_SHIM_DIR _APEXE_PREVIOUS_PATH_SET _APEXE_PREVIOUS_PATH
     unset _APEXE_PREVIOUS_SHIM_DIR_SET _APEXE_PREVIOUS_SHIM_DIR
+    printf '%s\n' 'This shell no longer resolves shims. The installation is unchanged; remove it with apexe env --disable' >&2
   fi
 elif [ -n "${APEXE_SHIM_DIR-}" ]; then
-  command apexe env --disable --shim-dir "$APEXE_SHIM_DIR"
+  # A directory is named but this shell never saved the environment it replaced,
+  # so there is nothing to restore. Say so instead of uninstalling the directory.
+  printf '%s\n' "This shell has no saved activation for $APEXE_SHIM_DIR; remove that directory from PATH yourself, or uninstall it with apexe env --disable --shim-dir $APEXE_SHIM_DIR" >&2
+  return 0
 else
-  # No directory is selected, so there is nothing this script can honestly
-  # disable. It used to run `apexe env --disable` with the default directory,
-  # which is whatever installation the *caller's* HOME happens to hold: a
-  # sourced helper then takes down an installation it was never pointed at.
-  # Name the directory instead of guessing.
   # Nothing is selected and nothing is active, so the shell already matches the
   # goal: succeed without touching any installation, and say so once.
   printf '%s\n' 'No apexe shim directory selected; nothing to deactivate' >&2

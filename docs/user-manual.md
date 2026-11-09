@@ -593,11 +593,16 @@ source ~/.apexe/bin/apexe-deactivate.sh
 ```
 
 `apexe-activate.sh` reloads the installed settings, automatically enabling when
-absent, then activates the current terminal. `apexe-deactivate.sh` runs
-`apexe env --disable` and, only after successful uninstall, restores the PATH
-and APEXE_SHIM_DIR saved before the first activation. Repeated activation
-preserves that original snapshot, including unset and empty values; no separate
-`eval` or `rehash` is required. New-terminal startup and `eval "$(apexe env)"`
+absent, then activates the current terminal. `apexe-deactivate.sh` — and the
+`deactivate` alias beside it — restores the PATH and APEXE_SHIM_DIR saved before
+the first activation and **leaves the installation alone**, the way `deactivate`
+leaves a Python virtualenv on disk. Uninstalling is `apexe env --disable`, a
+separate command: a per-shell helper that removes every shim, the entry point and
+the startup blocks is one keystroke away from being run by accident, and the
+damage reaches terminals and agent hosts the caller never mentioned. Repeated
+activation preserves that original snapshot, including unset and empty values;
+sourcing `deactivate` twice is harmless. No separate `eval` or `rehash` is
+required. New-terminal startup and `eval "$(apexe env)"`
 also save the environment so the same deactivation script can restore it.
 Both namespaced scripts and their ownership record remain installed after
 disable, including manual `apexe env --disable`, so they can be sourced again
