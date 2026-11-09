@@ -419,6 +419,12 @@ impl ScanOrchestrator {
         let Some(selection) = self.overlays.select(&context) else {
             return;
         };
+        // Overlays that matched but did not decide the scan are invisible
+        // otherwise: a local file can be ignored for being a weaker match, or
+        // replace a corpus file and silently drop what it did not restate.
+        for warning in self.overlays.shadow_diagnostics(&context) {
+            tool.warnings.push(warning);
+        }
         info!(
             tool = %tool.name,
             overlay = %selection.overlay.id(),

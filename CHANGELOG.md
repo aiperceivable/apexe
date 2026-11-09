@@ -32,6 +32,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   `OverlayFlag` denies unknown fields.
 
 ### Changed
+- A scan now reports the overlays that matched but did not decide it. Selection
+  keeps the single strongest match, so a local overlay that matches *less*
+  strongly than the corpus file it means to amend is silently ignored, and one
+  that matches *equally* replaces it wholesale — dropping every flag and operand
+  it does not restate. An `annotations`-only `rm@bsd` did exactly that and took
+  the path-typed operand with it, so `rm /etc/hosts` reached the binary. Both
+  cases are now a scan warning naming the two files, and the second one counts
+  what was dropped.
 - `deactivate` leaves the governed shell instead of uninstalling apexe. The
   installed `deactivate` / `apexe-deactivate.sh` and `scripts/deactivate.sh`
   used to run `apexe env --disable`, so sourcing a per-shell helper removed

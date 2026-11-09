@@ -78,6 +78,31 @@ enum OverlayOrigin {
 struct StoredOverlay {
     overlay: ToolOverlay,
     origin: OverlayOrigin,
+    /// Where it was loaded from, so a diagnostic can name the file the operator
+    /// has to edit rather than "a user overlay".
+    source: std::path::PathBuf,
+}
+
+/// Flags and operands an overlay declares, wherever its format puts them.
+///
+/// A `2.0` file keeps them under `commands[]` and leaves the top-level lists
+/// empty; a `1.x` file is flat. Counting only the top-level lists made a local
+/// `2.0` file look as if it declared nothing, which silenced the very diagnostic
+/// that exists to catch dropped declarations.
+fn declared_surface(overlay: &ToolOverlay) -> (usize, usize) {
+    let flags = overlay.flags.len()
+        + overlay
+            .commands
+            .iter()
+            .map(|command| command.flags.len())
+            .sum::<usize>();
+    let args = overlay.positional_args.len()
+        + overlay
+            .commands
+            .iter()
+            .map(|command| command.positional_args.len())
+            .sum::<usize>();
+    (flags, args)
 }
 
 /// A resolved overlay selection.
@@ -158,7 +183,11 @@ impl OverlayStore {
         })?;
         let overlay = parse_overlay(&path_text, &document)?;
         debug!(overlay = %overlay.id(), path = %path_text, "Loaded overlay");
-        self.entries.push(StoredOverlay { overlay, origin });
+        self.entries.push(StoredOverlay {
+            overlay,
+            origin,
+            source: path.to_path_buf(),
+        });
         Ok(())
     }
 
@@ -206,6 +235,82 @@ impl OverlayStore {
             .filter_map(|entry| self.evaluate(entry, context))
             .max_by_key(|(strength, prefer_user, _)| (*strength, *prefer_user))
             .map(|(strength, _, overlay)| OverlaySelection { overlay, strength })
+    }
+
+    /// Warnings about overlays that matched but did not decide the scan.
+    ///
+    /// Selection keeps the single strongest match, which makes two operator
+    /// mistakes silent:
+    ///
+    /// * a local overlay that matches *less strongly* than the corpus file it
+    ///   meant to amend is simply not used — `rm@bsd` with no `match` block loses
+    ///   to a corpus file that carries a probe;
+    /// * a local overlay that matches *equally* replaces the corpus file
+    ///   wholesale, so every flag and operand it does not restate is dropped —
+    ///   an `annotations`-only `rm@bsd` removed the path-typed operand the guard
+    ///   checks, and `rm /etc/hosts` reached the binary.
+    ///
+    /// Both produced that incident. The scan report is where an operator can see
+    /// them, so the messages name the files and the counts.
+    pub fn shadow_diagnostics(&self, context: &MatchContext) -> Vec<String> {
+        let matched: Vec<(MatchStrength, u8, &StoredOverlay)> = self
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                self.evaluate(entry, context)
+                    .map(|(strength, prefer_user, _)| (strength, prefer_user, entry))
+            })
+            .collect();
+        let Some((winner_strength, _, winner)) = matched
+            .iter()
+            .max_by_key(|(strength, prefer_user, _)| (*strength, *prefer_user))
+        else {
+            return Vec::new();
+        };
+        let mut warnings = Vec::new();
+        for (strength, _, entry) in &matched {
+            if std::ptr::eq(*entry, *winner) {
+                continue;
+            }
+            if strength < winner_strength {
+                warnings.push(format!(
+                    "Overlay {} matches {} but a stronger one wins \
+                     ({strength:?} < {winner_strength:?}): {}. Selection keeps one overlay, \
+                     so give the local file the same `match` block to shadow it.",
+                    entry.source.display(),
+                    context.command,
+                    winner.source.display()
+                ));
+                continue;
+            }
+            let (winner_flags, winner_args) = declared_surface(&winner.overlay);
+            let (loser_flags, loser_args) = declared_surface(&entry.overlay);
+            let replaced = [
+                ("flag(s)", winner_flags, loser_flags),
+                ("operand(s)", winner_args, loser_args),
+                (
+                    "command route(s)",
+                    winner.overlay.commands.len(),
+                    entry.overlay.commands.len(),
+                ),
+            ];
+            let missing: Vec<String> = replaced
+                .into_iter()
+                .filter(|(_, ours, theirs)| ours < theirs)
+                .map(|(label, ours, theirs)| format!("{ours} of {theirs} {label}"))
+                .collect();
+            if !missing.is_empty() {
+                warnings.push(format!(
+                    "Local overlay {} replaces {} for {} but restates only {}: selection keeps \
+                     one overlay, so anything not restated is dropped.",
+                    winner.source.display(),
+                    entry.source.display(),
+                    context.command,
+                    missing.join(", ")
+                ));
+            }
+        }
+        warnings
     }
 
     fn evaluate<'a>(
@@ -867,6 +972,55 @@ mod tests {
         let ctx = context("ls", ToolVariant::Bsd, Platform::new("macos"));
         let selected = store.select(&ctx).unwrap();
         assert_eq!(selected.strength, MatchStrength::Platform);
+    }
+
+    /// A local overlay that matches less strongly than the corpus file it means
+    /// to amend is ignored, and that used to be completely silent.
+    #[test]
+    fn test_shadow_diagnostics_report_a_weaker_local_overlay() {
+        let builtin = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        // Stronger *without* a probe: no probe outcomes are recorded here, so a
+        // probe-gated overlay would simply not match.
+        let probed = MINIMAL.replace(
+            "\"match\": { \"platform\": [\"macos\"] }",
+            "\"match\": { \"platform\": [\"macos\"], \"binary_globs\": [\"/bin/widget\"] }",
+        );
+        std::fs::write(builtin.path().join("widget@bsd.json"), probed).unwrap();
+        std::fs::write(user.path().join("widget@bsd.json"), MINIMAL).unwrap();
+        let mut store = OverlayStore::empty();
+        store.load_dir(builtin.path()).unwrap();
+        store.load_dir(user.path()).unwrap();
+        let warnings =
+            store.shadow_diagnostics(&context("widget", ToolVariant::Bsd, Platform::new("macos")));
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("stronger one wins"), "{}", warnings[0]);
+        assert!(warnings[0].contains("widget@bsd.json"), "{}", warnings[0]);
+    }
+
+    /// A local overlay at equal strength replaces the corpus file wholesale, so
+    /// every flag it does not restate is dropped. That is how an
+    /// `annotations`-only `rm@bsd` removed the operand the path guard checks.
+    #[test]
+    fn test_shadow_diagnostics_report_declarations_dropped_by_a_local_overlay() {
+        let builtin = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        let with_flags = MINIMAL.replace(
+            "\"commands\": [{ \"path\": [], \"flags\": [] }]",
+            "\"commands\": [{ \"path\": [], \"flags\": [\
+             { \"short\": \"-l\", \"type\": \"boolean\", \"description\": \"long\" }, \
+             { \"short\": \"-a\", \"type\": \"boolean\", \"description\": \"all\" }] }]",
+        );
+        std::fs::write(builtin.path().join("widget@bsd.json"), with_flags).unwrap();
+        std::fs::write(user.path().join("widget@bsd.json"), MINIMAL).unwrap();
+        let mut store = OverlayStore::empty();
+        store.load_dir(builtin.path()).unwrap();
+        store.load_dir(user.path()).unwrap();
+        let warnings =
+            store.shadow_diagnostics(&context("widget", ToolVariant::Bsd, Platform::new("macos")));
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("restates only"), "{}", warnings[0]);
+        assert!(warnings[0].contains("0 of 2 flag(s)"), "{}", warnings[0]);
     }
 
     /// Two directories can describe the same (command, variant), and which one
