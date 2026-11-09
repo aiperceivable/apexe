@@ -83,6 +83,56 @@ struct StoredOverlay {
     source: std::path::PathBuf,
 }
 
+/// One warning for an overlay that matched but did not decide the scan.
+///
+/// `None` when it lost on neither strength nor declared surface — a corpus file
+/// that declares the same thing it displaces is not worth a line in the report.
+fn diagnose_shadowed(
+    entry: &StoredOverlay,
+    winner: &StoredOverlay,
+    strength: MatchStrength,
+    winner_strength: MatchStrength,
+    command: &str,
+) -> Option<String> {
+    if strength < winner_strength {
+        return Some(format!(
+            "Overlay {} matches {command} but a stronger one wins \
+             ({strength:?} < {winner_strength:?}): {}. Selection keeps one overlay, \
+             so give the local file the same `match` block to shadow it.",
+            entry.source.display(),
+            winner.source.display()
+        ));
+    }
+    // Equal strength: the winner replaced it. Say "Overlay", not "Local
+    // overlay" — the winner may be a corpus file from another overlay_dirs
+    // entry, and naming it the operator's own would misattribute the edit.
+    let (winner_flags, winner_args) = declared_surface(&winner.overlay);
+    let (loser_flags, loser_args) = declared_surface(&entry.overlay);
+    let missing: Vec<String> = [
+        ("flag(s)", winner_flags, loser_flags),
+        ("operand(s)", winner_args, loser_args),
+        (
+            "command route(s)",
+            winner.overlay.commands.len(),
+            entry.overlay.commands.len(),
+        ),
+    ]
+    .into_iter()
+    .filter(|(_, ours, theirs)| ours < theirs)
+    .map(|(label, ours, theirs)| format!("{ours} of {theirs} {label}"))
+    .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Overlay {} replaces {} for {command} but restates only {}: selection keeps \
+         one overlay, so anything not restated is dropped.",
+        winner.source.display(),
+        entry.source.display(),
+        missing.join(", ")
+    ))
+}
+
 /// Flags and operands an overlay declares, wherever its format puts them.
 ///
 /// A `2.0` file keeps them under `commands[]` and leaves the top-level lists
@@ -267,50 +317,15 @@ impl OverlayStore {
         else {
             return Vec::new();
         };
-        let mut warnings = Vec::new();
-        for (strength, _, entry) in &matched {
-            if std::ptr::eq(*entry, *winner) {
-                continue;
-            }
-            if strength < winner_strength {
-                warnings.push(format!(
-                    "Overlay {} matches {} but a stronger one wins \
-                     ({strength:?} < {winner_strength:?}): {}. Selection keeps one overlay, \
-                     so give the local file the same `match` block to shadow it.",
-                    entry.source.display(),
-                    context.command,
-                    winner.source.display()
-                ));
-                continue;
-            }
-            let (winner_flags, winner_args) = declared_surface(&winner.overlay);
-            let (loser_flags, loser_args) = declared_surface(&entry.overlay);
-            let replaced = [
-                ("flag(s)", winner_flags, loser_flags),
-                ("operand(s)", winner_args, loser_args),
-                (
-                    "command route(s)",
-                    winner.overlay.commands.len(),
-                    entry.overlay.commands.len(),
-                ),
-            ];
-            let missing: Vec<String> = replaced
-                .into_iter()
-                .filter(|(_, ours, theirs)| ours < theirs)
-                .map(|(label, ours, theirs)| format!("{ours} of {theirs} {label}"))
-                .collect();
-            if !missing.is_empty() {
-                warnings.push(format!(
-                    "Local overlay {} replaces {} for {} but restates only {}: selection keeps \
-                     one overlay, so anything not restated is dropped.",
-                    winner.source.display(),
-                    entry.source.display(),
-                    context.command,
-                    missing.join(", ")
-                ));
-            }
-        }
-        warnings
+        matched
+            .iter()
+            // Compare sources: each file is loaded once, so this identifies the
+            // winner without a pointer dance.
+            .filter(|(_, _, entry)| entry.source != winner.source)
+            .filter_map(|(strength, _, entry)| {
+                diagnose_shadowed(entry, winner, *strength, *winner_strength, &context.command)
+            })
+            .collect()
     }
 
     fn evaluate<'a>(
@@ -996,6 +1011,9 @@ mod tests {
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("stronger one wins"), "{}", warnings[0]);
         assert!(warnings[0].contains("widget@bsd.json"), "{}", warnings[0]);
+        // Neutral wording: the shadowed file may be a corpus entry, not the
+        // operator's own.
+        assert!(warnings[0].starts_with("Overlay "), "{}", warnings[0]);
     }
 
     /// A local overlay at equal strength replaces the corpus file wholesale, so
@@ -1021,6 +1039,9 @@ mod tests {
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("restates only"), "{}", warnings[0]);
         assert!(warnings[0].contains("0 of 2 flag(s)"), "{}", warnings[0]);
+        // The winner here is a file from another directory, not necessarily the
+        // operator's: never call it "Local overlay".
+        assert!(warnings[0].starts_with("Overlay "), "{}", warnings[0]);
     }
 
     /// Two directories can describe the same (command, variant), and which one
