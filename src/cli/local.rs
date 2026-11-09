@@ -22,6 +22,14 @@ pub(super) fn acl_path(
     }
 }
 
+/// The caller id every local surface runs as: a PATH shim, `apexe exec`, and
+/// the ACL report that predicts what those surfaces may run.
+///
+/// One constant, because a diagnostic that evaluates as a different caller than
+/// the call itself reports the wrong answer — an allow rule scoped to
+/// `callers: ['local']` was once reported as denying every installed shim.
+pub(super) const LOCAL_CALLER: &str = "local";
+
 pub(super) fn context(caller: &str, asserted: bool) -> Context<Value> {
     let mut context = Context::new(Identity::new(
         caller.into(),

@@ -229,7 +229,20 @@ fn collect_routes(
         if !registered(&module.module_id) {
             continue;
         }
-        let path = super::shim::command_path(module)?;
+        // The policy skips a binding it cannot route (`scanned_admits` fails on
+        // the same check), so aborting the whole installation over one malformed
+        // file would block every other command it was meant to install.
+        let path = match super::shim::command_path(module) {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::warn!(
+                    module_id = %module.module_id,
+                    %error,
+                    "Skipping binding without a usable command path"
+                );
+                continue;
+            }
+        };
         if filter.exclude.iter().any(|name| name == &path[0]) {
             tracing::info!(
                 command = %path[0],
@@ -449,16 +462,16 @@ fn report_acl_coverage(directory: &Path, config: &ApexeConfig) {
     // scoped to `callers: ['local']` is the one that decides these calls. Asking
     // `explain` — which evaluates as `@external` — reported every shim as denied
     // the moment an operator scoped their allow rule to the local shell.
-    const SHIM_CALLER: &str = "local";
+    let shim_caller = super::local::LOCAL_CALLER;
     let denied: Vec<&str> = module_ids
         .into_iter()
-        .filter(|module_id| acl.explain_for(SHIM_CALLER, module_id).effect != "allow")
+        .filter(|module_id| acl.explain_for(shim_caller, module_id).effect != "allow")
         .collect();
     if denied.is_empty() || !std::io::stderr().is_terminal() {
         return;
     }
     eprintln!(
-        "Installed shims the loaded ACL refuses for caller '{SHIM_CALLER}' ({}):",
+        "Installed shims the loaded ACL refuses for caller '{shim_caller}' ({}):",
         acl_path.display()
     );
     for module_id in denied {

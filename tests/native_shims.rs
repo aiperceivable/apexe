@@ -77,6 +77,31 @@ impl Fixture {
             .write(&[module], &self.bindings(), false)
             .unwrap();
     }
+    /// A binding whose `command_path` disagrees with its target, which
+    /// `shim::command_path` refuses. The policy skips such a module; the
+    /// installation must skip it too rather than fail as a whole.
+    fn write_mismatched(&self, id: &str, name: &str, binary: &str, schema: Value) {
+        let mut module = ScannedModule::new(
+            id.into(),
+            "Mismatched shim test".into(),
+            schema,
+            json!({"type":"object"}),
+            vec!["pilot".into()],
+            // The target names a subcommand the metadata does not.
+            format!("exec://{binary} sub"),
+        );
+        module.metadata.insert("grammar".into(), json!("reviewed"));
+        module.metadata.insert("command_path".into(), json!([name]));
+        module.metadata.insert("variant".into(), json!("unknown"));
+        module.metadata.insert("shim_contract".into(), json!({"authoritative":true,"variant":"unknown","short_flag_bundling":true,"streaming_stdin_safe":false,"cross_flag_ordering":false}));
+        module.input_schema["x-apexe-streaming-stdin-safe"] = json!(false);
+        module.input_schema["x-apexe-short-flag-bundling"] = json!(true);
+        module.input_schema["x-apexe-cross-flag-ordering"] = json!(false);
+        apexe::output::YamlOutput::without_verification()
+            .write(&[module], &self.bindings(), false)
+            .unwrap();
+    }
+
     /// A binding written before the per-route grammar stamp existed: the only
     /// claim is the legacy tool-level `authoritative` flag (issue #47).
     fn write_unstamped(&self, id: &str, name: &str, binary: &str, schema: Value) {
@@ -773,6 +798,32 @@ fn test_enable_exclude_drops_an_admitted_command() {
     let manifest: Value = serde_json::from_str(&manifest).unwrap();
     assert_eq!(manifest["filter"]["exclude"], json!(["cat"]));
     assert!(manifest["commands"].get("cat").is_none());
+}
+
+/// One unroutable binding must not abort the whole installation.
+///
+/// `collect_routes` resolves each module's shim name to honour `--also` and
+/// `--exclude`, and the resolution used to run before the admission decision:
+/// a binding whose `command_path` disagrees with its target then failed
+/// `env --enable` outright, although the policy was going to skip it.
+#[test]
+fn test_enable_skips_a_binding_without_a_usable_command_path() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), false);
+    fixture.write_mismatched("cli.broken", "broken", "/bin/cat", file_schema());
+    fixture
+        .command()
+        .args(["env", "--enable"])
+        .assert()
+        .success();
+    assert!(
+        fixture.shims().join("cat").exists(),
+        "the routable command must still be installed"
+    );
+    assert!(
+        !fixture.shims().join("broken").exists(),
+        "the unroutable binding must be skipped, not installed"
+    );
 }
 
 /// Issue #47: an unstamped binding whose only claim is the legacy tool-level

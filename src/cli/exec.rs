@@ -278,7 +278,7 @@ impl ExecArgs {
 
     fn context(&self) -> Context<Value> {
         super::local::context(
-            self.caller.as_deref().unwrap_or("local"),
+            self.caller.as_deref().unwrap_or(super::local::LOCAL_CALLER),
             self.caller.is_some(),
         )
     }

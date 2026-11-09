@@ -486,7 +486,7 @@ fn execute(
     config: &ApexeConfig,
 ) -> anyhow::Result<i32> {
     let started = std::time::Instant::now();
-    let context = super::local::context("local", false);
+    let context = super::local::context(super::local::LOCAL_CALLER, false);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
