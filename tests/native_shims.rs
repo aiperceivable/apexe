@@ -626,6 +626,57 @@ fn test_shim_streams_raw_stdin_without_json_or_buffering() {
     assert!(audit.contains("local"));
 }
 
+/// A scanned route executes the caller's argv verbatim, so the path guard must
+/// run on the parsed input rather than only while rendering a command line.
+///
+/// Regression: the guard lived inside `build_argv`, and `fixed_argv` returned
+/// before it, so `rm <credential path>` through a shim reached the binary. The
+/// ACL is permissive here on purpose -- the guard is what must refuse.
+#[test]
+fn test_scanned_route_path_guard_refuses_a_protected_operand() {
+    let fixture = Fixture::new();
+    // Unstamped on purpose: the route is `legacy`, admitted by `--scanned all`,
+    // which is the tier that forwards the caller's argv (`fixed_argv`) and so
+    // the tier the guard used to miss.
+    fixture.write_unstamped("cli.cat", "cat", "/bin/cat", file_schema());
+    std::fs::write(
+        fixture.home.path().join(".apexe/acl.yaml"),
+        "rules:\n- callers: ['*']\n  targets: ['*']\n  effect: allow\ndefault_effect: allow\n",
+    )
+    .ok();
+    fixture
+        .command()
+        .args(["env", "--enable", "--scanned", "all"])
+        .assert()
+        .success();
+
+    let secret = fixture.home.path().join(".ssh/id_rsa");
+    std::fs::create_dir_all(secret.parent().unwrap()).unwrap();
+    std::fs::write(&secret, "PRIVATE KEY\n").unwrap();
+
+    fixture
+        .shim("cat")
+        .arg(secret.to_str().unwrap())
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("protected by"));
+    assert!(
+        secret.exists(),
+        "the guarded file must be untouched: {}",
+        secret.display()
+    );
+
+    // A path outside the protected locations still runs.
+    let ordinary = fixture.home.path().join("notes.txt");
+    std::fs::write(&ordinary, "hello\n").unwrap();
+    fixture
+        .shim("cat")
+        .arg(ordinary.to_str().unwrap())
+        .assert()
+        .success()
+        .stdout("hello\n");
+}
+
 /// A module the readonly policy excludes, which is what an interpreter looks
 /// like: neither readonly nor destructive, so `--scanned readonly` skips it.
 fn write_unannotated(fixture: &Fixture, id: &str, name: &str, binary: &str) {

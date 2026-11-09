@@ -173,6 +173,12 @@ impl CliModule {
 
     #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
     fn execution_argv(&self, inputs: &Value) -> Result<Vec<String>, ModuleError> {
+        // Before the argv is chosen, not while rendering it. A scanned route
+        // executes the caller's original argv and never renders anything, so a
+        // guard that lived only inside `build_argv` was skipped for exactly the
+        // routes that forward arbitrary operands: `rm <protected path>` through
+        // a shim reached the binary, and the credential store was gone.
+        self.check_input_paths(inputs)?;
         if let Some(args) = &self.fixed_argv {
             return Ok(args.clone());
         }
@@ -367,6 +373,51 @@ impl CliModule {
     /// a command nobody classified is assumed able to destroy.
     fn access_mode(&self) -> AccessMode {
         AccessMode::from_readonly(self.annotations.readonly)
+    }
+
+    /// Refuse a path-typed input that resolves into a protected location.
+    ///
+    /// `build_argv` performs the same check while it renders tokens, which
+    /// covers module-JSON calls. This runs first and unconditionally, because
+    /// [`Self::fixed_argv`] returns before rendering ever happens.
+    #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    fn check_input_paths(&self, inputs: &Value) -> Result<(), ModuleError> {
+        let (Some(properties), Some(values)) = (
+            self.input_schema["properties"].as_object(),
+            inputs.as_object(),
+        ) else {
+            return Ok(());
+        };
+        let mode = self.access_mode();
+        for (name, property) in properties {
+            let Some(value) = values.get(name) else {
+                continue;
+            };
+            let is_path =
+                property["x-apexe-path"] == true || property["items"]["x-apexe-path"] == true;
+            if !is_path {
+                continue;
+            }
+            let (items, indexed): (Vec<&Value>, bool) = match value {
+                Value::Array(items) => (items.iter().collect(), true),
+                other => (vec![other], false),
+            };
+            for (index, item) in items.into_iter().enumerate() {
+                let Some(text) = item.as_str() else {
+                    continue;
+                };
+                if text.is_empty() {
+                    continue;
+                }
+                let subject = if indexed {
+                    format!("Element {index} of parameter '{name}'")
+                } else {
+                    format!("Parameter '{name}'")
+                };
+                crate::governance::path_guard::active().check(&subject, text, mode)?;
+            }
+        }
+        Ok(())
     }
 
     async fn finish_execution(
