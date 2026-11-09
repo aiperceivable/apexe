@@ -547,6 +547,12 @@ fn arg_to_schema(arg: &ScannedArg, index: usize) -> JsonValue {
         schema["description"] = json!(arg.description);
     }
     schema["x-apexe-positional"] = json!(index);
+    if arg.opaque_after {
+        // `node tsc.js --noEmit`: from this operand on the tokens belong to the
+        // script, not to the interpreter, so the parser stops validating them.
+        // Execution still forwards the caller's original argv.
+        schema["x-apexe-opaque-after"] = json!(true);
+    }
     if arg.before_flags {
         schema["x-apexe-operand-position"] = json!("before-flags");
     }
@@ -1516,6 +1522,7 @@ mod tests {
             description: String::new(),
             value_type: ValueType::String,
             required: true,
+            opaque_after: false,
             variadic: false,
             before_flags: false,
         };
@@ -1543,6 +1550,7 @@ mod tests {
             description: String::new(),
             value_type: ValueType::String,
             required: true,
+            opaque_after: false,
             variadic: false,
             before_flags: false,
         };
@@ -1580,6 +1588,7 @@ mod tests {
             description: String::new(),
             value_type: ValueType::String,
             required: true,
+            opaque_after: false,
             variadic: false,
             before_flags: false,
         };
@@ -1623,6 +1632,7 @@ mod tests {
             description: String::new(),
             value_type: ValueType::String,
             required: true,
+            opaque_after: false,
             variadic: false,
             before_flags: false,
         };
@@ -1652,6 +1662,7 @@ mod tests {
             description: "Input file".to_string(),
             value_type: ValueType::Path,
             required: true,
+            opaque_after: false,
             variadic: false,
             before_flags: false,
         };
@@ -1675,6 +1686,7 @@ mod tests {
             description: "Files to read.".to_string(),
             value_type: ValueType::Path,
             required: false,
+            opaque_after: false,
             variadic: true,
             before_flags: false,
         };
@@ -1733,6 +1745,7 @@ mod tests {
             description: String::new(),
             value_type: ValueType::Path,
             required: true,
+            opaque_after: false,
             variadic: false,
             before_flags: false,
         };
@@ -1741,6 +1754,7 @@ mod tests {
             description: String::new(),
             value_type: ValueType::Path,
             required: true,
+            opaque_after: false,
             variadic: true,
             before_flags: false,
         };
@@ -1771,6 +1785,7 @@ mod tests {
             description: String::new(),
             value_type: ValueType::Url,
             required: true,
+            opaque_after: false,
             variadic: false,
             before_flags: false,
         };
@@ -1779,6 +1794,7 @@ mod tests {
             description: String::new(),
             value_type: ValueType::Url,
             required: false,
+            opaque_after: false,
             variadic: true,
             before_flags: false,
         };
@@ -1798,6 +1814,7 @@ mod tests {
             description: String::new(),
             value_type: ValueType::String,
             required: true,
+            opaque_after: false,
             variadic: true,
             before_flags: false,
         };
@@ -1830,6 +1847,7 @@ mod tests {
             description: "Roots of the walk.".to_string(),
             value_type: ValueType::Path,
             required: true,
+            opaque_after: false,
             variadic: true,
             before_flags: true,
         };
@@ -1869,6 +1887,7 @@ mod tests {
             description: "Input files".to_string(),
             value_type: ValueType::String,
             required: false,
+            opaque_after: false,
             variadic: true,
             before_flags: false,
         };

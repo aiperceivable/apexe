@@ -174,6 +174,7 @@ fn collect_operands(line: &str, args: &mut Vec<ScannedArg>) {
             description: String::new(),
             value_type: ValueType::String,
             required: false,
+            opaque_after: false,
             variadic: true,
             before_flags: false,
         });

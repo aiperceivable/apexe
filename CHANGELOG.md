@@ -9,6 +9,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 ## [Unreleased]
 
 ### Added
+- `x-apexe-opaque-after` lets an overlay declare where a tool stops interpreting
+  its own argv: everything from that operand onwards is forwarded verbatim. An
+  interpreter's grammar is `interpreter <script> <argv for the script>`, so
+  validating the tail against the interpreter refuses `node tsc.js --noEmit` and
+  `python -m pytest -q`. Valid only on the last, variadic operand; execution,
+  the path guard, the ACL and the audit are unchanged.
 - `x-apexe-digit-value` lets an overlay declare that a bare `-<digits>` token is
   one flag's value, so `head -20` and `tail -20` execute under a reviewed
   grammar instead of being refused as a `-2`/`-0` bundle (issue #46). At most

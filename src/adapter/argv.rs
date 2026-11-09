@@ -35,6 +35,9 @@ struct Parser<'a> {
     /// (`head -20`). At most one may declare it: two would make the token
     /// ambiguous, and the overlay is rejected rather than guessed at.
     digit_value: Option<Property<'a>>,
+    /// Index (among operands) of the operand from which the rest of argv is
+    /// forwarded verbatim. `None` when nothing declares it.
+    opaque_operand: Option<usize>,
 }
 
 /// Whether a property describes a tool-level option, which must precede the
@@ -242,6 +245,7 @@ impl<'a> Parser<'a> {
             global_flags: BTreeMap::new(),
             operands: vec![],
             digit_value: None,
+            opaque_operand: None,
         };
         for (name, value) in properties {
             let property = Property {
@@ -279,7 +283,36 @@ impl<'a> Parser<'a> {
             .operands
             .sort_by_key(|property| property.schema["x-apexe-positional"].as_u64());
         parser.validate_operands()?;
+        parser.opaque_operand = parser.locate_opaque_operand()?;
         Ok(parser)
+    }
+
+    /// Find the operand that starts the opaque tail, if any.
+    ///
+    /// An interpreter stops parsing at its script: everything after
+    /// `node <script>` belongs to the script, so validating it against `node`'s
+    /// own flags refuses `node tsc.js --noEmit`. The declaration is only
+    /// meaningful on the last operand, and that operand must be variadic —
+    /// otherwise the tokens it covers have nowhere to go and the overlay would
+    /// describe a grammar the parser cannot honour.
+    #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    fn locate_opaque_operand(&self) -> Result<Option<usize>, ModuleError> {
+        let Some(index) = self
+            .operands
+            .iter()
+            .position(|property| property.schema["x-apexe-opaque-after"] == true)
+        else {
+            return Ok(None);
+        };
+        let property = self.operands[index];
+        if index + 1 != self.operands.len() || property.schema["type"] != "array" {
+            return Err(invalid(format!(
+                "'x-apexe-opaque-after' must sit on the last operand and that operand must be \
+                 variadic; '{}' is not",
+                property.name
+            )));
+        }
+        Ok(Some(index))
     }
 
     #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
@@ -305,6 +338,10 @@ impl<'a> Parser<'a> {
         let mut cursor = 0;
         let mut command_cursor = 0;
         let mut ended = false;
+        // Set once the opaque operand has been consumed: from there the tokens
+        // belong to whatever that operand names, so they are collected rather
+        // than parsed as this tool's flags.
+        let mut opaque = false;
         while cursor < argv.len() {
             let token = &argv[cursor];
             cursor += 1;
@@ -313,7 +350,7 @@ impl<'a> Parser<'a> {
                     return Err(invalid("This command does not declare -- at this position"));
                 }
                 ended = true;
-            } else if !ended && token.starts_with('-') && token != "-" {
+            } else if !opaque && !ended && token.starts_with('-') && token != "-" {
                 self.parse_flag(
                     token,
                     argv,
@@ -335,6 +372,9 @@ impl<'a> Parser<'a> {
                 }
                 command_cursor += 1;
             } else {
+                if self.opaque_operand == Some(operands.len()) {
+                    opaque = true;
+                }
                 operands.push(token.as_str());
             }
         }
@@ -593,6 +633,68 @@ mod tests {
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).into()).collect()
     }
+    /// An interpreter stops parsing at its script: `node tsc.js --noEmit` must
+    /// not have `--noEmit` validated against `node`'s own flags.
+    #[test]
+    fn test_opaque_operand_forwards_every_later_token() {
+        let schema = json!({
+            "type": "object",
+            "x-apexe-end-of-options": true,
+            "properties": {
+                "script": {"type": "array", "items": {"type": "string"},
+                           "x-apexe-positional": 0, "x-apexe-opaque-after": true},
+                "verbose": {"type": "boolean", "x-apexe-flag": "--verbose"}
+            }
+        });
+        let parsed = resolve_argv(
+            &args(&["--verbose", "tsc.js", "--noEmit", "-p", "tsconfig.json"]),
+            &schema,
+        )
+        .unwrap();
+        assert_eq!(parsed["verbose"], json!(true));
+        assert_eq!(
+            parsed["script"],
+            json!(["tsc.js", "--noEmit", "-p", "tsconfig.json"])
+        );
+    }
+
+    #[test]
+    fn test_without_the_opaque_declaration_the_same_argv_is_refused() {
+        let schema = json!({
+            "type": "object",
+            "x-apexe-end-of-options": true,
+            "properties": {
+                "script": {"type": "array", "items": {"type": "string"},
+                           "x-apexe-positional": 0},
+                "verbose": {"type": "boolean", "x-apexe-flag": "--verbose"}
+            }
+        });
+        let error = resolve_argv(&args(&["tsc.js", "--noEmit"]), &schema).unwrap_err();
+        assert!(
+            error.message.contains("Undeclared flag"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn test_opaque_declaration_must_be_on_the_last_variadic_operand() {
+        let scalar = json!({
+            "type": "object",
+            "x-apexe-end-of-options": true,
+            "properties": {
+                "script": {"type": "string", "x-apexe-positional": 0,
+                           "x-apexe-opaque-after": true}
+            }
+        });
+        let error = resolve_argv(&args(&["tsc.js"]), &scalar).unwrap_err();
+        assert!(
+            error.message.contains("must sit on the last operand"),
+            "{}",
+            error.message
+        );
+    }
+
     /// The `head -20` spelling: a digit run is the declared flag's value.
     ///
     /// BSD and GNU `head`/`tail` accept it and neither man page documents it, so

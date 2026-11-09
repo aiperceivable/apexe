@@ -1122,6 +1122,7 @@ mod tests {
             description: "Files to list.".to_string(),
             value_type: crate::models::ValueType::Path,
             required: false,
+            opaque_after: false,
             variadic: true,
             before_flags: false,
         }];

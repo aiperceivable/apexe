@@ -81,6 +81,7 @@ mod tests {
                 description: "Input file".into(),
                 value_type: crate::models::ValueType::Path,
                 required: true,
+                opaque_after: false,
                 variadic: false,
                 before_flags: false,
             }],

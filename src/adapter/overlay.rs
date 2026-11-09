@@ -257,6 +257,12 @@ pub struct OverlayArg {
     pub required: bool,
     #[serde(default)]
     pub variadic: bool,
+    /// This operand and every token after it are forwarded verbatim.
+    ///
+    /// See [`ScannedArg::opaque_after`]: an interpreter stops parsing at its
+    /// script, so the rest of argv belongs to that script.
+    #[serde(default)]
+    pub opaque_after: bool,
     /// Render this operand before the command's flags rather than after.
     ///
     /// Only `find`-shaped grammars need it: see [`ScannedArg::before_flags`].
@@ -919,6 +925,7 @@ impl OverlayArg {
             value_type: self.value_type,
             required: self.required,
             variadic: self.variadic,
+            opaque_after: self.opaque_after,
             before_flags: self.before_flags,
         }
     }
@@ -1739,6 +1746,38 @@ mod tests {
         };
         apply_overlay(&mut tool, &overlay);
         assert_eq!(tool.description, "Scanned description");
+    }
+
+    /// An interpreter's trailing tokens belong to its script, not to the
+    /// interpreter, and only an overlay can say where that boundary is.
+    #[test]
+    fn test_overlay_opaque_operand_reaches_the_schema_marker() {
+        let mut overlay = overlay(OverlayMode::Authoritative);
+        overlay.command = "node".to_string();
+        overlay.commands[0].flags = Vec::new();
+        overlay.commands[0].positional_args = vec![OverlayArg {
+            name: "script".to_string(),
+            value_type: ValueType::String,
+            variadic: true,
+            opaque_after: true,
+            ..Default::default()
+        }];
+        let mut tool = ScannedCLITool {
+            name: "node".into(),
+            variant: ToolVariant::Unknown,
+            ..Default::default()
+        };
+        apply_overlay(&mut tool, &overlay);
+        let module = crate::adapter::CliToolConverter::new()
+            .convert(&tool)
+            .remove(0);
+        let properties = module.input_schema["properties"].as_object().unwrap();
+        assert!(
+            properties
+                .values()
+                .any(|property| property["x-apexe-opaque-after"] == serde_json::json!(true)),
+            "no property carries the opaque marker: {properties:?}"
+        );
     }
 
     /// The `-N` count shorthand is declared per flag and must survive the

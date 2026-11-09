@@ -358,6 +358,20 @@ impl ScannedFlag {
 pub struct ScannedArg {
     /// Argument name (e.g., "FILE", "PATH").
     pub name: String,
+    /// Whether this operand and every token after it are forwarded verbatim.
+    ///
+    /// An interpreter's grammar is `interpreter <script> <argv for the script>`:
+    /// the tokens after the script belong to the script, not to the
+    /// interpreter, so validating them against the interpreter's flags refuses
+    /// `node tsc.js --noEmit` and `python -m pytest -q`. Only an overlay can
+    /// assert it, because only a human knows where a tool stops interpreting.
+    ///
+    /// Valid only on the last, variadic operand: everything from that operand
+    /// onwards is opaque, so a later declared operand would have nothing left to
+    /// match. Defaulted on deserialize so caches and bindings written before the
+    /// field existed still load.
+    #[serde(default)]
+    pub opaque_after: bool,
     /// Human-readable description.
     pub description: String,
     /// Inferred type.
@@ -881,6 +895,7 @@ mod tests {
             description: "Input file".into(),
             value_type: ValueType::Path,
             required: true,
+            opaque_after: false,
             variadic: false,
             before_flags: false,
         };
@@ -899,6 +914,7 @@ mod tests {
             description: "Input files".into(),
             value_type: ValueType::Path,
             required: false,
+            opaque_after: false,
             variadic: true,
             before_flags: false,
         };

@@ -180,6 +180,9 @@ fn scanned_operand(name: String, required: bool, variadic: bool) -> ScannedArg {
         value_type: ValueType::String,
         required,
         variadic,
+        // A scan cannot know where a tool stops interpreting its own argv; only
+        // an overlay can assert that (see `ScannedArg::opaque_after`).
+        opaque_after: false,
         before_flags: false,
     }
 }
