@@ -775,8 +775,10 @@ fn protected_path_error(
     .with_details(details)
     .with_ai_guidance(format!(
         "'{requested}' resolves to '{}', inside or above the protected location \
-         '{}'. This is a compiled-in boundary that no configuration removes. \
-         Choose a path outside the protected system and credential directories.",
+         '{}'. The baseline is compiled in and cannot be removed, but an operator \
+         may carve out a narrower subtree with `allowed_paths` in config.yaml. \
+         Otherwise choose a path outside the protected system and credential \
+         directories.",
         resolved.display(),
         denied.display()
     ))
