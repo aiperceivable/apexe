@@ -440,6 +440,9 @@ impl<'a> Parser<'a> {
                 "Undeclared flag '{token}' or undeclared short-flag bundling"
             )));
         }
+        // A bundle can carry the marker too: `-qx` with `-x` opaque starts the
+        // tail at the same place `-x` alone would.
+        let mut opaque = false;
         for (offset, character) in token[1..].char_indices() {
             let literal = format!("-{character}");
             let property = self
@@ -449,11 +452,12 @@ impl<'a> Parser<'a> {
             let value_option = !boolean_only(property.schema);
             let attached = (value_option && !tail.is_empty()).then_some(tail);
             self.consume(property, attached, argv, cursor, input, position)?;
+            opaque |= property.schema["x-apexe-opaque-after"] == true;
             if value_option {
                 break;
             }
         }
-        Ok(false)
+        Ok(opaque)
     }
 
     /// Resolve one flag spelling for the phase the call is in.
@@ -677,6 +681,31 @@ mod tests {
         .unwrap();
         assert_eq!(parsed["module"], json!("json.tool"));
         assert_eq!(parsed["file"], json!(["--compact", "/dev/null"]));
+    }
+
+    /// A bundled short flag must start the opaque tail too.
+    ///
+    /// The single-flag branch returns whether the property is opaque; the bundle
+    /// branch used to return `false` unconditionally, so `-x value` forwarded the
+    /// tail while `-qx value` validated it against the tool's own grammar.
+    #[test]
+    fn test_bundled_opaque_flag_starts_the_opaque_tail() {
+        let schema = json!({
+            "type": "object",
+            "x-apexe-short-flag-bundling": true,
+            "x-apexe-end-of-options": true,
+            "properties": {
+                "quiet": {"type": "boolean", "x-apexe-flag": "-q"},
+                "exec": {"type": "boolean", "x-apexe-flag": "-x",
+                         "x-apexe-opaque-after": true},
+                "file": {"type": "array", "items": {"type": "string"},
+                         "x-apexe-positional": 0}
+            }
+        });
+        let parsed = resolve_argv(&args(&["-qx", "--whatever"]), &schema).unwrap();
+        assert_eq!(parsed["quiet"], json!(true));
+        assert_eq!(parsed["exec"], json!(true));
+        assert_eq!(parsed["file"], json!(["--whatever"]));
     }
 
     #[test]
