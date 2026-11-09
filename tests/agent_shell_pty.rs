@@ -94,6 +94,10 @@ impl Fixture {
         );
         module.annotations = Some(annotations);
         module.metadata.insert("command_path".into(), json!([name]));
+        // Current bindings carry the per-route grammar stamp; without it the
+        // route is `Legacy` (admitted like a scanned one, never reported as
+        // reviewed -- issue #47), which these fixtures must not model.
+        module.metadata.insert("grammar".into(), json!("reviewed"));
         module.metadata.insert("variant".into(), json!("unknown"));
         module.metadata.insert(
             "shim_contract".into(),

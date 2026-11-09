@@ -6,6 +6,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
+## [Unreleased]
+
+### Added
+- `x-apexe-digit-value` lets an overlay declare that a bare `-<digits>` token is
+  one flag's value, so `head -20` and `tail -20` execute under a reviewed
+  grammar instead of being refused as a `-2`/`-0` bundle (issue #46). At most
+  one property per command may carry it; a second declaration is rejected as
+  ambiguous. Only a probe can establish the spelling — `usage: head [-n lines |
+  -c bytes]` does not mention `-20` — so a corpus overlay declaring it must
+  record the probe in `provenance`. apexe ships the support first: an overlay
+  using the keyword against an older apexe fails to load, because
+  `OverlayFlag` denies unknown fields.
+
+### Changed
+- A binding with no `metadata.grammar` stamp is no longer promoted to
+  `reviewed` by the legacy tool-level `shim_contract.authoritative` (issue #47).
+  It is reported as `legacy`: admitted like a scanned route, labelled in
+  `env --enable` and `env --check`, and never granted reviewed trust it did not
+  earn. Reviewed routes are unaffected.
+
+### Migration
+- An installation whose shims were only ever justified by that legacy flag now
+  runs them as scanned routes: install with `apexe env --reload --scanned
+  readonly` (or `all`), or rescan the tool (`apexe scan <tool>`, then
+  `apexe env --reload`) to earn the stamp back.
+
+---
+
 ## [0.10.0] - 2026-11-06
 
 ### Added

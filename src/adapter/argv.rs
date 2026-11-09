@@ -31,6 +31,10 @@ struct Parser<'a> {
     /// not the caller's arguments.
     global_flags: BTreeMap<String, Property<'a>>,
     operands: Vec<Property<'a>>,
+    /// The one property a schema marks as taking a bare `-<digits>` value
+    /// (`head -20`). At most one may declare it: two would make the token
+    /// ambiguous, and the overlay is rejected rather than guessed at.
+    digit_value: Option<Property<'a>>,
 }
 
 /// Whether a property describes a tool-level option, which must precede the
@@ -44,6 +48,16 @@ fn is_global_property(schema: &Value) -> bool {
         schema["x-apexe-flag-position"].as_str(),
         Some("before-subcommand") | Some("before-operands")
     )
+}
+
+/// Whether the token is exactly a dash followed by one or more ASCII digits.
+///
+/// `-20` is the count shorthand of `head`/`tail`; `-2.5`, `-20x` and `--20` are
+/// not, so they keep their normal meaning.
+fn is_digit_run(token: &str) -> bool {
+    token
+        .strip_prefix('-')
+        .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
 }
 
 fn invalid(message: impl Into<String>) -> ModuleError {
@@ -77,6 +91,10 @@ enum FlagArity {
 pub(crate) struct CommandMatcher {
     flags: BTreeMap<String, FlagArity>,
     short_flag_bundling: bool,
+    /// Arity of the one flag a schema marks as taking a bare `-<digits>` value
+    /// (`head -20`). `None` means no schema here declares it, so a digit token
+    /// stays a bundle.
+    digit_value: Option<FlagArity>,
 }
 
 impl CommandMatcher {
@@ -85,6 +103,7 @@ impl CommandMatcher {
         let mut matcher = Self {
             flags: BTreeMap::new(),
             short_flag_bundling: false,
+            digit_value: None,
         };
         for (schema, root) in schemas {
             matcher.short_flag_bundling |= schema["x-apexe-short-flag-bundling"] == true;
@@ -104,6 +123,9 @@ impl CommandMatcher {
                 } else {
                     FlagArity::Required
                 };
+                if value["x-apexe-digit-value"] == true {
+                    matcher.digit_value = Some(arity);
+                }
                 for literal in declared_flags(Property {
                     name,
                     schema: value,
@@ -164,6 +186,9 @@ impl CommandMatcher {
         if let Some(arity) = self.flags.get(literal) {
             return skip_value(*arity, attached, argv, cursor);
         }
+        if let Some(arity) = self.digit_value.filter(|_| is_digit_run(token)) {
+            return skip_value(arity, true, argv, cursor);
+        }
         if token.starts_with("--") || !self.short_flag_bundling {
             return Err(invalid(format!(
                 "Undeclared flag '{token}' or undeclared short-flag bundling"
@@ -216,6 +241,7 @@ impl<'a> Parser<'a> {
             flags: BTreeMap::new(),
             global_flags: BTreeMap::new(),
             operands: vec![],
+            digit_value: None,
         };
         for (name, value) in properties {
             let property = Property {
@@ -225,6 +251,16 @@ impl<'a> Parser<'a> {
             if value["x-apexe-positional"].as_u64().is_some() {
                 parser.operands.push(property);
                 continue;
+            }
+            if value["x-apexe-digit-value"] == true {
+                if let Some(previous) = parser.digit_value {
+                    return Err(invalid(format!(
+                        "The -<digits> shorthand is declared on two flags ('{}' and '{}'); \
+                         the token would be ambiguous",
+                        previous.name, name
+                    )));
+                }
+                parser.digit_value = Some(property);
             }
             let target = if is_global_property(value) {
                 &mut parser.global_flags
@@ -327,6 +363,14 @@ impl<'a> Parser<'a> {
         };
         if let Some(property) = self.lookup(literal, position) {
             return self.consume(property, attached, argv, cursor, input, position);
+        }
+        // `head -20`: the digit run is the value of the flag the overlay marked,
+        // not a bundle of `-2` and `-0`. Only a declared flag is resolved this
+        // way; without the declaration the token still falls through to the
+        // bundle path and is refused, which is what `ls -5` must do.
+        if let Some(property) = self.digit_value.filter(|_| is_digit_run(token)) {
+            let digits = token.trim_start_matches('-');
+            return self.consume(property, Some(digits), argv, cursor, input, position);
         }
         if token.starts_with("--") || self.schema["x-apexe-short-flag-bundling"] != true {
             return Err(invalid(format!(
@@ -549,6 +593,55 @@ mod tests {
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).into()).collect()
     }
+    /// The `head -20` spelling: a digit run is the declared flag's value.
+    ///
+    /// BSD and GNU `head`/`tail` accept it and neither man page documents it, so
+    /// only an overlay that probed the binary can declare it -- see issue #46.
+    #[test]
+    fn test_digit_shorthand_is_the_declared_flags_value() {
+        let mut schema = schema();
+        schema["properties"]["count"]["x-apexe-digit-value"] = json!(true);
+        let parsed = resolve_argv(&args(&["-20", "f"]), &schema).unwrap();
+        assert_eq!(parsed["count"], json!(20));
+        assert_eq!(parsed["file"], json!(["f"]));
+    }
+
+    #[test]
+    fn test_digit_token_still_refuses_without_the_declaration() {
+        let error = resolve_argv(&args(&["-20"]), &schema()).unwrap_err();
+        assert!(
+            error.message.contains("Undeclared flag '-2'"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn test_two_digit_shorthand_declarations_are_rejected() {
+        let mut schema = schema();
+        schema["properties"]["count"]["x-apexe-digit-value"] = json!(true);
+        schema["properties"]["long"]["x-apexe-digit-value"] = json!(true);
+        let error = resolve_argv(&args(&["-20"]), &schema).unwrap_err();
+        assert!(
+            error.message.contains("declared on two flags"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn test_a_non_digit_run_keeps_its_normal_meaning() {
+        let mut schema = schema();
+        schema["properties"]["count"]["x-apexe-digit-value"] = json!(true);
+        // `-2.5` is not the shorthand, so it is a bundle of undeclared flags.
+        let error = resolve_argv(&args(&["-2.5"]), &schema).unwrap_err();
+        assert!(
+            error.message.contains("Undeclared flag"),
+            "{}",
+            error.message
+        );
+    }
+
     fn schema() -> Value {
         json!({"type":"object","x-apexe-short-flag-bundling":true,"x-apexe-end-of-options":true,"properties":{
             "all":{"type":"boolean","x-apexe-flag":"--all","x-apexe-flag-aliases":["-a","--all"]},

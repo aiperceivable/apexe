@@ -228,6 +228,14 @@ pub struct OverlayFlag {
     /// See [`ScannedFlag::value_optional`].
     #[serde(default)]
     pub value_optional: bool,
+    /// Whether a bare `-<digits>` token is this flag's value, as in `head -20`.
+    ///
+    /// Only a probe establishes this: `usage: head [-n lines | -c bytes]` does
+    /// not mention `-20`, so an overlay read off the man page cannot discover
+    /// it. See [`ScannedFlag::digit_value`] for why it is per flag rather than
+    /// a global rule.
+    #[serde(default)]
+    pub digit_value: bool,
     /// Render this flag before the command's operands rather than after.
     ///
     /// The companion to [`OverlayArg::before_flags`]; see
@@ -893,6 +901,7 @@ impl OverlayFlag {
             risk: self.risk,
             value_name: self.value_name.clone(),
             value_optional: self.value_optional,
+            digit_value: self.digit_value,
             before_operands: self.before_operands,
             long_running: self.long_running,
             conflicts_with: self.conflicts_with.clone(),
@@ -1730,6 +1739,42 @@ mod tests {
         };
         apply_overlay(&mut tool, &overlay);
         assert_eq!(tool.description, "Scanned description");
+    }
+
+    /// The `-N` count shorthand is declared per flag and must survive the
+    /// loader: `OverlayFlag` denies unknown fields, so a corpus overlay that
+    /// uses the keyword before apexe understands it fails to load -- which is
+    /// why apexe ships support first (issue #46).
+    #[test]
+    fn test_overlay_flag_digit_value_reaches_the_schema_marker() {
+        let mut overlay = overlay(OverlayMode::Authoritative);
+        overlay.command = "head".to_string();
+        overlay.commands[0].flags = vec![OverlayFlag {
+            short: Some("-n".to_string()),
+            value_type: ValueType::Integer,
+            description: "Print the first num lines.".to_string(),
+            digit_value: true,
+            ..Default::default()
+        }];
+        let mut tool = ScannedCLITool {
+            name: "head".into(),
+            variant: ToolVariant::Bsd,
+            ..Default::default()
+        };
+        apply_overlay(&mut tool, &overlay);
+        let module = crate::adapter::CliToolConverter::new()
+            .convert(&tool)
+            .remove(0);
+        let properties = module.input_schema["properties"].as_object().unwrap();
+        let (name, property) = properties
+            .iter()
+            .find(|(_, property)| property["x-apexe-flag"] == serde_json::json!("-n"))
+            .expect("the -n property must be declared");
+        assert_eq!(
+            property["x-apexe-digit-value"],
+            serde_json::json!(true),
+            "property '{name}' must carry the shorthand marker"
+        );
     }
 
     #[test]

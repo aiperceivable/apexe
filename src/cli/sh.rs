@@ -407,9 +407,12 @@ pub(crate) fn check_report(
                 .commands
                 .iter()
                 .filter(|(_, routes)| {
-                    routes
-                        .iter()
-                        .any(|route| route.tier == super::shim::RouteTier::Scanned)
+                    routes.iter().any(|route| {
+                        matches!(
+                            route.tier,
+                            super::shim::RouteTier::Scanned | super::shim::RouteTier::Legacy
+                        )
+                    })
                 })
                 .map(|(name, _)| name.clone())
                 .collect()

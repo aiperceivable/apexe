@@ -82,6 +82,10 @@ impl Fixture {
         });
         module.metadata.insert("command_path".into(), json!([name]));
         module.metadata.insert("variant".into(), json!("unknown"));
+        // Current bindings carry the per-route grammar stamp. Without it the
+        // route is `Legacy`: admitted like a scanned one, never reported as
+        // reviewed (issue #47), which is what these fixtures must not model.
+        module.metadata.insert("grammar".into(), json!("reviewed"));
         module.metadata.insert(
             "shim_contract".into(),
             json!({

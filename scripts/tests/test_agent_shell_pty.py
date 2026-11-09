@@ -76,6 +76,9 @@ bindings:
   examples: []
   metadata:
     apexe_scan_format: 3
+    # A current binding carries the per-route grammar stamp; without it the
+    # route is `legacy` (admitted like a scanned one, never reviewed -- #47).
+    grammar: reviewed
     command_path:
     - approval
     variant: unknown

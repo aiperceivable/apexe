@@ -55,6 +55,9 @@ impl Fixture {
         module
             .metadata
             .insert("command_path".into(), json!(["cat"]));
+        // A current binding carries the per-route grammar stamp; without it the
+        // route is `Legacy` -- admitted like a scanned one, never reviewed (#47).
+        module.metadata.insert("grammar".into(), json!("reviewed"));
         module.metadata.insert("variant".into(), json!("unknown"));
         module.metadata.insert(
             "shim_contract".into(),

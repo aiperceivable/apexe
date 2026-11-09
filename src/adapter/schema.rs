@@ -319,6 +319,12 @@ fn apply_flag_literal(schema: &mut JsonValue, flag: &ScannedFlag) {
     if let Some(literal) = flag.long_name.as_deref().or(flag.short_name.as_deref()) {
         schema["x-apexe-flag"] = json!(literal);
     }
+    if flag.digit_value {
+        // `head -20`: a digit run after the dash is this flag's value, not a
+        // bundle of `-2` and `-0`. Only an overlay that probed the binary can
+        // assert it, because no man page documents the spelling.
+        schema["x-apexe-digit-value"] = json!(true);
+    }
 }
 
 /// The JSON Schema `format` a value type implies, if any.

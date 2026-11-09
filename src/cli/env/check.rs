@@ -445,6 +445,11 @@ fn check_bindings(
                     crate::cli::shim::RouteTier::Scanned => {
                         "Route, native executable and scanned tier are current".into()
                     }
+                    crate::cli::shim::RouteTier::Legacy => {
+                        "Route is current; its reviewed label is inherited from the legacy \
+                         tool-level contract, so it runs as a scanned route until it is rescanned"
+                            .into()
+                    }
                 },
             );
         }
@@ -497,7 +502,9 @@ fn check_route(
     );
     match route.tier {
         crate::cli::shim::RouteTier::Verified => crate::cli::shim::eligible(module)?,
-        crate::cli::shim::RouteTier::Scanned => crate::cli::shim::scannable(module)?,
+        crate::cli::shim::RouteTier::Scanned | crate::cli::shim::RouteTier::Legacy => {
+            crate::cli::shim::scannable(module)?
+        }
     }
     anyhow::ensure!(
         crate::cli::shim::command_path(module)? == route.command_path,

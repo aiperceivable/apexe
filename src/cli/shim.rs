@@ -17,6 +17,12 @@ pub(super) enum RouteTier {
     #[default]
     Verified,
     Scanned,
+    /// Installed from a binding that predates the per-route grammar stamp and
+    /// whose only claim is the legacy tool-level `authoritative` flag.
+    ///
+    /// Admitted like a scanned route — it is not reviewed — but labelled, so an
+    /// operator can tell an inherited trust from an earned one (issue #47).
+    Legacy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -325,7 +331,8 @@ pub(super) fn resolve_route<'a>(
                 module_id: module.module_id.clone(),
             })
         })?;
-        let replay = (route.tier == RouteTier::Scanned).then(|| args.to_vec());
+        let replay =
+            matches!(route.tier, RouteTier::Scanned | RouteTier::Legacy).then(|| args.to_vec());
         reject_exec_parameters(module, &input)?;
         return Ok((module, input, replay));
     }
@@ -345,7 +352,7 @@ fn route_schema<'a>(
     module: &'a ScannedModule,
     route: &Route,
 ) -> std::borrow::Cow<'a, serde_json::Value> {
-    if route.tier == RouteTier::Scanned
+    if matches!(route.tier, RouteTier::Scanned | RouteTier::Legacy)
         && module.input_schema["x-apexe-short-flag-bundling"].is_null()
     {
         let mut schema = module.input_schema.clone();
@@ -461,7 +468,9 @@ fn reject_exec_parameters(module: &ScannedModule, input: &serde_json::Value) -> 
 fn check_route(module: &ScannedModule, route: &Route) -> anyhow::Result<()> {
     match route.tier {
         RouteTier::Verified => eligible(module)?,
-        RouteTier::Scanned => scannable(module)?,
+        // A legacy route runs on the same structural checks as a scanned one:
+        // nothing stamped its grammar, so nothing may vouch for it (issue #47).
+        RouteTier::Scanned | RouteTier::Legacy => scannable(module)?,
     }
     anyhow::ensure!(
         command_path(module)? == route.command_path,

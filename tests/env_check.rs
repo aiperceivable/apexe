@@ -75,6 +75,9 @@ impl Fixture {
         module
             .metadata
             .insert("command_path".into(), json!(["cat"]));
+        // A current binding carries the per-route grammar stamp; without it the
+        // route is `Legacy` -- admitted like a scanned one, never reviewed (#47).
+        module.metadata.insert("grammar".into(), json!("reviewed"));
         module.metadata.insert("variant".into(), json!("unknown"));
         module.metadata.insert(
             "shim_contract".into(),
@@ -503,7 +506,7 @@ fn test_env_check_reports_non_executable_native_binary_without_running_it() {
 #[test]
 fn test_env_check_reports_changed_contract_route_and_filter() {
     for change in [
-        "contract",
+        "grammar",
         "command_path",
         "filter",
         "registration",
@@ -511,8 +514,12 @@ fn test_env_check_reports_changed_contract_route_and_filter() {
     ] {
         let fixture = Fixture::new();
         match change {
-            "contract" => fixture.change_binding(|module| {
-                module.metadata.get_mut("shim_contract").unwrap()["authoritative"] = json!(false);
+            // The per-route stamp is what decides the tier now: a merge-mode
+            // overlay may legitimately be `authoritative: false` and still be
+            // reviewed, so flipping that field is not a contract change. The
+            // stamp is (issue #47).
+            "grammar" => fixture.change_binding(|module| {
+                module.metadata.insert("grammar".into(), json!("scanned"));
             }),
             "command_path" => fixture.change_binding(|module| {
                 module

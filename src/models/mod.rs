@@ -17,6 +17,17 @@ pub enum GrammarTier {
     Reviewed,
     /// At least one flag is heuristic, or the route declares none at all.
     Scanned,
+    /// The route carries no per-route stamp; its only claim is the legacy
+    /// tool-level `shim_contract.authoritative`.
+    ///
+    /// Recorded rather than promoted (issue #47): a tool-level flag cannot say
+    /// that *this* route's flags were reviewed, and a scanned binding written by
+    /// an older apexe happens to hold `authoritative: true` for reasons that
+    /// never applied to a route. Treating it as reviewed would hand a heuristic
+    /// grammar the trust the stamp was introduced to withhold. A legacy route is
+    /// therefore not reviewed; it is admitted like a scanned one and reported
+    /// with the label it earned.
+    Legacy,
 }
 
 impl GrammarTier {
@@ -25,6 +36,7 @@ impl GrammarTier {
         match self {
             GrammarTier::Reviewed => "reviewed",
             GrammarTier::Scanned => "scanned",
+            GrammarTier::Legacy => "legacy",
         }
     }
 }
@@ -45,24 +57,32 @@ pub fn grammar_tier(
     {
         Some("reviewed") => Some(GrammarTier::Reviewed),
         Some("scanned") => Some(GrammarTier::Scanned),
+        Some("legacy") => Some(GrammarTier::Legacy),
+        // No stamp: a binding written before [`GRAMMAR_KEY`] existed. The
+        // tool-level contract is the only signal left, and it is a weaker one,
+        // so it is named `Legacy` rather than promoted to `Reviewed`.
+        _ if legacy_authoritative(metadata) => Some(GrammarTier::Legacy),
         _ => None,
     }
 }
 
+/// Whether an unstamped binding still claims the legacy tool-level signal.
+fn legacy_authoritative(metadata: &std::collections::HashMap<String, serde_json::Value>) -> bool {
+    metadata
+        .get("shim_contract")
+        .and_then(|contract| contract.get("authoritative"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// Whether this route's grammar counts as reviewed.
 ///
-/// Falls back to the tool-level `shim_contract.authoritative` for a binding
-/// written before [`GRAMMAR_KEY`] existed, which keeps the older, stricter rule
-/// in force rather than promoting a route nothing stamped.
+/// Only the per-route stamp can say so. An unstamped binding falls back to
+/// [`GrammarTier::Legacy`], which is deliberately *not* reviewed: promoting it
+/// let a scanned binding that happens to hold the legacy tool-level
+/// `authoritative: true` inherit a curated grammar's trust (issue #47).
 pub fn route_is_reviewed(metadata: &std::collections::HashMap<String, serde_json::Value>) -> bool {
-    match grammar_tier(metadata) {
-        Some(tier) => tier == GrammarTier::Reviewed,
-        None => metadata
-            .get("shim_contract")
-            .and_then(|contract| contract.get("authoritative"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false),
-    }
+    grammar_tier(metadata) == Some(GrammarTier::Reviewed)
 }
 
 /// Type classification for CLI flag/argument values.
@@ -245,6 +265,20 @@ pub struct ScannedFlag {
     /// before the field existed still load.
     #[serde(default)]
     pub value_optional: bool,
+    /// Whether a bare `-<digits>` token carries this flag's value, as in
+    /// `head -20`.
+    ///
+    /// BSD and GNU `head`/`tail` accept the count without `-n`, and neither man
+    /// page documents it: only a probe finds it, so an overlay transcribed from
+    /// the manual can never declare it by accident. It is per flag rather than a
+    /// global rule because `-N` is not one thing — `git log -5` counts commits
+    /// while `ls -5` is invalid — and a blanket rule would reinterpret tokens
+    /// for tools that never accepted them.
+    ///
+    /// Defaulted on deserialize so caches and bindings written before the field
+    /// existed still load.
+    #[serde(default)]
+    pub digit_value: bool,
     /// What sending this flag does beyond passing its value.
     ///
     /// Defaulted on deserialize so caches and bindings written before the field
@@ -1054,9 +1088,17 @@ mod grammar_tests {
         assert!(!route_is_reviewed(&metadata(Some("scanned"), true)));
     }
 
+    /// Issue #47: a scanned binding written before the stamp existed carries
+    /// `shim_contract.authoritative: true` for reasons that never applied to
+    /// the route. It must not be reported or treated as reviewed.
     #[test]
-    fn test_route_is_reviewed_falls_back_to_the_tool_contract() {
-        assert!(route_is_reviewed(&metadata(None, true)));
+    fn test_unstamped_authoritative_binding_is_legacy_not_reviewed() {
+        let legacy = metadata(None, true);
+        assert_eq!(grammar_tier(&legacy), Some(GrammarTier::Legacy));
+        assert!(!route_is_reviewed(&legacy));
+        assert_eq!(GrammarTier::Legacy.as_str(), "legacy");
+
+        assert_eq!(grammar_tier(&metadata(None, false)), None);
         assert!(!route_is_reviewed(&metadata(None, false)));
         assert!(!route_is_reviewed(&HashMap::new()));
     }

@@ -64,6 +64,10 @@ impl Fixture {
             ..Default::default()
         });
         module.metadata.insert("command_path".into(), json!([name]));
+        // Current bindings carry the per-route grammar stamp; without it the
+        // route is `Legacy` (admitted like a scanned one, never reported as
+        // reviewed -- issue #47), which these fixtures must not model.
+        module.metadata.insert("grammar".into(), json!("reviewed"));
         module.metadata.insert("variant".into(), json!("unknown"));
         module.metadata.insert("shim_contract".into(), json!({"authoritative":true,"variant":"unknown","short_flag_bundling":true,"streaming_stdin_safe":streaming,"cross_flag_ordering":false}));
         module.input_schema["x-apexe-streaming-stdin-safe"] = json!(streaming);
@@ -73,6 +77,32 @@ impl Fixture {
             .write(&[module], &self.bindings(), false)
             .unwrap();
     }
+    /// A binding written before the per-route grammar stamp existed: the only
+    /// claim is the legacy tool-level `authoritative` flag (issue #47).
+    fn write_unstamped(&self, id: &str, name: &str, binary: &str, schema: Value) {
+        let mut module = ScannedModule::new(
+            id.into(),
+            "Legacy shim test".into(),
+            schema,
+            json!({"type":"object"}),
+            vec!["pilot".into()],
+            format!("exec://{binary}"),
+        );
+        module.annotations = Some(ModuleAnnotations {
+            readonly: true,
+            ..Default::default()
+        });
+        module.metadata.insert("command_path".into(), json!([name]));
+        module.metadata.insert("variant".into(), json!("unknown"));
+        module.metadata.insert("shim_contract".into(), json!({"authoritative":true,"variant":"unknown","short_flag_bundling":true,"streaming_stdin_safe":false,"cross_flag_ordering":false}));
+        module.input_schema["x-apexe-streaming-stdin-safe"] = json!(false);
+        module.input_schema["x-apexe-short-flag-bundling"] = json!(true);
+        module.input_schema["x-apexe-cross-flag-ordering"] = json!(false);
+        apexe::output::YamlOutput::without_verification()
+            .write(&[module], &self.bindings(), false)
+            .unwrap();
+    }
+
     fn enable(&self) {
         self.command().args(["env", "--enable"]).assert().success();
     }
@@ -558,6 +588,42 @@ fn test_shim_streams_raw_stdin_without_json_or_buffering() {
     let audit = std::fs::read_to_string(fixture.home.path().join(".apexe/audit.jsonl")).unwrap();
     assert!(audit.contains("execution"));
     assert!(audit.contains("local"));
+}
+
+/// Issue #47: an unstamped binding whose only claim is the legacy tool-level
+/// `authoritative` flag must not be installed as reviewed.
+///
+/// It is admitted like a scanned route and recorded as `legacy` in the manifest,
+/// so the tier an operator reads is the trust the binding actually carries.
+#[test]
+fn test_legacy_unstamped_binding_is_installed_as_legacy() {
+    let fixture = Fixture::new();
+    fixture.write_unstamped("cli.cat", "cat", "/bin/cat", file_schema());
+    fixture
+        .command()
+        .args(["env", "--enable", "--scanned", "all"])
+        .assert()
+        .success();
+    let manifest = std::fs::read_to_string(fixture.shims().join(".apexe-shims.json")).unwrap();
+    let manifest: Value = serde_json::from_str(&manifest).unwrap();
+    assert_eq!(
+        manifest["commands"]["cat"][0]["tier"],
+        json!("legacy"),
+        "an unstamped binding is inherited trust, not a reviewed grammar: {manifest}"
+    );
+
+    // A stamped binding keeps its reviewed tier: the migration must not demote
+    // routes that were actually reviewed.
+    let stamped = Fixture::new();
+    stamped.write("cli.cat", "cat", "/bin/cat", file_schema(), false);
+    stamped
+        .command()
+        .args(["env", "--enable"])
+        .assert()
+        .success();
+    let manifest = std::fs::read_to_string(stamped.shims().join(".apexe-shims.json")).unwrap();
+    let manifest: Value = serde_json::from_str(&manifest).unwrap();
+    assert_eq!(manifest["commands"]["cat"][0]["tier"], json!("verified"));
 }
 
 /// A shim stands in for the command the caller typed, so it reads the caller's

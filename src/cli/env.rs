@@ -203,7 +203,16 @@ fn collect_routes(
             Ok(()) => super::shim::RouteTier::Verified,
             Err(error) => {
                 if super::shim::scanned_admits(module, scanned) {
-                    super::shim::RouteTier::Scanned
+                    // Admitted, but say which kind of admission this is: a
+                    // binding older than the grammar stamp is inherited trust,
+                    // not an earned one (issue #47).
+                    if crate::models::grammar_tier(&module.metadata)
+                        == Some(crate::models::GrammarTier::Legacy)
+                    {
+                        super::shim::RouteTier::Legacy
+                    } else {
+                        super::shim::RouteTier::Scanned
+                    }
                 } else {
                     tracing::warn!(
                         module_id = %module.module_id,
@@ -435,6 +444,7 @@ fn report_coverage(manifest: &Manifest) {
                 let tier = match route.tier {
                     super::shim::RouteTier::Verified => "reviewed",
                     super::shim::RouteTier::Scanned => "scanned",
+                    super::shim::RouteTier::Legacy => "legacy (unstamped, rescan to review)",
                 };
                 *counts.entry(tier).or_default() += 1;
                 counts
