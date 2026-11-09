@@ -570,7 +570,7 @@ impl ScanArgs {
             // A scan that changes no rule must not rewrite the file: the write
             // re-serializes the document and takes the operator's comments and
             // ordering with it, as a side effect of scanning a tool.
-            if existing.same_document(&merged) {
+            if existing.same_document(&merged)? {
                 info!(path = %acl_path.display(), "ACL policy unchanged; leaving the file untouched");
                 return Ok(());
             }

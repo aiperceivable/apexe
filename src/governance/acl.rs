@@ -388,15 +388,24 @@ impl AclManager {
     ///
     /// Compares rule order as well: evaluation is first-match-wins, so the same
     /// rules in a different order are a different policy.
-    pub fn same_document(&self, other: &Self) -> bool {
+    #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+    pub(crate) fn same_document(&self, other: &Self) -> Result<bool, ModuleError> {
+        // Compares `Result`, not `.ok()`: treating a serialization failure as
+        // "no change" would silently skip a write the operator needs.
+        #[allow(clippy::result_large_err)] // Same boundary as the signature above
         let render = |manager: &Self| {
             serde_json::to_value(serde_json::json!({
                 "rules": manager.acl.rules(),
                 "default_effect": manager.default_effect,
             }))
-            .ok()
+            .map_err(|error| {
+                ModuleError::new(
+                    ErrorCode::GeneralInternalError,
+                    format!("Failed to compare ACL documents: {error}"),
+                )
+            })
         };
-        render(self) == render(other)
+        Ok(render(self)? == render(other)?)
     }
 
     /// Write ACL to a YAML file.
@@ -1651,5 +1660,27 @@ mod tests {
     fn test_default_effect_accessor() {
         let mgr = AclManager::generate_default(&[]);
         assert_eq!(mgr.default_effect(), "deny");
+    }
+    /// `same_document` decides whether a scan may skip rewriting `acl.yaml`.
+    ///
+    /// Rule *order* is part of the comparison: evaluation is first-match-wins, so
+    /// the same rules in a different order are a different policy.
+    #[test]
+    fn test_same_document_compares_rules_and_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, body: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, body).unwrap();
+            path
+        };
+        let allow_x = "rules:\n- callers: ['*']\n  targets: ['cli.x']\n  effect: allow\n\
+                       - callers: ['*']\n  targets: ['cli.y']\n  effect: deny\ndefault_effect: deny\n";
+        let reordered = "rules:\n- callers: ['*']\n  targets: ['cli.y']\n  effect: deny\n\
+                         - callers: ['*']\n  targets: ['cli.x']\n  effect: allow\ndefault_effect: deny\n";
+        let a = AclManager::from_config(&write("a.yaml", allow_x)).unwrap();
+        let b = AclManager::from_config(&write("b.yaml", allow_x)).unwrap();
+        let c = AclManager::from_config(&write("c.yaml", reordered)).unwrap();
+        assert!(a.same_document(&b).unwrap());
+        assert!(!a.same_document(&c).unwrap(), "rule order is the policy");
     }
 }
