@@ -417,13 +417,7 @@ fn check(config: &ApexeConfig, host: AgentHost, format: CheckFormat) -> anyhow::
 }
 
 fn inspect_host(host: AgentHost, launcher: &CheckReport) -> HostReport {
-    let binary_name = match host {
-        AgentHost::Opencode => "opencode",
-        AgentHost::Pi => "pi",
-        AgentHost::Codex => "codex",
-        AgentHost::Claude => "claude",
-    };
-    let binary = which::which(binary_name).ok();
+    let binary = which::which(binary_name(host)).ok();
     let mut first_existing = None;
     for path in config_candidates(host) {
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -529,6 +523,114 @@ fn path_contains_shims(shim_dir: &Path) -> bool {
         .is_some_and(|path| std::env::split_paths(&path).any(|candidate| candidate == shim_dir))
 }
 
+/// A host binary found on `PATH`, with whether its configuration already
+/// selects apexe.
+struct DetectedHost {
+    host: AgentHost,
+    binary: PathBuf,
+    configured: bool,
+}
+
+/// Name the detected agent hosts that still run commands outside apexe.
+///
+/// `env --enable` installs the launcher and the PATH shims, but it does not
+/// edit another tool's configuration: the scope (project versus user) and the
+/// consent (a Claude Code hook answers `allow`) belong to the operator. The gap
+/// that leaves is silent — an installed but unconfigured host runs every
+/// command ungoverned — so this states the remaining step at the moment the
+/// launcher becomes available, rather than leaving it to the documentation.
+///
+/// Nothing is written and nothing is refused: this is a report, not an
+/// installation step.
+pub(crate) fn report_unconfigured_hosts(shim_dir: &Path) {
+    use std::io::IsTerminal;
+    // `env --enable` is also how scripts and tests install shims, and a hint
+    // list there would land in captured output that expects none.
+    if !std::io::stderr().is_terminal() {
+        return;
+    }
+    let lines = hint_lines(&detected_hosts(shim_dir));
+    if lines.is_empty() {
+        return;
+    }
+    eprintln!("Detected agent hosts that do not use apexe yet:");
+    for line in lines {
+        eprintln!("  {line}");
+    }
+}
+
+fn detected_hosts(shim_dir: &Path) -> Vec<DetectedHost> {
+    const HOSTS: [AgentHost; 4] = [
+        AgentHost::Opencode,
+        AgentHost::Pi,
+        AgentHost::Codex,
+        AgentHost::Claude,
+    ];
+    HOSTS
+        .iter()
+        .filter_map(|host| {
+            let binary = which::which(binary_name(*host)).ok()?;
+            // Configuration files only. `inspect_host` also accepts a process
+            // PATH that already contains the shim directory, which answers a
+            // different question: this report runs inside a governed shell, so
+            // that PATH is inherited from the caller and says nothing about how
+            // the host will be launched later.
+            Some(DetectedHost {
+                host: *host,
+                binary,
+                configured: config_mentions_apexe(*host, shim_dir),
+            })
+        })
+        .collect()
+}
+
+fn hint_lines(hosts: &[DetectedHost]) -> Vec<String> {
+    hosts
+        .iter()
+        .filter(|detected| !detected.configured)
+        .map(|detected| {
+            format!(
+                "{:<8} {}  ->  {}",
+                host_name(detected.host),
+                detected.binary.display(),
+                remedy(detected.host)
+            )
+        })
+        .collect()
+}
+
+/// The step that host needs, phrased so it can be pasted as-is.
+fn remedy(host: AgentHost) -> &'static str {
+    match host {
+        AgentHost::Opencode => "apexe agent opencode --write --scope user",
+        AgentHost::Pi => "apexe agent pi --write",
+        AgentHost::Codex => {
+            "no configuration file: run 'apexe env --reload --shell <the shell Codex uses>', \
+             then restart Codex"
+        }
+        AgentHost::Claude => "apexe agent claude --write --scope user",
+    }
+}
+
+fn config_mentions_apexe(host: AgentHost, shim_dir: &Path) -> bool {
+    host_is_configured(host, &config_candidates(host), shim_dir)
+}
+
+fn host_is_configured(host: AgentHost, candidates: &[PathBuf], shim_dir: &Path) -> bool {
+    candidates.iter().any(|path| {
+        std::fs::read_to_string(path).is_ok_and(|text| host_text_configured(host, &text, shim_dir))
+    })
+}
+
+fn binary_name(host: AgentHost) -> &'static str {
+    match host {
+        AgentHost::Opencode => "opencode",
+        AgentHost::Pi => "pi",
+        AgentHost::Codex => "codex",
+        AgentHost::Claude => "claude",
+    }
+}
+
 fn configured_note(host: AgentHost) -> String {
     match host {
         AgentHost::Opencode => "OpenCode is configured to use apexe-sh; restart it after changing the file".into(),
@@ -599,5 +701,82 @@ fn host_name(host: AgentHost) -> &'static str {
         AgentHost::Pi => "pi",
         AgentHost::Codex => "codex",
         AgentHost::Claude => "claude",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn detected(host: AgentHost, configured: bool) -> DetectedHost {
+        DetectedHost {
+            host,
+            binary: PathBuf::from(format!("/usr/local/bin/{}", host_name(host))),
+            configured,
+        }
+    }
+
+    #[test]
+    fn test_hint_lines_reports_only_unconfigured_hosts() {
+        let hosts = [
+            detected(AgentHost::Pi, false),
+            detected(AgentHost::Opencode, true),
+        ];
+        let lines = hint_lines(&hosts);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("pi "));
+        assert!(lines[0].contains("apexe agent pi --write"));
+    }
+
+    #[test]
+    fn test_hint_lines_is_empty_when_every_detected_host_is_configured() {
+        let hosts = [
+            detected(AgentHost::Pi, true),
+            detected(AgentHost::Claude, true),
+        ];
+        assert!(hint_lines(&hosts).is_empty());
+    }
+
+    #[test]
+    fn test_hint_lines_names_user_scope_for_hosts_with_project_config() {
+        let hosts = [
+            detected(AgentHost::Opencode, false),
+            detected(AgentHost::Claude, false),
+        ];
+        let lines = hint_lines(&hosts);
+        assert!(lines[0].contains("--scope user"));
+        assert!(lines[1].contains("--scope user"));
+    }
+
+    #[test]
+    fn test_hint_lines_explains_codex_has_no_configuration_file() {
+        let lines = hint_lines(&[detected(AgentHost::Codex, false)]);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("no configuration file"));
+        assert!(lines[0].contains("apexe env --reload --shell"));
+    }
+
+    #[test]
+    fn test_host_is_configured_reads_the_selection_from_a_candidate_file() {
+        let root = tempfile::tempdir().unwrap();
+        let settings = root.path().join("settings.json");
+        let shim_dir = Path::new("/home/u/.apexe/bin");
+        std::fs::write(&settings, r#"{"shellPath": "/home/u/.apexe/bin/apexe-sh"}"#).unwrap();
+        assert!(host_is_configured(
+            AgentHost::Pi,
+            std::slice::from_ref(&settings),
+            shim_dir
+        ));
+        std::fs::write(&settings, r#"{"theme": "dark"}"#).unwrap();
+        assert!(!host_is_configured(
+            AgentHost::Pi,
+            std::slice::from_ref(&settings),
+            shim_dir
+        ));
+        assert!(!host_is_configured(
+            AgentHost::Pi,
+            &[root.path().join("missing.json")],
+            shim_dir
+        ));
     }
 }

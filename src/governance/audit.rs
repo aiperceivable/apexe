@@ -240,6 +240,25 @@ impl AuditManager {
         .await;
     }
 
+    /// Record one governance-layer event that is not a module execution.
+    ///
+    /// The audit trail answered "which call was refused" but not "who took the
+    /// layer down": `env --disable` removes the shims and the entry point and
+    /// left no record at all, so the log simply stopped. Synchronous by design —
+    /// its callers are CLI subcommands that are not on an async runtime, and a
+    /// governance event is worth waiting for.
+    pub fn log_governance_event(&self, event: &str, details: serde_json::Value) {
+        let record = serde_json::json!({
+            "timestamp": Self::now(),
+            "event": event,
+            "details": details,
+        });
+        match serde_json::to_string(&record) {
+            Ok(line) => Self::write_line_blocking(&self.path, &line, "governance event"),
+            Err(error) => tracing::warn!(%error, event, "Failed to serialize governance event"),
+        }
+    }
+
     /// RFC 3339 UTC with a trailing `Z`, matching apcore's ACL entry format.
     fn now() -> String {
         chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)

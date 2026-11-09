@@ -85,9 +85,16 @@ impl EnvArgs {
                 .unwrap_or(&config.config_dir.join("bin")),
         )?;
         if self.disable {
+            let installed = super::shim::read_manifest(&directory).ok().map(|manifest| {
+                (
+                    manifest.commands.len(),
+                    manifest.commands.values().map(Vec::len).sum::<usize>(),
+                )
+            });
             let result = super::shell_init::disable(&directory, || uninstall(&directory));
             if result.is_ok() {
                 super::agent::warn_if_host_selects_removed_launcher(&directory);
+                report_disable(config, &directory, installed);
             }
             return result;
         }
@@ -96,12 +103,17 @@ impl EnvArgs {
         }
         if self.enable || self.reload {
             let manifest = self.plan(config)?;
-            return super::shell_init::initialize(
-                &directory,
-                self.shell,
-                self.rc_file.as_deref(),
-                || install(&directory, manifest, self.replace_unowned),
-            );
+            super::shell_init::initialize(&directory, self.shell, self.rc_file.as_deref(), || {
+                install(&directory, manifest, self.replace_unowned)
+            })?;
+            // Only on the explicit installation. `--reload` also runs from the
+            // activation script of every new terminal, where a host hint list
+            // would repeat itself for no new information.
+            if self.enable {
+                super::agent::report_unconfigured_hosts(&directory);
+                report_acl_coverage(&directory, config);
+            }
+            return Ok(());
         }
         super::shim::read_manifest(&directory)?;
         print_activation(&directory, self.shell.unwrap_or_default())
@@ -311,6 +323,91 @@ fn install(directory: &Path, mut manifest: Manifest, replace_unowned: bool) -> a
     tracing::info!(directory = %directory.display(), count = manifest.commands.len(), "Installed governed command shims");
     persistent.log_paths();
     Ok(())
+}
+
+/// Say what disabling removed, and record it.
+///
+/// `env --disable` takes the whole governance layer down: command shims, the
+/// `apexe-sh` entry point and the managed startup blocks. A host configured to
+/// use the entry point does not fall back to its own shell, and every other
+/// command silently runs ungoverned. Leaving that silent made it the cheapest
+/// way for an agent that hit a refusal to unblock itself — the trail showed the
+/// refusals and then nothing at all, with no record of who removed the layer.
+///
+/// The record is deliberately not a refusal: nothing was refused. It names the
+/// action so a later reader can tell an uninstall from a broken install.
+fn report_disable(config: &ApexeConfig, directory: &Path, installed: Option<(usize, usize)>) {
+    use std::io::IsTerminal;
+    let audit = crate::governance::AuditManager::new(&config.audit_log);
+    audit.log_governance_event(
+        "shim_disable",
+        serde_json::json!({
+            "shim_dir": directory.display().to_string(),
+            "commands": installed.map(|(commands, _)| commands),
+            "routes": installed.map(|(_, routes)| routes),
+        }),
+    );
+    if !std::io::stderr().is_terminal() {
+        return;
+    }
+    match installed {
+        Some((commands, routes)) => eprintln!(
+            "Removed {commands} command shim(s) ({routes} route(s)) and the apexe-sh entry point \
+             from {}.\nThis shell and every host configured to use it now run commands \
+             ungoverned; the action is recorded in {}.",
+            directory.display(),
+            config.audit_log.display()
+        ),
+        None => eprintln!(
+            "Removed the apexe shim layer from {}; commands now run ungoverned until \
+             'apexe env --enable' is run again.",
+            directory.display()
+        ),
+    }
+}
+
+/// Name installed shims the loaded ACL refuses.
+///
+/// An installation and a policy are built from different inputs: `env --enable`
+/// admits every route the bindings allow, while the ACL's `default_effect`
+/// decides which of them a caller may run. Nothing compared the two, so `cat`
+/// got a reviewed shim while the starter ACL listed no rule for it — the shim
+/// existed only to be denied, and the refusal arrived later with no hint that
+/// the installation itself was the mismatch.
+fn report_acl_coverage(directory: &Path, config: &ApexeConfig) {
+    use std::io::IsTerminal;
+    let Ok(manifest) = super::shim::read_manifest(directory) else {
+        return;
+    };
+    let Ok(Some(acl_path)) = super::local::acl_path(manifest.acl.as_deref(), config) else {
+        return;
+    };
+    let Ok(acl) = crate::governance::AclManager::from_config(&acl_path) else {
+        return;
+    };
+    let module_ids: std::collections::BTreeSet<&str> = manifest
+        .commands
+        .values()
+        .flatten()
+        .map(|route| route.module_id.as_str())
+        .collect();
+    let denied: Vec<&str> = module_ids
+        .into_iter()
+        .filter(|module_id| acl.explain(module_id).effect != "allow")
+        .collect();
+    if denied.is_empty() || !std::io::stderr().is_terminal() {
+        return;
+    }
+    eprintln!(
+        "Installed shims the loaded ACL refuses ({}):",
+        acl_path.display()
+    );
+    for module_id in denied {
+        eprintln!(
+            "  {module_id}  ->  add an allow rule to {}, or leave the shim uninstalled",
+            acl_path.display()
+        );
+    }
 }
 
 /// Print what this installation admits, command by command.

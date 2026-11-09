@@ -10,6 +10,20 @@ struct Fixture {
     home: PathBuf,
     binary: PathBuf,
 }
+/// `PATH` with any apexe shim directory removed.
+///
+/// The suite is routinely run from an apexe-governed shell, where `PATH` starts
+/// with `~/.apexe/bin`. Every external tool a fixture spawns — `git` above all —
+/// would then hit a shim, be refused for having no route, and fail tests that
+/// are about apexe's own behaviour rather than about the ambient installation.
+fn without_shim_dir() -> std::ffi::OsString {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let kept: Vec<std::path::PathBuf> = std::env::split_paths(&path)
+        .filter(|directory| !directory.to_string_lossy().contains("/.apexe/"))
+        .collect();
+    std::env::join_paths(kept).unwrap_or(path)
+}
+
 impl Fixture {
     fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
@@ -65,6 +79,7 @@ impl Fixture {
                 "commit.gpgsign=false",
             ])
             .args(args)
+            .env("PATH", without_shim_dir())
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("HOME", &self.home)
             .env_remove("GIT_DIR")

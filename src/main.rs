@@ -47,14 +47,42 @@ fn print_man_page_if_requested(raw_args: &[String]) -> bool {
 /// Split out from `report_error` so the rendering logic is testable without
 /// capturing the process's actual stderr.
 fn render_error(error: anyhow::Error) -> String {
-    let module_err = match error.downcast::<ModuleError>() {
-        Ok(module_err) => module_err,
-        Err(error) => match error.downcast::<ApexeError>() {
-            Ok(apexe_err) => apexe_err.into(),
-            Err(error) => return format!("Error: {error}"),
-        },
+    // Walk the chain rather than downcasting the top error. Callers attach
+    // context to say *which* route or module refused (e.g. `RouteRefusal`
+    // naming `cli.node`), and `downcast` only inspects the outermost error, so
+    // a wrapped `ModuleError` used to fall through to a bare Display that
+    // printed the context and hid the reason. A refusal then read as
+    // "Undeclared flag '--noEmit'" with no module named, which is exactly how
+    // a `node` grammar refusal got blamed on `tsc`.
+    let chain: Vec<&(dyn std::error::Error + 'static)> = error.chain().collect();
+    let module_error = chain
+        .iter()
+        .position(|cause| cause.downcast_ref::<ModuleError>().is_some())
+        .and_then(|index| {
+            chain[index]
+                .downcast_ref::<ModuleError>()
+                .map(|module_err| (module_err, &chain[..index]))
+        });
+    if let Some((module_err, context)) = module_error {
+        return render_module_error(module_err, context);
+    }
+    match error.downcast::<ApexeError>() {
+        Ok(apexe_err) => render_module_error(&apexe_err.into(), &[]),
+        Err(error) => format!("Error: {error}"),
+    }
+}
+
+/// Render one `ModuleError` with the context that named its route.
+fn render_module_error(
+    module_err: &ModuleError,
+    context: &[&(dyn std::error::Error + 'static)],
+) -> String {
+    let mut rendered = if context.is_empty() {
+        format!("Error: {}", module_err.message)
+    } else {
+        let context: Vec<String> = context.iter().map(|cause| cause.to_string()).collect();
+        format!("Error: {}: {}", context.join(": "), module_err.message)
     };
-    let mut rendered = format!("Error: {}", module_err.message);
     if let Some(ref guidance) = module_err.ai_guidance {
         rendered.push_str(&format!("\nSuggestion: {guidance}"));
     }
