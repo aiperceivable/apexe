@@ -435,6 +435,51 @@ correction always wins.
 **apexe itself carries none.** There is no built-in set to add to: the corpus is
 the `cli-permissions` repository, and apexe reads it like any other consumer.
 
+### Amending a corpus entry from your own directory
+
+Selection keeps **one** overlay per `(command, variant)`, the strongest match,
+and `~/.apexe/overlays/` only outranks a corpus file at *equal* strength. Both
+halves of that bite, and both used to be silent:
+
+| What you wrote | What happens |
+|---|---|
+| A local `rm@bsd` with no `match` block | The corpus file carries a `probe`, so it matches at `Probe` and yours at `Platform`. **Yours is never used.** |
+| A local `rm@bsd` that copies the `match` block and declares only `annotations` | Equal strength, so yours wins by load order and **replaces** the corpus file. Every flag and operand you did not restate is gone — including the path-typed operand the path guard checks, which is how `rm /etc/hosts` once reached the binary. |
+| A local `rm@bsd` that copies the `match` block and declares `mode: merge` | Same thing. `merge` merges into the **heuristic scan**, not into the corpus overlay it displaced. |
+
+So the only safe shape for "the corpus entry, but with one thing changed" is a
+**full copy**:
+
+```bash
+cp ../cli-permissions/overlays/rm@bsd.json ~/.apexe/overlays/rm@bsd.json
+# then edit one field, keeping `match`, `flags`, `positional_args` and every
+# annotation you still mean, and say why in `provenance.notes`
+```
+
+Restating an annotation is part of that: dropping `destructive` from a copy of
+`cp@bsd` demotes the command to the name-based inference, which does not know
+`cp` or `mv`.
+
+`apexe scan` reports both mistakes as warnings on the tool it scanned, naming
+the two files and, for the second case, counting what was dropped:
+
+```text
+Overlay ~/.apexe/overlays/rm@bsd.json matches rm but a stronger one wins
+(Platform < PlatformAndGlob): /…/corpus/rm@bsd.json. Selection keeps one
+overlay, so give the local file the same `match` block to shadow it.
+```
+
+```text
+Local overlay ~/.apexe/overlays/rm@bsd.json replaces /…/corpus/rm@bsd.json for
+rm but restates only 0 of 2 flag(s), 0 of 1 operand(s): selection keeps one
+overlay, so anything not restated is dropped.
+```
+
+A local overlay is for a *correction* you intend to maintain. To add coverage
+without taking ownership of the corpus entry, prefer a `merge` overlay in a
+directory listed in `overlay_dirs` — one that the corpus does not already
+describe, so nothing is displaced.
+
 ## Checklist
 
 1. Confirm heuristic scanning genuinely cannot do the job.
@@ -444,6 +489,8 @@ the `cli-permissions` repository, and apexe reads it like any other consumer.
 5. Diff your list against the reference in both directions; sanity-check your extractor before believing a difference.
 6. Record `provenance` with a re-runnable `command` and a digest-pinned `environment`.
 7. Choose `authoritative` only if the overlay enumerates the option set completely; otherwise `merge`.
+   Amending an existing entry means copying it whole — see
+   [Amending a corpus entry from your own directory](#amending-a-corpus-entry-from-your-own-directory).
 8. Test it with `apexe scan <tool> --overlay <file> --no-cache`. **`--no-cache` is not optional here** — see below.
 9. Open a pull request against [cli-permissions](https://github.com/aiperceivable/cli-permissions). Nothing is needed to use it locally — `~/.apexe/overlays/` picks it up as soon as it is on disk.
 10. Run `cargo test` in apexe with `APEXE_TEST_CORPUS` pointing at your corpus, so the tests that assert against real entries actually run.
