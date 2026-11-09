@@ -89,26 +89,6 @@ impl CliModule {
         self
     }
 
-    #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
-    fn validate_stdin(&self) -> Result<(), ModuleError> {
-        if self.execution_io
-            == (super::ExecutionIo::Passthrough {
-                stdin: super::StdinMode::Inherit,
-            })
-            && self
-                .input_schema
-                .get("x-apexe-streaming-stdin-safe")
-                .and_then(Value::as_bool)
-                != Some(true)
-        {
-            return Err(ModuleError::new(
-                ErrorCode::GeneralInvalidInput,
-                "Inherited stdin requires an explicit streaming_stdin_safe overlay assertion",
-            ));
-        }
-        Ok(())
-    }
-
     /// Create from a `ScannedModule` by parsing the target field.
     ///
     /// Target format: `exec://{binary_path} {command_parts...}`
@@ -488,8 +468,23 @@ impl Module for CliModule {
         Some(preview)
     }
 
+    /// Stdin inheritance is a property of the calling surface, not of the
+    /// module.
+    ///
+    /// `Passthrough { Inherit }` is only ever constructed by a local shell
+    /// surface — a PATH shim or `apexe exec` with native argv — where the
+    /// caller already owns the descriptor and a pipe is the intended input.
+    /// Captured execution (`apexe serve`, MCP, A2A) builds every module with
+    /// [`super::StdinMode::Null`], so no remote caller can inherit a local
+    /// descriptor.
+    ///
+    /// The removed guard required an `x-apexe-streaming-stdin-safe` overlay
+    /// assertion for inheritance and could therefore only ever fire on the
+    /// local surface, where it was wrong: it made every scanned route answer
+    /// as if its input were empty (`printf 'a\nb\n' | wc -l` printed `0`).
+    /// The schema key is still written by the converter so an overlay can
+    /// state the intent, but execution no longer refuses on it.
     async fn execute(&self, inputs: Value, ctx: &Context<Value>) -> Result<Value, ModuleError> {
-        self.validate_stdin()?;
         if !inputs.is_object() {
             return Err(ModuleError::new(
                 ErrorCode::GeneralInvalidInput,
@@ -764,6 +759,28 @@ mod tests {
         let annotations = module.annotations();
         assert!(!annotations.destructive);
         assert!(!annotations.requires_approval);
+    }
+
+    /// Stdin inheritance is a property of the calling surface, not of the
+    /// module: a local shim must read the caller's pipe without an overlay
+    /// assertion.
+    ///
+    /// This used to fail here with `Inherited stdin requires an explicit
+    /// streaming_stdin_safe overlay assertion`, which is why scanned routes
+    /// answered as if their input were empty.
+    #[tokio::test]
+    async fn test_execute_inherits_stdin_without_a_streaming_assertion() {
+        let module = make_echo_module(vec![], None).with_execution_io(
+            crate::module::ExecutionIo::Passthrough {
+                stdin: crate::module::StdinMode::Inherit,
+            },
+        );
+
+        let result = module.execute(json!({}), &Context::anonymous()).await;
+        assert!(
+            result.is_ok(),
+            "passthrough execution must not require an overlay assertion: {result:?}"
+        );
     }
 
     #[tokio::test]

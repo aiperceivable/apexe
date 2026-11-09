@@ -5,7 +5,7 @@ use apcore_toolkit::{deduplicate_ids, DisplayResolver, ScannedModule};
 use serde_json::json;
 use tracing::warn;
 
-use crate::models::{HelpFormat, ScannedCLITool, ScannedCommand};
+use crate::models::{GrammarTier, HelpFormat, ScannedCLITool, ScannedCommand};
 
 use super::{annotations, schema};
 
@@ -372,8 +372,19 @@ impl CliToolConverter {
         // names off it, and those must be the names the module ships with.
         let mut input_schema = schema::build_input_schema(command, &tool.global_flags, position);
         if let Some(contract) = &tool.shim_contract {
-            if let Some(bundling) = contract.short_flag_bundling {
-                input_schema["x-apexe-short-flag-bundling"] = json!(bundling);
+            match contract.short_flag_bundling {
+                Some(bundling) => input_schema["x-apexe-short-flag-bundling"] = json!(bundling),
+                // A scanned-tier route validates the caller's argv and then
+                // forwards it unchanged, so a bundle is checked flag by flag
+                // and never rebuilt. Refusing it rejects spellings the tool
+                // itself accepts — `grep -rn`, `du -sh`, `head -60` — which is
+                // how most real invocations are written. Only a reviewed route
+                // rebuilds the command line, so only it keeps an undeclared
+                // answer as "not assumed".
+                None if Self::grammar_tier(tool, command_opt) == GrammarTier::Scanned => {
+                    input_schema["x-apexe-short-flag-bundling"] = json!(true);
+                }
+                None => {}
             }
             input_schema["x-apexe-streaming-stdin-safe"] = json!(contract.streaming_stdin_safe);
             if let Some(ordering) = contract.cross_flag_ordering {
@@ -752,6 +763,62 @@ mod tests {
             flags,
             ..make_command(name, name)
         }
+    }
+
+    /// A scanned-tier route forwards the caller's argv, so a bundle is
+    /// validated flag by flag instead of being refused: `grep -rn`, `du -sh`
+    /// and `head -60` are the spellings the tools themselves accept.
+    #[test]
+    fn test_scanned_route_enables_short_flag_bundling_by_default() {
+        use crate::models::{FlagSource, ShimContract, ToolVariant};
+
+        let contract = |authoritative: bool| ShimContract {
+            authoritative,
+            variant: ToolVariant::Unknown,
+            short_flag_bundling: None,
+            streaming_stdin_safe: false,
+            cross_flag_ordering: Some(false),
+        };
+        let mut tool = make_tool("grep", vec![command_accepting("grep", &["--ignore-case"])]);
+
+        // A heuristic route: the shim forwards argv, so bundling is validated
+        // rather than refused. This is the `grep -rn` case.
+        tool.subcommands[0].flags[0].sources = vec![FlagSource::ManPage];
+        tool.shim_contract = Some(contract(false));
+        let scanned = CliToolConverter::new().convert(&tool);
+        assert_eq!(
+            scanned[0].metadata[crate::models::GRAMMAR_KEY],
+            json!("scanned")
+        );
+        assert_eq!(
+            scanned[0].input_schema["x-apexe-short-flag-bundling"],
+            json!(true)
+        );
+
+        // A reviewed route can rebuild the command line, so it keeps the
+        // overlay's silence as "not assumed".
+        tool.subcommands[0].flags[0].sources = vec![FlagSource::Overlay];
+        let reviewed = CliToolConverter::new().convert(&tool);
+        assert_eq!(
+            reviewed[0].metadata[crate::models::GRAMMAR_KEY],
+            json!("reviewed")
+        );
+        assert!(
+            reviewed[0].input_schema["x-apexe-short-flag-bundling"].is_null(),
+            "a reviewed route must not assume bundling"
+        );
+
+        // An explicit overlay answer always wins, scanned route or not.
+        tool.subcommands[0].flags[0].sources = vec![FlagSource::ManPage];
+        tool.shim_contract = Some(ShimContract {
+            short_flag_bundling: Some(false),
+            ..contract(false)
+        });
+        let explicit = CliToolConverter::new().convert(&tool);
+        assert_eq!(
+            explicit[0].input_schema["x-apexe-short-flag-bundling"],
+            json!(false)
+        );
     }
 
     /// Grammar trust is stamped per route, from that route's own flags.

@@ -609,8 +609,15 @@ fn test_exec_module_preserves_exact_failure_status() {
         .stdout(predicates::str::contains("\"exit_code\":7"));
 }
 
+/// Native argv inherits the caller's stdin.
+///
+/// A local shell surface owns the descriptor: `printf 'a\nb\n' | wc -l` must
+/// count two lines, and `apexe exec -- cat` must echo what the caller piped.
+/// The dry-run plan reports the mode it will use, so the plan cannot promise
+/// `null` while execution inherits. (`--unmanaged` is the exception: it keeps
+/// `null` because it runs a binary apexe has no contract for.)
 #[test]
-fn test_exec_native_simulation_is_asserted_and_stdin_requires_review() {
+fn test_exec_native_simulation_is_asserted_and_stdin_is_inherited() {
     let fixture = Fixture::new();
     fixture.module("cat", "/bin/cat", file_schema(), false);
     fixture.acl("rules:\n- callers: ['ci']\n  targets: ['cli.cat']\n  effect: allow\ndefault_effect: deny\n");
@@ -624,7 +631,7 @@ fn test_exec_native_simulation_is_asserted_and_stdin_requires_review() {
         .clone();
     let plan: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(plan["caller_asserted"], true);
-    assert_eq!(plan["stdin"], "null");
+    assert_eq!(plan["stdin"], "inherit");
     fixture
         .command()
         .args(["exec", "--", "cat"])
@@ -637,7 +644,7 @@ fn test_exec_native_simulation_is_asserted_and_stdin_requires_review() {
         .write_stdin("hidden\n")
         .assert()
         .success()
-        .stdout("");
+        .stdout("hidden\n");
 }
 
 #[test]

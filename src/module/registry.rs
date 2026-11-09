@@ -217,6 +217,19 @@ pub(crate) fn build_executor_for_scanned(
     let audit = opts
         .audit_path
         .map(|path| Arc::new(crate::governance::AuditManager::new(path)));
+    // This route validates the caller's argv and then forwards it unchanged; it
+    // never rebuilds the command line. So a short-flag bundle is checked flag
+    // by flag and is always safe to admit, and an overlay that is silent about
+    // bundling must not be read as "this tool cannot bundle": `grep -rn`,
+    // `du -sh`, `cut -d:` are the spellings the tools themselves accept, and
+    // refusing them made ordinary invocations fail closed. Verified native
+    // routes are built by `build_executor` and keep the overlay's answer,
+    // because only they re-emit the arguments.
+    let mut scanned = scanned.clone();
+    if scanned.input_schema["x-apexe-short-flag-bundling"].is_null() {
+        scanned.input_schema["x-apexe-short-flag-bundling"] = serde_json::json!(true);
+    }
+    let scanned = &scanned;
     let module = CliModule::from_scanned(scanned, opts.timeout_ms)?
         .with_fixed_argv(argv)?
         .with_execution_io(io)
@@ -475,12 +488,16 @@ fn install_approval_handler(
         return;
     }
     if local_io && opts.local_approval {
-        executor.set_approval_handler(Box::new(require_human_with_acl(
-            ApprovalGate::wrapping(
-                Box::new(crate::module::approval::LocalApprovalHandler::new()),
-                audit.clone(),
-            ),
-            opts,
+        // No `always_prompt` here. On this surface the operator *is* the human,
+        // so an installed ACL is the allow/deny boundary rather than a promise
+        // that every `requires_approval` module must ask. Requiring a prompt
+        // made a flag-derived module unusable from a non-interactive shell:
+        // `git log`, whose ACL rule says allow and which carries no escalating
+        // argument, was refused as APPROVAL_DENIED. `git push --force` still
+        // prompts, because the gate reads the arguments actually sent.
+        executor.set_approval_handler(Box::new(ApprovalGate::wrapping(
+            Box::new(crate::module::approval::LocalApprovalHandler::new()),
+            audit.clone(),
         )));
         tracing::info!(
             "Local approval handler enabled: a call to a module marked `requires_approval` \

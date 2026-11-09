@@ -260,7 +260,7 @@ impl ExecArgs {
                     options,
                     modules,
                     crate::module::ExecutionIo::Passthrough {
-                        stdin: super::shim::stdin_mode(&invocation.module),
+                        stdin: super::shim::passthrough_stdin_mode(),
                     },
                 )?,
                 ExecutionMode::Native,
@@ -339,7 +339,7 @@ impl ExecArgs {
             result["stdin"] = json!(crate::module::StdinMode::Null);
         } else {
             let io = if call.mode == ExecutionMode::Native {
-                let stdin = super::shim::stdin_mode(scanned);
+                let stdin = super::shim::passthrough_stdin_mode();
                 result["stdin"] = json!(stdin);
                 crate::module::ExecutionIo::Passthrough { stdin }
             } else {

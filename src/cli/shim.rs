@@ -283,13 +283,17 @@ pub(super) fn resolve_route<'a>(
         ))
     })?;
     let candidates = route_candidates(routes, manifest, modules);
-    let schemas: Vec<(&serde_json::Value, bool)> = candidates
+    let schemas: Vec<(std::borrow::Cow<'_, serde_json::Value>, bool)> = candidates
         .iter()
         .filter_map(|(module, route)| {
-            module.map(|module| (&module.input_schema, route.command_path.len() == 1))
+            module.map(|module| (route_schema(module, route), route.command_path.len() == 1))
         })
         .collect();
-    let matcher = crate::adapter::argv::CommandMatcher::new(&schemas)?;
+    let borrowed: Vec<(&serde_json::Value, bool)> = schemas
+        .iter()
+        .map(|(schema, root)| (schema.as_ref(), *root))
+        .collect();
+    let matcher = crate::adapter::argv::CommandMatcher::new(&borrowed)?;
     for (module, route) in candidates {
         if !matcher.matches(args, &route.command_path[1..])? {
             continue;
@@ -310,9 +314,10 @@ pub(super) fn resolve_route<'a>(
         })?;
         // Once a subcommand is selected, any input refusal is final. Falling
         // back to a broader root module could bypass the selected module's ACL.
+        let schema = route_schema(module, route);
         let input = crate::adapter::argv::resolve_command_argv(
             args,
-            &module.input_schema,
+            schema.as_ref(),
             &route.command_path[1..],
         )
         .map_err(|error| {
@@ -325,6 +330,29 @@ pub(super) fn resolve_route<'a>(
         return Ok((module, input, replay));
     }
     Err(coverage_refusal(unmatched_route_message(name, args, modules)).into())
+}
+
+/// The schema this route validates against.
+///
+/// A scanned route validates the caller's argv and then forwards it unchanged,
+/// so a short-flag bundle is checked flag by flag and is always safe to admit.
+/// An overlay that is silent about bundling must not be read as "this tool
+/// cannot bundle": `grep -rn`, `du -sh`, `cut -d:` are the spellings the tools
+/// themselves accept, and refusing them made ordinary invocations fail closed
+/// while a raw shell accepted them. Verified routes keep the overlay's answer,
+/// because a native route re-emits the arguments it parsed.
+fn route_schema<'a>(
+    module: &'a ScannedModule,
+    route: &Route,
+) -> std::borrow::Cow<'a, serde_json::Value> {
+    if route.tier == RouteTier::Scanned
+        && module.input_schema["x-apexe-short-flag-bundling"].is_null()
+    {
+        let mut schema = module.input_schema.clone();
+        schema["x-apexe-short-flag-bundling"] = serde_json::json!(true);
+        return std::borrow::Cow::Owned(schema);
+    }
+    std::borrow::Cow::Borrowed(&module.input_schema)
 }
 
 /// Explain a route miss with the remedy that applies to it.
@@ -473,7 +501,7 @@ fn execute(
         }
     };
     let module_id = selected.module_id.clone();
-    let stdin = stdin_mode(selected);
+    let stdin = passthrough_stdin_mode();
     let executor = match replay {
         Some(argv) => build_executor_for_scanned(manifest, config, selected, argv, stdin)?,
         None => build_executor(manifest, config, modules, stdin)?,
@@ -485,12 +513,21 @@ fn execute(
         .ok_or_else(|| anyhow::anyhow!("Passthrough returned no exit status"))
 }
 
-pub(super) fn stdin_mode(selected: &ScannedModule) -> StdinMode {
-    if selected.input_schema["x-apexe-streaming-stdin-safe"] == true {
-        StdinMode::Inherit
-    } else {
-        StdinMode::Null
-    }
+/// Stdin mode for a local passthrough call.
+///
+/// A shim stands in for the command the caller typed, so the caller's stdin is
+/// the command's stdin: `... | grep x` must read the pipe, exactly as the
+/// unwrapped `grep` would. Every passthrough call site is a local shell
+/// surface (shim or `apexe exec` native argv); captured execution — `apexe
+/// serve`, MCP, A2A — never reaches here and keeps [`StdinMode::Null`].
+///
+/// This used to be gated on the module's `x-apexe-streaming-stdin-safe`
+/// assertion and silently downgraded to [`StdinMode::Null`] otherwise, which
+/// closed stdin for every scanned route: `printf 'a\nb\n' | wc -l` answered
+/// `0` and `... | grep x` reported no match. The assertion cannot be the gate
+/// here, because the caller already owns the descriptor.
+pub(super) fn passthrough_stdin_mode() -> StdinMode {
+    StdinMode::Inherit
 }
 
 fn build_executor_for_scanned(

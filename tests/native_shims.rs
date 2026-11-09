@@ -11,6 +11,19 @@ struct Fixture {
     home: TempDir,
 }
 
+/// `PATH` with any apexe shim directory removed.
+///
+/// These tests install their own shims into a temporary HOME and activate them
+/// deliberately. An ambient `~/.apexe/bin` from the shell that started the run
+/// would shadow the fixture's tools and be refused for having no route.
+fn without_shim_dir() -> std::ffi::OsString {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let kept: Vec<std::path::PathBuf> = std::env::split_paths(&path)
+        .filter(|directory| !directory.to_string_lossy().contains("/.apexe/"))
+        .collect();
+    std::env::join_paths(kept).unwrap_or(path)
+}
+
 impl Fixture {
     fn new() -> Self {
         Self {
@@ -28,6 +41,7 @@ impl Fixture {
         command
             .env("APEXE_OFFLINE", "true")
             .env("HOME", self.home.path())
+            .env("PATH", without_shim_dir())
             .env("SHELL", "/bin/sh")
             .env_remove("APEXE_BINDINGS_DIR")
             .env_remove("APEXE_SHIM_DIR")
@@ -546,17 +560,23 @@ fn test_shim_streams_raw_stdin_without_json_or_buffering() {
     assert!(audit.contains("local"));
 }
 
+/// A shim stands in for the command the caller typed, so it reads the caller's
+/// stdin whether or not an overlay asserted `streaming_stdin_safe`.
+///
+/// This used to answer `null`, which made every scanned route behave as if its
+/// input were empty: `... | grep x` reported no match and `... | wc -l` printed
+/// `0`.
 #[test]
-fn test_shim_null_stdin_without_explicit_capability() {
+fn test_shim_inherits_stdin_without_explicit_capability() {
     let fixture = Fixture::new();
     fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), false);
     fixture.enable();
     fixture
         .shim("cat")
-        .write_stdin("must not arrive")
+        .write_stdin("must arrive")
         .assert()
         .success()
-        .stdout("");
+        .stdout("must arrive");
 }
 
 #[test]
@@ -1388,7 +1408,7 @@ async fn test_passthrough_result_has_no_captured_streams() {
 }
 
 #[tokio::test]
-async fn test_stdin_inheritance_requires_explicit_module_capability() {
+async fn test_stdin_inheritance_needs_no_module_capability() {
     use apcore::Module;
     use apexe::module::{CliModule, ExecutionIo, StdinMode};
     let scanned = ScannedModule::new(
@@ -1404,11 +1424,12 @@ async fn test_stdin_inheritance_requires_explicit_module_capability() {
         .with_execution_io(ExecutionIo::Passthrough {
             stdin: StdinMode::Inherit,
         });
-    let error = module
+    // The caller owns the descriptor on a local surface; the module's schema
+    // says nothing about who that caller is.
+    module
         .execute(json!({}), &apcore::Context::anonymous())
         .await
-        .unwrap_err();
-    assert!(error.message.contains("streaming_stdin_safe"));
+        .expect("passthrough must not require an overlay assertion");
 }
 
 #[test]
