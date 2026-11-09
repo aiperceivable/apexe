@@ -16,11 +16,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   because the activation script's `env --reload` runs in every new terminal and
   would otherwise drop the route again.
 - `x-apexe-opaque-after` lets an overlay declare where a tool stops interpreting
-  its own argv: everything from that operand onwards is forwarded verbatim. An
+  its own argv: everything from that token onwards is forwarded verbatim. An
   interpreter's grammar is `interpreter <script> <argv for the script>`, so
-  validating the tail against the interpreter refuses `node tsc.js --noEmit` and
-  `python -m pytest -q`. Valid only on the last, variadic operand; execution,
-  the path guard, the ACL and the audit are unchanged.
+  validating the tail against the interpreter refuses `node tsc.js --noEmit`.
+  It sits on the last, variadic operand for that form, and on a **flag** for the
+  ones whose tail starts at a flag's value: `python3 -m <module> <args>` and
+  `python3 -c <code> <argv>`, which the operand form cannot express. Execution,
+  the ACL and the audit are unchanged; the tail still lands in the declared
+  operand, so a path-typed operand puts those tokens to the path guard.
 - `x-apexe-digit-value` lets an overlay declare that a bare `-<digits>` token is
   one flag's value, so `head -20` and `tail -20` execute under a reviewed
   grammar instead of being refused as a `-2`/`-0` bundle (issue #46). At most

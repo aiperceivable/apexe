@@ -279,6 +279,15 @@ pub struct ScannedFlag {
     /// existed still load.
     #[serde(default)]
     pub digit_value: bool,
+    /// Whether this flag's value starts an opaque tail, as in
+    /// `python3 -m <module> <args for the module>`.
+    ///
+    /// The flag counterpart of [`ScannedArg::opaque_after`]: an interpreter can
+    /// stop parsing at an option rather than at an operand. Defaulted on
+    /// deserialize so caches and bindings written before the field existed still
+    /// load.
+    #[serde(default)]
+    pub opaque_after: bool,
     /// What sending this flag does beyond passing its value.
     ///
     /// Defaulted on deserialize so caches and bindings written before the field

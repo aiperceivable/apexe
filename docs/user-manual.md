@@ -1459,6 +1459,30 @@ restrict `json_output` to an object need a rescan, or `init --refresh` for
 unchanged init-owned bindings, before returning other JSON roots. Custom binding
 schemas remain authoritative and must describe the command's actual output.
 
+### Where a decision belongs
+
+Most policy belongs in a **data file**, because that is the only layer an
+operator can change without a release. Reach for code last.
+
+| Decision | Data file | What it cannot do |
+|---|---|---|
+| Allow or deny a module | `acl.yaml` rules — first match wins, so rule *order* is the policy | — |
+| Require approval for a module | `approval: required` on an `acl.yaml` rule | It can only **add** approval. An approval demanded by the module's annotation cannot be cancelled here; `apcore` unions the two sources |
+| Let a command write into a system directory | `config.yaml` → `allowed_paths`, with `additional_denied_paths` to re-deny a subtree inside it | The compiled-in baseline cannot be removed, only carved into. A reader is not held to the system list at all |
+| Grammar: flags, operands, where validation stops | A local overlay in `~/.apexe/overlays/` | It must match at least as strongly as the corpus file it amends, and it replaces that file wholesale |
+| Classification: `destructive`, `open_world`, `requires_approval`, `risk` | The same overlay's `annotations` | Same two limits |
+| What a *fresh* `apexe init` writes for everyone | `EXEC_WRAPPER_TOOLS` and the other lists in `src/adapter/annotations.rs` | This is the last resort: it changes a default, and every machine that has written its own data already outranks it |
+
+Two consequences worth knowing before choosing:
+
+- **Comments do not survive.** `apexe scan` re-serializes `acl.yaml` when the
+  policy changes, so a decision recorded only in a comment is lost. Record it as
+  a rule with a `description` instead: the description is what the audit trail
+  reports as `matched_rule`, so the *reason* is visible in every record.
+- **The local surface has one caller id: `local`.** Rules cannot distinguish the
+  operator's own shell from an agent running in it. That needs a caller
+  identity, not a rule condition.
+
 ### 7.1 Contract Keywords
 
 A generated schema is valid JSON Schema, plus a set of `x-` extension keywords
@@ -1479,7 +1503,7 @@ Read this table if you are writing an MCP client against apexe, consuming
 | `x-apexe-operand-position` | property | `"before-flags"` | This operand precedes every flag. Set for `find`'s paths, whose grammar is `find path … [expression]` — both variants reject the other order outright |
 | `x-apexe-path` | property | `true` | The value is a filesystem path, so the path guard (§9.7) resolves and checks it. Emitted for `ValueType::Path`; a value the scan did not type as a path is not checked |
 | `x-apexe-value-optional` | property | `true` | The flag's value is optional (`--color[=WHEN]`), so the executor must render `--flag=value` rather than two argv entries. Paired with a union type so both spellings are expressible |
-| `x-apexe-opaque-after` | property | `true` | This operand and every token after it are forwarded verbatim, because the tool stops interpreting at that point. Declared on the last, variadic operand — `node <script> <argv for the script>`, `python -m <module> <args>` — so the parser does not validate a script's own flags against the interpreter's grammar. Execution still forwards the caller's original argv, and the path guard, ACL and audit are unchanged |
+| `x-apexe-opaque-after` | property | `true` | This token and every one after it are forwarded verbatim, because the tool stops interpreting there. On the **last, variadic operand** it covers `node <script> <argv for the script>`; on a **flag** it covers `python3 -m <module> <args for the module>` and `python3 -c <code> <argv for the code>`, where the tail starts at the flag's value rather than at a positional. Either way the parser stops validating, so a script's own flags are not measured against the interpreter's grammar. Execution still forwards the caller's original argv. The tail still lands in the declared operand, so a path-typed operand puts those tokens to the path guard like any other value |
 | `x-apexe-digit-value` | property | `true` | A bare `-<digits>` token is this flag's value, as in `head -20` / `tail -20`. At most one property per command may carry it. Declared only by an overlay that probed the binary: neither man page documents the spelling, and `-N` is not one rule (`git log -5` counts commits, `ls -5` is invalid) |
 | `x-apexe-conflicts-with` | property | array of property names | Flags that must not be sent together — whether the binary diagnoses the pair or silently resolves it last-one-wins. A JSON object has no key order, so for a last-wins pair *which* flag wins would otherwise be unpredictable |
 | `x-apexe-long-running` | property | `true` | This flag may not terminate on its own (`tail -f`). Bound the timeout or refuse; it is not a reason to reject the input |

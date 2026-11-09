@@ -98,6 +98,9 @@ pub(crate) struct CommandMatcher {
     /// (`head -20`). `None` means no schema here declares it, so a digit token
     /// stays a bundle.
     digit_value: Option<FlagArity>,
+    /// Flag spellings that start an opaque tail (`python3 -m <module>`). Any
+    /// token after one belongs to whatever the flag named.
+    opaque_flags: std::collections::BTreeSet<String>,
 }
 
 impl CommandMatcher {
@@ -107,6 +110,7 @@ impl CommandMatcher {
             flags: BTreeMap::new(),
             short_flag_bundling: false,
             digit_value: None,
+            opaque_flags: std::collections::BTreeSet::new(),
         };
         for (schema, root) in schemas {
             matcher.short_flag_bundling |= schema["x-apexe-short-flag-bundling"] == true;
@@ -129,6 +133,7 @@ impl CommandMatcher {
                 if value["x-apexe-digit-value"] == true {
                     matcher.digit_value = Some(arity);
                 }
+                let opaque = value["x-apexe-opaque-after"] == true;
                 for literal in declared_flags(Property {
                     name,
                     schema: value,
@@ -141,6 +146,9 @@ impl CommandMatcher {
                         return Err(invalid(format!(
                             "Ambiguous global flag arity for '{literal}'"
                         )));
+                    }
+                    if opaque {
+                        matcher.opaque_flags.insert(literal.clone());
                     }
                 }
             }
@@ -162,7 +170,11 @@ impl CommandMatcher {
                     "End-of-options before a declared subcommand is ambiguous",
                 ));
             } else if token.starts_with('-') && token != "-" {
-                self.skip_flag(token, argv, &mut cursor)?;
+                if self.skip_flag(token, argv, &mut cursor)? {
+                    // Everything from here belongs to whatever the flag named,
+                    // so the declared subcommand cannot appear after it.
+                    return Ok(false);
+                }
             } else if token == &command[matched] {
                 matched += 1;
             } else {
@@ -173,12 +185,13 @@ impl CommandMatcher {
     }
 
     #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    /// Skip one flag token. Returns whether it starts an opaque tail.
     fn skip_flag(
         &self,
         token: &str,
         argv: &[String],
         cursor: &mut usize,
-    ) -> Result<(), ModuleError> {
+    ) -> Result<bool, ModuleError> {
         let (literal, attached) = if token.starts_with("--") {
             token
                 .split_once('=')
@@ -187,10 +200,12 @@ impl CommandMatcher {
             (token, false)
         };
         if let Some(arity) = self.flags.get(literal) {
-            return skip_value(*arity, attached, argv, cursor);
+            skip_value(*arity, attached, argv, cursor)?;
+            return Ok(self.opaque_flags.contains(literal));
         }
         if let Some(arity) = self.digit_value.filter(|_| is_digit_run(token)) {
-            return skip_value(arity, true, argv, cursor);
+            skip_value(arity, true, argv, cursor)?;
+            return Ok(false);
         }
         if token.starts_with("--") || !self.short_flag_bundling {
             return Err(invalid(format!(
@@ -205,10 +220,11 @@ impl CommandMatcher {
                 .ok_or_else(|| invalid(format!("Undeclared flag '{literal}' in '{token}'")))?;
             let attached = 1 + offset + character.len_utf8() < token.len();
             if *arity != FlagArity::Boolean {
-                return skip_value(*arity, attached, argv, cursor);
+                skip_value(*arity, attached, argv, cursor)?;
+                return Ok(false);
             }
         }
-        Ok(())
+        Ok(false)
     }
 }
 
@@ -351,7 +367,7 @@ impl<'a> Parser<'a> {
                 }
                 ended = true;
             } else if !opaque && !ended && token.starts_with('-') && token != "-" {
-                self.parse_flag(
+                opaque |= self.parse_flag(
                     token,
                     argv,
                     &mut cursor,
@@ -386,6 +402,7 @@ impl<'a> Parser<'a> {
     }
 
     #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    /// Consume one flag token. Returns whether it starts an opaque tail.
     fn parse_flag(
         &self,
         token: &str,
@@ -393,7 +410,7 @@ impl<'a> Parser<'a> {
         cursor: &mut usize,
         input: &mut Map<String, Value>,
         position: FlagPosition,
-    ) -> Result<(), ModuleError> {
+    ) -> Result<bool, ModuleError> {
         let (literal, attached) = if token.starts_with("--") {
             token
                 .split_once('=')
@@ -402,7 +419,12 @@ impl<'a> Parser<'a> {
             (token, None)
         };
         if let Some(property) = self.lookup(literal, position) {
-            return self.consume(property, attached, argv, cursor, input, position);
+            // `python3 -m json.tool --compact`: the module name is this flag's
+            // value and everything after it belongs to the module, so the tail
+            // is forwarded rather than validated against python3's grammar.
+            let opaque = property.schema["x-apexe-opaque-after"] == true;
+            self.consume(property, attached, argv, cursor, input, position)?;
+            return Ok(opaque);
         }
         // `head -20`: the digit run is the value of the flag the overlay marked,
         // not a bundle of `-2` and `-0`. Only a declared flag is resolved this
@@ -410,7 +432,8 @@ impl<'a> Parser<'a> {
         // bundle path and is refused, which is what `ls -5` must do.
         if let Some(property) = self.digit_value.filter(|_| is_digit_run(token)) {
             let digits = token.trim_start_matches('-');
-            return self.consume(property, Some(digits), argv, cursor, input, position);
+            self.consume(property, Some(digits), argv, cursor, input, position)?;
+            return Ok(false);
         }
         if token.starts_with("--") || self.schema["x-apexe-short-flag-bundling"] != true {
             return Err(invalid(format!(
@@ -430,7 +453,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     /// Resolve one flag spelling for the phase the call is in.
@@ -633,6 +656,48 @@ mod tests {
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).into()).collect()
     }
+    /// `python3 -m json.tool --compact`: the tail starts at a *flag's* value, not
+    /// at a positional, so the operand marker cannot express it.
+    #[test]
+    fn test_opaque_flag_forwards_every_later_token() {
+        let schema = json!({
+            "type": "object",
+            "x-apexe-end-of-options": true,
+            "properties": {
+                "module": {"type": "string", "x-apexe-flag": "-m",
+                           "x-apexe-opaque-after": true},
+                "file": {"type": "array", "items": {"type": "string"},
+                         "x-apexe-positional": 0}
+            }
+        });
+        let parsed = resolve_argv(
+            &args(&["-m", "json.tool", "--compact", "/dev/null"]),
+            &schema,
+        )
+        .unwrap();
+        assert_eq!(parsed["module"], json!("json.tool"));
+        assert_eq!(parsed["file"], json!(["--compact", "/dev/null"]));
+    }
+
+    #[test]
+    fn test_without_the_opaque_flag_declaration_the_tail_is_refused() {
+        let schema = json!({
+            "type": "object",
+            "x-apexe-end-of-options": true,
+            "properties": {
+                "module": {"type": "string", "x-apexe-flag": "-m"},
+                "file": {"type": "array", "items": {"type": "string"},
+                         "x-apexe-positional": 0}
+            }
+        });
+        let error = resolve_argv(&args(&["-m", "json.tool", "--compact"]), &schema).unwrap_err();
+        assert!(
+            error.message.contains("Undeclared flag"),
+            "{}",
+            error.message
+        );
+    }
+
     /// An interpreter stops parsing at its script: `node tsc.js --noEmit` must
     /// not have `--noEmit` validated against `node`'s own flags.
     #[test]

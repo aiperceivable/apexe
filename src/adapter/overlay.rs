@@ -236,6 +236,14 @@ pub struct OverlayFlag {
     /// a global rule.
     #[serde(default)]
     pub digit_value: bool,
+    /// This flag's value and every token after it are forwarded verbatim.
+    ///
+    /// The flag form of [`ScannedArg::opaque_after`]: `python3 -m <module>
+    /// <args for the module>` and `python3 -c <code> <argv for the code>`. The
+    /// operand form cannot express these, because the tail starts at a flag's
+    /// value rather than at a positional.
+    #[serde(default)]
+    pub opaque_after: bool,
     /// Render this flag before the command's operands rather than after.
     ///
     /// The companion to [`OverlayArg::before_flags`]; see
@@ -908,6 +916,7 @@ impl OverlayFlag {
             value_name: self.value_name.clone(),
             value_optional: self.value_optional,
             digit_value: self.digit_value,
+            opaque_after: self.opaque_after,
             before_operands: self.before_operands,
             long_running: self.long_running,
             conflicts_with: self.conflicts_with.clone(),
@@ -1748,7 +1757,41 @@ mod tests {
         assert_eq!(tool.description, "Scanned description");
     }
 
-    /// An interpreter's trailing tokens belong to its script, not to the
+    /// The flag form of the opaque marker: `python3 -m <module> <args>`.
+    #[test]
+    fn test_overlay_flag_opaque_after_reaches_the_schema_marker() {
+        let mut overlay = overlay(OverlayMode::Authoritative);
+        overlay.command = "python3".to_string();
+        overlay.commands[0].positional_args = Vec::new();
+        overlay.commands[0].flags = vec![OverlayFlag {
+            short: Some("-m".to_string()),
+            value_type: ValueType::String,
+            description: "Run a library module as a script.".to_string(),
+            opaque_after: true,
+            ..Default::default()
+        }];
+        let mut tool = ScannedCLITool {
+            name: "python3".into(),
+            variant: ToolVariant::Unknown,
+            ..Default::default()
+        };
+        apply_overlay(&mut tool, &overlay);
+        let module = crate::adapter::CliToolConverter::new()
+            .convert(&tool)
+            .remove(0);
+        let properties = module.input_schema["properties"].as_object().unwrap();
+        let (_, property) = properties
+            .iter()
+            .find(|(_, property)| property["x-apexe-flag"] == serde_json::json!("-m"))
+            .expect("the -m property must be declared");
+        assert_eq!(
+            property["x-apexe-opaque-after"],
+            serde_json::json!(true),
+            "the -m flag must carry the opaque marker"
+        );
+    }
+
+    /// An interpreter's trailing tokens belong to its script, not to its
     /// interpreter, and only an overlay can say where that boundary is.
     #[test]
     fn test_overlay_opaque_operand_reaches_the_schema_marker() {
