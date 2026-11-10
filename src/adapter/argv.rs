@@ -9,6 +9,12 @@ struct Property<'a> {
     schema: &'a Value,
 }
 
+impl Property<'_> {
+    fn is_path(&self) -> bool {
+        self.schema["x-apexe-path"] == true || self.schema["items"]["x-apexe-path"] == true
+    }
+}
+
 #[derive(Clone, Copy)]
 enum FlagPosition {
     Root,
@@ -70,7 +76,34 @@ fn invalid(message: impl Into<String>) -> ModuleError {
 
 #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
 pub fn resolve_argv(argv: &[String], schema: &Value) -> Result<Value, ModuleError> {
-    resolve_command_argv(argv, schema, &[])
+    resolve_command_argv(argv, schema, &[]).map(|resolved| resolved.input)
+}
+
+#[derive(Debug)]
+pub(crate) struct ResolvedArgv {
+    pub(crate) input: Value,
+    pub(crate) opaque_tail: Option<OpaqueTail>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct OpaqueTail {
+    pub(crate) prefix: Map<String, Value>,
+    pub(crate) argv: Vec<String>,
+    pub(crate) separator: bool,
+    pub(crate) trigger_value: Option<(String, bool)>,
+    pub(crate) converted_paths: Value,
+}
+
+struct OpaqueBoundary<'a, 'b> {
+    start: usize,
+    preceding_operands: usize,
+    separator: bool,
+    flags: Vec<ParsedFlag<'a, 'b>>,
+}
+
+struct ParsedFlag<'a, 'b> {
+    property: Property<'a>,
+    raw_value: Option<&'b str>,
 }
 
 #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
@@ -78,7 +111,7 @@ pub(crate) fn resolve_command_argv(
     argv: &[String],
     schema: &Value,
     command: &[String],
-) -> Result<Value, ModuleError> {
+) -> Result<ResolvedArgv, ModuleError> {
     Parser::new(schema)?.parse(argv, command)
 }
 
@@ -98,6 +131,7 @@ pub(crate) struct CommandMatcher {
     /// (`head -20`). `None` means no schema here declares it, so a digit token
     /// stays a bundle.
     digit_value: Option<FlagArity>,
+    opaque_digit_value: bool,
     /// Flag spellings that start an opaque tail (`python3 -m <module>`). Any
     /// token after one belongs to whatever the flag named.
     opaque_flags: std::collections::BTreeSet<String>,
@@ -110,6 +144,7 @@ impl CommandMatcher {
             flags: BTreeMap::new(),
             short_flag_bundling: false,
             digit_value: None,
+            opaque_digit_value: false,
             opaque_flags: std::collections::BTreeSet::new(),
         };
         for (schema, root) in schemas {
@@ -132,6 +167,7 @@ impl CommandMatcher {
                 };
                 if value["x-apexe-digit-value"] == true {
                     matcher.digit_value = Some(arity);
+                    matcher.opaque_digit_value |= value["x-apexe-opaque-after"] == true;
                 }
                 let opaque = value["x-apexe-opaque-after"] == true;
                 for literal in declared_flags(Property {
@@ -205,13 +241,14 @@ impl CommandMatcher {
         }
         if let Some(arity) = self.digit_value.filter(|_| is_digit_run(token)) {
             skip_value(arity, true, argv, cursor)?;
-            return Ok(false);
+            return Ok(self.opaque_digit_value);
         }
         if token.starts_with("--") || !self.short_flag_bundling {
             return Err(invalid(format!(
                 "Undeclared flag '{token}' or undeclared short-flag bundling"
             )));
         }
+        let mut opaque = false;
         for (offset, character) in token[1..].char_indices() {
             let literal = format!("-{character}");
             let arity = self
@@ -219,12 +256,13 @@ impl CommandMatcher {
                 .get(&literal)
                 .ok_or_else(|| invalid(format!("Undeclared flag '{literal}' in '{token}'")))?;
             let attached = 1 + offset + character.len_utf8() < token.len();
+            opaque |= self.opaque_flags.contains(&literal);
             if *arity != FlagArity::Boolean {
                 skip_value(*arity, attached, argv, cursor)?;
-                return Ok(false);
+                break;
             }
         }
-        Ok(false)
+        Ok(opaque)
     }
 }
 
@@ -348,26 +386,25 @@ impl<'a> Parser<'a> {
     }
 
     #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
-    fn parse(&self, argv: &[String], command: &[String]) -> Result<Value, ModuleError> {
+    fn parse(&self, argv: &[String], command: &[String]) -> Result<ResolvedArgv, ModuleError> {
         let mut input = Map::new();
         let mut operands = Vec::new();
         let mut cursor = 0;
         let mut command_cursor = 0;
         let mut ended = false;
-        // Set once the opaque operand has been consumed: from there the tokens
-        // belong to whatever that operand names, so they are collected rather
-        // than parsed as this tool's flags.
-        let mut opaque = false;
-        while cursor < argv.len() {
-            let token = &argv[cursor];
+        let boundary = loop {
+            let Some(token) = argv.get(cursor) else {
+                break None;
+            };
+            let start = cursor;
             cursor += 1;
             if !ended && token == "--" {
                 if self.schema["x-apexe-end-of-options"] != true || command_cursor < command.len() {
                     return Err(invalid("This command does not declare -- at this position"));
                 }
                 ended = true;
-            } else if !opaque && !ended && token.starts_with('-') && token != "-" {
-                opaque |= self.parse_flag(
+            } else if !ended && token.starts_with('-') && token != "-" {
+                if let Some(flags) = self.parse_flag(
                     token,
                     argv,
                     &mut cursor,
@@ -379,7 +416,17 @@ impl<'a> Parser<'a> {
                     } else {
                         FlagPosition::AfterCommand
                     },
-                )?;
+                )? {
+                    if command_cursor < command.len() {
+                        return Err(invalid("Opaque arguments cannot start before a subcommand"));
+                    }
+                    break Some(OpaqueBoundary {
+                        start,
+                        preceding_operands: operands.len(),
+                        separator: false,
+                        flags,
+                    });
+                }
             } else if command_cursor < command.len() {
                 if token != &command[command_cursor] {
                     return Err(invalid(
@@ -387,30 +434,129 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 command_cursor += 1;
+            } else if self.opaque_operand == Some(operands.len()) {
+                cursor = start;
+                break Some(OpaqueBoundary {
+                    start,
+                    preceding_operands: operands.len(),
+                    separator: ended,
+                    flags: Vec::new(),
+                });
             } else {
-                if self.opaque_operand == Some(operands.len()) {
-                    opaque = true;
-                }
                 operands.push(token.as_str());
             }
-        }
+        };
         if command_cursor != command.len() {
             return Err(invalid("Missing declared subcommand"));
         }
+        operands.extend(argv[cursor..].iter().map(String::as_str));
         self.assign_operands(&operands, &mut input)?;
-        Ok(Value::Object(input))
+        let opaque_tail =
+            boundary.map(|boundary| self.opaque_tail(argv, &operands, &input, boundary));
+        Ok(ResolvedArgv {
+            input: Value::Object(input),
+            opaque_tail,
+        })
+    }
+
+    /// Keep the normal typed prefix and preserve the original tokens from the
+    /// trigger onward. The full input still supplies the schema and path checks.
+    fn opaque_tail(
+        &self,
+        argv: &[String],
+        operands: &[&str],
+        input: &Map<String, Value>,
+        boundary: OpaqueBoundary<'_, '_>,
+    ) -> OpaqueTail {
+        let mut prefix = input.clone();
+        let mut converted_paths = Map::new();
+        let trigger_value = boundary.flags.last().and_then(|flag| {
+            let raw = flag.raw_value?;
+            let value = &input[flag.property.name];
+            let scalar = value
+                .as_array()
+                .and_then(|items| items.last())
+                .unwrap_or(value);
+            Some((raw.into(), scalar.is_number()))
+        });
+        self.remove_tail_operands(
+            &mut prefix,
+            &mut converted_paths,
+            &operands[boundary.preceding_operands..],
+        );
+        for flag in boundary.flags {
+            let name = flag.property.name;
+            if let Some(items) = prefix.get_mut(name).and_then(Value::as_array_mut) {
+                if let (Some(value), Some(raw)) = (items.pop(), flag.raw_value) {
+                    if !value.is_string() && flag.property.is_path() {
+                        converted_paths.insert(name.into(), Value::Array(vec![raw.into()]));
+                    }
+                }
+                if !items.is_empty() {
+                    continue;
+                }
+            } else if let Some(raw) = flag.raw_value {
+                if !input[name].is_string() && flag.property.is_path() {
+                    converted_paths.insert(name.into(), raw.into());
+                }
+            }
+            prefix.remove(name);
+        }
+        OpaqueTail {
+            prefix,
+            argv: argv[boundary.start..].to_vec(),
+            separator: boundary.separator,
+            trigger_value,
+            converted_paths: Value::Object(converted_paths),
+        }
+    }
+
+    fn remove_tail_operands(
+        &self,
+        prefix: &mut Map<String, Value>,
+        converted_paths: &mut Map<String, Value>,
+        operands: &[&str],
+    ) {
+        let mut remaining = operands.len();
+        for property in self.operands.iter().rev() {
+            if remaining == 0 {
+                break;
+            }
+            let Some(value) = prefix.get_mut(property.name) else {
+                continue;
+            };
+            if let Some(items) = value.as_array_mut() {
+                let count = items.len().min(remaining);
+                let keep = items.len() - count;
+                if property.is_path() && items[keep..].iter().any(|item| !item.is_string()) {
+                    let paths = &operands[remaining - count..remaining];
+                    converted_paths.insert(property.name.into(), serde_json::json!(paths));
+                }
+                remaining -= count;
+                if keep > 0 {
+                    items.truncate(keep);
+                    break;
+                }
+            } else {
+                remaining -= 1;
+                if property.is_path() && !value.is_string() {
+                    converted_paths.insert(property.name.into(), operands[remaining].into());
+                }
+            }
+            prefix.remove(property.name);
+        }
     }
 
     #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
     /// Consume one flag token. Returns whether it starts an opaque tail.
-    fn parse_flag(
+    fn parse_flag<'b>(
         &self,
-        token: &str,
-        argv: &[String],
+        token: &'b str,
+        argv: &'b [String],
         cursor: &mut usize,
         input: &mut Map<String, Value>,
         position: FlagPosition,
-    ) -> Result<bool, ModuleError> {
+    ) -> Result<Option<Vec<ParsedFlag<'a, 'b>>>, ModuleError> {
         let (literal, attached) = if token.starts_with("--") {
             token
                 .split_once('=')
@@ -423,8 +569,13 @@ impl<'a> Parser<'a> {
             // value and everything after it belongs to the module, so the tail
             // is forwarded rather than validated against python3's grammar.
             let opaque = property.schema["x-apexe-opaque-after"] == true;
-            self.consume(property, attached, argv, cursor, input, position)?;
-            return Ok(opaque);
+            let raw_value = self.consume(property, attached, argv, cursor, input, position)?;
+            return Ok(opaque.then(|| {
+                vec![ParsedFlag {
+                    property,
+                    raw_value,
+                }]
+            }));
         }
         // `head -20`: the digit run is the value of the flag the overlay marked,
         // not a bundle of `-2` and `-0`. Only a declared flag is resolved this
@@ -432,8 +583,13 @@ impl<'a> Parser<'a> {
         // bundle path and is refused, which is what `ls -5` must do.
         if let Some(property) = self.digit_value.filter(|_| is_digit_run(token)) {
             let digits = token.trim_start_matches('-');
-            self.consume(property, Some(digits), argv, cursor, input, position)?;
-            return Ok(false);
+            let raw_value = self.consume(property, Some(digits), argv, cursor, input, position)?;
+            return Ok((property.schema["x-apexe-opaque-after"] == true).then(|| {
+                vec![ParsedFlag {
+                    property,
+                    raw_value,
+                }]
+            }));
         }
         if token.starts_with("--") || self.schema["x-apexe-short-flag-bundling"] != true {
             return Err(invalid(format!(
@@ -443,6 +599,7 @@ impl<'a> Parser<'a> {
         // A bundle can carry the marker too: `-qx` with `-x` opaque starts the
         // tail at the same place `-x` alone would.
         let mut opaque = false;
+        let mut bundle = Vec::new();
         for (offset, character) in token[1..].char_indices() {
             let literal = format!("-{character}");
             let property = self
@@ -451,13 +608,17 @@ impl<'a> Parser<'a> {
             let tail = &token[1 + offset + character.len_utf8()..];
             let value_option = !boolean_only(property.schema);
             let attached = (value_option && !tail.is_empty()).then_some(tail);
-            self.consume(property, attached, argv, cursor, input, position)?;
+            let raw_value = self.consume(property, attached, argv, cursor, input, position)?;
             opaque |= property.schema["x-apexe-opaque-after"] == true;
+            bundle.push(ParsedFlag {
+                property,
+                raw_value,
+            });
             if value_option {
                 break;
             }
         }
-        Ok(opaque)
+        Ok(opaque.then_some(bundle))
     }
 
     /// Resolve one flag spelling for the phase the call is in.
@@ -486,15 +647,15 @@ impl<'a> Parser<'a> {
     }
 
     #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
-    fn consume(
+    fn consume<'b>(
         &self,
         property: Property<'_>,
-        attached: Option<&str>,
-        argv: &[String],
+        attached: Option<&'b str>,
+        argv: &'b [String],
         cursor: &mut usize,
         input: &mut Map<String, Value>,
         position: FlagPosition,
-    ) -> Result<(), ModuleError> {
+    ) -> Result<Option<&'b str>, ModuleError> {
         let global = is_global_property(property.schema);
         if matches!(position, FlagPosition::BeforeCommand) && !global
             || matches!(position, FlagPosition::AfterCommand) && global
@@ -504,23 +665,23 @@ impl<'a> Parser<'a> {
                 property.name
             )));
         }
-        let value = if let Some(text) = attached {
+        let (value, raw_value) = if let Some(text) = attached {
             if boolean_only(property.schema) {
                 return Err(invalid(format!(
                     "Boolean flag '{}' takes no value",
                     property.name
                 )));
             }
-            parse_value(text, property)?
+            (parse_value(text, property)?, Some(text))
         } else if boolean_only(property.schema) || property.schema["x-apexe-value-optional"] == true
         {
-            Value::Bool(true)
+            (Value::Bool(true), None)
         } else {
             let text = argv
                 .get(*cursor)
                 .ok_or_else(|| invalid(format!("Flag '{}' requires a value", property.name)))?;
             *cursor += 1;
-            parse_value(text, property)?
+            (parse_value(text, property)?, Some(text.as_str()))
         };
         if property.schema["type"] == "array" {
             let values = input
@@ -533,7 +694,7 @@ impl<'a> Parser<'a> {
         } else {
             input.insert(property.name.into(), value);
         }
-        Ok(())
+        Ok(raw_value)
     }
 
     #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
@@ -873,6 +1034,13 @@ mod tests {
         );
     }
     #[test]
+    fn test_resolve_argv_refuses_undeclared_end_of_options() {
+        let mut schema = schema();
+        schema["x-apexe-end-of-options"] = json!(false);
+        let error = resolve_argv(&args(&["--", "file"]), &schema).unwrap_err();
+        assert!(error.message.contains("does not declare --"));
+    }
+    #[test]
     fn test_resolve_argv_refuses_unknown_and_undeclared_bundling() {
         assert!(resolve_argv(&args(&["--unknown"]), &schema()).is_err());
         let mut schema = schema();
@@ -924,7 +1092,8 @@ mod tests {
                 &two_sided_schema(),
                 &args(&["status"])
             )
-            .unwrap(),
+            .unwrap()
+            .input,
             json!({"dir":"/tmp","copies":2,"verbose":true})
         );
         assert_eq!(
@@ -933,7 +1102,8 @@ mod tests {
                 &two_sided_schema(),
                 &args(&["status"])
             )
-            .unwrap(),
+            .unwrap()
+            .input,
             json!({"version":true})
         );
     }
@@ -960,7 +1130,8 @@ mod tests {
                 &schema,
                 &args(&["cat-file"])
             )
-            .unwrap(),
+            .unwrap()
+            .input,
             json!({"directory":"tmp","file":"object"})
         );
     }

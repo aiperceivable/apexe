@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use serde_json::{Map, Value};
 
 use super::executor;
+use crate::adapter::argv::OpaqueTail;
 use crate::governance::path_guard::AccessMode;
 use crate::governance::AuditManager;
 
@@ -35,6 +36,7 @@ pub struct CliModuleConfig {
 pub struct CliModule {
     execution_io: super::ExecutionIo,
     fixed_argv: Option<Vec<String>>,
+    opaque_tail: Option<OpaqueTail>,
     module_id: String,
     description: String,
     input_schema: Value,
@@ -55,6 +57,7 @@ impl CliModule {
         Self {
             execution_io: super::ExecutionIo::Captured,
             fixed_argv: None,
+            opaque_tail: None,
             module_id: config.module_id,
             description: config.description,
             input_schema: config.input_schema,
@@ -171,6 +174,11 @@ impl CliModule {
         Ok(self)
     }
 
+    pub(crate) fn with_opaque_tail(mut self, tail: Option<OpaqueTail>) -> Self {
+        self.opaque_tail = tail;
+        self
+    }
+
     #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
     fn execution_argv(&self, inputs: &Value) -> Result<Vec<String>, ModuleError> {
         // Before the argv is chosen, not while rendering it. A scanned route
@@ -191,9 +199,55 @@ impl CliModule {
                 )
             })?
             .clone();
+        if let Some(tail) = &self.opaque_tail {
+            return self.execution_argv_with_opaque_tail(&kwargs, tail);
+        }
         self.apply_json_default(&mut kwargs);
         let rendered = executor::build_argv(&kwargs, Some(&self.input_schema), self.access_mode())?;
         Ok(self.assemble_arguments(rendered))
+    }
+
+    #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    fn execution_argv_with_opaque_tail(
+        &self,
+        input: &Map<String, Value>,
+        tail: &OpaqueTail,
+    ) -> Result<Vec<String>, ModuleError> {
+        let schema = Some(&self.input_schema);
+        executor::reject_exec_parameters(input, schema)?;
+        executor::reject_conflicting_flags(input, schema)?;
+        self.check_input_paths(&tail.converted_paths)?;
+        if let Some((value, numeric)) = &tail.trigger_value {
+            executor::validate_argument_value(
+                executor::ValueLocation {
+                    param_name: "opaque flag value",
+                    index: None,
+                },
+                value,
+                *numeric,
+                self.input_schema["x-apexe-end-of-options"] == true,
+            )?;
+        }
+        for (index, value) in tail.argv.iter().enumerate() {
+            executor::validate_argument_value(
+                executor::ValueLocation {
+                    param_name: "argv",
+                    index: Some(index),
+                },
+                value,
+                false,
+                true,
+            )?;
+        }
+        let rendered = executor::build_argv_with_separator(
+            &tail.prefix,
+            schema,
+            self.access_mode(),
+            Some(tail.separator),
+        )?;
+        let mut argv = self.assemble_arguments(rendered);
+        argv.extend(tail.argv.iter().cloned());
+        Ok(argv)
     }
 
     fn apply_json_default(&self, inputs: &mut Map<String, Value>) {

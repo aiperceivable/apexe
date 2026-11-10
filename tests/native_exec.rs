@@ -524,6 +524,122 @@ fn test_exec_native_routes_subcommands_without_acl_fallback_to_root() {
 }
 
 #[test]
+fn test_exec_opaque_bundle_keeps_root_acl() {
+    let fixture = Fixture::new();
+    let binary = fixture.script("toy", "touch started");
+    fixture.module(
+        "toy",
+        binary.to_str().unwrap(),
+        json!({"type":"object","properties":{
+            "quiet":{"type":"boolean","x-apexe-flag":"-q","x-apexe-flag-position":"before-subcommand"},
+            "script":{"type":"string","x-apexe-flag":"-m","x-apexe-flag-position":"before-subcommand","x-apexe-opaque-after":true},
+            "args":{"type":"array","items":{"type":"string"},"x-apexe-positional":0}
+        }}),
+        false,
+    );
+    let mut modules = apexe::output::load_modules_from_dir(&fixture.bindings(), None).unwrap();
+    let mut child = modules[0].clone();
+    child.module_id = "cli.toy.show".into();
+    child.target.push_str(" show");
+    child
+        .metadata
+        .insert("command_path".into(), json!(["toy", "show"]));
+    modules.push(child);
+    apexe::output::YamlOutput::without_verification()
+        .write(&modules, &fixture.bindings(), false)
+        .unwrap();
+    fixture.acl("rules:\n- callers: ['local']\n  targets: ['cli.toy.show']\n  effect: allow\ndefault_effect: deny\n");
+
+    for args in [
+        vec!["-q", "-m", "script", "show"],
+        vec!["-qm", "script", "show"],
+        vec!["-qmscript", "show"],
+    ] {
+        fixture
+            .command()
+            .args(["exec", "--", binary.to_str().unwrap()])
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains("Access denied"));
+        assert!(!fixture.home.path().join("started").exists());
+    }
+}
+
+#[test]
+fn test_exec_opaque_tail_preserves_child_arguments_and_preflight() {
+    for declares_separator in [false, true] {
+        let fixture = Fixture::new();
+        let binary = fixture.script("toy", "printf '<%s>\\n' \"$@\"");
+        fixture.module(
+            "toy",
+            binary.to_str().unwrap(),
+            json!({"type":"object","x-apexe-end-of-options":declares_separator,"properties":{
+                "script":{"type":"string","x-apexe-flag":"-m","x-apexe-opaque-after":true},
+                "args":{"type":"array","items":{"type":"string"},"x-apexe-positional":0}
+            }}),
+            false,
+        );
+        for args in [
+            vec!["-m", "script", "--", "--child-option", "value"],
+            vec!["-m", "script", "--child-option", "value"],
+        ] {
+            let output = fixture
+                .command()
+                .args(["exec", "--dry-run", "--", binary.to_str().unwrap()])
+                .args(&args)
+                .assert()
+                .success()
+                .get_output()
+                .stdout
+                .clone();
+            let plan: Value = serde_json::from_slice(&output).unwrap();
+            assert_eq!(plan["argv"], json!(args));
+            let expected: String = args.iter().map(|arg| format!("<{arg}>\n")).collect();
+            fixture
+                .command()
+                .args(["exec", "--", binary.to_str().unwrap()])
+                .args(args)
+                .assert()
+                .success()
+                .stdout(expected);
+        }
+    }
+}
+
+#[test]
+fn test_exec_opaque_tail_still_guards_paths() {
+    let fixture = Fixture::new();
+    let binary = fixture.script("toy", "touch started");
+    fixture.module(
+        "toy",
+        binary.to_str().unwrap(),
+        json!({"type":"object","properties":{
+            "script":{"type":"string","x-apexe-flag":"-m","x-apexe-opaque-after":true},
+            "paths":{"type":"array","items":{"type":"string","x-apexe-path":true},"x-apexe-positional":0}
+        }}),
+        false,
+    );
+    let protected = fixture.home.path().join(".ssh/id_rsa");
+    for command in [vec!["exec"], vec!["exec", "--dry-run"]] {
+        fixture
+            .command()
+            .args(command)
+            .args([
+                "--",
+                binary.to_str().unwrap(),
+                "-m",
+                "script",
+                "--",
+                protected.to_str().unwrap(),
+            ])
+            .assert()
+            .failure();
+    }
+    assert!(!fixture.home.path().join("started").exists());
+}
+
+#[test]
 fn test_exec_native_installed_shim_path_is_skipped_and_removed_route_stays_refused() {
     let fixture = Fixture::new();
     fixture.module("cat", "/bin/cat", file_schema(), true);

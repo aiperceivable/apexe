@@ -6,6 +6,7 @@ use apcore_toolkit::ScannedModule;
 use serde_json::{json, Value};
 
 use super::UnmanagedPolicy;
+use crate::adapter::argv::OpaqueTail;
 use crate::cli::shim::{Manifest, Route};
 use crate::config::ApexeConfig;
 use crate::module::{CliModule, ExecutionIo, StdinMode};
@@ -14,6 +15,7 @@ pub(super) struct NativeInvocation {
     pub module: ScannedModule,
     pub input: Value,
     pub unmanaged: Option<CliModule>,
+    pub opaque_tail: Option<OpaqueTail>,
 }
 
 pub(super) async fn resolve(
@@ -170,8 +172,9 @@ fn resolve_invocation(
         );
         return Ok(NativeInvocation {
             module: module.clone(),
-            input,
+            input: input.input,
             unmanaged: None,
+            opaque_tail: input.opaque_tail,
         });
     }
     // A binding without reviewed grammar is a coverage gap, not an unmanaged
@@ -293,6 +296,7 @@ fn unmanaged_invocation(
         module: scanned,
         input: json!({"argv":args}),
         unmanaged: Some(module),
+        opaque_tail: None,
     })
 }
 

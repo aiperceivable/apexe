@@ -905,6 +905,27 @@ fn test_shim_bundling_and_declared_end_of_options() {
 }
 
 #[test]
+fn test_shim_opaque_operand_preserves_literal_token_spelling() {
+    let fixture = Fixture::new();
+    let binary = fixture.script("toy", "printf '<%s>\\n' \"$@\"");
+    fixture.write(
+        "cli.toy", "toy", binary.to_str().unwrap(),
+        json!({"type":"object","x-apexe-end-of-options":true,"properties":{
+            "quiet":{"type":"boolean","x-apexe-flag":"-q"},
+            "args":{"type":"array","items":{"type":"integer"},"x-apexe-positional":0,"x-apexe-opaque-after":true}
+        }}),
+        false,
+    );
+    fixture.enable();
+    fixture
+        .shim("toy")
+        .args(["-q", "--", "+001", "-02"])
+        .assert()
+        .success()
+        .stdout("<-q>\n<-->\n<+001>\n<-02>\n");
+}
+
+#[test]
 fn test_shim_rejects_protected_paths_and_default_acl_denial() {
     let fixture = Fixture::new();
     fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);

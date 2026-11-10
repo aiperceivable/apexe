@@ -436,7 +436,7 @@ pub(crate) fn reject_exec_parameters(
 /// Only curated overlays state mutual exclusion, so this fires only where a
 /// human recorded it; a schema without `x-apexe-conflicts-with` is unaffected.
 #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
-fn reject_conflicting_flags(
+pub(crate) fn reject_conflicting_flags(
     kwargs: &serde_json::Map<String, Value>,
     input_schema: Option<&Value>,
 ) -> Result<(), ModuleError> {
@@ -801,6 +801,17 @@ pub fn build_argv(
     input_schema: Option<&Value>,
     mode: AccessMode,
 ) -> Result<RenderedArgv, ModuleError> {
+    build_argv_with_separator(kwargs, input_schema, mode, None)
+}
+
+/// Render a native prefix with the separator that preceded its opaque tail.
+#[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+pub(crate) fn build_argv_with_separator(
+    kwargs: &serde_json::Map<String, Value>,
+    input_schema: Option<&Value>,
+    mode: AccessMode,
+    explicit_separator: Option<bool>,
+) -> Result<RenderedArgv, ModuleError> {
     reject_exec_parameters(kwargs, input_schema)?;
     reject_conflicting_flags(kwargs, input_schema)?;
 
@@ -810,8 +821,9 @@ pub fn build_argv(
     // The separator marks where the tool stops reading options, which is ahead
     // of whichever operand group its grammar puts first.
     let separator_precedes_operands = operands_precede_flags(input_schema);
-    let needs_separator =
-        needs_end_of_options(&groups, honours_separator, separator_precedes_operands);
+    let needs_separator = explicit_separator.unwrap_or_else(|| {
+        needs_end_of_options(&groups, honours_separator, separator_precedes_operands)
+    });
 
     // This ordering is the contract; everything above only decides which group
     // a token belongs to.

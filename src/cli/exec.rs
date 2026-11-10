@@ -114,6 +114,7 @@ struct PreparedCall {
     executor: std::sync::Arc<apcore::Executor>,
     mode: ExecutionMode,
     unmanaged_binary: Option<String>,
+    opaque_tail: Option<crate::adapter::argv::OpaqueTail>,
 }
 
 fn parse_caller(value: &str) -> Result<String, String> {
@@ -229,6 +230,7 @@ impl ExecArgs {
             executor,
             mode: ExecutionMode::Module,
             unmanaged_binary: None,
+            opaque_tail: None,
         })
     }
 
@@ -242,12 +244,15 @@ impl ExecArgs {
     ) -> anyhow::Result<PreparedCall> {
         let invocation =
             native::resolve(&self.native, self.unmanaged, &modules, config, dir, context).await?;
+        let io = crate::module::ExecutionIo::Passthrough {
+            stdin: super::shim::passthrough_stdin_mode(),
+        };
         let mut unmanaged_binary = None;
         let (executor, mode) = match invocation.unmanaged {
             Some(module) => {
                 unmanaged_binary = Some(module.binary_path().into());
                 (
-                    crate::module::registry::build_executor_for_unmanaged(
+                    crate::module::registry::build_executor_for_invocation(
                         options,
                         &invocation.module,
                         module,
@@ -255,14 +260,21 @@ impl ExecArgs {
                     ExecutionMode::Unmanaged,
                 )
             }
+            None if invocation.opaque_tail.is_some() => {
+                let module = CliModule::from_scanned(&invocation.module, options.timeout_ms)?
+                    .with_execution_io(io)
+                    .with_opaque_tail(invocation.opaque_tail.clone());
+                (
+                    crate::module::registry::build_executor_for_invocation(
+                        options,
+                        &invocation.module,
+                        module,
+                    )?,
+                    ExecutionMode::Native,
+                )
+            }
             None => (
-                crate::module::registry::build_executor_from_modules_with_io(
-                    options,
-                    modules,
-                    crate::module::ExecutionIo::Passthrough {
-                        stdin: super::shim::passthrough_stdin_mode(),
-                    },
-                )?,
+                crate::module::registry::build_executor_from_modules_with_io(options, modules, io)?,
                 ExecutionMode::Native,
             ),
         };
@@ -273,6 +285,7 @@ impl ExecArgs {
             executor,
             mode,
             unmanaged_binary,
+            opaque_tail: invocation.opaque_tail,
         })
     }
 
@@ -345,7 +358,13 @@ impl ExecArgs {
             } else {
                 crate::module::ExecutionIo::Captured
             };
-            add_command_plan(&mut result, scanned, &call.input, io)?;
+            add_command_plan(
+                &mut result,
+                scanned,
+                &call.input,
+                io,
+                call.opaque_tail.clone(),
+            )?;
         }
         Ok(result)
     }
@@ -356,8 +375,11 @@ fn add_command_plan(
     scanned: &apcore_toolkit::ScannedModule,
     input: &Value,
     io: crate::module::ExecutionIo,
+    opaque_tail: Option<crate::adapter::argv::OpaqueTail>,
 ) -> anyhow::Result<()> {
-    let module = CliModule::from_scanned(scanned, 0)?.with_execution_io(io);
+    let module = CliModule::from_scanned(scanned, 0)?
+        .with_execution_io(io)
+        .with_opaque_tail(opaque_tail);
     result["annotations"] = serde_json::to_value(scanned.annotations.clone().unwrap_or_default())?;
     result["binary_path"] = json!(module.binary_path());
     result["path_guard"] = inspect_paths(

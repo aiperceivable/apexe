@@ -196,9 +196,9 @@ pub(crate) fn build_executor_from_modules_with_io(
     finish_executor(opts, registry, audit, local_io)
 }
 
-/// Register an ephemeral unmanaged invocation with the same governance stack.
+/// Register a module bound to a single native invocation with shared governance.
 #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
-pub(crate) fn build_executor_for_unmanaged(
+pub(crate) fn build_executor_for_invocation(
     opts: &ExecutorOptions<'_>,
     scanned: &ScannedModule,
     module: CliModule,

@@ -282,7 +282,11 @@ pub(super) fn resolve_route<'a>(
     args: &[String],
     manifest: &Manifest,
     modules: &'a [ScannedModule],
-) -> anyhow::Result<(&'a ScannedModule, serde_json::Value, Option<Vec<String>>)> {
+) -> anyhow::Result<(
+    &'a ScannedModule,
+    crate::adapter::argv::ResolvedArgv,
+    Option<Vec<String>>,
+)> {
     let routes = manifest.commands.get(name).ok_or_else(|| {
         coverage_refusal(format!(
             "Shim '{name}' has no registered route; re-run apexe env --enable"
@@ -333,7 +337,7 @@ pub(super) fn resolve_route<'a>(
         })?;
         let replay =
             matches!(route.tier, RouteTier::Scanned | RouteTier::Legacy).then(|| args.to_vec());
-        reject_exec_parameters(module, &input)?;
+        reject_exec_parameters(module, &input.input)?;
         return Ok((module, input, replay));
     }
     Err(coverage_refusal(unmatched_route_message(name, args, modules)).into())
@@ -513,9 +517,16 @@ fn execute(
     let stdin = passthrough_stdin_mode();
     let executor = match replay {
         Some(argv) => build_executor_for_scanned(manifest, config, selected, argv, stdin)?,
-        None => build_executor(manifest, config, modules, stdin)?,
+        None => build_executor(
+            manifest,
+            config,
+            modules,
+            &module_id,
+            input.opaque_tail,
+            stdin,
+        )?,
     };
-    let output = runtime.block_on(executor.call(&module_id, input, Some(&context), None))?;
+    let output = runtime.block_on(executor.call(&module_id, input.input, Some(&context), None))?;
     output["exit_code"]
         .as_i64()
         .and_then(|code| i32::try_from(code).ok())
@@ -566,6 +577,8 @@ fn build_executor(
     manifest: &Manifest,
     config: &ApexeConfig,
     modules: Vec<ScannedModule>,
+    module_id: &str,
+    tail: Option<crate::adapter::argv::OpaqueTail>,
     stdin: StdinMode,
 ) -> anyhow::Result<std::sync::Arc<apcore::Executor>> {
     let acl = super::local::acl_path(manifest.acl.as_deref(), config)?;
@@ -576,13 +589,20 @@ fn build_executor(
         acl.as_deref(),
         manifest.filter.clone(),
     );
-    Ok(
-        crate::module::registry::build_executor_from_modules_with_io(
-            &options,
-            modules,
-            ExecutionIo::Passthrough { stdin },
-        )?,
-    )
+    let io = ExecutionIo::Passthrough { stdin };
+    if let Some(tail) = tail {
+        let selected = modules
+            .iter()
+            .find(|module| module.module_id == module_id)
+            .ok_or_else(|| anyhow::anyhow!("Module not found: {module_id}"))?;
+        let module = crate::module::CliModule::from_scanned(selected, options.timeout_ms)?
+            .with_execution_io(io)
+            .with_opaque_tail(Some(tail));
+        return Ok(crate::module::registry::build_executor_for_invocation(
+            &options, selected, module,
+        )?);
+    }
+    Ok(crate::module::registry::build_executor_from_modules_with_io(&options, modules, io)?)
 }
 
 pub(super) async fn audit_resolution_refusal(
@@ -731,7 +751,7 @@ mod tests {
         .expect("an eligible route must resolve despite an ineligible sibling");
 
         assert_eq!(selected.module_id, "cli.git.status");
-        assert_eq!(input["short"], json!(true));
+        assert_eq!(input.input["short"], json!(true));
         assert!(replay.is_none());
     }
 
