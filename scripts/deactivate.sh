@@ -1,22 +1,39 @@
 # Source this file to leave the governed shell.
 #
-# Only this shell changes: PATH returns to what it was before activation and
-# commands stop resolving through the shim directory. Nothing on disk is
-# removed -- uninstalling is `apexe env --disable`, a separate and deliberate
-# action, because a helper named `deactivate` that takes the whole installation
-# down is one keystroke away from being run by accident.
+# Only this shell changes: the shim directory is removed from PATH and commands
+# stop resolving through it, while entries added after activation stay where
+# they are. Nothing on disk is removed -- uninstalling is
+# `apexe env --disable`, a separate and deliberate action, because a helper
+# named `deactivate` that takes the whole installation down is one keystroke
+# away from being run by accident.
 if [ -n "${_APEXE_ACTIVE_SHIM_DIR-}" ]; then
   if [ -f "$_APEXE_ACTIVE_SHIM_DIR/deactivate" ]; then
     . "$_APEXE_ACTIVE_SHIM_DIR/deactivate"
   else
-    # The generated file is gone (a manual --disable removes it), so restore
-    # this shell from the environment the activation saved.
+    # The generated file is gone (a manual --disable removes it), so leave the
+    # governed shell from the environment the activation saved. Restoring the
+    # saved PATH wholesale dropped entries added after activation, so only the
+    # shim directory is filtered out of the current PATH.
     if [ "${_APEXE_PREVIOUS_PATH_SET+x}${_APEXE_PREVIOUS_PATH+x}${_APEXE_PREVIOUS_SHIM_DIR_SET+x}${_APEXE_PREVIOUS_SHIM_DIR+x}" != xxxx ]; then
       printf '%s\n' 'Saved activation environment is incomplete; refusing to leave the governed shell' >&2
       return 1
     fi
     if [ "$_APEXE_PREVIOUS_PATH_SET" = x ]; then
-      export PATH="$_APEXE_PREVIOUS_PATH"
+      _APEXE_REMAINING="${PATH-}:"
+      _APEXE_FILTERED=
+      _APEXE_SEPARATOR=
+      while [ -n "$_APEXE_REMAINING" ]; do
+        _APEXE_ENTRY="${_APEXE_REMAINING%%:*}"
+        _APEXE_REMAINING="${_APEXE_REMAINING#*:}"
+        if [ "$_APEXE_ENTRY" = "$_APEXE_ACTIVE_SHIM_DIR" ]; then
+          continue
+        fi
+        _APEXE_FILTERED="${_APEXE_FILTERED}${_APEXE_SEPARATOR}${_APEXE_ENTRY}"
+        _APEXE_SEPARATOR=:
+      done
+      PATH="$_APEXE_FILTERED"
+      export PATH
+      unset _APEXE_REMAINING _APEXE_FILTERED _APEXE_SEPARATOR _APEXE_ENTRY
     else
       unset PATH
     fi

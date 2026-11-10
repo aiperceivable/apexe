@@ -507,6 +507,62 @@ fn test_persistent_source_scripts_preserve_python_venv_function_and_environment(
         .assert().success().stdout("venv function\n");
 }
 
+/// Deactivation removes only the shim directory.
+///
+/// On macOS a login shell activates from `.zprofile`, and `.zshrc` adds pyenv,
+/// pnpm and similar directories afterwards. Restoring the saved PATH wholesale
+/// dropped every one of those, so leaving the governed shell made `apdev`,
+/// `python3` and other unrelated commands disappear or change.
+#[test]
+fn test_deactivation_keeps_path_entries_added_after_activation() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    fixture.enable();
+    Command::new("/bin/sh")
+        .env("HOME", fixture.home.path())
+        .env("SHELL", "/bin/sh")
+        .env("PATH", "/usr/bin:/bin")
+        .env_remove("APEXE_SHIM_DIR")
+        .current_dir(fixture.home.path())
+        .args([
+            "-c",
+            "late=/late/bin; . \"$1\" || exit; PATH=\"$late:$PATH\"; export PATH; . \"$2\" || exit; test \"$PATH\" = \"$late:/usr/bin:/bin\" || exit 99; case \":$PATH:\" in *\":$3:\"*) exit 98;; esac",
+            "shell",
+        ])
+        .arg(fixture.home.path().join(".apexe/bin/apexe-activate.sh"))
+        .arg(fixture.home.path().join(".apexe/bin/apexe-deactivate.sh"))
+        .arg(fixture.shims())
+        .assert()
+        .success();
+}
+
+/// The bootstrap helper has the same obligation when the generated deactivate
+/// file is gone (a manual `env --disable` removes it).
+#[test]
+fn test_deactivation_fallback_keeps_path_entries_added_after_activation() {
+    let fixture = Fixture::new();
+    fixture.write("cli.cat", "cat", "/bin/cat", file_schema(), true);
+    fixture.enable();
+    let executable = assert_cmd::cargo::cargo_bin("apexe");
+    Command::new("/bin/sh")
+        .env("HOME", fixture.home.path())
+        .env("SHELL", "/bin/sh")
+        .env("PATH", "/usr/bin:/bin")
+        .env_remove("APEXE_SHIM_DIR")
+        .current_dir(fixture.home.path())
+        .args([
+            "-c",
+            "late=/late/bin; . \"$1\" || exit; PATH=\"$late:$PATH\"; export PATH; \"$4\" env --disable || exit; . \"$2\" || exit; test \"$PATH\" = \"$late:/usr/bin:/bin\" || exit 99; case \":$PATH:\" in *\":$3:\"*) exit 98;; esac",
+            "shell",
+        ])
+        .arg(fixture.home.path().join(".apexe/bin/apexe-activate.sh"))
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/deactivate.sh"))
+        .arg(fixture.shims())
+        .arg(executable)
+        .assert()
+        .success();
+}
+
 #[test]
 fn test_persistent_source_script_changes_refuse_reload_before_mutating_shims() {
     let fixture = Fixture::new();

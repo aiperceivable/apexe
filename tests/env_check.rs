@@ -62,8 +62,12 @@ impl Fixture {
     }
 
     fn write_binding(&self, target: &str) {
+        self.write_binding_as("cli.cat", "reviewed", true, target);
+    }
+
+    fn write_binding_as(&self, module_id: &str, grammar: &str, authoritative: bool, target: &str) {
         let mut module = ScannedModule::new(
-            "cli.cat".into(),
+            module_id.into(),
             "Check fixture".into(),
             json!({"type":"object","properties":{},"additionalProperties":false,
                 "x-apexe-streaming-stdin-safe":true,"x-apexe-short-flag-bundling":true,
@@ -77,11 +81,11 @@ impl Fixture {
             .insert("command_path".into(), json!(["cat"]));
         // A current binding carries the per-route grammar stamp; without it the
         // route is `Legacy` -- admitted like a scanned one, never reviewed (#47).
-        module.metadata.insert("grammar".into(), json!("reviewed"));
+        module.metadata.insert("grammar".into(), json!(grammar));
         module.metadata.insert("variant".into(), json!("unknown"));
         module.metadata.insert(
             "shim_contract".into(),
-            json!({"authoritative":true,
+            json!({"authoritative":authoritative,
             "variant":"unknown","streaming_stdin_safe":true,"short_flag_bundling":true,
             "cross_flag_ordering":false}),
         );
@@ -137,6 +141,23 @@ fn test_env_check_passes_without_executing_or_modifying_installation() {
         std::fs::read(fixture.home.path().join(".profile")).unwrap()
     );
     assert!(!fixture.home.path().join(".apexe/audit.jsonl").exists());
+}
+
+#[test]
+fn test_env_check_warns_about_routes_inherited_applications_cannot_use() {
+    let fixture = Fixture::new();
+    // A binding the installed `--scanned off` policy does not admit: the shim
+    // covers `cat` only partly, so an application that inherits this PATH will
+    // be refused on the missing route.
+    fixture.write_binding_as("cli.cat.extra", "scanned", false, "exec:///bin/cat");
+    fixture
+        .check()
+        .assert()
+        .success()
+        .stdout(contains("[WARN] INHERIT cat"))
+        .stdout(contains("1 of 2 routes"))
+        .stdout(contains("--exclude cat"))
+        .stdout(contains("1 warnings"));
 }
 
 #[test]

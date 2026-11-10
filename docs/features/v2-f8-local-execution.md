@@ -322,11 +322,13 @@ disable, so activation can re-enable without a checkout. Compatibility
 Activation reloads the stored settings and evaluates shell activation in the
 current terminal. After uninstall removes the manifest, enable uses current
 configuration rather than previously recorded nondefault filters.
-Deactivation disables the installation and restores PATH and APEXE_SHIM_DIR
-saved before the first activation, preserving unset/empty values and the snapshot
-across repeated activation. Startup activation and direct eval also record that
-snapshot. A refused uninstall keeps the current terminal active. The persistent
-deactivation helper can restore the snapshot even after manual disable.
+Deactivation removes the shim directory from the current PATH, leaving entries
+added after activation where they are, and restores APEXE_SHIM_DIR. It still
+records whether PATH was unset before the first activation, preserving
+unset/empty values and that snapshot across repeated activation. Startup
+activation and direct eval also record it. A refused uninstall keeps the current
+terminal active. The persistent deactivation helper can leave the governed shell
+even after manual disable.
 These helpers support sh/bash/zsh; POSIX sh uses `.`. They define no generic
 `deactivate` function and preserve Python venv's function and VIRTUAL_ENV.
 Activate venv before apexe and deactivate them in reverse order.

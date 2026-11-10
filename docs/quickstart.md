@@ -165,10 +165,16 @@ source ~/.apexe/bin/apexe-deactivate.sh
 The installed helpers require no repository checkout. Activation automatically
 enables or reloads eligible shims, updates the current shell and clears its
 command cache; no additional eval or rehash is needed. POSIX sh uses `.` rather
-than `source`. Deactivation removes owned links/startup blocks and restores the
-saved environment; the helpers remain available for reactivation. Other commands,
+than `source`. Deactivation removes the shim directory from the current PATH and
+leaves the installation — and any PATH entries added after activation — alone;
+the helpers remain available for reactivation. Other commands,
 builtins, aliases and absolute paths remain outside shim coverage. See the
 [env reference](user-manual.md#48-apexe-env) for supported shells and checks.
+
+Applications started from that shell inherit the shim `PATH` too. If an editor
+opened with `code .` loses its Git/GitHub integration, see
+[Applications launched from a governed shell](user-manual.md#applications-launched-from-a-governed-shell-cannot-find-a-tool);
+`apexe env --check` reports the affected commands as `[WARN] INHERIT`.
 
 After refreshing initialized bindings, refresh an active shim installation:
 

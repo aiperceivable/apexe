@@ -8,6 +8,7 @@ mod hook;
 mod init;
 mod list_output;
 mod local;
+mod managed;
 mod sh;
 mod shell;
 mod shell_init;
@@ -20,6 +21,7 @@ pub use env::EnvArgs;
 pub use exec::{ExecArgs, UnmanagedPolicy};
 pub use hook::HookArgs;
 pub use init::{InitArgs, ReportFormat};
+pub use managed::ManagedArgs;
 pub use sh::{is_entry_invocation, run_entry, ShArgs};
 pub use verify::VerifyArgs;
 
@@ -140,6 +142,9 @@ pub enum Commands {
     /// against, or check one path against it.
     #[command(display_order = 90)]
     Policy(PolicyArgs),
+    /// Probe a managed-execution backend or compile a managed policy.
+    #[command(display_order = 95)]
+    Managed(ManagedArgs),
 }
 
 impl Cli {
@@ -163,6 +168,7 @@ impl Cli {
             && !matches!(&self.command, Commands::Sh(_))
             && !matches!(&self.command, Commands::Hook(_))
             && !matches!(&self.command, Commands::Agent(_))
+            && !matches!(&self.command, Commands::Managed(_))
         {
             config.ensure_dirs()?;
         }
@@ -182,6 +188,7 @@ impl Cli {
             Commands::List(args) => args.execute(&config),
             Commands::Config(args) => args.execute(&config),
             Commands::Policy(args) => args.execute(&config),
+            Commands::Managed(args) => args.execute(&config),
         }
         .map(|()| 0)
     }

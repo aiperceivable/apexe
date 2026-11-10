@@ -9,12 +9,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 ## [Unreleased]
 
 ### Added
+- **Managed execution, portable core.** `docs/managed-execution/` now has an
+  implementation for the parts that do not need a kernel: a strict policy
+  parser that refuses duplicate keys, unknown roots, a form grant wider than the
+  session, a writable grant overlapping a protected subtree, and a reserved
+  operation; the effect model that separates a file right from a directory-entry
+  right; the five reviewed v1 forms with typed operands and fixed argv; the plan
+  digest over RFC 8785 canonical bytes; the session state machine with a
+  one-time approval nonce, a session-level in-flight limit and monotonic
+  expiry; the wire envelope; and `builtin.copy_create`, which stages in an
+  exclusively created `0600` file and publishes with
+  `renameat2(RENAME_NOREPLACE)` (portable `link(2)` fallback) so a destination
+  created after planning is never replaced. `apexe managed probe` reports what a
+  backend can enforce and `apexe managed policy-check` compiles a policy against
+  it, refusing any policy the backend cannot keep. The Linux namespace and
+  Landlock setup is not part of this change: until the isolation domain lands,
+  every backend reports unsupported on a non-Linux host and no session can
+  start, which is the refusal the specification requires rather than a
+  degradation.
 - `apexe env --enable --also <NAMES>` / `--exclude <NAMES>` name individual shim
   commands and outrank the scanned policy in the direction they state, so an
   interpreter can be governed without `--scanned all`:
   `--scanned readonly --also node,python3`. The names persist in the manifest,
   because the activation script's `env --reload` runs in every new terminal and
   would otherwise drop the route again.
+- `apexe env --check` now reports `[WARN] INHERIT <command>` when a shimmed
+  command installs only part of its bindings, with the installed and available
+  route counts. A shim refuses every route it was not given, and an application
+  started from an activated shell inherits that shim `PATH`: an editor opened
+  with `code .` probes `git --version` and `git rev-parse`, is refused both
+  times, and reports "no repository" instead of the refusal. The warning names
+  the commands where that can happen and carries the remedies — relaunch from a
+  deactivated shell, start the app through LaunchServices (`open -a`), or
+  `apexe env --reload --exclude <command>`. The behavior is unchanged: no
+  refusal is relaxed and nothing falls back to an ungoverned binary.
 - `x-apexe-opaque-after` lets an overlay declare where a tool stops interpreting
   its own argv: everything from that token onwards is forwarded verbatim. An
   interpreter's grammar is `interpreter <script> <argv for the script>`, so
@@ -35,6 +63,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   `OverlayFlag` denies unknown fields.
 
 ### Changed
+- `apexe-deactivate.sh` removes only the shim directory from `PATH`. It used to
+  restore the environment saved at the first activation, and on macOS that
+  snapshot is taken in `.zprofile` — before `.zshrc` adds pyenv, pnpm and similar
+  directories. Leaving the governed shell therefore dropped every later entry:
+  `apdev` (a pyenv shim), `python3` and anything else installed after activation
+  resolved differently or disappeared. Activation still records the snapshot so
+  `APEXE_SHIM_DIR` and whether `PATH` was unset can be restored, but entries
+  added while the shell is governed now survive deactivation.
+  `scripts/deactivate.sh` follows the same rule in its after-disable fallback.
 - A scan now reports the overlays that matched but did not decide it. Selection
   keeps the single strongest match, so a local overlay that matches *less*
   strongly than the corpus file it means to amend is silently ignored, and one

@@ -596,16 +596,17 @@ source ~/.apexe/bin/apexe-deactivate.sh
 
 `apexe-activate.sh` reloads the installed settings, automatically enabling when
 absent, then activates the current terminal. `apexe-deactivate.sh` — and the
-`deactivate` alias beside it — restores the PATH and APEXE_SHIM_DIR saved before
-the first activation and **leaves the installation alone**, the way `deactivate`
-leaves a Python virtualenv on disk. Uninstalling is `apexe env --disable`, a
+`deactivate` alias beside it — removes the shim directory from the current PATH
+and restores `APEXE_SHIM_DIR`, leaving the installation and any PATH entries
+added after activation in place, the way `deactivate` leaves a Python virtualenv
+on disk. Uninstalling is `apexe env --disable`, a
 separate command: a per-shell helper that removes every shim, the entry point and
 the startup blocks is one keystroke away from being run by accident, and the
 damage reaches terminals and agent hosts the caller never mentioned. Repeated
 activation preserves that original snapshot, including unset and empty values;
 sourcing `deactivate` twice is harmless. No separate `eval` or `rehash` is
 required. New-terminal startup and `eval "$(apexe env)"`
-also save the environment so the same deactivation script can restore it.
+also save the environment so the same deactivation script can leave the shell.
 Both namespaced scripts and their ownership record remain installed after
 disable, including manual `apexe env --disable`, so they can be sourced again
 without a checkout. For an older installation, run `apexe env --reload` once
@@ -712,7 +713,12 @@ The manifest must contain valid absolute paths and unambiguous command routes.
 Bindings are loaded using the manifest's directory, pattern and filters, then
 checked for runtime registration, native executable availability, matching
 routes and current overlay capabilities. Retained refusal tombstones are
-reported as failed bindings because those routes cannot execute.
+reported as failed bindings because those routes cannot execute. A shimmed
+command whose bindings are only partly installed is reported as
+`[WARN] INHERIT <command>` with its installed and available route counts: those
+are the calls an application that inherits the shim PATH will be refused, so the
+remedy is part of the warning. See
+[Applications launched from a governed shell](#applications-launched-from-a-governed-shell-cannot-find-a-tool).
 
 ACL checks use the manifest's explicit policy, or the current default
 `<config_dir>/acl.yaml` when no explicit path was installed. Missing or malformed
@@ -1059,6 +1065,19 @@ before the child starts. Child processes started by a governed command keep the
 shim directory on `PATH`, so descendant commands can still resolve through the
 same shims.
 
+Applications inherit that PATH as well. A program started from an activated
+shell — an editor opened with `code .`, a GUI launcher, or your own wrapper under
+a different name — hands the shim directory to everything it spawns, and those
+calls are refused exactly like a person typing an undeclared route. The command
+still runs inside apexe's boundary, but the operator never asked for it: a Git
+integration that probes `git --version` and `git rev-parse` to decide whether a
+folder is a repository is refused both times and reports "no repository".
+`apexe env --check` names the commands where this is possible as
+`[WARN] INHERIT <command>`. Deactivating after the application has started does
+not reach into its process; quit and relaunch it from a deactivated shell, start
+it through LaunchServices (`open -a`), or exclude the command from shims. See
+[Applications launched from a governed shell](#applications-launched-from-a-governed-shell-cannot-find-a-tool).
+
 `--locked` is a restricted command search path, not a guarantee. Absolute
 paths, shell builtins, functions, `sudo` and interpreters can still run
 commands outside it. `APEXE_SHELL_LOCKED=1` and `APEXE_SHELL_ALLOW_PATH` provide
@@ -1195,6 +1214,39 @@ launch-environment PATH setup.
 `--check` reports a missing host configuration as a warning and fails only when
 the launcher itself is not ready. Config detection is best-effort: a file that
 exists but is not configured is reported without its contents.
+
+### 4.14 `apexe managed`
+
+Probe the managed-execution backend, or validate and compile a managed policy
+against it. Managed execution is the v1 contract in
+[`docs/managed-execution/`](managed-execution/policy.md): a trusted launcher
+pins a policy, a workspace and a session, and an untrusted agent may only run
+the reviewed forms that policy admits.
+
+| Argument / option | Default | Behavior |
+|---|---|---|
+| `probe --backend <linux\|sbpl>` | `linux` | Report the backend, the Landlock ABI, the capabilities it can enforce, and every missing one |
+| `probe --format <table\|json>` | `table` | Report format |
+| `policy-check --file <PATH>` | required | Policy document to validate (64 KiB maximum) |
+| `policy-check --backend <linux\|sbpl>` | `linux` | Backend the policy is compiled for |
+| `policy-check --root <ID[:reference]>` | `workspace`, `reference:reference` | Resource roots the launcher will provide; `id` is a writable workspace, `id:reference` an immutable reference |
+| `policy-check --format <table\|json>` | `table` | Report format |
+
+```bash
+apexe managed probe --backend linux --format json
+apexe managed policy-check --file policy.json --backend linux
+apexe managed policy-check --file policy.json --backend sbpl --format json
+```
+
+`policy-check` refuses what the specification refuses: duplicate JSON keys, an
+unknown root, a form grant wider than the session, a writable grant overlapping
+a protected subtree, a reserved operation, and any policy the selected backend
+cannot enforce. A refusal names its code (`POLICY_INVALID`,
+`BACKEND_UNSUPPORTED`, `FORM_UNSUPPORTED`, ...) and exits non-zero. On a host
+that is not Linux the `linux` backend reports unsupported and every policy is
+refused, because the isolation domain is the release gate and a compiled policy
+that cannot be enforced is exactly the failure the contract forbids. `sbpl` is
+a macOS prototype and never activates a managed session.
 
 ## 5. Configuration
 
@@ -2951,6 +3003,58 @@ For the default installation, the resolved paths should be
 activate this terminal. Aliases and functions can take precedence over PATH; absolute
 binary paths bypass shims. Inspect these with `type -a`; a separate `rehash`
 is not normally required after sourcing the helper.
+
+### Applications launched from a governed shell cannot find a tool
+
+Symptom: VS Code, Cursor or another editor opened from the command line
+(`code .`) reports no Git repository, no source control provider, or a GitHub
+integration that cannot detect the project — while `git status` typed in the
+same terminal works.
+
+Cause: the application inherited the shim `PATH` from the shell that launched
+it. Its internal calls are undeclared routes, the shim refuses them by design,
+and the application sees only a failed probe rather than the refusal. This is
+not specific to `code`: any launcher, renamed command or custom wrapper inherits
+the same `PATH`, because the shim matches command names, not the process that
+started them. `apexe env --check` reports the affected commands before this
+happens:
+
+```text
+[WARN] INHERIT git: 7 of 142 routes; applications started from a governed shell inherit the shim PATH, ...
+```
+
+Fix, in order of preference:
+
+1. Quit the application completely — closing its window leaves the running
+   process with the environment it was started in — then deactivate and start it
+   again:
+
+   ```bash
+   source ~/.apexe/bin/apexe-deactivate.sh
+   code .
+   ```
+
+2. Start it through LaunchServices so it never inherits the shell environment:
+
+   ```bash
+   open -a "Visual Studio Code" .
+   ```
+
+3. Keep the editor and the terminal governed by excluding the command from
+   shims. Other commands keep theirs; the editor and the terminal then share the
+   ungoverned `git`:
+
+   ```bash
+   apexe env --reload --exclude git
+   ```
+
+4. Pin the editor to the real binary where it offers the setting. VS Code's
+   `git.path` covers only that editor's Git integration.
+
+`--scanned all` does not fix this: the editor also probes flag forms such as
+`git --version` that match no route, and widening the admission policy weakens
+governance for every caller. A terminal opened inside the editor is a new shell
+and activates shims normally.
 
 ### The installed apexe does not recognize `env --check`
 

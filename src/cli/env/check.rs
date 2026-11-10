@@ -2,10 +2,10 @@ use super::{entry_path, owned};
 use crate::cli::shim::{Manifest, Route};
 use crate::config::ApexeConfig;
 use apcore_toolkit::ScannedModule;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Status {
     Pass,
     Fail,
@@ -454,7 +454,73 @@ fn check_bindings(
             );
         }
     }
+    report_inherited_path(manifest, &modules, report);
     Some(executor.registry().module_ids_full(true))
+}
+
+/// Name shimmed commands that cover only part of their bindings.
+///
+/// A shim refuses every invocation it has no route for, and that refusal is the
+/// point. What it does not say is who is calling: an application started from
+/// an activated shell inherits the shim directory on `PATH`, so its internal
+/// calls (`code .` probing `git --version` and `git rev-parse`) are refused as
+/// if a person had typed them, and the editor reports "no repository" instead
+/// of the refusal. Partial coverage is what makes that visible before it
+/// happens, so the remedy travels with the warning.
+fn report_inherited_path(manifest: &Manifest, modules: &[ScannedModule], report: &mut Report) {
+    let available = available_route_counts(modules);
+    for (name, installed) in installed_route_counts(manifest) {
+        let Some(available) = available.get(name) else {
+            continue;
+        };
+        if *available <= installed {
+            continue;
+        }
+        report.add(
+            Status::Warn,
+            &format!("INHERIT {name}"),
+            format!(
+                "{installed} of {available} routes; applications started from a governed shell \
+                 inherit the shim PATH, so their {name} calls outside these routes are refused. \
+                 Launch them via `open -a` or from a deactivated shell, or exclude the command: \
+                 `apexe env --reload --exclude {name}`"
+            ),
+        );
+    }
+}
+
+/// Routes the installation actually exposes, excluding tombstones.
+fn installed_route_counts(manifest: &Manifest) -> BTreeMap<&str, usize> {
+    manifest
+        .commands
+        .iter()
+        .map(|(name, routes)| {
+            (
+                name.as_str(),
+                routes.iter().filter(|route| !route.tombstone).count(),
+            )
+        })
+        .collect()
+}
+
+/// Bindings that exist for each command name, whether or not the installed
+/// policy admits them. The gap this measures is "calls the shim will refuse",
+/// not "calls the operator meant to allow".
+fn available_route_counts(modules: &[ScannedModule]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for module in modules {
+        let Some(name) = module
+            .metadata
+            .get("command_path")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|path| path.first())
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        *counts.entry(name.to_string()).or_insert(0) += 1;
+    }
+    counts
 }
 
 fn build_registry(
@@ -612,5 +678,87 @@ mod tests {
             &root.path().join("a"),
             &root.path().join("b")
         ));
+    }
+
+    fn bound(module_id: &str, command_path: &[&str]) -> ScannedModule {
+        let mut module = ScannedModule::new(
+            module_id.into(),
+            "coverage fixture".into(),
+            serde_json::json!({"type": "object"}),
+            serde_json::json!({"type": "object"}),
+            vec![],
+            "exec:///bin/cat".into(),
+        );
+        module
+            .metadata
+            .insert("command_path".into(), serde_json::json!(command_path));
+        module
+    }
+
+    fn shimmed(routes: Vec<Route>) -> Manifest {
+        Manifest {
+            version: crate::cli::shim::MANIFEST_VERSION,
+            executable: PathBuf::from("/bin/cat"),
+            bindings_dir: PathBuf::from("/tmp/bindings"),
+            bindings_pattern: None,
+            acl: None,
+            filter: crate::module::ModuleFilter::default(),
+            commands: [("cat".to_string(), routes)].into_iter().collect(),
+            scanned: crate::cli::ScannedPolicy::Off,
+            activation_script: None,
+            deactivation_script: None,
+            source_scripts_dir: None,
+        }
+    }
+
+    fn route(module_id: &str, path: &[&str]) -> Route {
+        Route {
+            module_id: module_id.into(),
+            command_path: path.iter().map(|part| (*part).into()).collect(),
+            tier: crate::cli::shim::RouteTier::Scanned,
+            tombstone: false,
+        }
+    }
+
+    #[test]
+    fn test_inherited_path_warns_when_a_command_covers_part_of_its_bindings() {
+        let modules = vec![
+            bound("cli.cat.status", &["cat"]),
+            bound("cli.cat.other", &["cat"]),
+        ];
+        let manifest = shimmed(vec![route("cli.cat.status", &["cat"])]);
+        let mut report = Report::default();
+        report_inherited_path(&manifest, &modules, &mut report);
+
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].status, Status::Warn);
+        assert_eq!(report.findings[0].label, "INHERIT cat");
+        assert!(report.findings[0].detail.contains("1 of 2 routes"));
+        assert!(report.findings[0].detail.contains("--exclude cat"));
+    }
+
+    #[test]
+    fn test_inherited_path_stays_silent_when_every_binding_is_installed() {
+        let modules = vec![bound("cli.cat", &["cat"])];
+        let manifest = shimmed(vec![route("cli.cat", &["cat"])]);
+        let mut report = Report::default();
+        report_inherited_path(&manifest, &modules, &mut report);
+
+        assert!(report.findings.is_empty());
+    }
+
+    /// A tombstone refuses execution, so it cannot count as coverage: the
+    /// command is still partial even though the manifest names the route.
+    #[test]
+    fn test_inherited_path_does_not_count_a_tombstone_as_installed() {
+        let modules = vec![bound("cli.cat", &["cat"]), bound("cli.cat.other", &["cat"])];
+        let mut tombstone = route("cli.cat", &["cat"]);
+        tombstone.tombstone = true;
+        let manifest = shimmed(vec![tombstone]);
+        let mut report = Report::default();
+        report_inherited_path(&manifest, &modules, &mut report);
+
+        assert_eq!(report.findings.len(), 1);
+        assert!(report.findings[0].detail.contains("0 of 2 routes"));
     }
 }
