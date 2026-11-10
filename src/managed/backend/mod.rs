@@ -12,6 +12,9 @@ use serde_json::{json, Value};
 
 use super::effect::Op;
 
+#[cfg(target_os = "linux")]
+mod linux;
+
 /// The backend a managed session is compiled for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -87,6 +90,57 @@ pub struct CapabilityReport {
     /// Human-readable reasons a capability or the backend is unavailable.
     pub missing: Vec<String>,
     pub notes: Vec<String>,
+    /// What the readiness probe actually executed. `None` on a host where the
+    /// probe cannot run at all (a non-Linux host, or the SBPL prototype).
+    pub readiness: Option<Readiness>,
+}
+
+/// The result of actually performing each isolation step, not inferring it.
+///
+/// This is the probe ISO-A7 asks for: the launcher must prove the mechanism
+/// works on this kernel, because a capability list derived from a version
+/// string is a guess. Each field is the *observed* outcome of the real call.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Readiness {
+    pub namespaces: bool,
+    pub uid_map: bool,
+    pub mount_view: bool,
+    pub no_replace_publish: bool,
+    pub landlock_installed: bool,
+    pub landlock_denies_outside: bool,
+    pub close_range: bool,
+}
+
+impl Readiness {
+    /// Whether every step the v1 profile needs succeeded.
+    pub fn complete(self) -> bool {
+        self.namespaces
+            && self.uid_map
+            && self.mount_view
+            && self.no_replace_publish
+            && self.landlock_installed
+            && self.landlock_denies_outside
+            && self.close_range
+    }
+
+    /// The failed steps, in the order the specification lists them.
+    pub fn failures(self) -> Vec<&'static str> {
+        let mut failed = Vec::new();
+        for (ok, name) in [
+            (self.namespaces, "namespaces"),
+            (self.uid_map, "uid_map"),
+            (self.mount_view, "mount_view"),
+            (self.no_replace_publish, "no_replace_publish"),
+            (self.landlock_installed, "landlock_installed"),
+            (self.landlock_denies_outside, "landlock_denies_outside"),
+            (self.close_range, "close_range"),
+        ] {
+            if !ok {
+                failed.push(name);
+            }
+        }
+        failed
+    }
 }
 
 impl CapabilityReport {
@@ -143,6 +197,7 @@ impl CapabilityReport {
             "capabilities": self.capabilities.iter().map(|c| c.as_str()).collect::<Vec<_>>(),
             "missing": self.missing,
             "notes": self.notes,
+            "readiness": self.readiness,
         })
     }
 }
@@ -160,6 +215,7 @@ pub fn probe(backend: BackendId) -> CapabilityReport {
             landlock_abi: None,
             capabilities: BTreeSet::new(),
             missing: vec!["SBPL is a prototype backend".into()],
+            readiness: None,
             notes: vec![
                 "macOS Seatbelt can express deny-inside-allow, but v1 does not \
                  activate a managed session on it; see the isolation-domain \
@@ -183,130 +239,12 @@ pub fn probe(backend: BackendId) -> CapabilityReport {
                         "the linux backend requires a Linux host; this is {}",
                         std::env::consts::OS
                     )],
+                    readiness: None,
                     notes: vec!["run the v1 managed profile in a Linux VM; the macOS SBPL \
                          probe does not validate it"
                         .into()],
                 }
             }
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-mod linux {
-    use super::{BackendId, Capability, CapabilityReport};
-    use std::collections::BTreeSet;
-
-    /// Query the Landlock ABI version, or `None` when Landlock is unavailable.
-    fn landlock_abi() -> Option<u32> {
-        const LANDLOCK_CREATE_RULESET_VERSION: libc::c_uint = 1;
-        // SAFETY: the ABI query takes a null attribute pointer and a zero size
-        // by contract, and returns a plain integer.
-        let abi = unsafe {
-            libc::syscall(
-                libc::SYS_landlock_create_ruleset,
-                std::ptr::null::<libc::c_void>(),
-                0usize,
-                LANDLOCK_CREATE_RULESET_VERSION,
-            )
-        };
-        (abi > 0).then_some(abi as u32)
-    }
-
-    fn kernel_release() -> Option<(u32, u32)> {
-        let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").ok()?;
-        let mut parts = release.trim().split('.');
-        let major = parts.next()?.parse().ok()?;
-        let minor = parts.next()?.parse().ok()?;
-        Some((major, minor))
-    }
-
-    fn user_namespaces_available() -> bool {
-        std::fs::read_to_string("/proc/sys/user/max_user_namespaces")
-            .ok()
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .is_some_and(|maximum| maximum > 0)
-    }
-
-    fn cgroup_v2_controllers() -> Option<String> {
-        std::fs::read_to_string("/sys/fs/cgroup/cgroup.controllers").ok()
-    }
-
-    pub(super) fn probe() -> CapabilityReport {
-        let abi = landlock_abi();
-        let release = kernel_release();
-        let mut capabilities = BTreeSet::new();
-        let mut missing = Vec::new();
-        let mut notes = Vec::new();
-
-        match abi {
-            Some(version) if version >= 1 => {
-                capabilities.insert(Capability::ReadFile);
-                capabilities.insert(Capability::ReadDir);
-                capabilities.insert(Capability::MakeReg);
-                if version >= 3 {
-                    capabilities.insert(Capability::TruncateDenial);
-                } else {
-                    missing.push(format!(
-                        "Landlock ABI {version} cannot deny truncate; ABI 3 or later is required"
-                    ));
-                }
-                if version >= 2 {
-                    notes.push(format!("Landlock ABI {version}: REFER is available"));
-                }
-            }
-            Some(version) => {
-                missing.push(format!(
-                    "Landlock ABI {version} is too old for a managed session"
-                ));
-            }
-            None => missing.push("Landlock is unavailable on this kernel".into()),
-        }
-
-        // `renameat2(RENAME_NOREPLACE)` needs the syscall and a filesystem that
-        // supports it. The launch-time readiness probe must confirm both on the
-        // real workspace; here it is reported as unavailable until then.
-        if release.is_some_and(|(major, minor)| (major, minor) >= (3, 15)) {
-            capabilities.insert(Capability::NoReplacePublish);
-            notes.push(
-                "renameat2 exists; the workspace filesystem's RENAME_NOREPLACE support \
-                 is exercised by the launch-time readiness probe"
-                    .into(),
-            );
-        } else {
-            missing.push("renameat2 is unavailable on this kernel".into());
-        }
-
-        if user_namespaces_available() {
-            capabilities.insert(Capability::Namespaces);
-        } else {
-            missing.push("unprivileged user namespaces are disabled".into());
-        }
-
-        match release {
-            Some((major, minor)) if (major, minor) >= (5, 9) => {
-                capabilities.insert(Capability::DescriptorBoundary);
-            }
-            _ => missing.push("close_range requires Linux 5.9 or later".into()),
-        }
-
-        match cgroup_v2_controllers() {
-            Some(controllers)
-                if controllers.split_whitespace().any(|c| c == "memory")
-                    && controllers.split_whitespace().any(|c| c == "pids") =>
-            {
-                capabilities.insert(Capability::ResourceLimits);
-            }
-            _ => missing.push("cgroup v2 with the memory and pids controllers is required".into()),
-        }
-
-        CapabilityReport {
-            backend: BackendId::Linux,
-            supported: missing.is_empty(),
-            landlock_abi: abi,
-            capabilities,
-            missing,
-            notes,
         }
     }
 }
@@ -351,6 +289,7 @@ mod tests {
             capabilities: BTreeSet::new(),
             missing: vec![],
             notes: vec![],
+            readiness: None,
         };
         let ops = BTreeSet::from([Op::ReadFile]);
         let unsatisfied = report.unsatisfied(&ops);
