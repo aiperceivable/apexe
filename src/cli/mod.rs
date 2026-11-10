@@ -69,9 +69,9 @@ pub struct Cli {
     #[arg(long, global = true, display_order = 1001)]
     pub log_stderr: bool,
 
-    /// Per-call timeout in seconds, overriding `default_timeout` from
-    /// `config.yaml`. Applies to every subcommand that runs a wrapped binary
-    /// or probes one during a scan.
+    /// Per-call timeout in seconds, overriding `default_timeout` and
+    /// `local_timeout` from `config.yaml`. Applies to every subcommand that
+    /// runs a wrapped binary or probes one during a scan.
     #[arg(long, global = true, value_name = "SECONDS", display_order = 1002, value_parser = clap::value_parser!(u64).range(1..=u64::MAX / 1000))]
     pub timeout: Option<u64>,
 
@@ -2372,6 +2372,7 @@ mod tests {
     fn test_timeout_override_beats_the_config_file() {
         let config = ApexeConfig {
             default_timeout: 30,
+            local_timeout: 0,
             ..ApexeConfig::default()
         };
         assert_eq!(
@@ -2379,9 +2380,18 @@ mod tests {
             30
         );
         assert_eq!(
-            config.with_timeout_override(Some(120)).default_timeout,
-            120,
+            config.clone().with_timeout_override(None).local_timeout,
+            0,
+            "no flag leaves the local surface unbounded"
+        );
+        let bounded = config.with_timeout_override(Some(120));
+        assert_eq!(
+            bounded.default_timeout, 120,
             "a CLI flag outranks config.yaml, matching --log-level"
+        );
+        assert_eq!(
+            bounded.local_timeout, 120,
+            "an explicit --timeout bounds the command the operator actually ran"
         );
     }
 

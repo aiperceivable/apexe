@@ -52,7 +52,10 @@ pub(super) fn options<'a>(
     ExecutorOptions {
         bindings_dir: Some(bindings),
         bindings_pattern: pattern,
-        timeout_ms: config.default_timeout.saturating_mul(1000),
+        // A local passthrough call is the caller's own command, so it takes
+        // `local_timeout` (0 = unbounded) rather than `default_timeout`. See
+        // `ApexeConfig::local_timeout`.
+        timeout_ms: config.local_timeout.saturating_mul(1000),
         acl_path: acl,
         filter,
         audit_path: Some(&config.audit_log),

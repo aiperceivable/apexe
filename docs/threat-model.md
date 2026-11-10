@@ -165,10 +165,15 @@ environment.
 
 ### 4.6 Resource bounds
 
-Output is capped at 64 MiB per stream (`DEFAULT_MAX_OUTPUT_BYTES`). A timeout is
-enforced with `kill_on_drop(true)`, so an expired timeout actually kills the
-child rather than merely returning an error to the caller — covered by
-`test_execute_subprocess_kills_the_child_when_the_timeout_elapses`.
+Output is capped at 64 MiB per stream (`DEFAULT_MAX_OUTPUT_BYTES`). A timeout,
+when configured, is enforced with `kill_on_drop(true)`, so an expired timeout
+actually kills the child rather than merely returning an error to the caller —
+covered by `test_execute_subprocess_kills_the_child_when_the_timeout_elapses`.
+Captured execution is bounded by `default_timeout` (30 s). Local passthrough is
+unbounded by default (`local_timeout: 0`): the caller owns a terminal and can
+interrupt the command, whereas a fixed wall clock killed legitimate long-running
+tools mid-flight. Set `local_timeout` when the local surface is driven by
+something that cannot be interrupted by hand.
 
 ### 4.7 Audit trail
 

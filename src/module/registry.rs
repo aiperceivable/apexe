@@ -291,9 +291,17 @@ pub async fn build_executor_with_openapi(
 /// 30 s was silently truncated to 30 s. Give the outer deadline a one-second
 /// grace over the module timer: the module then times out first, marks the
 /// error retryable, and records its outcome.
+///
+/// `0` disables both apcore deadlines. Leaving `Config::default()` in place
+/// would arm a 30 s per-call and 60 s global bound behind a caller that asked
+/// for no bound at all — the module-level timer would be gone and the pipeline
+/// would still kill the run at the minute mark.
 fn config_for_timeouts(timeout_ms: u64) -> Config {
     let mut config = Config::default();
-    if timeout_ms > 0 {
+    if timeout_ms == 0 {
+        config.executor.default_timeout = 0;
+        config.executor.global_timeout = 0;
+    } else {
         config.executor.default_timeout = timeout_ms.saturating_add(1_000);
         config.executor.global_timeout = config
             .executor
@@ -318,7 +326,13 @@ fn finish_executor(
 
     let mut executor = Executor::new(registry, config_for_timeouts(opts.timeout_ms));
     install_middleware(&executor, opts, audit.clone());
-    install_acl(&mut executor, opts, &registered_ids, audit.as_ref())?;
+    install_acl(
+        &mut executor,
+        opts,
+        &registered_ids,
+        audit.as_ref(),
+        !local_io,
+    )?;
     install_approval_handler(&mut executor, opts, audit.clone(), local_io);
 
     Ok(Arc::new(executor))
@@ -421,12 +435,24 @@ fn install_middleware(
 /// server) rather than degrade to an unguarded allow-all executor. apcore
 /// skips ACL enforcement entirely when no ACL is set, so silently continuing
 /// here would serve every tool to every caller.
+///
+/// `warn_unmatched_targets` is false on a local passthrough surface. A shim
+/// registers only the routes of the command it stands in for, so an ACL rule
+/// naming any *other* tool "matches no registered module" by construction —
+/// a fact about the scope of this process, not about the policy. Emitting it
+/// per call produced eleven warnings per `ls` (1.3 GB of log in a day) while
+/// saying nothing the operator could act on. `apexe env --check` and
+/// `apexe list --verbose` still report the same findings against the full
+/// installed module set, which is the surface where the answer means
+/// something. Fatal findings (a target that is a typo of a registered id) are
+/// still refused on every surface.
 #[allow(clippy::result_large_err)] // ModuleError is the crate-wide domain error
 fn install_acl(
     executor: &mut Executor,
     opts: &ExecutorOptions<'_>,
     registered_ids: &[String],
     audit: Option<&Arc<crate::governance::AuditManager>>,
+    warn_unmatched_targets: bool,
 ) -> Result<(), ModuleError> {
     let Some(acl_path) = opts.acl_path else {
         return Ok(());
@@ -448,7 +474,9 @@ fn install_acl(
     // and the surface it guards exist together. See `validate_acl_rules`
     // for the refuse-vs-warn split.
     let report = crate::governance::validate_acl_rules(acl.rules(), registered_ids);
-    report.emit_warnings();
+    if warn_unmatched_targets {
+        report.emit_warnings();
+    }
     if let Some(error) = report.fatal_error(acl_path) {
         return Err(error);
     }
@@ -1166,6 +1194,56 @@ mod tests {
         );
     }
 
+    /// A local shim registers only the routes of the command it stands in for,
+    /// so every *other* rule in a shared ACL "matches no registered module" by
+    /// construction. Warning about that on each call produced eleven log lines
+    /// per `ls` and 1.3 GB of log in a day. Suppressing the warning must not
+    /// suppress the refusal: a target that is a typo of a registered id is a
+    /// real defect and still refuses to start, on every surface.
+    #[test]
+    fn test_a_local_surface_still_refuses_a_near_miss_acl_target() {
+        let dir = TempDir::new().unwrap();
+        write_two_modules(dir.path());
+        let acl_path = write_acl(
+            dir.path(),
+            "  - callers: [\"*\"]\n    targets: [\"cp\"]\n    effect: deny\n",
+        );
+        let modules = crate::output::load_modules_from_dir(dir.path(), None).unwrap();
+        let mut opts = opts(Some(dir.path()));
+        opts.acl_path = Some(&acl_path);
+
+        let err = build_executor_from_modules_with_io(
+            &opts,
+            modules,
+            crate::module::ExecutionIo::Passthrough {
+                stdin: crate::module::StdinMode::Null,
+            },
+        )
+        .expect_err("a near-miss target must refuse to start even on a local surface");
+        assert!(
+            err.message.contains("cli.cp"),
+            "error should name the spelling that works: {}",
+            err.message
+        );
+    }
+
+    /// A zero timeout must reach apcore's pipeline too. Leaving its defaults in
+    /// place would bound an "unbounded" local call at 30 s per call and 60 s
+    /// per chain — the module timer would be gone and the run would still die.
+    #[test]
+    fn test_zero_timeout_disables_the_pipeline_deadlines() {
+        let config = config_for_timeouts(0);
+        assert_eq!(config.executor.default_timeout, 0);
+        assert_eq!(config.executor.global_timeout, 0);
+    }
+
+    #[test]
+    fn test_a_configured_timeout_keeps_its_grace_over_the_module_timer() {
+        let config = config_for_timeouts(5_000);
+        assert_eq!(config.executor.default_timeout, 6_000);
+        assert!(config.executor.global_timeout >= 10_000);
+    }
+
     #[test]
     fn test_build_executor_accepts_acl_targeting_registered_modules() {
         let dir = TempDir::new().unwrap();
@@ -1344,6 +1422,9 @@ mod tests {
         let config = config_for_timeouts(45_000);
         assert_eq!(config.executor.default_timeout, 46_000);
         assert!(config.executor.global_timeout >= 90_000);
-        assert_eq!(config_for_timeouts(0).executor.default_timeout, 30_000);
+        // `0` asks for no bound at all, so apcore's own 30 s / 60 s defaults
+        // must not survive behind it.
+        assert_eq!(config_for_timeouts(0).executor.default_timeout, 0);
+        assert_eq!(config_for_timeouts(0).executor.global_timeout, 0);
     }
 }

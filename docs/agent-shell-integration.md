@@ -158,9 +158,14 @@ rev1 判断错误。`PathGuard::from_env()`（`src/governance/path_guard.rs:439`
 
 结论：**没有证据需要修正**。补一条回归测试即可：`apexe sh` 在其进程 cwd 下启动，shim 命令看到的 cwd 与启动目录一致。
 
-### 4.4 timeout：是默认策略问题，不是缺失能力
+### 4.4 timeout：本地默认关闭，captured 默认 30 秒
 
-timeout 已支持配置与覆盖。需要决策的是"本地执行默认是否放宽/关闭"，而不是补一个不存在的开关。
+本地 passthrough（shim、`apexe exec` 原生 argv、`apexe sh`）默认**没有墙钟上限**：调用方自己拥有终端，`node`、`vim`、`ssh`、`npm run dev`、分页器和 agent 的 TUI 都天然长于任何固定值。此前把整条命令包在 `default_timeout` 里，30 秒就杀掉，继承的输出被打断成破碎的转义序列（agent TUI 就是这样坏的）。
+
+- 本地边界由 `local_timeout`（秒，`0` = 不限，默认 `0`）/ `APEXE_LOCAL_TIMEOUT` 配置；需要给无法手动中断的本地调用设上限时才填。
+- captured（`serve`、MCP、A2A、module-mode `exec`）仍用 `default_timeout`（默认 30 秒），因为那里没有人类按 Ctrl-C。
+- 全局 `--timeout` 同时约束两者。
+- 实现：`src/module/io.rs` 把 `0` 读作“不装定时器”；`config_for_timeouts(0)` 同时关闭 apcore 的 `executor.default_timeout` / `global_timeout`，否则模块层不限时、pipeline 仍会在 60 秒处掐断。
 
 ### 4.5 子进程路由与递归是独立问题
 

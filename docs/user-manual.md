@@ -309,8 +309,10 @@ overlay left closed, and the ACL targets that match no loaded module. The second
 list is usually a merge artefact — `apexe scan` keeps grants for tools it did not
 touch, and now drops the grants of a tool it *did* rescan when the route is gone
 — and it is the one place those dead entries can be seen without reading the
-policy by hand. `--scanned` lowers the grammar bar for declared routes; it cannot
-widen the set.
+policy by hand. A shim does not repeat the finding on every call: it registers
+only the routes of the command it stands in for, so every other rule in a shared
+ACL would look dead by construction. `--scanned` lowers the grammar bar for
+declared routes; it cannot widen the set.
 
 ### 4.5 `apexe config`
 
@@ -745,12 +747,19 @@ original `command_path`, and a selected subcommand's refusal is final.
 stdout and stderr are inherited; there is no JSON envelope or output buffering.
 A child exit code reaches the shell unchanged; a POSIX signal returns `128 +
 signal`. POSIX children restore default SIGPIPE, so an upstream pipeline stage
-exits quietly when its reader closes. The timeout still bounds execution;
-the captured-output byte cap does not apply to passthrough. ACL, approval,
-path checks, local environment inheritance and audit stay active. A call
-requiring approval prompts on the controlling terminal; a non-interactive
-process is refused with a remedy instead of blocking.
-The shim uses the current `default_timeout` / `APEXE_TIMEOUT` configuration.
+exits quietly when its reader closes. The captured-output byte cap does not
+apply to passthrough. ACL, approval, path checks, local environment inheritance
+and audit stay active. A call requiring approval prompts on the controlling
+terminal; a non-interactive process is refused with a remedy instead of blocking.
+
+A passthrough call has **no wall-clock bound by default**. A shim stands in for
+the command you typed, so `node`, `vim`, `ssh`, `npm run dev`, a pager and a long
+test run are bounded by your terminal, not by a timer; killing them mid-flight
+also truncates inherited output into torn escape sequences. Set `local_timeout`
+(or `APEXE_LOCAL_TIMEOUT`) to bound the local surface when it is driven by
+something that cannot be interrupted by hand. `default_timeout` still bounds
+captured execution, where no human is attached. An explicit global `--timeout`
+bounds both.
 
 Activation is idempotent. Scanners and wrapped children remove managed shim
 directories from PATH. Reinstalling updates owned links and refuses name
@@ -1246,6 +1255,7 @@ cache_dir: ~/.apexe/cache
 audit_log: ~/.apexe/audit.jsonl
 log_level: warn
 default_timeout: 30
+local_timeout: 0
 scan_depth: 2
 json_output_preference: true
 
@@ -1269,7 +1279,8 @@ allowed_paths:
 | `cache_dir` | path | `~/.apexe/cache` | Scan result cache |
 | `audit_log` | path | `~/.apexe/audit.jsonl` | Audit trail file |
 | `log_level` | string | `warn` | Diagnostic file log level: off, error, warn, info, debug, trace |
-| `default_timeout` | integer | `30` | CLI subprocess timeout (seconds) |
+| `default_timeout` | integer | `30` | Captured-execution timeout (seconds): `serve`, MCP, A2A and module-mode `exec`. `0` disables the bound |
+| `local_timeout` | integer | `0` | Local passthrough timeout (seconds) for shims, `apexe exec` native argv and `apexe sh`. `0` (the default) means no bound — a terminal, an editor or an agent session is the stop signal |
 | `scan_depth` | integer | `2` | Default depth for init, scan and verify; explicit scan/verify `--depth` overrides it |
 | `json_output_preference` | boolean | `true` | Prefer a detected, schema-declared JSON switch in newly generated captured-execution bindings |
 | `overlay_dirs` | list of paths | `[]` | Explicit local corpus directories; skip automatic downloads and load before personal overlays |
@@ -1312,6 +1323,7 @@ the remaining keys still apply.
 | `APEXE_CACHE_DIR` | `cache_dir` | `/tmp/apexe-cache` |
 | `APEXE_LOG_LEVEL` | `log_level` | `debug` |
 | `APEXE_TIMEOUT` | `default_timeout` | `120` |
+| `APEXE_LOCAL_TIMEOUT` | `local_timeout` | `600` |
 | `APEXE_SCAN_DEPTH` | `scan_depth` | `3` |
 | `APEXE_OVERLAY_DIRS` | `overlay_dirs` | `/opt/cli-facts/overlays:/srv/team-policy` |
 | `APEXE_DEFAULT_OVERLAY_REPOSITORY` | `default_overlay_repository` | `https://example.com/team/cli-permissions.git` |
@@ -1879,7 +1891,7 @@ toggle. Imported HTTP operations use a proxy instead of this subprocess path.
 - **Environment policy**: captured subprocesses (MCP/A2A and module JSON) do **not** inherit apexe's full environment. The env is cleared and only a base allowlist is passed through (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TZ`, `TMPDIR`), so secrets in apexe's environment cannot leak to — or be surfaced by — a wrapped tool. Local native exec, PATH shims and `apexe sh` instead inherit the caller's environment so credential helpers (`GH_TOKEN`, `AWS_PROFILE`, `KUBECONFIG`, `SSH_AUTH_SOCK`) keep working; `LD_PRELOAD`, `LD_LIBRARY_PATH` and `DYLD_*` are removed. This is a trust decision, not a sandbox: a local wrapped tool can use the caller's credentials.
 - **No shell**: arguments are passed as direct argv and handed to `execve` — no shell is spawned anywhere on the execution path, so shell metacharacters are inert data and pass through unchanged. (`curl --data '{"a":1}'` and every `jq` filter depend on that.) A caller-supplied value is rejected only for NUL and the five line terminators, which would corrupt the audit trail's framing, and for a leading `-`, which the wrapped tool would parse as an option the caller was not granted — see `CONTROL_CHARS` and `validate_argument_value` in `src/module/executor.rs`. The shell-metacharacter blacklist that remains (`BINDING_INJECTION_CHARS`) applies only to `json_flag` and the command path read out of a *binding file*, which is a build-time artifact rather than caller input.
 - **Captured output cap**: module JSON and server CLI calls cap stdout/stderr at 64 MiB each (`executor::DEFAULT_MAX_OUTPUT_BYTES`). A command that exceeds it gets `stdout_truncated`/`stderr_truncated: true` in the result. Native exec/shims inherit output streams instead of capturing them, so this cap does not apply there.
-- **Timeout kills the process**: the child is spawned with `kill_on_drop(true)`; when `--timeout`/`default_timeout` elapses, the subprocess is actually terminated rather than left running as an orphan.
+- **Timeout kills the process**: the child is spawned with `kill_on_drop(true)`; when the effective bound (`--timeout`, or `default_timeout` for captured calls and `local_timeout` for passthrough calls) elapses, the subprocess is actually terminated rather than left running as an orphan.
 - **stdin** is connected to `/dev/null` for module JSON, server CLI calls and unmanaged native calls. Reviewed native exec/shims inherit it only when their declared capabilities admit streaming stdin.
 
 Normal execution needs an external sandbox for OS containment. Explicit
@@ -2836,7 +2848,7 @@ more natural to type:
 |------|---------|-------------|
 | `--log-level <LEVEL>` | `warn` unless configured or overridden by the environment | Diagnostic log level; overrides `RUST_LOG`, `APEXE_LOG_LEVEL` and `config.yaml` |
 | `--log-stderr` | Off | Also mirror diagnostic logs to stderr |
-| `--timeout <SECS>` | `default_timeout` from `config.yaml` (30) | Per-call timeout override, applied to every subcommand that runs or probes a wrapped binary. Requires positive integer seconds representable as 64-bit milliseconds (at most 18446744073709551) |
+| `--timeout <SECS>` | `default_timeout` / `local_timeout` from `config.yaml` (30 / 0) | Per-call timeout override, applied to every subcommand that runs or probes a wrapped binary. Bounds captured and passthrough calls alike; `0` is rejected because it would kill every call before it started. Requires positive integer seconds representable as 64-bit milliseconds (at most 18446744073709551) |
 | `--error-format <FORMAT>` | `text` | Render CLI failures on stderr as `text` or a versioned `json` envelope; successful output and child status are unchanged |
 
 ```bash

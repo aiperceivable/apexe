@@ -36,7 +36,24 @@ pub struct ApexeConfig {
     pub config_dir: PathBuf,
     pub audit_log: PathBuf,
     pub log_level: String,
+    /// Wall-clock bound for a *captured* call, in seconds.
+    ///
+    /// Captured execution (`serve`, MCP, A2A, module-mode `exec`) has no human
+    /// attached to stop a hung command, so a bound is the only thing between a
+    /// stuck tool and a stuck caller. `0` means "no bound", matching apcore's
+    /// own reading of a zero timeout.
     pub default_timeout: u64,
+    /// Wall-clock bound for a *local passthrough* call, in seconds.
+    ///
+    /// `0` — the default — means no bound. A shim stands in for the command
+    /// the caller typed, and that caller owns a terminal: `node`, `vim`,
+    /// `ssh`, `npm run dev`, a pager and a long test run all legitimately
+    /// outlive any fixed number. Wrapping them in `default_timeout` killed
+    /// them mid-flight (an agent TUI died at 30 s and its output arrived as
+    /// torn escape sequences), which is why the local surface has its own
+    /// setting. Set this when the local surface is driven by something that
+    /// cannot be interrupted by hand.
+    pub local_timeout: u64,
     pub scan_depth: u32,
     pub json_output_preference: bool,
 
@@ -116,6 +133,7 @@ impl Default for ApexeConfig {
             audit_log: apexe_dir.join("audit.jsonl"),
             log_level: "warn".to_string(),
             default_timeout: 30,
+            local_timeout: 0,
             scan_depth: 2,
             json_output_preference: true,
             additional_denied_paths: Vec::new(),
@@ -127,6 +145,15 @@ impl Default for ApexeConfig {
     }
 }
 
+/// Convert a configured second count to milliseconds, rejecting overflow.
+///
+/// `0` passes through as `0`, which every caller reads as "no timeout".
+fn seconds_to_milliseconds(seconds: u64, label: &str) -> anyhow::Result<u64> {
+    seconds
+        .checked_mul(1000)
+        .ok_or_else(|| anyhow::anyhow!("{label} must not exceed {} seconds", u64::MAX / 1000))
+}
+
 impl ApexeConfig {
     /// Get the apcore CoreConfig, creating a default if not loaded.
     pub fn core_config(&self) -> CoreConfig {
@@ -136,20 +163,24 @@ impl ApexeConfig {
     /// Apply a global `--timeout` override, if the operator gave one.
     ///
     /// A CLI flag outranks `config.yaml`, matching how `--log-level` resolves.
+    /// It bounds *both* surfaces: `--timeout` is the operator saying "stop this
+    /// after N seconds", and honouring that only on captured calls would leave
+    /// the command they actually typed running past the bound they asked for.
     pub fn with_timeout_override(mut self, timeout: Option<u64>) -> Self {
         if let Some(seconds) = timeout {
             self.default_timeout = seconds;
+            self.local_timeout = seconds;
         }
         self
     }
 
     pub(crate) fn timeout_milliseconds(&self) -> anyhow::Result<u64> {
-        self.default_timeout.checked_mul(1000).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Execution timeout must not exceed {} seconds",
-                u64::MAX / 1000
-            )
-        })
+        seconds_to_milliseconds(self.default_timeout, "Execution timeout")
+    }
+
+    /// The local passthrough bound in milliseconds; `0` means unbounded.
+    pub(crate) fn local_timeout_milliseconds(&self) -> anyhow::Result<u64> {
+        seconds_to_milliseconds(self.local_timeout, "Local execution timeout")
     }
 
     /// Create all required directories if they do not exist.
@@ -181,7 +212,7 @@ impl ApexeConfig {
 ///    field by field (a field the file omits keeps its default -- see
 ///    `ApexeConfig`'s `#[serde(default)]`)
 /// 3. Check env vars (APEXE_BINDINGS_DIR, APEXE_CACHE_DIR, APEXE_LOG_LEVEL,
-///    APEXE_TIMEOUT) and override matching fields
+///    APEXE_TIMEOUT, APEXE_LOCAL_TIMEOUT) and override matching fields
 /// 4. Return ApexeConfig
 ///
 /// CLI-flag overrides are applied separately, after this returns: `--timeout`
@@ -439,6 +470,12 @@ fn apply_env_overrides(config: &mut ApexeConfig) {
             Err(_) => warn!("Invalid APEXE_TIMEOUT value: {val}, using default"),
         }
     }
+    if let Ok(val) = std::env::var("APEXE_LOCAL_TIMEOUT") {
+        match val.parse::<u64>() {
+            Ok(t) => config.local_timeout = t,
+            Err(_) => warn!("Invalid APEXE_LOCAL_TIMEOUT value: {val}, using default"),
+        }
+    }
     if let Ok(val) = std::env::var("APEXE_OVERLAY_DIRS") {
         // `:`-separated like PATH. apexe does not support Windows (see the
         // platform table in README.md), so there is no `;` variant to handle.
@@ -489,6 +526,7 @@ mod tests {
             "audit_log",
             "log_level",
             "default_timeout",
+            "local_timeout",
             "scan_depth",
             "json_output_preference",
             "additional_denied_paths",
@@ -726,6 +764,44 @@ mod tests {
     fn test_default_timeout_is_30() {
         let config = ApexeConfig::default();
         assert_eq!(config.default_timeout, 30);
+    }
+
+    /// The local surface has no wall clock by default: a shim stands in for the
+    /// command the caller typed, and that command may be an editor, a server or
+    /// an agent session. Bounding it at `default_timeout` killed them mid-run.
+    #[test]
+    fn test_default_local_timeout_is_unbounded() {
+        let config = ApexeConfig::default();
+        assert_eq!(config.local_timeout, 0);
+        assert_eq!(config.local_timeout_milliseconds().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_local_timeout_is_read_from_the_config_file() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.yaml");
+        std::fs::write(&config_path, "local_timeout: 900\n").unwrap();
+        let config = load_config(Some(config_path.as_path())).unwrap();
+        assert_eq!(config.local_timeout, 900);
+        assert_eq!(config.default_timeout, 30, "the captured bound is separate");
+    }
+
+    #[test]
+    fn test_env_var_override_local_timeout() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("nonexistent.yaml");
+
+        unsafe { std::env::set_var("APEXE_LOCAL_TIMEOUT", "45") };
+        let config = load_config(Some(config_path.as_path())).unwrap();
+        unsafe { std::env::remove_var("APEXE_LOCAL_TIMEOUT") };
+
+        assert_eq!(config.local_timeout, 45);
+        assert_eq!(
+            config.default_timeout, 30,
+            "APEXE_LOCAL_TIMEOUT must not widen the captured bound"
+        );
     }
 
     #[test]

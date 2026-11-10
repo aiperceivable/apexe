@@ -387,10 +387,12 @@ fields. The registered output schema matches the chosen mode.
 
 A child exit code reaches the shell unchanged. POSIX signal termination uses
 `128 + signal`; child SIGPIPE handling is restored to its default so an upstream
-pipeline stage exits quietly when its reader closes. The configured timeout
-still bounds execution and kill-on-drop cleans up the direct child. The captured
-output byte cap does not apply to inherited output. No JSON-output flag is
-silently appended to a passthrough command.
+pipeline stage exits quietly when its reader closes. The local bound is
+`local_timeout` (0 by default: no wall clock, because the caller's terminal is
+the stop signal), while `default_timeout` bounds captured execution; kill-on-drop
+cleans up the direct child. The captured output byte cap does not apply to
+inherited output. No JSON-output flag is silently appended to a passthrough
+command.
 
 ## 8. Security boundaries
 

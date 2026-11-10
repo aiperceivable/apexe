@@ -75,6 +75,14 @@ pub(crate) async fn execute(
             exit_code: exit_code(status),
         }))
     };
+    // `0` means the local surface configured no bound. A passthrough call is
+    // the caller's own command, and the caller's terminal is a better stop
+    // signal than a wall clock: an editor, a pager, `ssh`, `npm run dev` or an
+    // agent's own TUI outlives any fixed number, and killing them mid-flight
+    // truncates inherited output into torn escape sequences.
+    if timeout_ms == 0 {
+        return run.await;
+    }
     tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), run)
         .await
         .map_err(|_| {
@@ -83,4 +91,38 @@ pub(crate) async fn execute(
                 format!("Command '{binary}' timed out after {timeout_ms}ms"),
             )
         })?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn passthrough() -> ExecutionIo {
+        ExecutionIo::Passthrough {
+            stdin: StdinMode::Null,
+        }
+    }
+
+    /// The regression behind a broken agent session: a local shim wrapped the
+    /// caller's whole command in `default_timeout`, so an editor, a server or
+    /// a TUI was killed at 30 s and its inherited output arrived torn.
+    #[tokio::test]
+    async fn test_passthrough_with_zero_timeout_is_unbounded() {
+        let output = execute("sleep", &["1".to_string()], None, 0, 1024, passthrough())
+            .await
+            .expect("a zero local timeout must not arm a timer");
+        match output {
+            ExecutionOutput::Passthrough(output) => assert_eq!(output.exit_code, 0),
+            ExecutionOutput::Captured(_) => panic!("expected passthrough output"),
+        }
+    }
+
+    /// The knob still works: an operator who sets `local_timeout` gets a bound.
+    #[tokio::test]
+    async fn test_passthrough_with_a_timeout_still_bounds_the_run() {
+        let error = execute("sleep", &["10".to_string()], None, 50, 1024, passthrough())
+            .await
+            .expect_err("a bounded passthrough call must time out");
+        assert_eq!(error.code, ErrorCode::ModuleTimeout);
+    }
 }

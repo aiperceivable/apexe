@@ -2009,7 +2009,7 @@ fn timed_out_child_pid(fixture: &Fixture, pid_file: &Path) -> i32 {
         let started = std::time::Instant::now();
         let assertion = fixture
             .shim("slow")
-            .env("APEXE_TIMEOUT", "5")
+            .env("APEXE_LOCAL_TIMEOUT", "5")
             .timeout(std::time::Duration::from_secs(15))
             .assert()
             .failure()
@@ -2103,4 +2103,51 @@ fn test_plain_shell_command_prefix_still_invokes_the_path_shim() {
     let audit = std::fs::read_to_string(fixture.home.path().join(".apexe/audit.jsonl")).unwrap();
     assert!(audit.contains("execution"));
     assert!(audit.contains("cli.cat"));
+}
+
+/// A shim stands in for the command the caller typed, and that caller owns a
+/// terminal. Bounding it at the captured `default_timeout` killed long-running
+/// local tools mid-flight — an agent TUI died at 30 s and its inherited output
+/// arrived as torn escape sequences — so the local surface has no wall clock by
+/// default. `local_timeout` is the knob for callers that cannot be interrupted
+/// by hand.
+#[test]
+fn test_shim_outlives_the_captured_timeout() {
+    let fixture = Fixture::new();
+    let slow = fixture.script("slow-command", "sleep 2; printf 'finished\\n'");
+    fixture.write(
+        "cli.slow",
+        "slow",
+        slow.to_str().unwrap(),
+        json!({"type":"object","properties":{},"additionalProperties":false}),
+        false,
+    );
+    fixture.enable();
+    fixture
+        .shim("slow")
+        .env("APEXE_TIMEOUT", "1")
+        .assert()
+        .success()
+        .stdout("finished\n");
+}
+
+/// The local bound still exists for an operator who asks for one.
+#[test]
+fn test_shim_local_timeout_bounds_the_run() {
+    let fixture = Fixture::new();
+    let slow = fixture.script("slow-command", "sleep 5; printf 'finished\\n'");
+    fixture.write(
+        "cli.slow",
+        "slow",
+        slow.to_str().unwrap(),
+        json!({"type":"object","properties":{},"additionalProperties":false}),
+        false,
+    );
+    fixture.enable();
+    fixture
+        .shim("slow")
+        .env("APEXE_LOCAL_TIMEOUT", "1")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("timed out after 1000ms"));
 }

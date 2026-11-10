@@ -738,7 +738,8 @@ apexe config --init    # Creates ~/.apexe/config.yaml
 | `APEXE_BINDINGS_DIR` | `~/.apexe/bindings` | Binding file storage |
 | `APEXE_CACHE_DIR` | `~/.apexe/cache` | Scan cache |
 | `APEXE_LOG_LEVEL` | `warn` | Diagnostic file log level |
-| `APEXE_TIMEOUT` | `30` | CLI subprocess timeout (seconds) |
+| `APEXE_TIMEOUT` | `30` | Captured-execution timeout (seconds) |
+| `APEXE_LOCAL_TIMEOUT` | `0` | Local passthrough timeout (seconds); `0` means no bound |
 | `APEXE_SCAN_DEPTH` | `2` | Subcommand recursion depth |
 
 ---

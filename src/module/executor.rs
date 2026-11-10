@@ -1111,6 +1111,12 @@ pub async fn execute_subprocess(
         collect_output(&mut child, binary_path, max_output_bytes).await
     };
 
+    // `0` means "no timeout", the same reading apcore gives a zero
+    // `executor.default_timeout` (`resolve_effective_timeout_ms`). Arming a
+    // zero-duration timer instead would fail every call before it started.
+    if timeout_ms == 0 {
+        return run.await;
+    }
     let timeout_duration = std::time::Duration::from_millis(timeout_ms);
     match tokio::time::timeout(timeout_duration, run).await {
         Ok(result) => result,

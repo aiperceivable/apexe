@@ -225,7 +225,7 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 - `AuditManager`: apexe's own append-only JSONL trail (log `0o600`); records executions, refusals (`event`, `trace_id`, `caller_id`, `error_code`) and ACL allow/deny decisions. No input values, hashed or otherwise — see user-manual §9.2
 - `PathGuard` (v0.7.0): resolves every argument the schema types `x-apexe-path` and checks it against two compiled-in baselines — system paths bind writers, credential paths bind readers and writers alike. **Always-on, no flag.** `config.yaml` extends it with `additional_denied_paths` and relaxes it with `allowed_paths`; `apexe policy` reports the installed boundary
 - `ApprovalGate`: weighs actual escalating inputs and audits refusals. Local execution installs it automatically. MCP interactive approval is opt-in via `--enable-approval`; approval stores can be supplied through the MCP/A2A library builders
-- CLI process controls: always-on in `module/executor.rs` and `module/io.rs` — env scrubbing, direct argv, captured output cap, timeout + `kill_on_drop`, plus option-injection, control-character and `x-apexe-exec` guards. Native streams are inherited; there is no normal-execution SandboxManager
+- CLI process controls: always-on in `module/executor.rs` and `module/io.rs` — env scrubbing, direct argv, captured output cap, timeout + `kill_on_drop`, plus option-injection, control-character and `x-apexe-exec` guards. Captured execution is bounded by `default_timeout`; local passthrough is unbounded by default (`local_timeout: 0`) because the caller owns a terminal. Native streams are inherited; there is no normal-execution SandboxManager
 
 ## Tool Overlays & Variant Detection (v0.4.0, extended in v0.5.0)
 
