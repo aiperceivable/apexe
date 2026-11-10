@@ -192,7 +192,7 @@ fn test_merge_default_retires_the_grant_of_a_route_the_rescan_dropped() {
     // below would pass for the wrong reason.
     let before = apexe::governance::AclManager::from_config(&path).unwrap();
     assert_eq!(
-        before.explain("cli.git.log").effect,
+        before.explain_external("cli.git.log").effect,
         "allow",
         "the fixture must start from a live grant, or the prune assertion proves nothing"
     );
@@ -201,19 +201,19 @@ fn test_merge_default_retires_the_grant_of_a_route_the_rescan_dropped() {
     let narrowed = vec![fixture.module("cli.git.status")];
     let merged = apexe::governance::AclManager::merge_default(&path, &narrowed).unwrap();
 
-    let dropped = merged.explain("cli.git.log");
+    let dropped = merged.explain_external("cli.git.log");
     assert_eq!(
         dropped.matched_rule_index, None,
         "a grant for a closed route must not survive the rescan"
     );
     assert_eq!(dropped.effect, "deny");
     assert_eq!(
-        merged.explain("cli.git.status").effect,
+        merged.explain_external("cli.git.status").effect,
         "allow",
         "the route that still exists keeps its grant"
     );
     assert_eq!(
-        merged.explain("cli.docker.ps").effect,
+        merged.explain_external("cli.docker.ps").effect,
         "allow",
         "a tool this batch never touched keeps its grant"
     );

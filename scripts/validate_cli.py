@@ -201,6 +201,23 @@ def validate_list(session, fixture):
         ["list", "--bindings-dir", fixture.bindings, "--diagnostics"],
         check=contains("Scan inventory"),
     )
+    for caller in ["local", "@external"]:
+        session.run(
+            "list verbose caller " + caller,
+            [
+                "list",
+                "--bindings-dir",
+                fixture.bindings,
+                "--format",
+                "json",
+                "--verbose",
+                "--acl",
+                fixture.acl,
+                "--caller",
+                caller,
+            ],
+            check=contains('"x-acl-caller": "' + caller + '"'),
+        )
 
 
 def validate_execution(session, fixture):

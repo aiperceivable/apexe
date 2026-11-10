@@ -176,6 +176,17 @@ pub(super) fn scannable(module: &ScannedModule) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether a module's annotations satisfy the `readonly` policy.
+///
+/// This is the gate `--also` overrides: an operator who names a command is
+/// taking responsibility for its annotations. It is deliberately separate from
+/// [`scannable`], which `--also` must not override.
+pub(super) fn annotations_admit(module: &ScannedModule) -> bool {
+    module.annotations.as_ref().is_some_and(|annotations| {
+        annotations.readonly && !annotations.destructive && !annotations.open_world
+    })
+}
+
 /// Whether a module without an authoritative overlay may be exposed as a
 /// scanned route under `policy`.
 pub(super) fn scanned_admits(module: &ScannedModule, policy: crate::cli::ScannedPolicy) -> bool {
@@ -185,9 +196,41 @@ pub(super) fn scanned_admits(module: &ScannedModule, policy: crate::cli::Scanned
     if policy == crate::cli::ScannedPolicy::All {
         return true;
     }
-    module.annotations.as_ref().is_some_and(|annotations| {
-        annotations.readonly && !annotations.destructive && !annotations.open_world
-    })
+    annotations_admit(module)
+}
+
+/// The spelling of `policy` used in reports and in the manifest.
+pub(super) fn policy_name(policy: crate::cli::ScannedPolicy) -> &'static str {
+    use crate::cli::ScannedPolicy;
+    match policy {
+        ScannedPolicy::Off => "off",
+        ScannedPolicy::Readonly => "readonly",
+        ScannedPolicy::All => "all",
+    }
+}
+
+/// Why [`scanned_admits`] refuses `module` under `policy`.
+///
+/// `--also` admits a command by name regardless of this answer, so the reason
+/// is what an installation report needs in order to say what it overrode: a
+/// command admitted this way is not "readonly", and the manifest label alone
+/// would keep claiming it is.
+pub(super) fn scanned_refusal_reason(
+    module: &ScannedModule,
+    policy: crate::cli::ScannedPolicy,
+) -> &'static str {
+    use crate::cli::ScannedPolicy;
+    match policy {
+        ScannedPolicy::Off => "the scanned policy is off",
+        ScannedPolicy::All => "it failed a structural check",
+        ScannedPolicy::Readonly => match module.annotations.as_ref() {
+            None => "it declares no annotations, so it is not readonly",
+            Some(annotations) if annotations.destructive => "it is destructive",
+            Some(annotations) if annotations.open_world => "it is open-world",
+            Some(annotations) if !annotations.readonly => "it is not readonly",
+            Some(_) => "it failed a structural check",
+        },
+    }
 }
 
 fn validate_capabilities(module: &ScannedModule, contract: &ShimContract) -> anyhow::Result<()> {
@@ -959,6 +1002,38 @@ mod tests {
         assert!(
             format!("{error:#}").contains("cli.git.stash"),
             "refusal must name the missing module: {error:#}"
+        );
+    }
+
+    /// `--also` admits a command by name, so the report has to name the
+    /// annotation that the scanned policy would have refused. `rm` is the case
+    /// that produced a "readonly" installation running a destructive writer.
+    #[test]
+    fn test_scanned_refusal_reason_names_the_annotation_the_policy_refused() {
+        let mut destructive = module("cli.rm", &["rm"], false);
+        destructive.annotations = Some(apcore::module::ModuleAnnotations {
+            destructive: true,
+            ..Default::default()
+        });
+        assert_eq!(
+            scanned_refusal_reason(&destructive, crate::cli::ScannedPolicy::Readonly),
+            "it is destructive"
+        );
+
+        let mut open_world = module("cli.git.fetch", &["git", "fetch"], false);
+        open_world.annotations = Some(apcore::module::ModuleAnnotations {
+            readonly: true,
+            open_world: true,
+            ..Default::default()
+        });
+        assert_eq!(
+            scanned_refusal_reason(&open_world, crate::cli::ScannedPolicy::Readonly),
+            "it is open-world"
+        );
+
+        assert_eq!(
+            scanned_refusal_reason(&destructive, crate::cli::ScannedPolicy::Off),
+            "the scanned policy is off"
         );
     }
 }

@@ -270,8 +270,8 @@ fn test_init_is_idempotent_offline_and_preserves_custom_binding_and_policy() {
     assert_eq!(report["written"], json!([]));
     assert_eq!(std::fs::read(fixture.binding()).unwrap(), previous);
     let policy = apexe::governance::AclManager::from_config(&acl).unwrap();
-    assert_eq!(policy.explain("cli.toy").effect, "deny");
-    assert_eq!(policy.explain("cli.other").effect, "allow");
+    assert_eq!(policy.explain_external("cli.toy").effect, "deny");
+    assert_eq!(policy.explain_external("cli.other").effect, "allow");
 }
 
 #[test]
@@ -514,7 +514,7 @@ fn test_init_recreates_missing_acl_without_rewriting_bindings() {
     fixture.init(&[]);
     assert_eq!(std::fs::read(fixture.binding()).unwrap(), previous);
     let policy = apexe::governance::AclManager::from_config(&acl).unwrap();
-    assert_eq!(policy.explain("cli.toy").effect, "allow");
+    assert_eq!(policy.explain_external("cli.toy").effect, "allow");
 }
 
 /// A scan that changes no rule must not rewrite the policy file.

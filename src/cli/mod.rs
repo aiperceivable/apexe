@@ -1156,8 +1156,7 @@ pub struct ListArgs {
 
     /// Print each module's behavioral annotations (readonly, destructive,
     /// idempotent, requires_approval, open_world) and, when an ACL policy is
-    /// loaded, the allow/deny decision an unauthenticated caller would get
-    /// from it.
+    /// loaded, the allow/deny decision for the `--caller` identity.
     ///
     /// Rendered with apcore-cli's own `format_module_detail` -- the renderer
     /// `apcore-cli describe` uses -- rather than a bespoke one, so a module's
@@ -1185,6 +1184,16 @@ pub struct ListArgs {
     /// `serve`/`a2a`, naming a file here does not enable enforcement anywhere.
     #[arg(long)]
     pub acl: Option<PathBuf>,
+
+    /// Caller identity the `--verbose` ACL decision is evaluated as.
+    ///
+    /// Defaults to `local` -- the caller a shim and `apexe exec` run as on this
+    /// machine -- so the report answers "will this run here?". Pass `@external`
+    /// to answer the server-facing question instead: that is what an
+    /// unauthenticated `apexe serve` / `apexe a2a` client would get, and a
+    /// policy scoped to `callers: ['local']` denies every module under it.
+    #[arg(long, default_value = "local")]
+    pub caller: String,
 
     /// Only list modules whose underlying binary is still reachable on this
     /// machine.
@@ -1433,7 +1442,8 @@ impl ListArgs {
         if self.format == "json" {
             let mut items: Vec<serde_json::Value> = Vec::with_capacity(sorted.len());
             for module in &sorted {
-                let descriptor = Self::verbose_descriptor(module, acl_manager.as_ref())?;
+                let descriptor =
+                    Self::verbose_descriptor(module, acl_manager.as_ref(), &self.caller)?;
                 // Round-tripped through apcore-cli's own JSON renderer so the
                 // shape matches `apcore-cli describe` exactly (including which
                 // fields it keeps and how it surfaces `x-` extensions),
@@ -1454,7 +1464,7 @@ impl ListArgs {
 
         println!("{acl_header}\n");
         for module in sorted {
-            let descriptor = Self::verbose_descriptor(module, acl_manager.as_ref())?;
+            let descriptor = Self::verbose_descriptor(module, acl_manager.as_ref(), &self.caller)?;
             println!("{}", apcore_cli::format_module_detail(&descriptor, "table"));
         }
         Ok(())
@@ -1467,6 +1477,7 @@ impl ListArgs {
     fn verbose_descriptor(
         module: &apcore_toolkit::ScannedModule,
         acl_manager: Option<&crate::governance::AclManager>,
+        caller: &str,
     ) -> anyhow::Result<serde_json::Value> {
         let mut descriptor = serde_json::to_value(module)?;
         // The SDK detail renderer retains x- extensions but omits raw metadata.
@@ -1477,8 +1488,17 @@ impl ListArgs {
             }
         }
         if let Some(manager) = acl_manager {
-            let decision = manager.explain(&module.module_id);
+            // Evaluate as the caller that will actually run the command. A
+            // caller-agnostic `explain_external` here reported every module
+            // denied on an installation whose allow rule is scoped to
+            // `callers: ['local']`, while `exec --dry-run` and `env --check`
+            // reported the same module allowed.
+            let decision = manager.explain_for(caller, &module.module_id);
             if let Some(obj) = descriptor.as_object_mut() {
+                obj.insert(
+                    "x-acl-caller".to_string(),
+                    serde_json::Value::String(caller.to_string()),
+                );
                 obj.insert(
                     "x-acl-effect".to_string(),
                     serde_json::Value::String(decision.effect.clone()),
@@ -2553,6 +2573,7 @@ mod tests {
             verbose: false,
             acl: None,
             available_only: true,
+            caller: "local".to_string(),
         };
         let loaded = args.load_modules(tmp.path(), None).unwrap();
         let available: Vec<_> = loaded
@@ -2583,6 +2604,7 @@ mod tests {
             verbose: true,
             acl: Some(explicit_acl.clone()),
             available_only: false,
+            caller: "local".to_string(),
         };
         assert_eq!(args.resolve_acl_path(&config), Some(explicit_acl));
     }
@@ -2604,6 +2626,7 @@ mod tests {
             verbose: true,
             acl: None,
             available_only: false,
+            caller: "local".to_string(),
         };
         assert_eq!(args.resolve_acl_path(&config), Some(default_acl));
     }
@@ -2622,6 +2645,7 @@ mod tests {
             verbose: true,
             acl: None,
             available_only: false,
+            caller: "local".to_string(),
         };
         assert_eq!(args.resolve_acl_path(&config), None);
     }
@@ -2650,14 +2674,50 @@ mod tests {
         });
 
         let acl_manager = crate::governance::AclManager::from_config(&acl_path).unwrap();
-        let descriptor = ListArgs::verbose_descriptor(&module, Some(&acl_manager)).unwrap();
+        let descriptor =
+            ListArgs::verbose_descriptor(&module, Some(&acl_manager), "local").unwrap();
 
+        assert_eq!(descriptor["x-acl-caller"], "local");
         assert_eq!(descriptor["x-acl-effect"], "allow");
         assert!(descriptor["x-acl-rule"]
             .as_str()
             .unwrap()
             .contains("Auto-allow readonly CLI commands"));
         assert_eq!(descriptor["annotations"]["readonly"], true);
+    }
+
+    /// A policy scoped to `callers: ['local']` decides what a shim and
+    /// `apexe exec` may run, so `list --verbose` must evaluate as `local` by
+    /// default. Evaluating as `@external` reported the whole installation
+    /// denied while `exec --dry-run` and `env --check` reported it allowed.
+    #[test]
+    fn test_list_verbose_evaluates_as_the_caller_it_names() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let acl_path = tmp.path().join("acl.yaml");
+        std::fs::write(
+            &acl_path,
+            "rules:\n  - callers: [\"local\"]\n    targets: [\"*\"]\n    effect: allow\n    description: \"Local shell runs installed shims\"\ndefault_effect: deny\n",
+        )
+        .unwrap();
+
+        let module = apcore_toolkit::ScannedModule::new(
+            "cli.ls".to_string(),
+            "List files".to_string(),
+            serde_json::json!({"type": "object"}),
+            serde_json::json!({"type": "object"}),
+            vec!["cli".to_string()],
+            "exec:///bin/ls".to_string(),
+        );
+
+        let acl_manager = crate::governance::AclManager::from_config(&acl_path).unwrap();
+        let local = ListArgs::verbose_descriptor(&module, Some(&acl_manager), "local").unwrap();
+        assert_eq!(local["x-acl-caller"], "local");
+        assert_eq!(local["x-acl-effect"], "allow");
+
+        let external =
+            ListArgs::verbose_descriptor(&module, Some(&acl_manager), "@external").unwrap();
+        assert_eq!(external["x-acl-caller"], "@external");
+        assert_eq!(external["x-acl-effect"], "deny");
     }
 
     // ConfigArgs tests
@@ -2920,6 +2980,7 @@ mod tests {
             verbose: false,
             acl: None,
             available_only: false,
+            caller: "local".to_string(),
         };
         let result = args.load_modules(tmp.path(), None);
         assert!(

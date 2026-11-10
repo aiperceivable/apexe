@@ -270,15 +270,19 @@ apexe list [OPTIONS]
 |--------|---------|-------------|
 | `--format <FMT>` | `table` | Output format: `table` or `json` |
 | `--bindings-dir <DIR>` | `~/.apexe/bindings/` | Directory to read binding files from |
-| `--verbose` | off | Print each module's behavioral annotations and, with `--acl`, the ACL decision an unauthenticated caller would get |
+| `--verbose` | off | Print each module's behavioral annotations and, with `--acl`, the ACL decision for the `--caller` identity |
 | `--acl <PATH>` | `<config_dir>/acl.yaml` if present | ACL policy file to evaluate against in `--verbose` output, and to check for targets that match no loaded module in `--diagnostics`. Read-only report — does not enable enforcement anywhere |
+| `--caller <ID>` | `local` | Caller identity the `--verbose` ACL decision is evaluated as. `local` is what a shim and `apexe exec` run as on this machine; pass `@external` for the server-facing answer an unauthenticated `apexe serve` / `apexe a2a` client would get. The result is echoed as `x-acl-caller`, so a report always states which surface it describes |
 | `--diagnostics` | off | Show the scan inventory — routes a curated overlay left out of the declared surface — and, when a policy is loaded, the ACL targets that match no module on disk. See [Coverage and policy are two gates](#coverage-and-policy-are-two-gates) |
 | `--available-only` | off | Only list modules whose binary is reachable on this machine right now. `apexe serve`/`apexe a2a` apply this check unconditionally; here it is opt-in so the plain listing still shows everything ever scanned — see [Availability Filtering](#availability-filtering) |
 
 For terminal agents and CI, `apexe list --verbose --format json` returns an
 object with `acl_policy` and `modules`. Each module includes `id`,
-`input_schema`, `output_schema`, available annotations and optional
-`x-confidence` / `x-verification` extensions for validated runtime evidence.
+`input_schema`, `output_schema`, available annotations, optional
+`x-confidence` / `x-verification` extensions for validated runtime evidence,
+and — when a policy is loaded — `x-acl-caller`, `x-acl-effect` and
+`x-acl-rule`. The decision is evaluated as `--caller` (`local` by default), so
+it agrees with `exec --dry-run` and `env --check` on the same machine.
 This is discovery
 information; use `exec --dry-run` to validate a concrete call with its caller.
 Plain `list --format json` returns an array of module IDs and descriptions.
@@ -507,7 +511,7 @@ use the shell-specific setup below.
 | `--tags <TAGS>` | absent | Require every listed tag |
 | `--prefix <PREFIX>` | absent | Restrict the eligible module IDs |
 | `--scanned <off\|readonly\|all>` | `off` | Also route bindings without a reviewed overlay. `readonly` admits only readonly, non-destructive, closed-world modules; `all` admits any current binding |
-| `--also <NAMES>` | absent | Admit these shim commands even when `--scanned` excludes them. Comma-separated command names (`node,python3`), matched against the name the shim installs. This is how an interpreter is governed without taking `all`: `node` is neither readonly nor destructive, so `readonly` skips it |
+| `--also <NAMES>` | absent | Admit these shim commands even when `--scanned` excludes them. Comma-separated command names (`node,python3`), matched against the name the shim installs. This is how an interpreter is governed without taking `all`: `node` is neither readonly nor destructive, so `readonly` skips it. The name overrides the annotation gate only — never the structural checks (current scan format, usable command path, reachable binary). Every admission the policy would have refused is reported by `env --enable` and `env --check` |
 | `--exclude <NAMES>` | absent | Refuse these shim commands even when the policy admits them |
 | `--shell <SHELL>` | detected for `--enable`; `sh` for printed activation | Choose `sh`, `bash`, `zsh`, `fish` or `powershell` |
 
@@ -536,6 +540,20 @@ inference is not a reviewed contract, so path-guard coverage for arguments the
 scanner did not type may be incomplete. Use `readonly` for the conservative
 subset and `all` only after reviewing the bindings. `apexe sh --check` lists
 scanned routes separately from verified ones.
+
+`--scanned` is a coverage filter, not a permission gate: it decides which
+unreviewed commands get a shim at all, while the ACL decides which calls a
+caller may run. `--also` adds commands to that coverage by name, so
+`--scanned readonly --also rm` installs an `rm` shim while the manifest still
+records `readonly` as the policy. That grant is legitimate — the operator named
+the command — but it must not be silent, so `env --enable` prints each command
+admitted this way with the annotation the policy would have refused
+(`destructive`, `open-world`, `not readonly`, or `the scanned policy is off`),
+and `env --check` reports `POSTURE <command>` for the same set. The `readonly`
+label is not protection for a command `--also` named; the ACL is where
+permission lives. `--also` also cannot make a structurally ineligible binding
+eligible: a stale scan format, an unusable command path or an unreachable
+binary is refused regardless of the name.
 
 For an existing installation, reload retains its binding directory, binding
 pattern, explicit ACL path, prefix, tags, `--also`/`--exclude` names and scanned

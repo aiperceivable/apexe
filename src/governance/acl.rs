@@ -440,8 +440,16 @@ impl AclManager {
         &self.default_effect
     }
 
-    /// Explain how this policy would decide a call to `target_id`, for
-    /// display (`apexe list --verbose`) rather than enforcement.
+    /// Explain how this policy would decide an **unauthenticated** call to
+    /// `target_id`, for display rather than enforcement.
+    ///
+    /// The caller is fixed to `@external`, so this answers only the
+    /// server-facing question ("what would an MCP/A2A client get?"). A local
+    /// installation runs its shims and `apexe exec` calls as `local`, and a
+    /// policy scoped to `callers: ['local']` therefore disagrees with this
+    /// method for every module. Use [`Self::explain_for`] with the caller that
+    /// will actually run the command; this name states its caller so a report
+    /// cannot silently answer the wrong question.
     ///
     /// Walks the rules in the same first-match-wins order [`ACL::check`]
     /// does, reusing [`target_patterns`] (which already resolves `$or`/`$not`
@@ -462,7 +470,7 @@ impl AclManager {
     /// caller's identity and role, which this method has neither of.
     /// [`AclDecision::matched_rule_has_conditions`] flags that gap rather
     /// than silently guessing.
-    pub fn explain(&self, target_id: &str) -> AclDecision {
+    pub fn explain_external(&self, target_id: &str) -> AclDecision {
         // apcore's own sentinel rather than a second copy of the literal: the
         // value has to agree with what `ACL::check_inner` resolves a `None`
         // caller to, and a private constant here could drift from it silently.
@@ -880,7 +888,7 @@ mod tests {
     fn test_generated_acl_destructive_overrides_readonly_annotation() {
         let module = make_module_with_annotations("cli.conflicting", true, true);
         let policy = AclManager::generate_default(&[module]);
-        assert_eq!(policy.explain("cli.conflicting").effect, "deny");
+        assert_eq!(policy.explain_external("cli.conflicting").effect, "deny");
         assert_eq!(policy.acl.rules().len(), 1);
     }
 
@@ -1576,7 +1584,7 @@ mod tests {
         let modules = vec![make_module_with_annotations("cli.git.status", true, false)];
         let mgr = AclManager::generate_default(&modules);
 
-        let decision = mgr.explain("cli.git.status");
+        let decision = mgr.explain_external("cli.git.status");
 
         assert_eq!(decision.effect, "allow");
         assert_eq!(decision.matched_rule_index, Some(0));
@@ -1592,7 +1600,7 @@ mod tests {
         let modules = vec![make_module_with_annotations("cli.rm", false, true)];
         let mgr = AclManager::generate_default(&modules);
 
-        let decision = mgr.explain("cli.rm");
+        let decision = mgr.explain_external("cli.rm");
 
         assert_eq!(decision.effect, "deny");
         assert_eq!(
@@ -1606,7 +1614,7 @@ mod tests {
         let modules = vec![make_module_with_annotations("cli.echo", false, false)];
         let mgr = AclManager::generate_default(&modules);
 
-        let decision = mgr.explain("cli.echo");
+        let decision = mgr.explain_external("cli.echo");
 
         assert_eq!(decision.effect, "deny");
         assert_eq!(decision.default_effect, "deny");
@@ -1626,7 +1634,7 @@ mod tests {
         let mgr = AclManager::generate_default(&modules);
 
         for id in ["cli.git.status", "cli.rm", "cli.echo"] {
-            let decision = mgr.explain(id);
+            let decision = mgr.explain_external(id);
             let allowed = mgr.acl.check(Some(apcore::EXTERNAL_CALLER), id, None);
             assert_eq!(
                 decision.effect == "allow",
@@ -1651,7 +1659,7 @@ mod tests {
             default_effect: "deny".to_string(),
         };
 
-        let decision = mgr.explain("cli.deploy");
+        let decision = mgr.explain_external("cli.deploy");
 
         assert!(decision.matched_rule_has_conditions);
     }

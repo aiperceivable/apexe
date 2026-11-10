@@ -473,8 +473,8 @@ fn test_scan_automatically_installs_default_corpus_and_generates_acl() {
     assert_eq!(installed[0]["commit"], fixture.git(&["rev-parse", "HEAD"]));
     let policy =
         apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml")).unwrap();
-    assert_eq!(policy.explain("cli.fixture").effect, "allow");
-    assert_eq!(policy.explain("cli.unscanned").effect, "deny");
+    assert_eq!(policy.explain_external("cli.fixture").effect, "allow");
+    assert_eq!(policy.explain_external("cli.unscanned").effect, "deny");
 }
 
 #[cfg(unix)]
@@ -512,7 +512,7 @@ fn test_scan_unavailable_default_corpus_falls_back_and_denies_unknown_module() {
     assert_eq!(fixture.list(), json!([]));
     let policy =
         apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml")).unwrap();
-    assert_eq!(policy.explain("cli.fixture").effect, "deny");
+    assert_eq!(policy.explain_external("cli.fixture").effect, "deny");
 }
 
 #[cfg(unix)]
@@ -523,7 +523,7 @@ fn test_scan_offline_without_cache_does_not_install_corpus() {
     assert!(!fixture.root().exists());
     let policy =
         apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml")).unwrap();
-    assert_eq!(policy.explain("cli.fixture").effect, "deny");
+    assert_eq!(policy.explain_external("cli.fixture").effect, "deny");
 }
 
 #[cfg(unix)]
@@ -550,7 +550,7 @@ fn test_scan_configured_local_corpus_skips_download_and_supplies_annotations() {
     assert!(!fixture.root().exists());
     let policy =
         apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml")).unwrap();
-    assert_eq!(policy.explain("cli.fixture").effect, "allow");
+    assert_eq!(policy.explain_external("cli.fixture").effect, "allow");
 }
 
 #[cfg(unix)]
@@ -593,7 +593,7 @@ fn test_scan_automatic_corpus_respects_platform_and_variant() {
             apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml"))
                 .unwrap();
         assert_eq!(
-            policy.explain("cli.fixture").effect,
+            policy.explain_external("cli.fixture").effect,
             "deny",
             "{mismatch} mismatch must not grant access"
         );
@@ -609,8 +609,8 @@ fn test_scan_automatic_corpus_preserves_manual_rules_and_default_effect() {
     fixture.automatic_scan().assert().success();
     let policy =
         apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml")).unwrap();
-    assert_eq!(policy.explain("cli.fixture").effect, "deny");
-    assert_eq!(policy.explain("cli.unscanned").effect, "deny");
+    assert_eq!(policy.explain_external("cli.fixture").effect, "deny");
+    assert_eq!(policy.explain_external("cli.unscanned").effect, "deny");
     assert!(
         std::fs::read_to_string(fixture.home.join(".apexe/acl.yaml"))
             .unwrap()
@@ -672,7 +672,7 @@ fn test_scan_default_corpus_does_not_override_installed_team_corpus() {
         .success();
     let policy =
         apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml")).unwrap();
-    assert_eq!(policy.explain("cli.fixture").effect, "deny");
+    assert_eq!(policy.explain_external("cli.fixture").effect, "deny");
     assert_eq!(fixture.list().as_array().unwrap().len(), 2);
 }
 
@@ -694,5 +694,5 @@ fn test_scan_automatic_corpus_rejects_invalid_downloaded_rules() {
     assert_eq!(fixture.list(), json!([]));
     let policy =
         apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml")).unwrap();
-    assert_eq!(policy.explain("cli.fixture").effect, "deny");
+    assert_eq!(policy.explain_external("cli.fixture").effect, "deny");
 }

@@ -112,7 +112,7 @@ impl EnvArgs {
             return self.refresh(&directory, config);
         }
         if self.enable || self.reload {
-            let manifest = self.plan(config)?;
+            let (manifest, also_overrides) = self.plan(config)?;
             super::shell_init::initialize(&directory, self.shell, self.rc_file.as_deref(), || {
                 install(&directory, manifest, self.replace_unowned)
             })?;
@@ -122,6 +122,7 @@ impl EnvArgs {
             if self.enable {
                 super::agent::report_unconfigured_hosts(&directory);
                 report_acl_coverage(&directory, config);
+                report_also_overrides(&also_overrides);
             }
             return Ok(());
         }
@@ -150,7 +151,7 @@ impl EnvArgs {
         });
         let mut config = config.clone();
         config.bindings_pattern = previous.bindings_pattern;
-        let manifest = self.plan(&config)?;
+        let (manifest, _) = self.plan(&config)?;
         if self.shell.is_some() || self.rc_file.is_some() {
             super::shell_init::initialize(directory, self.shell, self.rc_file.as_deref(), || {
                 install(directory, manifest, self.replace_unowned)
@@ -160,7 +161,7 @@ impl EnvArgs {
         }
     }
 
-    fn plan(&self, config: &ApexeConfig) -> anyhow::Result<Manifest> {
+    fn plan(&self, config: &ApexeConfig) -> anyhow::Result<(Manifest, Vec<AlsoOverride>)> {
         let bindings =
             std::path::absolute(self.bindings_dir.as_deref().unwrap_or(&config.bindings_dir))?;
         let filter = ModuleFilter {
@@ -195,26 +196,54 @@ impl EnvArgs {
             crate::output::load_modules_from_dir(&bindings, config.bindings_pattern.as_deref())?;
         let executor =
             crate::module::registry::build_executor_from_modules(&options, modules.clone())?;
-        let commands = collect_routes(
+        let CollectedRoutes {
+            commands,
+            overrides: also_overrides,
+        } = collect_routes(
             &modules,
             |id| executor.registry().has(id),
             self.scanned.unwrap_or_default(),
             &filter,
         )?;
-        Ok(Manifest {
-            version: MANIFEST_VERSION,
-            executable: std::env::current_exe()?.canonicalize()?,
-            bindings_dir: bindings,
-            bindings_pattern: config.bindings_pattern.clone(),
-            acl: self.acl.as_deref().map(std::path::absolute).transpose()?,
-            filter,
-            commands,
-            scanned: self.scanned.unwrap_or_default(),
-            activation_script: None,
-            deactivation_script: None,
-            source_scripts_dir: None,
-        })
+        Ok((
+            Manifest {
+                version: MANIFEST_VERSION,
+                executable: std::env::current_exe()?.canonicalize()?,
+                bindings_dir: bindings,
+                bindings_pattern: config.bindings_pattern.clone(),
+                acl: self.acl.as_deref().map(std::path::absolute).transpose()?,
+                filter,
+                commands,
+                scanned: self.scanned.unwrap_or_default(),
+                activation_script: None,
+                deactivation_script: None,
+                source_scripts_dir: None,
+            },
+            also_overrides,
+        ))
     }
+}
+
+/// A command the installation admits only because `--also` named it.
+///
+/// `--scanned readonly` admits a module when its annotations say readonly,
+/// non-destructive and closed-world. `--also` overrides that test by name, so
+/// the installation can hold a command the policy would refuse while its
+/// manifest still says `readonly`. Recording the reason lets `env --enable`
+/// and `env --check` state the override instead of leaving the label to be
+/// believed.
+#[derive(Debug)]
+pub(super) struct AlsoOverride {
+    pub command: String,
+    pub module_id: String,
+    pub reason: &'static str,
+}
+
+/// The routes an installation exposes, plus the admissions `--also` forced.
+#[derive(Debug)]
+struct CollectedRoutes {
+    commands: BTreeMap<String, Vec<Route>>,
+    overrides: Vec<AlsoOverride>,
 }
 
 fn collect_routes(
@@ -222,9 +251,10 @@ fn collect_routes(
     registered: impl Fn(&str) -> bool,
     scanned: super::ScannedPolicy,
     filter: &ModuleFilter,
-) -> anyhow::Result<BTreeMap<String, Vec<Route>>> {
+) -> anyhow::Result<CollectedRoutes> {
     let mut commands: BTreeMap<String, Vec<Route>> = BTreeMap::new();
     let mut binaries = BTreeMap::new();
+    let mut overrides: Vec<AlsoOverride> = Vec::new();
     for module in modules {
         if !registered(&module.module_id) {
             continue;
@@ -252,7 +282,7 @@ fn collect_routes(
             continue;
         }
         // `--also` names the command the operator wants governed. It outranks
-        // the scanned policy on purpose: `--scanned readonly` admits only
+        // the annotation gate on purpose: `--scanned readonly` admits only
         // readonly modules, and an interpreter is neither readonly nor
         // destructive, so without this the only way to govern one is to admit
         // every heuristic route with `--scanned all`.
@@ -260,7 +290,32 @@ fn collect_routes(
         let tier = match super::shim::eligible(module) {
             Ok(()) => super::shim::RouteTier::Verified,
             Err(error) => {
-                if super::shim::scanned_admits(module, scanned) || named {
+                // Structural eligibility is not negotiable. `--also` names a
+                // command to govern; it does not vouch for a binding whose
+                // binary is gone or whose scan format is stale. Letting the name
+                // override this installed a shim that could only fail, and then
+                // reported it as an admission the policy refused.
+                if super::shim::scannable(module).is_err() {
+                    tracing::warn!(
+                        module_id = %module.module_id,
+                        %error,
+                        "Excluding module from shims: not structurally eligible"
+                    );
+                    continue;
+                }
+                let admitted_by_scan = super::shim::scanned_admits(module, scanned);
+                if admitted_by_scan || named {
+                    // `--also` outranks the annotation gate. Record when it did,
+                    // so the installation can report a command the policy would
+                    // have refused instead of letting `scanned: readonly` imply
+                    // the surface is still readonly.
+                    if named && !admitted_by_scan {
+                        overrides.push(AlsoOverride {
+                            command: path[0].clone(),
+                            module_id: module.module_id.clone(),
+                            reason: super::shim::scanned_refusal_reason(module, scanned),
+                        });
+                    }
                     // Admitted, but say which kind of admission this is: a
                     // binding older than the grammar stamp is inherited trust,
                     // not an earned one (issue #47).
@@ -308,7 +363,10 @@ fn collect_routes(
         !commands.is_empty(),
         "No shim-eligible modules; rescan using reviewed overlays or enable --scanned"
     );
-    Ok(commands)
+    Ok(CollectedRoutes {
+        commands,
+        overrides,
+    })
 }
 
 fn entry_path(directory: &Path, name: &str) -> PathBuf {
@@ -502,8 +560,39 @@ mod acl_coverage_tests {
         assert_eq!(acl.explain_for("local", "cli.ls").effect, "allow");
         assert_eq!(acl.explain_for("local", "cli.rm").effect, "deny");
         // The generic caller keeps the default-deny it always had.
-        assert_eq!(acl.explain("cli.ls").effect, "deny");
+        assert_eq!(acl.explain_external("cli.ls").effect, "deny");
     }
+}
+
+/// Name commands the installation holds only because `--also` overrode the
+/// scanned policy.
+///
+/// `--also rm,mv,cp` under `--scanned readonly` installs writers while the
+/// manifest keeps saying `readonly`. The override is legitimate (an
+/// interpreter is never readonly, and `--also` is the narrow way to govern
+/// one), but it must not be silent: the operator set the policy by the flag
+/// they typed, so the report has to name what that flag let through.
+fn report_also_overrides(overrides: &[AlsoOverride]) {
+    use std::io::IsTerminal;
+    if overrides.is_empty() || !std::io::stdout().is_terminal() {
+        return;
+    }
+    println!(
+        "{} command(s) installed only because --also named them; the scanned policy would \
+         refuse them:",
+        overrides.len()
+    );
+    for entry in overrides {
+        println!(
+            "  {}: {} ({})",
+            entry.command, entry.reason, entry.module_id
+        );
+    }
+    println!(
+        "  These run as scanned routes: argv is validated against the scanned grammar and \
+         refused when a token is undeclared. A reviewed overlay is the only way to earn \
+         reviewed trust for them."
+    );
 }
 
 /// Print what this installation admits, command by command.
@@ -901,5 +990,104 @@ mod tests {
         retain_removed_routes(&mut current, Some(&old));
         assert_eq!(current.commands["git"].len(), 1);
         assert!(current.commands["git"][0].tombstone);
+    }
+
+    /// A structurally valid binding with no reviewed overlay, so `eligible`
+    /// fails on the contract and the scanned policy decides.
+    fn binding(module_id: &str, command: &str, target: &str) -> apcore_toolkit::ScannedModule {
+        let mut module = apcore_toolkit::ScannedModule::new(
+            module_id.into(),
+            "shim fixture".into(),
+            serde_json::json!({"type": "object"}),
+            serde_json::json!({"type": "object"}),
+            vec![],
+            target.into(),
+        );
+        module
+            .metadata
+            .insert("command_path".into(), serde_json::json!([command]));
+        module
+            .metadata
+            .insert("apexe_scan_format".into(), serde_json::json!(3));
+        module
+    }
+
+    fn also(names: &[&str]) -> crate::module::ModuleFilter {
+        crate::module::ModuleFilter {
+            also: names.iter().map(|name| (*name).to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// `--also` names a command to govern; it does not vouch for a binding
+    /// whose binary is gone. Admitting one installed a shim that could only
+    /// fail and reported it as an admission the policy refused.
+    #[test]
+    fn test_also_cannot_admit_a_structurally_ineligible_binding() {
+        let module = binding(
+            "cli.ghost",
+            "ghost",
+            "exec:///nonexistent/apexe-test-binary",
+        );
+        let error = collect_routes(
+            &[module],
+            |_| true,
+            crate::cli::ScannedPolicy::Readonly,
+            &also(&["ghost"]),
+        )
+        .expect_err("--also must not vouch for a missing binary");
+        assert!(
+            format!("{error:#}").contains("No shim-eligible modules"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    /// The admission is legitimate, but it must be recorded: a manifest that
+    /// says `readonly` while holding `rm` is the lie the report exists to
+    /// prevent.
+    #[test]
+    fn test_also_records_the_annotation_it_overrode() {
+        let mut module = binding("cli.rm", "rm", "exec:///bin/ls");
+        module.annotations = Some(apcore::module::ModuleAnnotations {
+            destructive: true,
+            ..Default::default()
+        });
+
+        let collected = collect_routes(
+            &[module],
+            |_| true,
+            crate::cli::ScannedPolicy::Readonly,
+            &also(&["rm"]),
+        )
+        .unwrap();
+
+        assert_eq!(collected.commands.len(), 1);
+        assert_eq!(collected.overrides.len(), 1);
+        assert_eq!(collected.overrides[0].command, "rm");
+        assert_eq!(collected.overrides[0].reason, "it is destructive");
+    }
+
+    /// Naming a command the policy already admits is not an override, so the
+    /// report stays silent. `--also node,python3` under `--scanned all` is the
+    /// case this protects.
+    #[test]
+    fn test_also_is_silent_when_the_policy_already_admits_the_module() {
+        let mut module = binding("cli.cat", "cat", "exec:///bin/ls");
+        module.annotations = Some(apcore::module::ModuleAnnotations {
+            readonly: true,
+            open_world: false,
+            ..Default::default()
+        });
+
+        let collected = collect_routes(
+            &[module],
+            |_| true,
+            crate::cli::ScannedPolicy::Readonly,
+            &also(&["cat"]),
+        )
+        .unwrap();
+
+        assert_eq!(collected.commands.len(), 1);
+        assert!(collected.overrides.is_empty());
     }
 }

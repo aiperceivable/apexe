@@ -455,7 +455,59 @@ fn check_bindings(
         }
     }
     report_inherited_path(manifest, &modules, report);
+    report_also_posture(manifest, &modules, report);
     Some(executor.registry().module_ids_full(true))
+}
+
+/// Name commands the installation holds only because `--also` overrode the
+/// scanned policy.
+///
+/// The manifest's `scanned` label is what an operator reads later, and
+/// `--also` can make that label false: `--scanned readonly --also rm,mv,cp`
+/// installs three destructive commands while the manifest still says
+/// `readonly`. This is the only place the label and the contents are compared.
+fn report_also_posture(manifest: &Manifest, modules: &[ScannedModule], report: &mut Report) {
+    if manifest.filter.also.is_empty() {
+        return;
+    }
+    let installed: BTreeSet<&str> = manifest
+        .commands
+        .values()
+        .flatten()
+        .filter(|route| !route.tombstone)
+        .map(|route| route.module_id.as_str())
+        .collect();
+    for module in modules {
+        if !installed.contains(module.module_id.as_str()) {
+            continue;
+        }
+        if crate::cli::shim::scanned_admits(module, manifest.scanned) {
+            continue;
+        }
+        let Some(name) = module
+            .metadata
+            .get("command_path")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|path| path.first())
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        if !manifest.filter.also.iter().any(|also| also == name) {
+            continue;
+        }
+        report.add(
+            Status::Warn,
+            &format!("POSTURE {name}"),
+            format!(
+                "--scanned {} would refuse it ({}), but --also names it, so it is installed: \
+                 the shim surface is wider than the policy label. Drop it from --also or \
+                 govern it with a reviewed overlay",
+                crate::cli::shim::policy_name(manifest.scanned),
+                crate::cli::shim::scanned_refusal_reason(module, manifest.scanned)
+            ),
+        );
+    }
 }
 
 /// Name shimmed commands that cover only part of their bindings.
@@ -743,6 +795,44 @@ mod tests {
         let manifest = shimmed(vec![route("cli.cat", &["cat"])]);
         let mut report = Report::default();
         report_inherited_path(&manifest, &modules, &mut report);
+
+        assert!(report.findings.is_empty());
+    }
+
+    /// `--scanned readonly --also rm` installs a destructive writer while the
+    /// manifest keeps saying `readonly`. The check has to say so, because the
+    /// label is what an operator reads later.
+    #[test]
+    fn test_posture_warns_when_also_admits_a_command_the_policy_refuses() {
+        let mut destructive = bound("cli.rm", &["rm"]);
+        destructive.annotations = Some(apcore::module::ModuleAnnotations {
+            destructive: true,
+            ..Default::default()
+        });
+        let modules = vec![destructive];
+
+        let mut manifest = shimmed(vec![route("cli.rm", &["rm"])]);
+        manifest.commands = [("rm".to_string(), vec![route("cli.rm", &["rm"])])]
+            .into_iter()
+            .collect();
+        manifest.scanned = crate::cli::ScannedPolicy::Readonly;
+        manifest.filter.also = vec!["rm".to_string()];
+
+        let mut report = Report::default();
+        report_also_posture(&manifest, &modules, &mut report);
+
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].status, Status::Warn);
+        assert_eq!(report.findings[0].label, "POSTURE rm");
+        assert!(report.findings[0].detail.contains("destructive"));
+    }
+
+    #[test]
+    fn test_posture_stays_silent_without_an_also_override() {
+        let modules = vec![bound("cli.rm", &["rm"])];
+        let manifest = shimmed(vec![route("cli.rm", &["rm"])]);
+        let mut report = Report::default();
+        report_also_posture(&manifest, &modules, &mut report);
 
         assert!(report.findings.is_empty());
     }
