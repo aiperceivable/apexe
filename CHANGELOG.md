@@ -9,31 +9,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 ## [Unreleased]
 
 ### Added
-- **Managed execution, portable core.** `docs/managed-execution/` now has an
-  implementation for the parts that do not need a kernel: a strict policy
-  parser that refuses duplicate keys, unknown roots, a form grant wider than the
-  session, a writable grant overlapping a protected subtree, and a reserved
-  operation; the effect model that separates a file right from a directory-entry
-  right; the five reviewed v1 forms with typed operands and fixed argv; the plan
-  digest over RFC 8785 canonical bytes; the session state machine with a
-  one-time approval nonce, a session-level in-flight limit and monotonic
-  expiry; the wire envelope; and `builtin.copy_create`, which stages in an
-  exclusively created `0600` file and publishes with
-  `renameat2(RENAME_NOREPLACE)` (portable `link(2)` fallback) so a destination
-  created after planning is never replaced. `apexe managed probe` reports what a
-  backend can enforce and `apexe managed policy-check` compiles a policy against
-  it, refusing any policy the backend cannot keep. The probe is evidence rather
-  than a version check: on Linux it forks a child and actually performs
-  `unshare`, uid/gid mapping, a private mount, a `RENAME_NOREPLACE` publication,
-  a Landlock ruleset with a positive and a negative control, and `close_range`,
-  then removes any capability whose step failed. The worker-spawn path (mount
-  view, `pivot_root`, PID 1 reaping, cgroup limits, supervisor) and the session
-  transport are not part of this change; until they land, a backend that cannot
-  perform every step reports unsupported and no session can start, which is the
-  refusal the specification requires rather than a degradation. Note that
-  Docker Desktop's LinuxKit kernel ships with `CONFIG_SECURITY_LANDLOCK=n`, so
-  the readiness probe reports Landlock missing there even though namespaces,
-  mounts and publication pass; the gate must run on a stock Linux kernel.
 - `apexe env --enable --also <NAMES>` / `--exclude <NAMES>` name individual shim
   commands and outrank the scanned policy in the direction they state, so an
   interpreter can be governed without `--scanned all`:

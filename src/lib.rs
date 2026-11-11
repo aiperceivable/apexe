@@ -32,7 +32,6 @@ pub mod config;
 mod corpus;
 pub mod errors;
 pub mod governance;
-pub mod managed;
 pub mod mcp;
 pub mod models;
 pub mod module;

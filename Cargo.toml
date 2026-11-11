@@ -31,15 +31,7 @@ regex = "1"
 # Validate corpus release versions; already in the dependency graph.
 semver = "1"
 serde = { version = "1", features = ["derive"] }
-# RFC 8785 JSON canonicalization for the managed-execution policy and plan
-# digests (`docs/managed-execution/session-protocol.md`). A hand-rolled
-# canonicalizer next to a digest contract is how two implementations end up
-# disagreeing, so the normative algorithm is a dependency rather than code.
-serde_jcs = "0.2"
 serde_json = "1"
-# The approval nonce and call IDs come from the OS CSPRNG, never from a
-# timestamp or a hash of caller data (session-protocol.md).
-getrandom = "0.3"
 serde_yaml = "0.9"
 sha2 = "0.10"
 tempfile = "3"

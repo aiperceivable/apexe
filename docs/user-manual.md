@@ -1233,39 +1233,6 @@ launch-environment PATH setup.
 the launcher itself is not ready. Config detection is best-effort: a file that
 exists but is not configured is reported without its contents.
 
-### 4.14 `apexe managed`
-
-Probe the managed-execution backend, or validate and compile a managed policy
-against it. Managed execution is the v1 contract in
-[`docs/managed-execution/`](managed-execution/policy.md): a trusted launcher
-pins a policy, a workspace and a session, and an untrusted agent may only run
-the reviewed forms that policy admits.
-
-| Argument / option | Default | Behavior |
-|---|---|---|
-| `probe --backend <linux\|sbpl>` | `linux` | Report the backend, the Landlock ABI, the capabilities it can enforce, and every missing one |
-| `probe --format <table\|json>` | `table` | Report format |
-| `policy-check --file <PATH>` | required | Policy document to validate (64 KiB maximum) |
-| `policy-check --backend <linux\|sbpl>` | `linux` | Backend the policy is compiled for |
-| `policy-check --root <ID[:reference]>` | `workspace`, `reference:reference` | Resource roots the launcher will provide; `id` is a writable workspace, `id:reference` an immutable reference |
-| `policy-check --format <table\|json>` | `table` | Report format |
-
-```bash
-apexe managed probe --backend linux --format json
-apexe managed policy-check --file policy.json --backend linux
-apexe managed policy-check --file policy.json --backend sbpl --format json
-```
-
-`policy-check` refuses what the specification refuses: duplicate JSON keys, an
-unknown root, a form grant wider than the session, a writable grant overlapping
-a protected subtree, a reserved operation, and any policy the selected backend
-cannot enforce. A refusal names its code (`POLICY_INVALID`,
-`BACKEND_UNSUPPORTED`, `FORM_UNSUPPORTED`, ...) and exits non-zero. On a host
-that is not Linux the `linux` backend reports unsupported and every policy is
-refused, because the isolation domain is the release gate and a compiled policy
-that cannot be enforced is exactly the failure the contract forbids. `sbpl` is
-a macOS prototype and never activates a managed session.
-
 ## 5. Configuration
 
 Configuration resolves in 4 tiers (highest priority wins):

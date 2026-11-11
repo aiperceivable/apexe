@@ -342,89 +342,6 @@ def validate_policy(session, fixture):
             )
 
 
-def validate_managed(session, fixture):
-    # `managed` has no default action; a missing subcommand is a usage error.
-    session.run(
-        "managed requires a subcommand",
-        ["managed"],
-        code={2},
-        kind="behavior",
-    )
-    policy = session.root / "managed-policy.json"
-    policy.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "session_grants": [
-                    {
-                        "root": "workspace",
-                        "prefix": "",
-                        "ops": ["inspect_metadata", "read_file"],
-                    }
-                ],
-                "forms": [
-                    {
-                        "id": "read-workspace",
-                        "form": "cli.cat.file",
-                        "grants": [
-                            {
-                                "root": "workspace",
-                                "prefix": "",
-                                "ops": ["inspect_metadata", "read_file"],
-                            }
-                        ],
-                        "approval": "none",
-                    }
-                ],
-            }
-        )
-    )
-
-    def stderr_contains(text):
-        def check(result):
-            require(text in result.stderr, f"Missing {text!r} in stderr: {result.stderr}")
-
-        return check
-
-    for backend in ["linux", "sbpl"]:
-        for fmt in ["json", "table"]:
-            session.run(
-                f"managed probe {backend} {fmt}",
-                ["managed", "probe", "--backend", backend, "--format", fmt],
-            )
-    for backend in ["linux", "sbpl"]:
-        for fmt in ["json", "table"]:
-            for label, roots in [
-                ("default", []),
-                (
-                    "explicit",
-                    ["--root", "workspace", "--root", "reference:reference"],
-                ),
-            ]:
-                # The Linux probe depends on the kernel, so either exit is a
-                # legitimate report; SBPL is a prototype and must refuse.
-                session.run(
-                    f"managed policy-check {backend} {fmt} {label}",
-                    [
-                        "managed",
-                        "policy-check",
-                        "--file",
-                        policy,
-                        "--backend",
-                        backend,
-                        "--format",
-                        fmt,
-                        *roots,
-                    ],
-                    code={0, 1} if backend == "linux" else {1},
-                    check=(
-                        None
-                        if backend == "linux"
-                        else stderr_contains("BACKEND_UNSUPPORTED")
-                    ),
-                )
-
-
 def validate_source_verification(session, fixture):
     for isolation in ["auto", "required", "none"]:
         report = session.root / (isolation + "-report.json")
@@ -1382,7 +1299,6 @@ def validate_cli(session):
     validate_list(session, fixture)
     validate_execution(session, fixture)
     validate_policy(session, fixture)
-    validate_managed(session, fixture)
     validate_source_verification(session, fixture)
     validate_shells(session, fixture)
     validate_shim_names(session, fixture)

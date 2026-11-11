@@ -31,7 +31,6 @@ git/docker scan tests and the macOS native example are opt-in.
 | Agent shell launcher | `cli::sh`; `sh` | Executes a real shell with the installed shim environment; readiness diagnostics and host config snippets. Not a full-governance boundary |
 | Host hook translation | `cli::hook`; `hook` | Rewrites simple Claude Code Bash calls to `apexe sh -c` through `updatedInput`; stateful and compound commands rely on PATH shims |
 | Host configuration helper | `cli::agent`; `agent` | Prints OpenCode/pi/Codex/Claude Code setup, checks launcher/host readiness, and merges configuration only with `--write`; OpenCode/pi `--write` refuses when the launcher is not installed |
-| Managed execution | `managed`, `managed::policy`, `managed::session`; `managed` | Strict policy compilation, typed effects, plan digests, the session state machine and `builtin.copy_create`; probes a backend's enforceable capabilities and refuses a policy it cannot keep |
 | MCP serving | `mcp`; `serve` | stdio, streamable HTTP, legacy SSE, structured results, Explorer, client snippets and optional metrics |
 | A2A serving | `a2a`; `a2a` | Authenticated agent server and agent card over the shared executor |
 | HTTP API import | `openapi`; `serve/a2a --openapi` | OpenAPI 3.0/3.1 file/URL import at startup; supported JSON proxy operations |
@@ -121,7 +120,7 @@ src/
 │   └── overlay      ToolOverlay: curated flag/arg descriptions, apply_overlay
 ├── auth             Transport authentication for the HTTP-family MCP/A2A
 │                    transports (token/JWT, loopback-bind detection)
-├── cli/             clap CLI entry point (scan/serve/a2a/exec/sh/hook/agent/env/verify/init/list/config/policy/managed)
+├── cli/             clap CLI entry point (scan/serve/a2a/exec/sh/hook/agent/env/verify/init/list/config/policy)
 │   ├── init         Reviewed source bootstrap, binding ownership and starter ACL
 │   ├── exec         Module JSON and native argv through shared governance
 │   ├── config_set   Persistent log-level updates preserving other settings
