@@ -450,25 +450,18 @@ fn inspect_host(host: AgentHost, launcher: &CheckReport) -> HostReport {
     let binary = which::which(binary_name(host)).ok();
     let mut first_existing = None;
     for path in config_candidates(host) {
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        if first_existing.is_none() {
+        if first_existing.is_none() && path.is_file() {
             first_existing = Some(path.clone());
         }
-        if host_text_configured(host, &text, &launcher.shims.directory) {
+        if let Some((configured, note)) =
+            inspect_configuration_file(host, &path, &launcher.shims.directory)
+        {
             return HostReport {
                 host,
                 binary,
                 config: Some(path),
-                configured: true,
-                note: configured_note(host),
-            };
-        }
-        if host == AgentHost::Claude && !claude_hooks(&text).is_empty() {
-            return HostReport {
-                host, binary, config: Some(path), configured: false,
-                note: "Claude hook selects a stale apexe executable; run `apexe env --enable`, then `apexe agent claude --write` for the same scope".into(),
+                configured,
+                note,
             };
         }
     }
@@ -492,6 +485,42 @@ fn inspect_host(host: AgentHost, launcher: &CheckReport) -> HostReport {
     }
 }
 
+/// None means this source does not select an integration; a false result is
+/// authoritative and must not be hidden by a lower-priority configuration.
+fn inspect_configuration_file(
+    host: AgentHost,
+    path: &Path,
+    shim_dir: &Path,
+) -> Option<(bool, String)> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => return Some((false, format!("Cannot read host configuration: {error}"))),
+    };
+    if host == AgentHost::Opencode {
+        let Ok(settings) = serde_json::from_str::<Map<String, Value>>(&text) else {
+            return Some((false, "OpenCode configuration must be a valid JSON object; repair this source before checking lower-priority settings".into()));
+        };
+        if !settings.contains_key("shell") {
+            return None;
+        }
+        let configured = host_text_configured(host, &text, shim_dir);
+        let note = if configured {
+            configured_note(host)
+        } else {
+            "OpenCode's effective shell selection does not match this installation; inspect this configuration or run `apexe agent opencode --write` for the same scope".into()
+        };
+        return Some((configured, note));
+    }
+    if host_text_configured(host, &text, shim_dir) {
+        return Some((true, configured_note(host)));
+    }
+    if host == AgentHost::Claude && !claude_hooks(&text).is_empty() {
+        return Some((false, "Claude hook selects a stale apexe executable; run `apexe env --enable`, then `apexe agent claude --write` for the same scope".into()));
+    }
+    None
+}
+
 fn config_candidates(host: AgentHost) -> Vec<PathBuf> {
     let home = dirs::home_dir().unwrap_or_default();
     let cwd = std::env::current_dir().unwrap_or_default();
@@ -512,15 +541,26 @@ fn config_candidates(host: AgentHost) -> Vec<PathBuf> {
 fn codex_startup_paths() -> anyhow::Result<Vec<PathBuf>> {
     let (real_shell, _) = sh::resolve_real_shell(None, &std::env::current_exe()?)?;
     let shell = super::shell::Shell::from_path(&real_shell)?;
-    super::shell_init::startup_paths(shell, None)
+    let mut paths = super::shell_init::startup_paths(shell, None)?;
+    // The installer lists interactive rc files before the login profile.
+    // Codex's noninteractive login shell does not read .bashrc or .zshrc.
+    Ok(paths.pop().into_iter().collect())
 }
 
 fn selects_entry(text: &str, key: &str, expected: &Path) -> bool {
     let Ok(value) = serde_json::from_str::<Value>(text) else {
         return false;
     };
-    let Some(path) = value.get(key).and_then(Value::as_str).map(Path::new) else {
+    let Some(value) = value.get(key).and_then(Value::as_str) else {
         return false;
+    };
+    let path = if let Some(relative) = value.strip_prefix("~/") {
+        let Some(home) = dirs::home_dir() else {
+            return false;
+        };
+        home.join(relative)
+    } else {
+        PathBuf::from(value)
     };
     path == expected
         || path.file_name() == expected.file_name()
@@ -698,9 +738,12 @@ fn config_mentions_apexe(host: AgentHost, shim_dir: &Path) -> bool {
 }
 
 fn host_is_configured(host: AgentHost, candidates: &[PathBuf], shim_dir: &Path) -> bool {
-    candidates.iter().any(|path| {
-        std::fs::read_to_string(path).is_ok_and(|text| host_text_configured(host, &text, shim_dir))
-    })
+    candidates
+        .iter()
+        .find_map(|path| {
+            inspect_configuration_file(host, path, shim_dir).map(|(configured, _)| configured)
+        })
+        .unwrap_or(false)
 }
 
 fn binary_name(host: AgentHost) -> &'static str {

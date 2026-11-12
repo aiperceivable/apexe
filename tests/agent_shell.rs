@@ -183,6 +183,18 @@ impl Fixture {
         .unwrap();
     }
 
+    fn agent_report(&self, host: &str) -> Value {
+        let output = self
+            .command()
+            .args(["agent", "--check", host, "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        serde_json::from_slice(&output).unwrap()
+    }
+
     fn check_command(&self) -> Command {
         let mut command = self.command();
         command
@@ -863,6 +875,110 @@ fn test_agent_check_detects_opencode_shell_configuration() {
     let report: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(report["host"]["configured"], true);
     assert_eq!(report["host"]["host"], "opencode");
+}
+
+#[test]
+fn test_agent_check_opencode_respects_project_shell_overrides() {
+    let fixture = Fixture::new();
+    fixture.enable();
+    let user = fixture.home.path().join(".config/opencode/opencode.json");
+    std::fs::create_dir_all(user.parent().unwrap()).unwrap();
+    std::fs::write(&user, json!({"shell":fixture.entry_point()}).to_string()).unwrap();
+    let project = fixture.home.path().join("opencode.json");
+    for text in [
+        r#"{"shell":"/removed/apexe-sh"}"#,
+        r#"{"shell":"/bin/bash"}"#,
+        r#"{"shell":null}"#,
+        "{invalid-json",
+        "[]",
+    ] {
+        std::fs::write(&project, text).unwrap();
+        let report = fixture.agent_report("opencode");
+        assert_eq!(report["host"]["configured"], false, "{text}: {report}");
+        assert_eq!(
+            report["host"]["config"],
+            json!(project.canonicalize().unwrap())
+        );
+    }
+    std::fs::write(&project, [0xff]).unwrap();
+    assert_eq!(
+        fixture.agent_report("opencode")["host"]["configured"],
+        false
+    );
+    std::fs::write(&project, r#"{"theme":"dark"}"#).unwrap();
+    let report = fixture.agent_report("opencode");
+    assert_eq!(report["host"]["configured"], true);
+    assert_eq!(
+        PathBuf::from(report["host"]["config"].as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        user.canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn test_agent_check_pi_expands_home_paths_and_preserves_uninstall_warning() {
+    let fixture = Fixture::new();
+    fixture.enable();
+    let settings = fixture.home.path().join(".pi/agent/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    for (path, expected) in [
+        ("~/.apexe/bin/apexe-sh", true),
+        ("~another-user/.apexe/bin/apexe-sh", false),
+        ("~/.apexe/bin/apexe-sh", true),
+    ] {
+        std::fs::write(&settings, json!({"shellPath":path}).to_string()).unwrap();
+        let report = fixture.agent_report("pi");
+        assert_eq!(report["host"]["configured"], expected, "{path}: {report}");
+    }
+    fixture
+        .command()
+        .args(["env", "--disable"])
+        .assert()
+        .success()
+        .stderr(contains("pi still selects"))
+        .stderr(contains("apexe env --enable"));
+    assert!(!fixture.entry_point().exists());
+}
+
+#[test]
+fn test_agent_check_codex_requires_login_activation_not_only_interactive_rc() {
+    let mut shells = vec![(PathBuf::from("/bin/bash"), ".profile")];
+    if let Ok(zsh) = which::which("zsh") {
+        shells.push((zsh, ".zprofile"));
+    }
+    for (shell, profile) in shells {
+        let fixture = Fixture::new();
+        fixture.enable();
+        fixture
+            .command()
+            .env("SHELL", &shell)
+            .env_remove("ZDOTDIR")
+            .args(["agent", "codex", "--write"])
+            .assert()
+            .success();
+        std::fs::remove_file(fixture.home.path().join(profile)).unwrap();
+        let output = fixture
+            .command()
+            .env("SHELL", &shell)
+            .env_remove("ZDOTDIR")
+            .args(["agent", "--check", "codex", "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let report: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(report["host"]["configured"], false, "{report}");
+        Command::new(&shell)
+            .env("HOME", fixture.home.path())
+            .env("PATH", "/usr/bin:/bin")
+            .env_remove("BASH_ENV")
+            .env_remove("ZDOTDIR")
+            .args(["-lc", "command -v apxepwd"])
+            .assert()
+            .failure();
+    }
 }
 
 #[test]

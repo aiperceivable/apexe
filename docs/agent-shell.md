@@ -207,7 +207,8 @@ apexe agent codex --write
 - Codex has no apexe-specific shell file; `--write` reloads startup files for
   the resolved real shell (`APEXE_REAL_SHELL`, then `SHELL`, then the launcher
   fallback), preserving the selected shim directory. The check reads that
-  shell's startup files rather than accepting a block for an unrelated shell.
+  shell's noninteractive login startup file rather than accepting a block from
+  an unrelated shell or an interactive-only `.bashrc`/`.zshrc`.
   Restart Codex afterwards. If Codex explicitly selects a different shell,
   configure that shell with `apexe env --reload --shell <shell>` instead.
 
@@ -236,6 +237,11 @@ do not substitute a default policy for a previously selected one.
 Use the same `--scope user` or project scope as the original installation,
 then restart the agent. OpenCode/pi checks compare the selected launcher path
 with the active installation; an unrelated or removed `apexe-sh` is not ready.
+An explicit OpenCode project `shell` overrides the user setting, even when it
+is invalid or points elsewhere. A project file with no `shell` inherits the
+user selection; unreadable or malformed project JSON cannot establish readiness.
+pi's supported leading `~/` is expanded before comparison, including when
+checking for host settings that depend on shims being uninstalled.
 Claude `--write` updates recognized apexe hook commands to the current binary
 without adding another hook, including quoted paths and `--persistent`. Other
 hooks and permission rules are preserved. A stale hook is reported even when
