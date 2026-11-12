@@ -60,6 +60,12 @@ libc = "0.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 openssl = { version = "0.10.76", features = ["vendored"] }
 
+# Evidence repeatedly hashes the entire verifier, which is large in debug builds.
+# Keep hashing optimized under dev and its inherited test profile without
+# weakening evidence checks or extending subprocess deadlines.
+[profile.dev.package.sha2]
+opt-level = 3
+
 [dev-dependencies]
 # Sign valid and expired credentials for A2A request-path tests.
 jsonwebtoken = "9"

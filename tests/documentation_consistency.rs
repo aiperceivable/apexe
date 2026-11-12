@@ -950,6 +950,17 @@ fn test_every_mkdocs_nav_entry_resolves() {
     );
 }
 
+/// Evidence hashes the full debug verifier repeatedly, including in CLI smoke tests.
+#[test]
+fn test_debug_verifier_hashing_keeps_sha2_optimized() {
+    let manifest = include_str!("../Cargo.toml");
+    let (_, section) = manifest
+        .split_once("[profile.dev.package.sha2]")
+        .expect("Optimize SHA-256 in dev/test builds instead of extending CLI timeouts");
+    let settings = section.split('[').next().unwrap();
+    assert!(settings.lines().any(|line| line.trim() == "opt-level = 3"));
+}
+
 /// Explicit test targets must not silently omit new test files.
 #[test]
 fn test_integration_test_inventory_includes_every_source_file() {

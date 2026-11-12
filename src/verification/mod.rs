@@ -186,6 +186,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_file_digest_matches_sha256_vectors_and_rechecks_changed_contents() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        for (contents, expected) in [
+            (
+                b"".as_slice(),
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
+            (
+                b"abc".as_slice(),
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            ),
+            (
+                b"".as_slice(),
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
+        ] {
+            std::fs::write(file.path(), contents).unwrap();
+            assert_eq!(file_digest(file.path()).unwrap(), expected);
+        }
+        let mut contents: Vec<u8> = (0_u8..=255).cycle().take(256 * 513).collect();
+        contents.extend_from_slice(b"end");
+        std::fs::write(file.path(), &contents).unwrap();
+        assert_eq!(
+            file_digest(file.path()).unwrap(),
+            "11dfa49303f019313a43810cf936217e1d94f12aeb95f3bee503a34eada6409e"
+        );
+        contents[65536] ^= 1;
+        std::fs::write(file.path(), &contents).unwrap();
+        assert_ne!(
+            file_digest(file.path()).unwrap(),
+            "11dfa49303f019313a43810cf936217e1d94f12aeb95f3bee503a34eada6409e"
+        );
+    }
+
+    #[test]
     fn test_digest_ignores_object_key_order_at_every_depth() {
         let first: serde_json::Value =
             serde_json::from_str(r#"{"first":1,"nested":{"a":2,"b":3},"items":[{"c":4,"d":5}]}"#)
