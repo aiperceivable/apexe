@@ -971,11 +971,10 @@ fn execute_error(binary_path: &str, doing: &str, cause: impl std::fmt::Display) 
 /// actually kill the process rather than leave an orphan.
 ///
 /// The `kill_on_drop` guarantee is covered by
-/// `test_execute_subprocess_kills_the_child_when_the_timeout_elapses`. The
-/// `stdin` one deliberately is not: `cargo test` already hands the harness a
-/// non-terminal stdin, so a child inheriting it behaves exactly like one given
-/// `/dev/null` and no assertion can tell the two apart. A test that passes with
-/// the line removed would report coverage it does not have.
+/// `test_execute_subprocess_kills_the_child_when_the_timeout_elapses`.
+/// Tests of inherited stdin must supply a controlled descriptor in a child
+/// process: a harness launched interactively can inherit the user's terminal,
+/// unlike CI, and must not expose that terminal to test tools.
 #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
 fn spawn_isolated(
     binary_path: &str,

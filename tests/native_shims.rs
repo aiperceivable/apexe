@@ -1788,6 +1788,24 @@ async fn test_passthrough_result_has_no_captured_streams() {
 
 #[tokio::test]
 async fn test_stdin_inheritance_needs_no_module_capability() {
+    const PROBE_ENVIRONMENT: &str = "APEXE_TEST_CONTROLLED_STDIN_PROBE";
+    if std::env::var_os(PROBE_ENVIRONMENT).is_none() {
+        // Never let this in-process module inherit the developer's terminal.
+        // Only the child probe executes it, with an explicit input pipe and EOF.
+        Command::new(std::env::current_exe().unwrap())
+            .env(PROBE_ENVIRONMENT, "1")
+            .args([
+                "--exact",
+                "native_shims::test_stdin_inheritance_needs_no_module_capability",
+                "--nocapture",
+            ])
+            .write_stdin("controlled inherited stdin\n")
+            .timeout(std::time::Duration::from_secs(10))
+            .assert()
+            .success()
+            .stdout(predicates::str::contains("controlled inherited stdin\n"));
+        return;
+    }
     use apcore::Module;
     use apexe::module::{CliModule, ExecutionIo, StdinMode};
     let scanned = ScannedModule::new(
