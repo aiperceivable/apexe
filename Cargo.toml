@@ -1,6 +1,6 @@
 [package]
 name = "apexe"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 # Compile integration tests together instead of linking one binary per file.
 autotests = false
@@ -20,7 +20,7 @@ axum = "0.8"
 async-trait = "0.1"
 apcore = "0.32.3"
 apcore-a2a = "0.8.4"
-apcore-cli = "0.12.5"
+apcore-cli = "0.13.0"
 apcore-mcp = "0.23.2"
 apcore-toolkit = { version = "0.14.1", default-features = false, features = ["http-proxy"] }
 # RFC 3339 timestamps for the governance audit records apexe writes itself

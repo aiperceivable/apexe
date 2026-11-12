@@ -8,7 +8,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 0.10.0 |
+| **Version** | 0.11.0 |
 | **Date** | 2026-10-15 |
 | **Platform** | macOS / Linux |
 

@@ -8,7 +8,7 @@ locally, and serves CLI and imported OpenAPI operations through MCP and A2A.
 Configured access controls, approval checks and audit records accompany the
 execution path.
 
-**Version:** 0.10.0.
+**Version:** 0.11.0.
 
 **Status:** CLI discovery, initialization, binding/Skill generation, local
 module execution, reviewed native argv and PATH shims, MCP/A2A serving, OpenAPI
@@ -180,7 +180,7 @@ src/
 | `apcore-toolkit` | 0.14.1 | ScannedModule, YAMLWriter, Verifier, ModuleAnnotations, `deduplicate_ids` |
 | `apcore-mcp` | 0.23.2 | APCoreMCP server with structured results (stdio, streamable-http, SSE, Explorer UI) |
 | `apcore-a2a` | 0.8.4 | A2A agent server with token/JWT authentication (`build_app_with_auth`) |
-| `apcore-cli` | 0.12.5 | `--man` page generation (`build_program_man_page`) |
+| `apcore-cli` | 0.13.0 | Man pages, module detail formatting and OpenAPI proxy hazard detection |
 
 ## v0.1.0 Features
 
@@ -245,7 +245,7 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 | `apcore-toolkit` | Scanner types, YAML writer, verifiers |
 | `apcore-mcp` | MCP protocol server |
 | `apcore-a2a` | A2A protocol server |
-| `apcore-cli` | `--man` page generation |
+| `apcore-cli` | Man pages, module detail formatting and OpenAPI proxy hazard detection |
 | `clap` (derive mode) | CLI argument parsing |
 | `serde` + `serde_json` + `serde_yaml` | Serialization |
 | `tokio` | Async runtime |

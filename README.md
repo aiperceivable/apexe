@@ -115,7 +115,7 @@ OpenAPI import is a server feature; local exec and shims execute CLI commands.
 | [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit-rust) 0.14.1 | ScannedModule, YAMLWriter, DisplayResolver |
 | [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) 0.23.2 | MCP server with structured results, middleware, auth, Explorer UI |
 | [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust) 0.8.4 | A2A agent server sharing the same governed `Executor` |
-| [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) 0.12.5 | `--man` page generation |
+| [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) 0.13.0 | Man pages, module detail formatting and OpenAPI proxy hazard detection |
 
 ---
 

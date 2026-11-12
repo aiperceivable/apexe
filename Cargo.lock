@@ -198,9 +198,9 @@ dependencies = [
 
 [[package]]
 name = "apcore-cli"
-version = "0.12.5"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd4df4670f8b091d852e656411a766cc8a8113939b2a9666a63b12790f0ffa20"
+checksum = "79c2c1f6d098436576d8fbf0e2170ab23a1124ea06d3c28f8d7d360907ef0e05"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -292,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "apexe"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "apcore",

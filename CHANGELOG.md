@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
-## [Unreleased]
+## [0.11.0] - 2026-11-12
 
 ### Added
 - `apexe env --enable --also <NAMES>` / `--exclude <NAMES>` name individual shim
@@ -153,11 +153,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   Code keep the system shell and are unaffected.
 - `apexe env --disable` reports any host still configured to use the entry point
   it has just removed. It does not refuse: an uninstall has to remain possible.
-- Dependency floors moved to apcore 0.32.3, apcore-mcp 0.23.2, apcore-cli 0.12.5,
+- Dependency floors moved to apcore 0.32.3, apcore-mcp 0.23.2, apcore-cli 0.13.0,
   apcore-a2a 0.8.4 and apcore-toolkit 0.14.1. No call sites change: apcore
   0.32.1-0.32.3 are fixes only and its new cancellation scope APIs are additive,
   and apcore-mcp 0.23.x keeps the descriptor's runtime input schema, which is
-  the side apexe's MCP builder already used.
+  the side apexe's MCP builder already used. apcore-cli 0.13.0 leaves the man-page,
+  module-detail and proxy-hazard APIs unchanged; its new embedded dispatcher and
+  sandbox/stream/approval changes are outside apexe's own execution paths.
 - **Preview: an overlay can declare the routes it opens.** A tool with no subcommands
   keeps its flat `flags` spelling unchanged — at any `schema_version`, including
   2.0, since the version names the format generation and not the spelling; a
