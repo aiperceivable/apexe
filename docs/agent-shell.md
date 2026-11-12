@@ -204,12 +204,50 @@ apexe agent codex --write
 - pi writes `shellPath` to `~/.pi/agent/settings.json`.
 - Claude Code writes a `PreToolUse` hook to `.claude/settings.json`; use
   `--scope user` for `~/.claude/settings.json`.
-- Codex has no shell file; `--write` runs `apexe env --reload --shell zsh`.
+- Codex has no apexe-specific shell file; `--write` reloads startup files for
+  the resolved real shell (`APEXE_REAL_SHELL`, then `SHELL`, then the launcher
+  fallback), preserving the selected shim directory. The check reads that
+  shell's startup files rather than accepting a block for an unrelated shell.
+  Restart Codex afterwards. If Codex explicitly selects a different shell,
+  configure that shell with `apexe env --reload --shell <shell>` instead.
 
 The writer refuses invalid JSON and OpenCode refuses when `opencode.jsonc`
-already exists. For OpenCode and pi it also refuses when `apexe-sh` is not
-installed, because both start every command through that path. Review the file
-after writing.
+already exists. OpenCode, pi and Claude hook installation also refuse an
+incomplete launcher installation: a missing entry point breaks shell-path
+hosts, and a missing manifest makes the Claude hook deny Bash calls. Invalid
+Claude hook container types are refused without changing the file. Review the
+file after writing.
+
+### Repair stale integration without bypassing policy
+
+Run the checks from the terminal that will launch the agent:
+
+```bash
+apexe sh --check
+apexe env --reload
+apexe agent <host> --write
+apexe agent --check <host> --format json
+```
+
+Reload preserves the recorded bindings, ACL and filters when the manifest is
+valid. If the manifest is missing or corrupt, restore with `apexe env --enable`
+and the original `--shim-dir`, `--bindings-dir`, `--acl` and policy options;
+do not substitute a default policy for a previously selected one.
+Use the same `--scope user` or project scope as the original installation,
+then restart the agent. OpenCode/pi checks compare the selected launcher path
+with the active installation; an unrelated or removed `apexe-sh` is not ready.
+Claude `--write` updates recognized apexe hook commands to the current binary
+without adding another hook, including quoted paths and `--persistent`. Other
+hooks and permission rules are preserved. A stale hook is reported even when
+PATH already contains shims, because PATH cannot repair a hook executable.
+
+Do not repair an installation by filling `apexe-sh` with a hand-written shell
+wrapper. Do not clear an ACL or ignore a governance refusal. Plain `apexe sh`
+continues to run a real shell without an installation; that is not evidence of
+governed execution, and the hook retains its fail-closed prerequisite check.
+Existing MCP-only `tools.bash: false` or `permissions.deny: ["Bash"]` settings
+are not removed by shell configuration; explicitly review them if restoring
+ordinary shell access is intended.
 
 ## Experimental persistent session
 
@@ -298,8 +336,10 @@ Scanned routes also carry `"tier":"scanned"`.
   starts a shell, but no command is governed.
 - `apexe sh --check` fails when the entry point or manifest is missing and
   warns when no ACL is loaded.
-- `apexe env --disable` warns when OpenCode or pi still points at the removed
-  `apexe-sh`; re-enable the installation or remove the host setting.
+- `apexe env --disable` warns when OpenCode/pi still selects `apexe-sh`, or a
+  Claude hook remains and would refuse Bash without its manifest. Re-enable
+  the installation, or explicitly remove the corresponding host setting/hook.
+  Uninstall does not silently edit another application's configuration.
 - Login shells may reset `PATH`; keep the managed startup block after
   `path_helper` or use the hook.
 - A host upgrade can change config discovery or shell behavior. Re-run the

@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use clap::ValueEnum;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
@@ -89,20 +90,14 @@ fn install(
         eprintln!("Problem: {problem}");
     }
     if write {
-        if selects_shell_by_path(host) {
-            // REFUSAL, not a warning: these hosts start every command through
-            // the entry point, so writing `shellPath` at a launcher that is not
-            // installed does not degrade to the system shell — it breaks the
-            // host's own command execution, which is reported to the user as an
-            // unrelated `EACCES` long after apexe ran. An operator who reinstalls
-            // `apexe env --enable` afterwards gets a working host; one who instead
-            // fills the gap by hand gets a file that is not the launcher and
-            // silently runs commands outside apexe.
+        if selects_shell_by_path(host) || host == AgentHost::Claude {
+            // Shell-path hosts need the launcher, and the Claude hook refuses
+            // Bash calls without its manifest. Validate before enabling either.
             anyhow::ensure!(
                 report.problems.is_empty(),
-                "refusing to write {} configuration: {} problem(s) mean apexe-sh is not \
-                 installed, and this host starts every command through it. Run 'apexe env \
-                 --enable', then 'apexe agent --check {}'.",
+                "refusing to write {} configuration: {} installation problem(s) would \
+                 block shell calls. Run 'apexe env --enable', then \
+                 'apexe agent --check {}'.",
                 host_name(host),
                 report.problems.len(),
                 host_name(host)
@@ -174,6 +169,7 @@ fn mcp(
                     if let Some(tools) = tools {
                         tools.insert("bash".into(), json!(false));
                     }
+                    Ok(())
                 })?;
                 println!("Wrote {}", path.display());
             } else {
@@ -196,6 +192,7 @@ fn mcp(
                     let mcp_path = std::env::current_dir()?.join(".mcp.json");
                     write_json(&mcp_path, |object| {
                         object.insert("mcpServers".into(), mcp["mcpServers"].clone());
+                        Ok(())
                     })?;
                     println!("Wrote {}", mcp_path.display());
                 } else {
@@ -205,7 +202,10 @@ fn mcp(
                         arguments.join(" ")
                     );
                 }
-                write_json(&path, |object| ensure_permission_deny(object, "Bash"))?;
+                write_json(&path, |object| {
+                    ensure_permission_deny(object, "Bash");
+                    Ok(())
+                })?;
                 println!("Wrote {}", path.display());
             } else {
                 println!("{}", serde_json::to_string_pretty(&mcp)?);
@@ -265,6 +265,7 @@ fn write_host(
             let path = host_config_path(host, scope)?;
             write_json(&path, |object| {
                 object.insert("shell".into(), json!(entry));
+                Ok(())
             })?;
             println!("Wrote {}", path.display());
         }
@@ -275,16 +276,11 @@ fn write_host(
             let path = host_config_path(host, Some(AgentScope::User))?;
             write_json(&path, |object| {
                 object.insert("shellPath".into(), json!(entry));
+                Ok(())
             })?;
             println!("Wrote {}", path.display());
         }
-        AgentHost::Codex => {
-            let status = std::process::Command::new(std::env::current_exe()?)
-                .args(["env", "--reload", "--shell", "zsh"])
-                .status()?;
-            anyhow::ensure!(status.success(), "apexe env --reload --shell zsh failed");
-            println!("Reloaded zsh startup configuration for Codex");
-        }
+        AgentHost::Codex => write_codex(report)?,
         AgentHost::Claude => {
             let path = host_config_path(host, scope)?;
             let executable = std::env::current_exe()?.canonicalize()?;
@@ -292,6 +288,20 @@ fn write_host(
             println!("Wrote {}", path.display());
         }
     }
+    Ok(())
+}
+
+fn write_codex(report: &CheckReport) -> anyhow::Result<()> {
+    let shell = super::shell::Shell::from_path(&report.real_shell)?
+        .to_possible_value()
+        .ok_or_else(|| anyhow::anyhow!("Unsupported Codex shell"))?;
+    let name = shell.get_name();
+    let status = std::process::Command::new(std::env::current_exe()?)
+        .args(["env", "--reload", "--shell", name, "--shim-dir"])
+        .arg(&report.shims.directory)
+        .status()?;
+    anyhow::ensure!(status.success(), "apexe env --reload --shell {name} failed");
+    println!("Reloaded {name} startup configuration for Codex; restart Codex to refresh its shell snapshot");
     Ok(())
 }
 
@@ -324,7 +334,10 @@ fn host_config_path(host: AgentHost, scope: Option<AgentScope>) -> anyhow::Resul
     Ok(path)
 }
 
-fn write_json(path: &Path, mutate: impl FnOnce(&mut Map<String, Value>)) -> anyhow::Result<()> {
+fn write_json(
+    path: &Path,
+    mutate: impl FnOnce(&mut Map<String, Value>) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     let existing_permissions = std::fs::metadata(path)
         .ok()
         .map(|metadata| metadata.permissions());
@@ -338,7 +351,7 @@ fn write_json(path: &Path, mutate: impl FnOnce(&mut Map<String, Value>)) -> anyh
     let object = root
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("{} must contain a JSON object", path.display()))?;
-    mutate(object);
+    mutate(object)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -351,47 +364,64 @@ fn write_json(path: &Path, mutate: impl FnOnce(&mut Map<String, Value>)) -> anyh
     Ok(())
 }
 
-fn ensure_claude_hook(object: &mut Map<String, Value>, executable: &Path) {
+fn claude_hook_arguments(command: &str) -> Option<Vec<String>> {
+    let arguments = shell_words::split(command).ok()?;
+    let executable = Path::new(arguments.first()?).file_stem()?.to_str()?;
+    let owned = executable == "apexe"
+        && arguments.get(1).is_some_and(|argument| argument == "hook")
+        && arguments
+            .get(2)
+            .is_some_and(|argument| argument == "claude")
+        && (arguments.len() == 3 || arguments.len() == 4 && arguments[3] == "--persistent");
+    owned.then_some(arguments)
+}
+
+fn repair_claude_hooks(entries: &mut [Value], executable: &str) -> bool {
+    let mut repaired = false;
+    for entry in entries {
+        if entry["matcher"] != "Bash" {
+            continue;
+        }
+        let Some(hooks) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for hook in hooks {
+            let Some(mut arguments) = hook
+                .get("command")
+                .and_then(Value::as_str)
+                .and_then(claude_hook_arguments)
+            else {
+                continue;
+            };
+            arguments[0] = executable.into();
+            hook["command"] = json!(shell_words::join(arguments));
+            repaired = true;
+        }
+    }
+    repaired
+}
+
+fn ensure_claude_hook(object: &mut Map<String, Value>, executable: &Path) -> anyhow::Result<()> {
+    let executable = executable
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("apexe executable path must be valid UTF-8"))?;
     let hooks = object
         .entry("hooks")
         .or_insert_with(|| json!({}))
-        .as_object_mut();
-    let Some(hooks) = hooks else {
-        return;
-    };
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("Claude hooks must be a JSON object"))?;
     let entries = hooks
         .entry("PreToolUse")
         .or_insert_with(|| json!([]))
-        .as_array_mut();
-    let Some(entries) = entries else {
-        return;
-    };
-    let command = format!(
-        "{} hook claude",
-        shell_words::quote(executable.to_str().unwrap_or("apexe"))
-    );
-    if entries.iter().any(|entry| {
-        entry
-            .get("hooks")
-            .and_then(Value::as_array)
-            .is_some_and(|hooks| {
-                hooks.iter().any(|hook| {
-                    hook.get("command")
-                        .and_then(Value::as_str)
-                        .is_some_and(|value| value.contains("apexe hook claude"))
-                })
-            })
-    }) {
-        return;
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("Claude PreToolUse hooks must be an array"))?;
+    if !repair_claude_hooks(entries, executable) {
+        entries.push(json!({
+            "matcher": "Bash",
+            "hooks": [{"type":"command", "command":format!("{} hook claude", shell_words::quote(executable)), "timeout":30}]
+        }));
     }
-    entries.push(json!({
-        "matcher": "Bash",
-        "hooks": [{
-            "type": "command",
-            "command": command,
-            "timeout": 30
-        }]
-    }));
+    Ok(())
 }
 
 fn check(config: &ApexeConfig, host: AgentHost, format: CheckFormat) -> anyhow::Result<()> {
@@ -435,6 +465,12 @@ fn inspect_host(host: AgentHost, launcher: &CheckReport) -> HostReport {
                 note: configured_note(host),
             };
         }
+        if host == AgentHost::Claude && !claude_hooks(&text).is_empty() {
+            return HostReport {
+                host, binary, config: Some(path), configured: false,
+                note: "Claude hook selects a stale apexe executable; run `apexe env --enable`, then `apexe agent claude --write` for the same scope".into(),
+            };
+        }
     }
 
     if host == AgentHost::Claude && path_contains_shims(&launcher.shims.directory) {
@@ -452,8 +488,7 @@ fn inspect_host(host: AgentHost, launcher: &CheckReport) -> HostReport {
         binary,
         config: first_existing,
         configured: false,
-        note: "no apexe host configuration found; run `apexe agent <host>` for the supported setup"
-            .into(),
+        note: "no matching current apexe host configuration found; after `apexe env --enable`, run `apexe agent <host> --write` to install or repair the selected scope".into(),
     }
 }
 
@@ -466,12 +501,7 @@ fn config_candidates(host: AgentHost) -> Vec<PathBuf> {
             home.join(".config/opencode/opencode.json"),
         ],
         AgentHost::Pi => vec![home.join(".pi/agent/settings.json")],
-        AgentHost::Codex => vec![
-            home.join(".zprofile"),
-            home.join(".zshrc"),
-            home.join(".bash_profile"),
-            home.join(".profile"),
-        ],
+        AgentHost::Codex => codex_startup_paths().unwrap_or_default(),
         AgentHost::Claude => vec![
             cwd.join(".claude/settings.json"),
             home.join(".claude/settings.json"),
@@ -479,33 +509,84 @@ fn config_candidates(host: AgentHost) -> Vec<PathBuf> {
     }
 }
 
+fn codex_startup_paths() -> anyhow::Result<Vec<PathBuf>> {
+    let (real_shell, _) = sh::resolve_real_shell(None, &std::env::current_exe()?)?;
+    let shell = super::shell::Shell::from_path(&real_shell)?;
+    super::shell_init::startup_paths(shell, None)
+}
+
+fn selects_entry(text: &str, key: &str, expected: &Path) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return false;
+    };
+    let Some(path) = value.get(key).and_then(Value::as_str).map(Path::new) else {
+        return false;
+    };
+    path == expected
+        || path.file_name() == expected.file_name()
+            && path
+                .parent()
+                .and_then(|parent| parent.canonicalize().ok())
+                .zip(
+                    expected
+                        .parent()
+                        .and_then(|parent| parent.canonicalize().ok()),
+                )
+                .is_some_and(|(left, right)| left == right)
+}
+
+fn claude_hooks(text: &str) -> Vec<Vec<String>> {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return Vec::new();
+    };
+    let Some(entries) = value["hooks"]["PreToolUse"].as_array() else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter(|entry| entry["matcher"] == "Bash")
+        .filter_map(|entry| entry["hooks"].as_array())
+        .flatten()
+        .filter_map(|hook| hook["command"].as_str().and_then(claude_hook_arguments))
+        .collect()
+}
+
 fn host_text_configured(host: AgentHost, text: &str, shim_dir: &Path) -> bool {
     match host {
-        AgentHost::Opencode => text.contains("apexe-sh"),
-        AgentHost::Pi => text.contains("shellPath") && text.contains("apexe-sh"),
-        AgentHost::Codex => {
-            text.contains("env --shim-dir") || text.contains(shim_dir.to_string_lossy().as_ref())
-        }
-        AgentHost::Claude => text.contains("apexe hook claude"),
+        AgentHost::Opencode => selects_entry(text, "shell", &shim_dir.join(ENTRY_NAME)),
+        AgentHost::Pi => selects_entry(text, "shellPath", &shim_dir.join(ENTRY_NAME)),
+        AgentHost::Codex => text.contains(shim_dir.to_string_lossy().as_ref()),
+        AgentHost::Claude => claude_hooks(text).iter().any(|arguments| {
+            Path::new(&arguments[0])
+                .canonicalize()
+                .ok()
+                .zip(
+                    std::env::current_exe()
+                        .ok()
+                        .and_then(|path| path.canonicalize().ok()),
+                )
+                .is_some_and(|(left, right)| left == right)
+        }),
     }
 }
 
-/// Report a host that disabling the shim directory leaves unable to start a
-/// command.
+/// Report host configuration that still depends on the removed installation.
 ///
-/// `env --disable` removes the `apexe-sh` entry point, and a host configured to
-/// use it as its shell does not fall back to the system shell: it loses the
-/// ability to run anything, and the failure surfaces as an `EACCES` from the
-/// host rather than as anything naming apexe. Disabling stays possible — an
-/// uninstall has to be — so this states the consequence instead of refusing.
-pub(crate) fn warn_if_host_selects_removed_launcher(shim_dir: &Path) {
-    const PATH_SELECTING: [AgentHost; 2] = [AgentHost::Opencode, AgentHost::Pi];
-    for host in PATH_SELECTING {
+/// OpenCode/pi lose their shell entry point; Claude's remaining hook refuses
+/// Bash without its manifest. Uninstall stays explicit and possible, but never
+/// silently edits another application's configuration to hide that consequence.
+pub(crate) fn warn_if_host_depends_on_removed_shims(shim_dir: &Path) {
+    const DEPENDENT_HOSTS: [AgentHost; 3] = [AgentHost::Opencode, AgentHost::Pi, AgentHost::Claude];
+    for host in DEPENDENT_HOSTS {
         for path in config_candidates(host) {
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
             if host_text_configured(host, &text, shim_dir) {
+                if host == AgentHost::Claude {
+                    eprintln!("Warning: claude still has an apexe hook in {}; without shims it will refuse Bash calls. Run 'apexe env --enable' to restore the installation, or explicitly remove that hook to stop routing through apexe.", path.display());
+                    continue;
+                }
                 eprintln!(
                     "Warning: {} still selects {} as its shell; disabling it broke that host. \
                      Run 'apexe env --enable' to restore it, or remove the setting from {}.",

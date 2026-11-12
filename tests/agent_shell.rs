@@ -937,18 +937,90 @@ fn test_agent_write_refuses_when_entry_point_is_not_the_launcher() {
 }
 
 #[test]
-fn test_agent_write_configures_path_based_host_without_launcher() {
-    // The refusal is scoped to hosts that select a shell by path. Claude Code
-    // keeps the system shell and only gains hook commands, so a missing entry
-    // point must not block writing its configuration.
+fn test_agent_write_claude_refuses_without_a_ready_installation() {
     let fixture = Fixture::new();
-
     fixture
         .command()
         .args(["agent", "claude", "--write"])
         .assert()
+        .failure()
+        .stderr(contains("apexe env --enable"));
+    assert!(!fixture.home.path().join(".claude/settings.json").exists());
+}
+
+#[test]
+fn test_env_disable_warns_when_claude_hook_would_block_shell_calls() {
+    let fixture = Fixture::new();
+    fixture.enable();
+    fixture
+        .command()
+        .args(["agent", "claude", "--write"])
+        .assert()
+        .success();
+    fixture
+        .command()
+        .args(["env", "--disable"])
+        .assert()
         .success()
-        .stdout(contains("Wrote"));
+        .stderr(contains("claude"))
+        .stderr(contains("hook"))
+        .stderr(contains("apexe env --enable"));
+    assert!(fixture.home.path().join(".claude/settings.json").is_file());
+}
+
+#[test]
+fn test_agent_check_rejects_a_stale_claude_hook_even_with_shims_on_path() {
+    let fixture = Fixture::new();
+    fixture.enable();
+    let path = fixture.home.path().join(".claude/settings.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        json!({"hooks":{"PreToolUse":[{"matcher":"Bash", "hooks":[{
+            "type":"command", "command":"/removed/apexe hook claude"
+        }]}]}})
+        .to_string(),
+    )
+    .unwrap();
+    let output = fixture
+        .command()
+        .env(
+            "PATH",
+            std::env::join_paths([
+                fixture.shims(),
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/bin"),
+            ])
+            .unwrap(),
+        )
+        .args(["agent", "--check", "claude", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(report["host"]["configured"], false);
+    assert!(report["host"]["note"].as_str().unwrap().contains("--write"));
+}
+
+#[test]
+fn test_agent_check_codex_ignores_startup_files_of_other_shells() {
+    let fixture = Fixture::new();
+    fixture.enable();
+    let profile = fixture.home.path().join(".profile");
+    std::fs::rename(&profile, fixture.home.path().join(".zprofile")).unwrap();
+    let output = fixture
+        .command()
+        .env("SHELL", "/bin/bash")
+        .args(["agent", "--check", "codex", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(report["host"]["configured"], false);
 }
 
 #[test]
@@ -987,6 +1059,136 @@ fn test_agent_write_refuses_invalid_json() {
         .assert()
         .failure();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not json");
+}
+
+#[test]
+fn test_agent_write_codex_selects_the_resolved_real_shell() {
+    for (shell, real_shell, startup, unexpected) in [
+        ("/bin/bash", None, ".bashrc", ".zprofile"),
+        ("/bin/sh", None, ".profile", ".zprofile"),
+        ("/bin/sh", Some("/bin/bash"), ".bashrc", ".zprofile"),
+    ] {
+        let fixture = Fixture::new();
+        fixture.enable();
+        let mut command = fixture.command();
+        command.env("SHELL", shell);
+        if let Some(real) = real_shell {
+            command.env("APEXE_REAL_SHELL", real);
+        }
+        command
+            .args(["agent", "codex", "--write"])
+            .assert()
+            .success();
+        let text = std::fs::read_to_string(fixture.home.path().join(startup)).unwrap();
+        assert!(text.contains("apexe"));
+        assert!(!fixture.home.path().join(unexpected).exists());
+    }
+}
+
+#[test]
+fn test_agent_check_does_not_accept_a_stale_shell_path() {
+    for (host, key, relative) in [
+        ("pi", "shellPath", ".pi/agent/settings.json"),
+        ("opencode", "shell", "opencode.json"),
+    ] {
+        let fixture = Fixture::new();
+        fixture.enable();
+        let path = fixture.home.path().join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            json!({key: fixture.home.path().join("removed/apexe-sh")}).to_string(),
+        )
+        .unwrap();
+        let output = fixture
+            .command()
+            .args(["agent", "--check", host, "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let report: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(report["host"]["configured"], false);
+        fixture
+            .command()
+            .args(["agent", host, "--write"])
+            .assert()
+            .success();
+        let repaired: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(repaired[key], json!(fixture.entry_point()));
+    }
+}
+
+#[test]
+fn test_agent_write_claude_repairs_quoted_stale_hooks_without_duplicates() {
+    let fixture = Fixture::new();
+    fixture.enable();
+    let path = fixture.home.path().join(".claude/settings.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let old = fixture.home.path().join("old installation/apexe");
+    let hook = format!(
+        "{} hook claude --persistent",
+        shell_words::quote(old.to_str().unwrap())
+    );
+    std::fs::write(
+        &path,
+        json!({"theme":"dark", "hooks":{"PreToolUse":[
+            {"matcher":"Bash", "hooks":[{"type":"command", "command":hook, "timeout":45}]},
+            {"matcher":"Bash", "hooks":[{"type":"command", "command":"python check.py"}]}
+        ]}})
+        .to_string(),
+    )
+    .unwrap();
+    for _ in 0..2 {
+        fixture
+            .command()
+            .args(["agent", "claude", "--write"])
+            .assert()
+            .success();
+    }
+    let value: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let entries = value["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    let command = entries[0]["hooks"][0]["command"].as_str().unwrap();
+    let arguments = shell_words::split(command).unwrap();
+    assert_eq!(
+        std::path::Path::new(&arguments[0]).canonicalize().unwrap(),
+        std::path::Path::new(env!("CARGO_BIN_EXE_apexe"))
+            .canonicalize()
+            .unwrap()
+    );
+    assert_eq!(&arguments[1..], ["hook", "claude", "--persistent"]);
+    assert_eq!(entries[0]["hooks"][0]["timeout"], 45);
+    assert_eq!(entries[1]["hooks"][0]["command"], "python check.py");
+    assert_eq!(value["theme"], "dark");
+}
+
+#[test]
+fn test_agent_write_claude_refuses_malformed_hook_settings_without_changes() {
+    let fixture = Fixture::new();
+    fixture.enable();
+    let path = fixture.home.path().join(".claude/settings.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    for original in [r#"{"hooks":[]}"#, r#"{"hooks":{"PreToolUse":{}}}"#] {
+        std::fs::write(&path, original).unwrap();
+        fixture
+            .command()
+            .args(["agent", "claude", "--write"])
+            .assert()
+            .failure();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+}
+
+#[test]
+fn test_sh_without_installation_keeps_ordinary_shell_semantics() {
+    let fixture = Fixture::new();
+    fixture.command().args(["sh", "--shell", "/bin/sh", "-c",
+        "IFS= read -r line; printf '%s\\n' \"$line\"; printf 'pipeline-ok\\n' | /bin/cat; exit 42"])
+        .write_stdin("stdin-ok\n").assert().code(42).stdout("stdin-ok\npipeline-ok\n");
+    assert!(!fixture.shims().join(".apexe-shims.json").exists());
 }
 
 #[test]

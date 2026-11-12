@@ -103,7 +103,7 @@ impl EnvArgs {
             });
             let result = super::shell_init::disable(&directory, || uninstall(&directory));
             if result.is_ok() {
-                super::agent::warn_if_host_selects_removed_launcher(&directory);
+                super::agent::warn_if_host_depends_on_removed_shims(&directory);
                 report_disable(config, &directory, installed);
             }
             return result;

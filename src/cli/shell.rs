@@ -14,11 +14,11 @@ pub enum Shell {
 impl Shell {
     pub(super) fn detect() -> anyhow::Result<Self> {
         let shell = std::env::var_os("SHELL");
-        let name = shell
-            .as_deref()
-            .and_then(|path| std::path::Path::new(path).file_stem())
-            .and_then(|name| name.to_str());
-        match name {
+        Self::from_path(std::path::Path::new(shell.as_deref().unwrap_or_default()))
+    }
+
+    pub(super) fn from_path(path: &std::path::Path) -> anyhow::Result<Self> {
+        match path.file_stem().and_then(|name| name.to_str()) {
             Some("sh" | "dash") => Ok(Self::Sh),
             Some("bash") => Ok(Self::Bash),
             Some("zsh") => Ok(Self::Zsh),

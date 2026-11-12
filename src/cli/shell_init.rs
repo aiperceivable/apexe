@@ -98,7 +98,7 @@ pub(super) fn disable(
     apply_edits(&edits)
 }
 
-fn startup_paths(shell: Shell, rc_file: Option<&Path>) -> anyhow::Result<Vec<PathBuf>> {
+pub(super) fn startup_paths(shell: Shell, rc_file: Option<&Path>) -> anyhow::Result<Vec<PathBuf>> {
     if let Some(path) = rc_file {
         return Ok(vec![std::path::absolute(path)?]);
     }

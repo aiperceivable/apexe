@@ -222,7 +222,7 @@ fn shim_directory(config: &ApexeConfig) -> PathBuf {
         .unwrap_or_else(|| config.config_dir.join("bin"))
 }
 
-fn resolve_real_shell(
+pub(super) fn resolve_real_shell(
     explicit: Option<&Path>,
     current_exe: &Path,
 ) -> anyhow::Result<(PathBuf, ShellSource)> {

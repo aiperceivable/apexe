@@ -670,6 +670,19 @@ def validate_agent_shell(session, fixture):
         ["agent", "pi", "--write", "--scope", "user"],
         env=environment,
     )
+    for host in ["codex", "claude"]:
+        session.run(
+            "agent write " + host,
+            ["agent", host, "--write"],
+            env=environment,
+        )
+    for host in ["opencode", "pi", "codex", "claude"]:
+        session.run(
+            "agent configured " + host,
+            ["agent", "--check", host, "--format", "json"],
+            env=environment,
+            check=lambda result: equal(json_output(result)["host"]["configured"], True),
+        )
     session.run(
         "agent mcp only opencode",
         ["agent", "opencode", "--mcp-only"],
