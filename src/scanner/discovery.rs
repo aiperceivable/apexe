@@ -158,25 +158,28 @@ mod tests {
         assert!(result.is_some());
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_run_help_strips_man_page_overstrike() {
-        // `git log --help` delegates to `man git-log`, whose output encodes bold
-        // as `l\x08l`. That text is stored as the module's `documentation`, so
-        // it has to be collapsed at the point of capture. `printf` stands in for
-        // a tool that pipes its man page out.
+        use std::os::unix::fs::PermissionsExt;
+
+        // A controlled --help fixture avoids external printf implementations
+        // that interpret the appended --help as their own help request.
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("man-help");
         let pipeline = ParserPipeline::new(None);
-        let discovery = SubcommandDiscovery::new(&pipeline, 2, std::time::Duration::from_secs(5));
-        let result = discovery
-            .run_help(
-                "printf",
-                &["printf".into(), "N\\bNA\\bAM\\bME\\bE\\n".into()],
-            )
-            .expect("printf writes to stdout");
-        assert!(
-            result.contains("NAME"),
-            "overstrike not collapsed: {result:?}"
-        );
-        assert!(!result.contains('\u{8}'), "backspace survived: {result:?}");
+        let discovery = SubcommandDiscovery::new(&pipeline, 2, Duration::from_secs(5));
+        for redirect in ["", ">&2"] {
+            std::fs::write(&binary, format!(
+                "#!/bin/sh\n[ \"$1\" = '--help' ] || exit 2\nprintf '%b' 'N\\bNA\\bAM\\bME\\bE\\n' {redirect}\n"
+            )).unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let tool = binary.to_str().unwrap();
+            let result = discovery
+                .run_help(tool, &[tool.into()])
+                .expect("fixture emits help");
+            assert_eq!(result, "NAME\n", "overstrike not collapsed ({redirect})");
+        }
     }
 
     #[test]
