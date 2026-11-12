@@ -1,9 +1,8 @@
 //! End-to-end argv rendering against the real binaries.
 //!
-//! Both defects these tests cover render perfectly well as strings — the
-//! rendered command *looks* right in either spelling, and only the wrapped
-//! binary can tell the two apart. A unit test asserting `--max-time=1` would
-//! have passed for the whole time curl was refusing it. So these execute.
+//! These tests check both the rendered argv contract and its behavior against
+//! installed tools. Required long-option values use the separated spelling for
+//! compatibility with older curl versions; newer versions may also accept `=`.
 //!
 //! Every test states its environment precondition and skips rather than fails
 //! when it is not met: a Linux CI box has GNU `find` with no `-f`, and a
@@ -12,14 +11,6 @@
 use apexe::governance::path_guard::AccessMode;
 use apexe::module::executor::{build_arguments, execute_subprocess, DEFAULT_MAX_OUTPUT_BYTES};
 use serde_json::{json, Value};
-
-/// A local port nothing listens on, so `curl` exercises option parsing and
-/// then fails to connect instead of reaching the network.
-const CLOSED_PORT_URL: &str = "http://127.0.0.1:9/";
-
-/// `curl`'s exit code for an unknown option, as distinct from 7 (could not
-/// connect), which means the option parsed.
-const CURL_EXIT_UNKNOWN_OPTION: i32 = 2;
 
 fn kwargs(pairs: &[(&str, Value)]) -> serde_json::Map<String, Value> {
     pairs
@@ -84,8 +75,8 @@ fn find_schema(end_of_options: bool) -> Value {
 
 /// Regression (#24): a long option's value used to be attached with `=`, on the
 /// premise that an option whose value is *required* accepts both spellings.
-/// `curl` implements its own option parser and accepts neither `=` form, which
-/// made 134 of `cli.curl`'s 258 properties unusable.
+/// Older curl versions reject the `=` form. Newer versions accepting it must
+/// not weaken the renderer's portable separated-value contract.
 #[tokio::test]
 async fn test_curl_accepts_a_separated_long_option_value() {
     if !binary_exists("/usr/bin/curl") {
@@ -93,9 +84,15 @@ async fn test_curl_accepts_a_separated_long_option_value() {
         return;
     }
 
+    let fixture = tempfile::tempdir().expect("curl fixture");
+    let file = fixture.path().join("input.txt");
+    std::fs::write(&file, "apexe curl fixture\n").unwrap();
+    let url = url::Url::from_file_path(&file)
+        .expect("absolute fixture path")
+        .to_string();
     let args = build_arguments(
         &kwargs(&[
-            ("url", json!(CLOSED_PORT_URL)),
+            ("url", json!(url)),
             ("max_time", json!(1)),
             ("user_agent", json!("apexe")),
         ]),
@@ -104,62 +101,24 @@ async fn test_curl_accepts_a_separated_long_option_value() {
     )
     .expect("a curl invocation with two valued long options must render");
 
-    assert!(
-        !args.iter().any(|arg| arg.starts_with("--max-time=")),
-        "the attached spelling is the defect: {args:?}"
-    );
-
-    let out = execute_subprocess(
-        "/usr/bin/curl",
-        &args,
-        None,
-        10_000,
-        DEFAULT_MAX_OUTPUT_BYTES,
-    )
-    .await
-    .expect("curl should run");
-
-    assert_ne!(
-        out.exit_code, CURL_EXIT_UNKNOWN_OPTION,
-        "curl rejected an option apexe rendered: {}",
-        out.stderr
-    );
-    assert!(
-        !out.stderr.contains("is unknown"),
-        "curl rejected an option apexe rendered: {}",
-        out.stderr
-    );
-}
-
-/// The premise of the test above, asserted rather than assumed: the `=` form
-/// really is refused, so the separated form is not merely a stylistic choice.
-#[tokio::test]
-async fn test_curl_refuses_an_attached_long_option_value() {
-    if !binary_exists("/usr/bin/curl") {
-        eprintln!("skipping: no /usr/bin/curl on this host");
-        return;
-    }
-
-    let args = vec!["--max-time=1".to_string(), CLOSED_PORT_URL.to_string()];
-    let out = execute_subprocess(
-        "/usr/bin/curl",
-        &args,
-        None,
-        10_000,
-        DEFAULT_MAX_OUTPUT_BYTES,
-    )
-    .await
-    .expect("curl should run");
-
     assert_eq!(
-        out.exit_code, CURL_EXIT_UNKNOWN_OPTION,
-        "curl was expected to refuse `--max-time=1`: {out:?}"
+        args,
+        vec!["--max-time", "1", "--user-agent", "apexe", url.as_str()],
+        "required long-option values must remain separate argv entries"
     );
-    assert!(
-        out.stderr.contains("--max-time=1"),
-        "curl should name the option it refused: {}",
-        out.stderr
-    );
+
+    let out = execute_subprocess(
+        "/usr/bin/curl",
+        &args,
+        None,
+        10_000,
+        DEFAULT_MAX_OUTPUT_BYTES,
+    )
+    .await
+    .expect("curl should run");
+
+    assert_eq!(out.exit_code, 0, "curl rejected {args:?}: {}", out.stderr);
+    assert_eq!(out.stdout, "apexe curl fixture\n");
 }
 
 /// Regression (#25): every one of `find`'s expression primaries begins with

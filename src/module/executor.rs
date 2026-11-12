@@ -619,13 +619,10 @@ struct PropertyRules {
 /// *optional* accepts only that form, so it is the one case `=` is required
 /// for, and `x-apexe-value-optional` marks exactly those options.
 ///
-/// Everything else takes two argv entries. `--flag=value` is a GNU convention
-/// rather than a universal one, so the previous premise — that an option with a
-/// required value accepts both spellings — is simply false: `curl` implements
-/// its own parser and accepts NO long option in `=` form, answering
-/// `--max-time=1` with "option --max-time=1: is unknown". That made 134 of
-/// cli.curl's 258 properties unusable. The separated form is the one the help
-/// text shows (`-m, --max-time <seconds>`) and GNU accepts it as well as `=`.
+/// Everything else takes two argv entries. `--flag=value` is not universally
+/// supported: older curl versions reject `--max-time=1` as an unknown option,
+/// even though newer versions accept it. The separated form shown by the help
+/// text (`-m, --max-time <seconds>`) works across those versions and GNU tools.
 ///
 /// Short options were never attachable — `-I=PATTERN` would pass a value
 /// beginning with `=` — so they take the separated form here too.
@@ -1833,10 +1830,8 @@ mod tests {
     fn test_build_arguments_required_value_long_flag_stays_separate() {
         // Regression (#24): every long option used to render `--flag=value`,
         // on the premise that an option with a *required* value accepts both
-        // spellings. That is a GNU convention, not a universal one. `curl`
-        // implements its own parser and accepts no long option in `=` form --
-        // `curl --max-time=1` is "option --max-time=1: is unknown" -- which
-        // made 134 of cli.curl's 258 properties unusable.
+        // spellings. Older curl versions reject the attached form, so keep
+        // emitting separate tokens even when the installed version accepts `=`.
         let schema = schema_with(json!({
             "max_time": { "type": "number", "x-apexe-flag": "--max-time" },
             "user_agent": { "type": "string", "x-apexe-flag": "--user-agent" },
