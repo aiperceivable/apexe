@@ -1200,6 +1200,8 @@ def validate_recorded_cases(session, fixture):
         )
     )
     args = [
+        "--timeout",
+        "5",
         "verify",
         "--bindings-dir",
         fixture.bindings,
@@ -1214,10 +1216,15 @@ def validate_recorded_cases(session, fixture):
         "--report",
         session.root / "behavior.json",
     ]
+    # Verification also rescans source and hashes the verifier executable when
+    # recording evidence. Large unoptimized Linux binaries make this setup much
+    # slower than the tool itself; keep its five-second bound separate from the
+    # finite outer budget for the complete scenario.
     session.run(
         "verified isolated case",
         args,
         check=lambda p: equal(json_output(p)["behavioral"][0]["status"], "passed"),
+        timeout=120,
     )
 
 

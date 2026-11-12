@@ -20,6 +20,7 @@ from runtime_validation import (
     require,
     stop_process_group,
 )
+from validate_cli import CliFixture, validate_recorded_cases
 from validate_examples import (
     EXAMPLE_ENTRYPOINTS,
     check_acl_refusal,
@@ -71,6 +72,33 @@ def covered_cases():
         }
         for value, error in [("json", "json"), ("table", "text")]
     ]
+
+
+class RecordedVerificationTests(unittest.TestCase):
+    def test_recorded_verification_separates_case_and_scenario_timeouts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "toy"
+            binary.write_text("synthetic binary for digest")
+            fixture = CliFixture(binary, root / "rules", root / "toy.json",
+                                 root / "bindings", root / "acl.yaml")
+            session = Mock(root=root)
+            validate_recorded_cases(session, fixture)
+            positional, options = session.run.call_args
+            self.assertEqual(positional[0], "verified isolated case")
+            arguments = positional[1]
+            self.assertEqual(arguments[arguments.index("--timeout") + 1], "5")
+            self.assertEqual(arguments[arguments.index("--isolation") + 1], "required")
+            self.assertIn("--record", arguments)
+            self.assertEqual(options["timeout"], 120)
+            cases = json.loads((root / "cases.json").read_text())
+            self.assertEqual(cases["cases"][0]["mode"], "isolated")
+            for status in ["failed", "unverifiable"]:
+                result = subprocess.CompletedProcess([], 0, json.dumps(
+                    {"behavioral": [{"status": status}]}
+                ), "")
+                with self.assertRaises(RuntimeError):
+                    options["check"](result)
 
 
 class CoverageTests(unittest.TestCase):
