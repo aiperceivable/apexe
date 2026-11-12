@@ -306,13 +306,17 @@ impl ExecArgs {
         dir: &'a std::path::Path,
         acl: Option<&'a std::path::Path>,
     ) -> ExecutorOptions<'a> {
-        super::local::options(
+        let mut options = super::local::options(
             config,
             dir,
             config.bindings_pattern.as_deref(),
             acl,
             ModuleFilter::default(),
-        )
+        );
+        if self.native.is_empty() {
+            options.timeout_ms = config.default_timeout.saturating_mul(1000);
+        }
+        options
     }
 
     async fn preflight(

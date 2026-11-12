@@ -50,8 +50,26 @@ fn drain_pipe(mut pipe: impl io::Read + Send + 'static) -> std::thread::JoinHand
     })
 }
 
+/// Own a probe and terminate its process group on every exit path.
+struct ProbeProcess(std::process::Child);
+
+impl Drop for ProbeProcess {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Ok(pid) = i32::try_from(self.0.id()) {
+            // SAFETY: this group was created exclusively for the scanner probe.
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        }
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// Run `program` with `args`, capturing stdout/stderr, killing the child if it
-/// exceeds `timeout`.
+/// exceeds `timeout`. On Unix, descendants share a dedicated process group
+/// that is also terminated; inherited pipes cannot outlive the deadline.
 ///
 /// stdin is connected to `/dev/null` so a tool that waits for input fails fast
 /// instead of blocking. On timeout the child is killed and reaped (no orphan)
@@ -63,29 +81,38 @@ fn drain_pipe(mut pipe: impl io::Read + Send + 'static) -> std::thread::JoinHand
 /// `std::process::Command::output()` drains both pipes concurrently). This
 /// matters for big-help tools (`kubectl`, `docker`, `--help all`).
 pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> io::Result<Output> {
-    let mut child = Command::new(program)
-        .args(args)
-        .env("PATH", crate::runtime_path::search_path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+    let mut command = Command::new(program);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = ProbeProcess(
+        command
+            .args(args)
+            .env("PATH", crate::runtime_path::search_path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?,
+    );
 
     // INVARIANT: stdout/stderr were configured Stdio::piped() above, so take() is Some.
-    let out_reader = drain_pipe(child.stdout.take().expect("stdout was piped"));
-    let err_reader = drain_pipe(child.stderr.take().expect("stderr was piped"));
+    let out_reader = drain_pipe(child.0.stdout.take().expect("stdout was piped"));
+    let err_reader = drain_pipe(child.0.stderr.take().expect("stderr was piped"));
 
     let deadline = Instant::now() + timeout;
+    let mut exit_status = None;
     let status = loop {
-        if let Some(status) = child.try_wait()? {
+        if exit_status.is_none() {
+            exit_status = child.0.try_wait()?;
+        }
+        if let Some(status) =
+            exit_status.filter(|_| out_reader.is_finished() && err_reader.is_finished())
+        {
             break status;
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            // Readers unblock once the killed child's pipe ends close.
-            let _ = out_reader.join();
-            let _ = err_reader.join();
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!("`{program}` timed out after {timeout:?}"),
@@ -123,6 +150,32 @@ mod tests {
             start.elapsed() < Duration::from_secs(5),
             "timeout was not enforced promptly"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_with_timeout_bounds_descendants_holding_capture_pipes() {
+        let started = Instant::now();
+        let result = run_with_timeout(
+            "/bin/sh",
+            &["-c", "sleep 2 & echo complete"],
+            Duration::from_millis(100),
+        );
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_with_timeout_kills_descendants_before_joining_pipe_readers() {
+        let started = Instant::now();
+        let result = run_with_timeout(
+            "/bin/sh",
+            &["-c", "sleep 2 & wait"],
+            Duration::from_millis(100),
+        );
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

@@ -640,6 +640,46 @@ fn test_exec_opaque_tail_still_guards_paths() {
 }
 
 #[test]
+fn test_exec_native_preserves_acl_required_approval_for_flag_derived_modules() {
+    let fixture = Fixture::new();
+    let binary = fixture.script("toy", "touch started");
+    fixture.module(
+        "toy",
+        binary.to_str().unwrap(),
+        json!({"type":"object","properties":{
+            "force":{"type":"boolean","x-apexe-flag":"--force"}
+        },"additionalProperties":false}),
+        false,
+    );
+    let path = fixture.bindings().join("cli.toy.binding.yaml");
+    let mut document: Value =
+        serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    document["bindings"][0]["annotations"]["requires_approval"] = json!(true);
+    document["bindings"][0]["annotations"]["extra"] = json!({
+        "x-apexe-approval-basis":"flags", "x-apexe-escalating-params":["force"]
+    });
+    std::fs::write(&path, serde_yaml::to_string(&document).unwrap()).unwrap();
+    fixture.acl("default_effect: deny\nrules:\n- callers: [local]\n  targets: [cli.toy]\n  effect: allow\n  approval: required\n");
+    fixture
+        .command()
+        .args(["exec", "--", binary.to_str().unwrap()])
+        .assert()
+        .failure();
+    assert!(!fixture.home.path().join("started").exists());
+
+    // A plain allow must still avoid prompting when no escalating flag is sent.
+    fixture.acl(
+        "default_effect: deny\nrules:\n- callers: [local]\n  targets: [cli.toy]\n  effect: allow\n",
+    );
+    fixture
+        .command()
+        .args(["exec", "--", binary.to_str().unwrap()])
+        .assert()
+        .success();
+    assert!(fixture.home.path().join("started").exists());
+}
+
+#[test]
 fn test_exec_native_installed_shim_path_is_skipped_and_removed_route_stays_refused() {
     let fixture = Fixture::new();
     fixture.module("cat", "/bin/cat", file_schema(), true);

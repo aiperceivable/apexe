@@ -229,12 +229,16 @@ impl ScanOrchestrator {
         let detected = self.detect_variant(command_name, &resolved.binary_path);
 
         if !no_cache {
-            if let Some(mut cached) = self.cache.get_with_depth(
-                command_name,
-                detected.variant,
-                resolved.version.as_deref(),
-                depth,
-            ) {
+            if let Some(mut cached) = self
+                .cache
+                .get_with_depth(
+                    command_name,
+                    detected.variant,
+                    resolved.version.as_deref(),
+                    depth,
+                )
+                .filter(|cached| cached.binary_path == resolved.binary_path)
+            {
                 info!(tool = %command_name, variant = detected.variant.as_str(), "Using cached scan result");
                 // The cache holds tiers 1-3 only, so tier 4 is layered on here
                 // exactly as it is on a miss. See `SCAN_FORMAT_VERSION`.
@@ -1034,6 +1038,29 @@ mod tests {
         let source = vec![flag(Some("-l"), None, "Use long format.")];
         merge_new_flags(&mut target, &source);
         assert_eq!(target.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_scan_cache_does_not_reuse_another_installation_of_the_same_tool() {
+        use std::os::unix::fs::PermissionsExt;
+        let temporary = TempDir::new().unwrap();
+        let scanner = ScanOrchestrator::new(test_config(&temporary));
+        for (directory, flag) in [("first", "alpha"), ("second", "beta")] {
+            let binary = temporary.path().join(directory).join("reviewtool");
+            std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+            std::fs::write(&binary, format!(
+                "#!/bin/sh\ncase \"$1\" in\n--version) echo 'reviewtool 1.0.0';;\n--help) printf 'Usage: reviewtool [OPTIONS]\\n  --{flag}  Installation flag\\n';;\nesac\n"
+            )).unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let outcome = scanner.scan(&[binary.to_str().unwrap().into()], false, 1);
+            assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+            assert_eq!(outcome.tools[0].binary_path, binary.to_str().unwrap());
+            assert!(outcome.tools[0]
+                .global_flags
+                .iter()
+                .any(|entry| entry.long_name.as_deref() == Some(&format!("--{flag}"))));
+        }
     }
 
     fn test_config(tmp: &TempDir) -> ApexeConfig {

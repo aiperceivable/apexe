@@ -326,14 +326,20 @@ fn finish_executor(
 
     let mut executor = Executor::new(registry, config_for_timeouts(opts.timeout_ms));
     install_middleware(&executor, opts, audit.clone());
-    install_acl(
+    let acl_requires_approval = install_acl(
         &mut executor,
         opts,
         &registered_ids,
         audit.as_ref(),
         !local_io,
     )?;
-    install_approval_handler(&mut executor, opts, audit.clone(), local_io);
+    install_approval_handler(
+        &mut executor,
+        opts,
+        audit.clone(),
+        local_io,
+        acl_requires_approval,
+    );
 
     Ok(Arc::new(executor))
 }
@@ -453,9 +459,9 @@ fn install_acl(
     registered_ids: &[String],
     audit: Option<&Arc<crate::governance::AuditManager>>,
     warn_unmatched_targets: bool,
-) -> Result<(), ModuleError> {
+) -> Result<bool, ModuleError> {
     let Some(acl_path) = opts.acl_path else {
-        return Ok(());
+        return Ok(false);
     };
     if !acl_path.exists() {
         return Err(ModuleError::new(
@@ -485,9 +491,10 @@ fn install_acl(
         let audit = audit.clone();
         acl.set_audit_logger(move |entry| audit.log_acl_decision(entry));
     }
+    let requires_approval = acl.rules().iter().any(apcore::ACLRule::approval_required);
     executor.set_acl(acl);
     tracing::info!(acl = %acl_path.display(), "ACL enforcement active");
-    Ok(())
+    Ok(requires_approval)
 }
 
 /// Attach the approval gate `--enable-approval` asks for, or do nothing.
@@ -507,6 +514,7 @@ fn install_approval_handler(
     opts: &ExecutorOptions<'_>,
     audit: Option<Arc<crate::governance::AuditManager>>,
     local_io: bool,
+    acl_requires_approval: bool,
 ) {
     if !opts.enable_approval {
         return;
@@ -529,17 +537,17 @@ fn install_approval_handler(
         return;
     }
     if local_io && opts.local_approval {
-        // No `always_prompt` here. On this surface the operator *is* the human,
-        // so an installed ACL is the allow/deny boundary rather than a promise
-        // that every `requires_approval` module must ask. Requiring a prompt
-        // made a flag-derived module unusable from a non-interactive shell:
-        // `git log`, whose ACL rule says allow and which carries no escalating
-        // argument, was refused as APPROVAL_DENIED. `git push --force` still
-        // prompts, because the gate reads the arguments actually sent.
-        executor.set_approval_handler(Box::new(ApprovalGate::wrapping(
+        let mut gate = ApprovalGate::wrapping(
             Box::new(crate::module::approval::LocalApprovalHandler::new()),
             audit.clone(),
-        )));
+        );
+        // ApprovalRequest does not identify the source of the requirement.
+        // If this ACL can require approval, conservatively preserve the gate;
+        // an ordinary allow-only ACL still permits flag-derived stand-down.
+        if acl_requires_approval {
+            gate = gate.always_prompt();
+        }
+        executor.set_approval_handler(Box::new(gate));
         tracing::info!(
             "Local approval handler enabled: a call to a module marked `requires_approval` \
              prompts on the controlling terminal. A non-interactive process is refused with \

@@ -43,6 +43,32 @@ fn write_acl(home: &TempDir, content: &str) {
     std::fs::write(home.path().join(".apexe/acl.yaml"), content).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn test_exec_captured_uses_default_timeout_instead_of_local_timeout() {
+    let home = fixture();
+    let module = ScannedModule::new(
+        "cli.sleep".into(),
+        "Wait".into(),
+        json!({"type":"object","properties":{
+            "seconds":{"type":"integer","x-apexe-positional":0}
+        },"required":["seconds"],"additionalProperties":false}),
+        json!({"type":"object"}),
+        vec![],
+        "exec:///bin/sleep".into(),
+    );
+    apexe::output::YamlOutput::without_verification()
+        .write(&[module], &home.path().join(".apexe/bindings"), false)
+        .unwrap();
+    command(&home)
+        .env("APEXE_TIMEOUT", "1")
+        .env("APEXE_LOCAL_TIMEOUT", "0")
+        .args(["exec", "cli.sleep", "--input", r#"{"seconds":2}"#])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("timed out"));
+}
+
 #[test]
 fn test_exec_returns_captured_json_and_warns_without_acl() {
     let home = fixture();
