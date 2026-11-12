@@ -163,7 +163,16 @@ def basic_calls(url):
     tools = rpc(url + "/mcp", "tools/list", token=token)["result"]["tools"]
     names = {tool["name"] for tool in tools}
     require({"cli.ls", "cli.curl"}.issubset(names), names)
-    for arguments in [{}, {"l": True, "file": ["/etc/hosts"]}]:
+    schema = next(tool["inputSchema"] for tool in tools if tool["name"] == "cli.ls")
+    long_flags = [
+        name for name, property in schema["properties"].items()
+        if property.get("type") == "boolean"
+        and (property.get("x-apexe-flag") == "-l"
+             or "-l" in property.get("x-apexe-flag-aliases", []))
+    ]
+    require(len(long_flags) == 1, f"Expected one declared -l flag: {schema}")
+    listing_arguments = {long_flags[0]: True, "file": ["/etc/hosts"]}
+    for arguments in [{}, listing_arguments]:
         result = rpc(
             url + "/mcp",
             "tools/call",
@@ -183,6 +192,7 @@ def basic_calls(url):
         token,
     )
     check_acl_refusal(denied)
+    return listing_arguments
 
 
 def run_basic_example(session):
@@ -200,10 +210,11 @@ def run_basic_example(session):
             session.ready(url, process, timeout=90)
             equal(http(url + "/explorer/")[0], 200)
             equal(http(url + "/explorer/tools")[0], 200)
-            basic_calls(url)
+            listing_arguments = basic_calls(url)
             entry["documented_calls"] = {
                 "ls_empty": True,
                 "ls_flags_operand": True,
+                "ls_arguments": listing_arguments,
                 "curl_acl_refused": True,
             }
 

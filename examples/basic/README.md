@@ -41,10 +41,23 @@ ACL for `cli.jq` rather than assuming a classification from its name.
 ```
 You'll see your current directory listing immediately. This is the quickest way to verify apexe works.
 
-3. Click **`cli.ls`** again to pass a short option and an operand:
+3. Click **`cli.ls`** again to request a long listing and an operand. Use the
+   schema property that declares the `-l` flag: `l` for BSD/GNU `ls`, or `long`
+   for uutils `ls` (including Ubuntu 26.04). JSON property names are derived
+   from each installation's declared flags, not portable CLI aliases.
+
+BSD/GNU:
 ```json
 {"l": true, "file": ["/etc/hosts"]}
 ```
+
+uutils:
+```json
+{"long": true, "file": ["/etc/hosts"]}
+```
+
+Inspect the input schema in Explorer or run `apexe list --verbose --format json`
+with the example's `--bindings-dir ./output/modules` to confirm the property.
 
 4. Click **`cli.curl`**. `url` is the operand and is required:
 ```json

@@ -23,6 +23,7 @@ from runtime_validation import (
 from validate_cli import CliFixture, validate_recorded_cases
 from validate_examples import (
     EXAMPLE_ENTRYPOINTS,
+    basic_calls,
     check_acl_refusal,
     check_example_coverage,
     check_example_inventory,
@@ -72,6 +73,35 @@ def covered_cases():
         }
         for value, error in [("json", "json"), ("table", "text")]
     ]
+
+
+class BasicExampleTests(unittest.TestCase):
+    def test_basic_calls_use_the_advertised_long_listing_property(self):
+        for name in ["l", "long"]:
+            with self.subTest(property=name):
+                arguments = []
+
+                def call(url, method, params=None, token=None):
+                    if method == "initialize":
+                        return {"result": {"serverInfo": {"name": "apexe"}}}
+                    if method == "tools/list":
+                        return {"result": {"tools": [
+                            {"name": "cli.ls", "inputSchema": {"properties": {
+                                name: {"type": "boolean", "x-apexe-flag-aliases": ["-l"]},
+                                "file": {"type": "array", "items": {"type": "string"}},
+                            }}},
+                            {"name": "cli.curl"},
+                        ]}}
+                    if params["name"] == "cli.curl":
+                        return {"error": {"message": "ACL_DENIED: Access denied"}}
+                    payload = params["arguments"]
+                    self.assertLessEqual(set(payload), {name, "file"})
+                    arguments.append(payload)
+                    return {"result": {"structuredContent": {"exit_code": 0}}}
+
+                with patch("validate_examples.rpc", side_effect=call):
+                    basic_calls("http://127.0.0.1:8000")
+                self.assertEqual(arguments, [{}, {name: True, "file": ["/etc/hosts"]}])
 
 
 class RecordedVerificationTests(unittest.TestCase):

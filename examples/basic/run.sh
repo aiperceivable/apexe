@@ -8,7 +8,7 @@ ACL_PATH="${HOME}/.apexe/acl.yaml"
 PORT="${APEXE_EXAMPLE_PORT:-8000}"
 
 echo "=== Step 1: Scan tools ==="
-echo "  ls   — short options and an operand, from a curated overlay"
+echo "  ls   — options and operands; schema depends on your implementation"
 echo "  jq   — boolean flags, parsed from GNU-format help"
 echo "  curl — the widest surface here; flag count depends on your build"
 echo
@@ -54,7 +54,9 @@ echo "calling a required string input such as curl's URL."
 echo ""
 echo "Try in Explorer:"
 echo '  cli.ls   → {}                                          → listing of the current directory'
-echo '  cli.ls   → {"l": true, "file": ["/etc/hosts"]}          → short option + operand'
+echo '  cli.ls   → {"l": true, "file": ["/etc/hosts"]}          → BSD/GNU long listing'
+echo '           → {"long": true, "file": ["/etc/hosts"]}       → uutils long listing'
+echo '             Use the schema property declaring -l; the JSON key varies by implementation.'
 echo '  cli.curl → {"url": "https://httpbin.org/get", "silent": true}'
 echo '              → denied by the generated ACL because curl is open-world'
 echo "Review $ACL_PATH before adding a narrow allow rule for a real use case."
