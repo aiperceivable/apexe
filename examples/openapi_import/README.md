@@ -68,7 +68,8 @@ HTTP proxy modules.
 ## Automated checks
 
 ```bash
-cargo test --all-features --test openapi_integration --test examples_smoke
+cargo test --all-features --locked --test it openapi_integration::
+cargo test --all-features --locked --test it examples_smoke::test_openapi_example_
 ```
 
 The OpenAPI smoke tests run both server surfaces for local JSON and protected

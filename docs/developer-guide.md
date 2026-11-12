@@ -65,6 +65,17 @@ full gate. Runtime checks use temporary HOME/work directories and terminate
 owned process groups, including on timeout. They leave JSON receipts under
 `target/runtime-validation/`; `RUNTIME_REPORT_DIR` can override this location.
 
+Rust integration tests share the `it` target (`tests/it.rs`) to avoid compiling
+and linking a separate executable for every source file. Run one module with
+`cargo test --all-features --locked --test it native_exec::`, or use a fully
+qualified test name with `-- --exact`. Add new `tests/*.rs` files as modules in
+`tests/it.rs`; a coverage guard rejects unregistered files. Tests in this target
+must not mutate process-global environment, working directory, tracing or path
+guard state. Tests requiring process isolation belong in explicit `[[test]]`
+targets in `Cargo.toml`. No lint, test or example gate is skipped.
+
+The long-running `cli_runtime_validation` remains a separate target so its live
+process matrix does not compete with the shared suite's subprocesses.
 The Rust integration test `cli_runtime_validation` exports the compiled Clap
 command tree, option aliases, positional arguments and possible enum values.
 It runs `scripts/validate_cli.py` and requires successful behavioral scenarios

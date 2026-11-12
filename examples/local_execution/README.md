@@ -74,6 +74,6 @@ The captured demo runs in `tests/examples_smoke.rs`. On macOS the native demo
 is opt-in because it depends on the external reviewed corpus:
 
 ```bash
-cargo test --all-features --test examples_smoke \
-  test_local_example_runs_native_pipeline_and_owned_uninstall -- --ignored --exact
+cargo test --all-features --locked --test it \
+  examples_smoke::test_local_example_runs_native_pipeline_and_owned_uninstall -- --ignored --exact
 ```

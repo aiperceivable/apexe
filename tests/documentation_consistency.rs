@@ -950,6 +950,50 @@ fn test_every_mkdocs_nav_entry_resolves() {
     );
 }
 
+/// Explicit test targets must not silently omit new test files.
+#[test]
+fn test_integration_test_inventory_includes_every_source_file() {
+    use std::collections::BTreeSet;
+    let manifest = include_str!("../Cargo.toml");
+    assert!(
+        manifest.lines().any(|line| line == "autotests = false"),
+        "Integration tests must use explicit targets instead of per-file binaries"
+    );
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let suite = std::fs::read_to_string(root.join("tests/it.rs")).unwrap();
+    let modules: BTreeSet<String> = suite
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("mod ")
+                .and_then(|line| line.strip_suffix(';'))
+                .map(|name| format!("{name}.rs"))
+        })
+        .collect();
+    let targets: BTreeSet<String> = manifest
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("path = \"tests/")
+                .and_then(|line| line.strip_suffix('"'))
+                .map(str::to_owned)
+        })
+        .collect();
+    assert!(
+        modules.is_disjoint(&targets),
+        "A test file must not run twice"
+    );
+    let registered: BTreeSet<String> = modules.union(&targets).cloned().collect();
+    let discovered: BTreeSet<String> = std::fs::read_dir(root.join("tests"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+        .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        registered, discovered,
+        "Add each tests/*.rs file to tests/it.rs or an explicit Cargo test target"
+    );
+}
+
 /// Every document describing the scan pipeline must account for all its tiers.
 ///
 /// A document listing only the three tiers that read the binary reads as a

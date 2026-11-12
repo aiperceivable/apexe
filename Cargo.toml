@@ -2,6 +2,8 @@
 name = "apexe"
 version = "0.10.0"
 edition = "2021"
+# Compile integration tests together instead of linking one binary per file.
+autotests = false
 description = "Governed CLI execution and OpenAPI tools for humans and AI agents"
 license = "Apache-2.0"
 readme = "README.md"
@@ -71,6 +73,15 @@ predicates = "3"
 rstest = "0.23"
 tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+# Keep the live CLI matrix separate from the shared suite's subprocess load.
+[[test]]
+name = "cli_runtime_validation"
+path = "tests/cli_runtime_validation.rs"
 
 [[bin]]
 name = "apexe"
