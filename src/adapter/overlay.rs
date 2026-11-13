@@ -271,6 +271,14 @@ pub struct OverlayArg {
     /// script, so the rest of argv belongs to that script.
     #[serde(default)]
     pub opaque_after: bool,
+    /// What sending this operand does beyond passing its value.
+    ///
+    /// See [`ScannedArg::risk`]. It reaches the emitted schema as the same
+    /// `x-apexe-escalates` / `x-apexe-exec` keyword a flag uses, because the
+    /// approval gate and the argv renderer already read those by property name
+    /// and an operand is a property like any other.
+    #[serde(default)]
+    pub risk: FlagRisk,
     /// Render this operand before the command's flags rather than after.
     ///
     /// Only `find`-shaped grammars need it: see [`ScannedArg::before_flags`].
@@ -936,6 +944,7 @@ impl OverlayArg {
             variadic: self.variadic,
             opaque_after: self.opaque_after,
             before_flags: self.before_flags,
+            risk: self.risk,
         }
     }
 }
@@ -1768,6 +1777,7 @@ mod tests {
             value_type: ValueType::String,
             description: "Run a library module as a script.".to_string(),
             opaque_after: true,
+            risk: FlagRisk::None,
             ..Default::default()
         }];
         let mut tool = ScannedCLITool {
@@ -1794,6 +1804,43 @@ mod tests {
     /// An interpreter's trailing tokens belong to its script, not to its
     /// interpreter, and only an overlay can say where that boundary is.
     #[test]
+    fn test_overlay_operand_risk_reaches_the_schema_keyword() {
+        // `uniq INPUT OUTPUT`: only OUTPUT writes, so only that property may
+        // carry the escalation keyword.
+        let mut overlay = overlay(OverlayMode::Authoritative);
+        overlay.command = "uniq".to_string();
+        overlay.commands[0].flags = Vec::new();
+        overlay.commands[0].positional_args = vec![
+            OverlayArg {
+                name: "input".to_string(),
+                value_type: ValueType::Path,
+                ..Default::default()
+            },
+            OverlayArg {
+                name: "output".to_string(),
+                value_type: ValueType::Path,
+                risk: FlagRisk::Escalates,
+                ..Default::default()
+            },
+        ];
+        let mut tool = ScannedCLITool {
+            name: "uniq".into(),
+            variant: ToolVariant::Unknown,
+            ..Default::default()
+        };
+        apply_overlay(&mut tool, &overlay);
+        let module = crate::adapter::CliToolConverter::new()
+            .convert(&tool)
+            .remove(0);
+        let properties = module.input_schema["properties"].as_object().unwrap();
+        assert_eq!(
+            properties["output"]["x-apexe-escalates"],
+            serde_json::json!(true)
+        );
+        assert!(properties["input"].get("x-apexe-escalates").is_none());
+    }
+
+    #[test]
     fn test_overlay_opaque_operand_reaches_the_schema_marker() {
         let mut overlay = overlay(OverlayMode::Authoritative);
         overlay.command = "node".to_string();
@@ -1803,6 +1850,7 @@ mod tests {
             value_type: ValueType::String,
             variadic: true,
             opaque_after: true,
+            risk: FlagRisk::None,
             ..Default::default()
         }];
         let mut tool = ScannedCLITool {

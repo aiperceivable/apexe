@@ -298,7 +298,15 @@ fn apply_sensitive_arg(schema: &mut JsonValue, arg: &ScannedArg) {
 /// also marking it escalating would put a human through an approval prompt for
 /// a call that cannot run either way.
 fn apply_flag_risk(schema: &mut JsonValue, flag: &ScannedFlag) {
-    match flag.risk {
+    apply_risk(schema, flag.risk);
+}
+
+/// Emit the risk keywords for one parameter, flag or operand.
+///
+/// See [`apply_flag_risk`] for why `Benign` writes an explicit `false`, and why
+/// `Executes` writes no escalation keyword.
+fn apply_risk(schema: &mut JsonValue, risk: FlagRisk) {
+    match risk {
         FlagRisk::None => {}
         FlagRisk::Benign => schema["x-apexe-escalates"] = json!(false),
         FlagRisk::Escalates => schema["x-apexe-escalates"] = json!(true),
@@ -561,6 +569,10 @@ fn arg_to_schema(arg: &ScannedArg, index: usize) -> JsonValue {
     if arg.before_flags {
         schema["x-apexe-operand-position"] = json!("before-flags");
     }
+    // The same keywords a flag carries, on the property this operand becomes:
+    // the approval gate reads `x-apexe-escalates` and the argv renderer reads
+    // `x-apexe-exec` by property name, so an operand needs no separate path.
+    apply_risk(&mut schema, arg.risk);
     apply_sensitive_arg(&mut schema, arg);
 
     schema
@@ -1528,6 +1540,7 @@ mod tests {
             value_type: ValueType::String,
             required: true,
             opaque_after: false,
+            risk: FlagRisk::None,
             variadic: false,
             before_flags: false,
         };
@@ -1535,6 +1548,31 @@ mod tests {
         let schema = build_input_schema(&cmd, &[], CommandPosition::Root);
 
         assert_eq!(schema["properties"]["password"]["x-sensitive"], true);
+    }
+
+    #[test]
+    fn test_operand_risk_reaches_the_schema_keywords() {
+        // `uniq INPUT OUTPUT`: the write is the second operand, so the gate has
+        // to be decided from that property rather than from the command.
+        let mut arg = ScannedArg {
+            name: "output".to_string(),
+            description: String::new(),
+            value_type: ValueType::Path,
+            required: false,
+            variadic: false,
+            opaque_after: false,
+            before_flags: false,
+            risk: FlagRisk::Escalates,
+        };
+
+        let schema = arg_to_schema(&arg, 1);
+        assert_eq!(schema["x-apexe-escalates"], json!(true));
+        assert!(schema.get("x-apexe-exec").is_none());
+
+        arg.risk = FlagRisk::Executes;
+        let schema = arg_to_schema(&arg, 1);
+        assert_eq!(schema["x-apexe-exec"], json!(true));
+        assert!(schema.get("x-apexe-escalates").is_none());
     }
 
     #[test]
@@ -1556,6 +1594,7 @@ mod tests {
             value_type: ValueType::String,
             required: true,
             opaque_after: false,
+            risk: FlagRisk::None,
             variadic: false,
             before_flags: false,
         };
@@ -1594,6 +1633,7 @@ mod tests {
             value_type: ValueType::String,
             required: true,
             opaque_after: false,
+            risk: FlagRisk::None,
             variadic: false,
             before_flags: false,
         };
@@ -1638,6 +1678,7 @@ mod tests {
             value_type: ValueType::String,
             required: true,
             opaque_after: false,
+            risk: FlagRisk::None,
             variadic: false,
             before_flags: false,
         };
@@ -1668,6 +1709,7 @@ mod tests {
             value_type: ValueType::Path,
             required: true,
             opaque_after: false,
+            risk: FlagRisk::None,
             variadic: false,
             before_flags: false,
         };
@@ -1692,6 +1734,7 @@ mod tests {
             value_type: ValueType::Path,
             required: false,
             opaque_after: false,
+            risk: FlagRisk::None,
             variadic: true,
             before_flags: false,
         };
@@ -1751,6 +1794,7 @@ mod tests {
             value_type: ValueType::Path,
             required: true,
             opaque_after: false,
+            risk: FlagRisk::None,
             variadic: false,
             before_flags: false,
         };
@@ -1760,6 +1804,7 @@ mod tests {
             value_type: ValueType::Path,
             required: true,
             opaque_after: false,
+            risk: FlagRisk::None,
             variadic: true,
             before_flags: false,
         };
@@ -1791,6 +1836,7 @@ mod tests {
             value_type: ValueType::Url,
             required: true,
             opaque_after: false,
+            risk: FlagRisk::None,
             variadic: false,
             before_flags: false,
         };
@@ -1800,6 +1846,7 @@ mod tests {
             value_type: ValueType::Url,
             required: false,
             opaque_after: false,
+            risk: FlagRisk::None,
             variadic: true,
             before_flags: false,
         };
@@ -1820,6 +1867,7 @@ mod tests {
             value_type: ValueType::String,
             required: true,
             opaque_after: false,
+            risk: FlagRisk::None,
             variadic: true,
             before_flags: false,
         };
@@ -1853,6 +1901,7 @@ mod tests {
             value_type: ValueType::Path,
             required: true,
             opaque_after: false,
+            risk: FlagRisk::None,
             variadic: true,
             before_flags: true,
         };
@@ -1893,6 +1942,7 @@ mod tests {
             value_type: ValueType::String,
             required: false,
             opaque_after: false,
+            risk: FlagRisk::None,
             variadic: true,
             before_flags: false,
         };

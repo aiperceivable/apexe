@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::models::{ScannedArg, ValueType};
+use crate::models::{FlagRisk, ScannedArg, ValueType};
 
 // INVARIANT: every pattern is a compile-time constant valid regex.
 
@@ -221,6 +221,7 @@ fn scanned_operand(name: String, required: bool, variadic: bool) -> ScannedArg {
         // A scan cannot know where a tool stops interpreting its own argv; only
         // an overlay can assert that (see `ScannedArg::opaque_after`).
         opaque_after: false,
+        risk: FlagRisk::None,
         before_flags: false,
     }
 }

@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::models::{HelpFormat, ScannedArg, ScannedFlag, ValueType};
+use crate::models::{FlagRisk, HelpFormat, ScannedArg, ScannedFlag, ValueType};
 use crate::scanner::protocol::{CliParser, ParsedHelp};
 
 // INVARIANT: every pattern is a compile-time constant valid regex.
@@ -175,6 +175,7 @@ fn collect_operands(line: &str, args: &mut Vec<ScannedArg>) {
             value_type: ValueType::String,
             required: false,
             opaque_after: false,
+            risk: FlagRisk::None,
             variadic: true,
             before_flags: false,
         });

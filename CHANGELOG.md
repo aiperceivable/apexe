@@ -9,6 +9,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 ## [0.11.2] - 2026-11-13
 
 ### Added
+- `positional_args` entries accept the same `risk` assertion as flags, so a
+  tool whose only write lives in an operand can be governed without gating the
+  whole command. `uniq INPUT OUTPUT` truncates and rewrites OUTPUT while `uniq`
+  with no operand writes nothing, so the old choice was between failing every
+  read-only pipeline and letting an unattended write through — which is why
+  `uniq` had to be excluded from shims. The keyword lands on the operand's
+  property as `x-apexe-escalates`, so the approval gate applies only when the
+  caller fills it, and `executes` on an operand is refused outright like a flag.
 - `apexe env --enable --no-rc` installs shims without touching shell startup
   files, and removes the blocks a previous installation left behind. The managed
   block puts the shim directory first on `PATH` in every new terminal, where

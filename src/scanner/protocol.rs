@@ -44,6 +44,7 @@ pub trait CliParser: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::FlagRisk;
 
     // T7: ParsedHelp Default
     #[test]
@@ -82,6 +83,7 @@ mod tests {
                 value_type: crate::models::ValueType::Path,
                 required: true,
                 opaque_after: false,
+                risk: FlagRisk::None,
                 variadic: false,
                 before_flags: false,
             }],

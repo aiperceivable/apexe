@@ -682,7 +682,7 @@ tool you have not checked.
 
 ---
 
-## Flag risk
+## Flag and operand risk
 
 Two things a scan cannot infer, and the reason it cannot: help text does not
 distinguish `--exec-path=<path>`, which sets a search path, from
@@ -733,6 +733,27 @@ keyword is three-state: absent means the floor decides, `true` and `false` are
 both human assertions. It overrides the name list only — it cannot cancel a
 `destructive` command-level annotation, and writing it means you read the flag's
 documentation, the same standard every other field here holds.
+
+`risk` is not limited to flags. Some tools put their only write, or their only
+executed command, in an operand: `uniq INPUT OUTPUT` truncates and rewrites
+OUTPUT, while `uniq` with no operand writes nothing at all. A command-level
+`destructive` therefore has to choose between gating every read-only pipeline and
+letting an unattended write through, and neither is acceptable. Marking the
+operand puts the gate on the property the caller actually fills:
+
+```json
+"positional_args": [
+  { "name": "input",  "type": "path" },
+  { "name": "output", "type": "path", "risk": "escalates",
+    "description": "File to write. It is truncated and rewritten." }
+]
+```
+
+The keyword lands on that property exactly as it does for a flag, so the
+approval gate stands down when the operand is absent, and `executes` on an
+operand is refused outright. `risk` on a *positional* has the same
+three-state meaning, and the same requirement: write it only after reading what
+the operand does in the real tool.
 
 `executes` is stronger and is not a severity notch above `escalates` — it is a
 different claim. apexe's central guarantee is that argv reaches `execve` with no

@@ -717,6 +717,7 @@ fn help_format_to_tag(format: HelpFormat) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::FlagRisk;
     use crate::models::StructuredOutputInfo;
 
     fn make_command(name: &str, full_command: &str) -> ScannedCommand {
@@ -1123,6 +1124,7 @@ mod tests {
             value_type: crate::models::ValueType::Path,
             required: false,
             opaque_after: false,
+            risk: FlagRisk::None,
             variadic: true,
             before_flags: false,
         }];

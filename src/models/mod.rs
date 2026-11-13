@@ -407,6 +407,17 @@ pub struct ScannedArg {
     /// existed still load, with the prior behaviour.
     #[serde(default)]
     pub before_flags: bool,
+    /// What sending this operand does beyond passing its value.
+    ///
+    /// The same three-state assertion a flag carries, and for the same reason:
+    /// some tools put their only write or their only executed command in an
+    /// operand rather than in a flag. `uniq INPUT OUTPUT` truncates and rewrites
+    /// OUTPUT, and `uniq` with no operand writes nothing, so gating the whole
+    /// command either fails every read-only pipeline or lets an unattended write
+    /// through. Only an overlay can state it, because the usage line says
+    /// `[INPUT [OUTPUT]]` and never says what the second one does.
+    #[serde(default)]
+    pub risk: FlagRisk,
 }
 
 /// Information about a CLI tool's structured output capability.
@@ -905,6 +916,7 @@ mod tests {
             value_type: ValueType::Path,
             required: true,
             opaque_after: false,
+            risk: FlagRisk::None,
             variadic: false,
             before_flags: false,
         };
@@ -924,6 +936,7 @@ mod tests {
             value_type: ValueType::Path,
             required: false,
             opaque_after: false,
+            risk: FlagRisk::None,
             variadic: true,
             before_flags: false,
         };
