@@ -531,6 +531,15 @@ its prototype behind and every later login reports it. A host that selects
 `apexe-sh` reaches the shims without any startup block, so `--no-rc` is the
 setting to use when the governance boundary is the agent rather than the human
 shell.
+
+`--enable` also names the commands whose whole surface is a heuristic subcommand
+tree. A shimmed command validates the caller's argv against the scanned grammar
+and refuses anything outside it rather than forwarding it, so a tree the scan did
+not read completely fails ordinary calls closed: `git rev-parse --show-toplevel`
+was reported as an undeclared flag, one invocation at a time. Single-route tools
+are not listed — one help block is a surface the scan reads in full — and the
+report gives the route count for the ones that are. `--exclude <command>` is the
+way to leave one ungoverned instead of discovering the gap at call time.
 Use `--reload` when newly scanned eligible tools or subcommands change the shim
 list or routing, or when changing the prefix/tag filter. For example, adding
 reviewed `ls` to an installation previously covering `cat` and `head` needs

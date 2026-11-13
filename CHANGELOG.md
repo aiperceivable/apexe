@@ -9,6 +9,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 ## [0.11.2] - 2026-11-13
 
 ### Added
+- `apexe env --enable` names the commands whose whole surface is a heuristic
+  subcommand tree, with a route count each. A shimmed command validates the
+  caller's argv against the scanned grammar and refuses what falls outside it
+  rather than forwarding it, so a tree the scan did not read completely fails
+  ordinary calls closed — `git rev-parse --show-toplevel` was refused as an
+  undeclared flag. Single-route tools are excluded because one help block is a
+  surface the scan reads in full; listing them produced nineteen lines on an
+  ordinary install and pointed at the commands with the least to miss. The
+  alternative to the report is meeting the gap one failed call at a time, and
+  `--exclude <command>` is the decision it makes possible.
 - `positional_args` entries accept the same `risk` assertion as flags, so a
   tool whose only write lives in an operand can be governed without gating the
   whole command. `uniq INPUT OUTPUT` truncates and rewrites OUTPUT while `uniq`

@@ -124,6 +124,9 @@ impl EnvArgs {
         }
         if self.enable || self.reload {
             let (manifest, also_overrides) = self.plan(config)?;
+            let heuristic = self
+                .enable
+                .then(|| heuristic_only_commands(&manifest.commands));
             super::shell_init::initialize(
                 &directory,
                 self.shell,
@@ -137,6 +140,9 @@ impl EnvArgs {
             if self.enable {
                 super::agent::report_unconfigured_hosts(&directory);
                 report_acl_coverage(&directory, config);
+                if let Some(heuristic) = heuristic {
+                    report_heuristic_coverage(&heuristic);
+                }
                 report_also_overrides(&also_overrides);
             }
             return Ok(());
@@ -591,6 +597,58 @@ mod acl_coverage_tests {
 /// interpreter is never readonly, and `--also` is the narrow way to govern
 /// one), but it must not be silent: the operator set the policy by the flag
 /// they typed, so the report has to name what that flag let through.
+/// Name the commands whose entire installed surface is heuristic.
+///
+/// A scanned route executes the caller's original argv after schema validation,
+/// which is right for a tool whose help text describes its whole grammar. It is
+/// not enough for a tool the scan cannot fully describe: `git rev-parse
+/// --show-toplevel` is refused as an undeclared flag, and the shim refuses it
+/// rather than forwarding it. The operator meets that as a failed call, one
+/// invocation at a time; naming the commands at install time is the only place
+/// they can decide to leave one ungoverned instead.
+fn report_heuristic_coverage(heuristic: &[(String, usize)]) {
+    use std::io::IsTerminal;
+    if !std::io::stderr().is_terminal() {
+        return;
+    }
+    if heuristic.is_empty() {
+        return;
+    }
+    eprintln!(
+        "Commands whose subcommand surface is heuristic only ({}):",
+        heuristic.len()
+    );
+    for (name, count) in heuristic {
+        eprintln!(
+            "  {name} ({count} route(s))  ->  a route the scan missed is refused, not \
+             forwarded; leave it ungoverned with --exclude {name}"
+        );
+    }
+}
+
+/// Commands whose surface is a heuristic subcommand tree, most routes first.
+///
+/// The single-route case is deliberately left out. A tool with one help block —
+/// `wc`, `grep`, `sort` — is described by that block, and the scan reads it in
+/// full; the gap this report exists for is the tree, where the scan must find N
+/// subcommands and misses the flags of whichever it read least well. Reporting
+/// every scanned command produced nineteen lines on an ordinary install and
+/// pointed at the ones with least to miss.
+fn heuristic_only_commands(commands: &BTreeMap<String, Vec<Route>>) -> Vec<(String, usize)> {
+    let mut heuristic: Vec<(String, usize)> = commands
+        .iter()
+        .filter(|(_, routes)| {
+            routes.len() > 1
+                && routes
+                    .iter()
+                    .all(|route| route.tier != super::shim::RouteTier::Verified)
+        })
+        .map(|(name, routes)| (name.clone(), routes.len()))
+        .collect();
+    heuristic.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    heuristic
+}
+
 fn report_also_overrides(overrides: &[AlsoOverride]) {
     use std::io::IsTerminal;
     if overrides.is_empty() || !std::io::stdout().is_terminal() {
@@ -985,6 +1043,43 @@ mod tests {
             tier: RouteTier::Verified,
             tombstone: false,
         }
+    }
+
+    #[test]
+    fn test_heuristic_only_commands_skips_commands_with_a_reviewed_route() {
+        let mut commands = std::collections::BTreeMap::new();
+        commands.insert(
+            "git".to_string(),
+            vec![route("cli.git.status", &["git", "status"])],
+        );
+        let mut guessed = route("cli.git.rev_parse", &["git", "rev_parse"]);
+        guessed.tier = RouteTier::Scanned;
+        let mut other = route("hg.add", &["hg", "add"]);
+        other.tier = RouteTier::Scanned;
+        commands.insert("hg".to_string(), vec![guessed, other]);
+
+        let heuristic = heuristic_only_commands(&commands);
+
+        assert_eq!(heuristic, vec![("hg".to_string(), 2)]);
+    }
+
+    #[test]
+    fn test_heuristic_only_commands_ignores_a_single_route_command() {
+        // `wc` is one help block the scan reads in full; reporting it pointed
+        // the operator at the tools with the least to miss.
+        let mut commands = std::collections::BTreeMap::new();
+        let mut guessed = route("cli.wc", &["wc"]);
+        guessed.tier = RouteTier::Scanned;
+        commands.insert("wc".to_string(), vec![guessed]);
+        let mut first = route("cli.git.status", &["git", "status"]);
+        first.tier = RouteTier::Scanned;
+        let mut second = route("cli.git.rev_parse", &["git", "rev_parse"]);
+        second.tier = RouteTier::Scanned;
+        commands.insert("git".to_string(), vec![first, second]);
+
+        let heuristic = heuristic_only_commands(&commands);
+
+        assert_eq!(heuristic, vec![("git".to_string(), 2)]);
     }
 
     #[test]
