@@ -172,6 +172,44 @@ impl OptionValueRanges {
     }
 }
 
+/// Byte ranges covered by an angle-bracket placeholder on `line`.
+///
+/// The bare and bracketed passes must not re-read the words *inside* a
+/// multi-word placeholder. `bun run`'s usage line is
+/// `Usage: bun run [flags] <file or script>`: the angle pass reports
+/// `file_or_script`, and the bare pass then found `file` — a word from
+/// [`LOWERCASE_OPERAND_WORDS`] — inside that same placeholder and pushed a
+/// second required operand. The module rendered `bun run <script> <script>`, so
+/// `bun run test` became `bun test test` and the extra token arrived at the test
+/// runner as an argument: a call that succeeds while doing something else.
+///
+/// Deduplication by name does not catch this, because the two names differ
+/// (`file_or_script` and `file`).
+struct AnglePlaceholderRanges(Vec<(usize, usize)>);
+
+impl AnglePlaceholderRanges {
+    /// Collect every angle-bracket placeholder span on `line`.
+    fn of(line: &str) -> Self {
+        Self(
+            ARG_RE
+                .find_iter(line)
+                .map(|m| (m.start(), m.end()))
+                .collect(),
+        )
+    }
+
+    /// Whether `offset` sits strictly inside a placeholder.
+    ///
+    /// The opening `<` is excluded on purpose: the angle pass reports the
+    /// placeholder at that offset, and only the words after it are the ones the
+    /// other passes have to leave alone.
+    fn covers(&self, offset: usize) -> bool {
+        self.0
+            .iter()
+            .any(|&(start, end)| offset > start && offset < end)
+    }
+}
+
 /// Build an operand with the fields every pass below fills the same way.
 fn scanned_operand(name: String, required: bool, variadic: bool) -> ScannedArg {
     ScannedArg {
@@ -240,14 +278,20 @@ fn collect_angle_placeholders(
 /// holding only the optional half of the tool's arguments, which reads as "this
 /// is all it takes" and is worse than reporting none. An all-caps placeholder
 /// is GNU's explicit convention and carries no such doubt.
-fn collect_bracketed_operands(line: &str, found: &mut Vec<(usize, ScannedArg)>) {
+fn collect_bracketed_operands(
+    line: &str,
+    angles: &AnglePlaceholderRanges,
+    found: &mut Vec<(usize, ScannedArg)>,
+) {
     for cap in BRACKET_OPERAND_RE.captures_iter(line) {
         // INVARIANT: groups 0 and 1 are present on every capture of this pattern.
         let (Some(whole), Some(name_match)) = (cap.get(0), cap.get(1)) else {
             continue;
         };
         let name = normalize_name(name_match.as_str());
-        if belongs_to_an_option(line, name_match.start(), &name) {
+        if angles.covers(name_match.start())
+            || belongs_to_an_option(line, name_match.start(), &name)
+        {
             continue;
         }
 
@@ -302,6 +346,7 @@ fn command_token(line: &str) -> Option<&str> {
 fn collect_bare_operands(
     line: &str,
     ranges: &OptionValueRanges,
+    angles: &AnglePlaceholderRanges,
     found: &mut Vec<(usize, ScannedArg)>,
 ) {
     let command = command_token(line).and_then(|token| token.rsplit('/').next());
@@ -326,6 +371,7 @@ fn collect_bare_operands(
         }
         if belongs_to_an_option(line, name_match.start(), &name)
             || ranges.covers(whole.start())
+            || angles.covers(name_match.start())
             || glued_to_predecessor(line, name_match.start())
         {
             continue;
@@ -360,11 +406,12 @@ fn collect_bare_operands(
 /// `git [--version] <command> [<args>]`.
 pub fn extract_args_from_usage_line(line: &str) -> Vec<ScannedArg> {
     let ranges = OptionValueRanges::of(line);
+    let angles = AnglePlaceholderRanges::of(line);
     let mut found: Vec<(usize, ScannedArg)> = Vec::new();
 
     collect_angle_placeholders(line, &ranges, &mut found);
-    collect_bracketed_operands(line, &mut found);
-    collect_bare_operands(line, &ranges, &mut found);
+    collect_bracketed_operands(line, &angles, &mut found);
+    collect_bare_operands(line, &ranges, &angles, &mut found);
 
     found.sort_by_key(|(offset, _)| *offset);
     found.into_iter().map(|(_, arg)| arg).collect()
@@ -477,6 +524,34 @@ mod tests {
     fn test_skips_variadic_short_option_value_placeholder() {
         let args = extract_args_from_usage_line("Usage: tool [-I <dir>...]");
         assert!(args.is_empty(), "expected no positional args, got {args:?}");
+    }
+
+    #[test]
+    fn test_multi_word_angle_placeholder_is_not_reparsed_as_bare_operands() {
+        // `bun run`'s usage line. The angle pass yields `file_or_script`; the
+        // bare pass then found `file` — a word from `LOWERCASE_OPERAND_WORDS` —
+        // inside the same placeholder and reported a second, required operand.
+        // The module rendered `bun run <script> <script>`, so `bun run test`
+        // reached the script runner as `bun test test`.
+        let args = extract_args_from_usage_line("Usage: bun run [flags] <file or script>");
+        assert_eq!(
+            args.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+            ["file_or_script"],
+            "a multi-word placeholder is one operand: {args:?}"
+        );
+    }
+
+    #[test]
+    fn test_multi_word_angle_placeholder_holding_two_operand_nouns() {
+        // `<input file>` contains two words that each look like an operand on
+        // their own, so the bug above produced three operands for one
+        // placeholder.
+        let args = extract_args_from_usage_line("Usage: tool [--json] <input file>");
+        assert_eq!(
+            args.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+            ["input_file"],
+            "a multi-word placeholder is one operand: {args:?}"
+        );
     }
 
     #[test]

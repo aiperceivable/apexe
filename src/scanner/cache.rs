@@ -128,7 +128,14 @@ impl ScanCache {
 ///   baked in, so reusing one would serve a corpus assertion as though it were
 ///   something the binary said — and would re-apply the current overlay on top
 ///   of a stale one. This is the last bump an overlay change will ever need.
-const SCAN_FORMAT_VERSION: u32 = 4;
+/// - 5: the bare and bracketed passes no longer read operands out of a
+///   multi-word `<...>` placeholder. `bun run`'s `Usage: bun run [flags] <file or
+///   script>` yielded `file_or_script` plus a second, required `file`, so the
+///   binding rendered `bun run <script> <script>` and `bun run test` arrived at
+///   the script runner as `bun test test`. An entry written by 4 keeps the
+///   duplicate: reusing it would hand out the pre-fix contract for a binary whose
+///   name, variant and version are all unchanged.
+const SCAN_FORMAT_VERSION: u32 = 5;
 
 /// Build the on-disk cache file name for one scan result.
 ///
