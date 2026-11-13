@@ -390,6 +390,30 @@ def validate_shells(session, fixture):
                 "cli.toy",
             ],
         )
+        state_file = shim / ".apexe-shell-init.json"
+        session.run(
+            "env enable --no-rc " + shell,
+            [
+                "env",
+                "--enable",
+                "--no-rc",
+                "--shell",
+                shell,
+                "--shim-dir",
+                shim,
+                "--bindings-dir",
+                fixture.bindings,
+                "--acl",
+                fixture.acl,
+                "--tags",
+                "cli",
+                "--prefix",
+                "cli.toy",
+            ],
+            # The startup half is skipped and the record of the blocks the
+            # previous run wrote is dropped, so nothing claims those files.
+            check=lambda p: equal(state_file.exists(), False),
+        )
         session.run(
             "env activation " + shell,
             ["env", "--shell", shell, "--shim-dir", shim],

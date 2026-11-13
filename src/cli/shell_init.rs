@@ -31,17 +31,38 @@ pub(super) fn initialize(
     directory: &Path,
     shell: Option<Shell>,
     rc_file: Option<&Path>,
+    manage_startup: bool,
     install: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     std::env::join_paths([directory])?;
     let shell = shell.map(Ok).unwrap_or_else(Shell::detect)?;
+    let mut edits = Vec::new();
+    if !manage_startup {
+        // The operator asked for shims without shell startup changes. That is
+        // the shape a host integration needs: `apexe-sh` puts the shim
+        // directory on PATH itself, while a login shell that also had it would
+        // resolve its own bootstrap tools (`rm`, `ln`, `sort` from pyenv, nvm or
+        // brew) through the shims and fail wherever the policy denies them.
+        // Blocks a previous installation left behind are removed, so the two
+        // states cannot both claim the same files.
+        if let Some(state) = read_state(directory)? {
+            edits.extend(plan_removal(&state)?);
+            edits.push(plan_state(directory, None)?);
+        }
+        install()?;
+        apply_edits(&edits)?;
+        tracing::info!(
+            directory = %directory.display(),
+            "Installed shims without shell startup changes; a host that selects apexe-sh reaches them without them"
+        );
+        return Ok(());
+    }
     let paths = startup_paths(shell, rc_file)?;
     let mut state = read_state(directory)?.unwrap_or(Initialization {
         version: 1,
         files: Vec::new(),
     });
     let block = activation_block(directory, shell)?;
-    let mut edits = Vec::new();
     for path in paths {
         let path = resolve_path(&path)?;
         anyhow::ensure!(
@@ -73,6 +94,20 @@ pub(super) fn initialize(
     Ok(())
 }
 
+/// The edits that remove every managed block, leaving the surrounding text.
+///
+/// Shared by `disable` and by an installation that asks for no startup
+/// changes, so the two paths cannot drift on what "remove what we wrote"
+/// means.
+fn plan_removal(state: &Initialization) -> anyhow::Result<Vec<FileEdit>> {
+    let mut edits = Vec::new();
+    for file in &state.files {
+        let (edit, _) = plan_block(&file.path, Some(&file.block), None)?;
+        edits.push(edit);
+    }
+    Ok(edits)
+}
+
 pub(super) fn disable(
     directory: &Path,
     remove_links: impl FnOnce() -> anyhow::Result<()>,
@@ -85,10 +120,7 @@ pub(super) fn disable(
     }
     let mut edits = Vec::new();
     if let Some(state) = state {
-        for file in state.files {
-            let (edit, _) = plan_block(&file.path, Some(&file.block), None)?;
-            edits.push(edit);
-        }
+        edits.extend(plan_removal(&state)?);
         edits.push(plan_state(directory, None)?);
     }
     // Validate every startup block before removing any command links.
@@ -408,6 +440,29 @@ mod tests {
         apply_edits(&[installation]).unwrap();
         let (cleanup, _) = plan_block(&path, Some(&owned), None).unwrap();
         apply_edits(&[cleanup]).unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+    }
+
+    #[test]
+    fn test_plan_removal_restores_text_around_a_managed_block() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("startup.rc");
+        let original = "# before\nexport VALUE=1\n";
+        let block = "# >>> apexe test >>>\nactivate\n# <<< apexe test <<<\n";
+        std::fs::write(&path, original).unwrap();
+        let (installation, owned) = plan_block(&path, None, Some(block)).unwrap();
+        apply_edits(&[installation]).unwrap();
+
+        let state = Initialization {
+            version: 1,
+            files: vec![StartupFile {
+                path: path.clone(),
+                block: owned,
+            }],
+        };
+        let edits = plan_removal(&state).unwrap();
+        apply_edits(&edits).unwrap();
+
         assert_eq!(std::fs::read_to_string(path).unwrap(), original);
     }
 }

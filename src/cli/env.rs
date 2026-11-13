@@ -40,6 +40,17 @@ pub struct EnvArgs {
     #[arg(long, conflicts_with_all = ["enable", "reload", "disable", "bindings_dir", "acl", "tags", "prefix", "shell"])]
     #[serde(default)]
     pub check: bool,
+    /// Install shims without touching shell startup files.
+    ///
+    /// The managed blocks put the shim directory first on `PATH` in every new
+    /// terminal, where login-time tooling (pyenv, nvm, brew) then resolves its
+    /// own `rm`/`ln`/`sort` through the shims and fails wherever the policy
+    /// denies them. Use this for a host that reaches apexe through `apexe-sh`
+    /// (`apexe agent <host> --write`), so only the agent's shell is governed.
+    /// Blocks a previous installation left behind are removed.
+    #[arg(long, requires = "startup_config", conflicts_with = "rc_file")]
+    #[serde(default)]
+    pub no_rc: bool,
     /// Shell startup file to configure instead of the detected default.
     #[arg(long, requires = "startup_config")]
     pub rc_file: Option<PathBuf>,
@@ -113,9 +124,13 @@ impl EnvArgs {
         }
         if self.enable || self.reload {
             let (manifest, also_overrides) = self.plan(config)?;
-            super::shell_init::initialize(&directory, self.shell, self.rc_file.as_deref(), || {
-                install(&directory, manifest, self.replace_unowned)
-            })?;
+            super::shell_init::initialize(
+                &directory,
+                self.shell,
+                self.rc_file.as_deref(),
+                !self.no_rc,
+                || install(&directory, manifest, self.replace_unowned),
+            )?;
             // Only on the explicit installation. `--reload` also runs from the
             // activation script of every new terminal, where a host hint list
             // would repeat itself for no new information.
@@ -153,9 +168,13 @@ impl EnvArgs {
         config.bindings_pattern = previous.bindings_pattern;
         let (manifest, _) = self.plan(&config)?;
         if self.shell.is_some() || self.rc_file.is_some() {
-            super::shell_init::initialize(directory, self.shell, self.rc_file.as_deref(), || {
-                install(directory, manifest, self.replace_unowned)
-            })
+            super::shell_init::initialize(
+                directory,
+                self.shell,
+                self.rc_file.as_deref(),
+                !self.no_rc,
+                || install(directory, manifest, self.replace_unowned),
+            )
         } else {
             install(directory, manifest, self.replace_unowned)
         }

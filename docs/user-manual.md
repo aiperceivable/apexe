@@ -8,7 +8,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 0.11.1 |
+| **Version** | 0.11.2 |
 | **Date** | 2026-11-13 |
 | **Platform** | macOS / Linux |
 
@@ -505,6 +505,7 @@ use the shell-specific setup below.
 | `--disable` | off | Remove owned shims and managed startup blocks; retain namespaced shell helpers; succeeds when already disabled |
 | `--check` | off | Diagnose installed shims, current PATH resolution, bindings and ACL without executing commands |
 | `--rc-file <PATH>` | detected startup file | Configure an explicit startup file with `--enable` or `--reload` |
+| `--no-rc` | off | Install shims without touching shell startup files, and remove blocks a previous installation left behind. Use it when the host selects `apexe-sh` (`apexe agent <host> --write`), so only the agent's shell is governed |
 | `--shim-dir <DIR>` | `<config_dir>/bin` | Directory for command links and their routing manifest |
 | `--bindings-dir <DIR>` | configured directory | Binding snapshot to install from |
 | `--acl <PATH>` | default ACL when present | Explicit policy path to store in the manifest |
@@ -520,6 +521,16 @@ with shim installation. Startup blocks are validated before links are installed.
 An unknown shell requires an explicit `--shell`. The startup block activates
 only when the apexe executable and shim manifest exist. Once enabled, use native
 commands directly; there is no per-command or per-terminal setup to repeat.
+
+`--no-rc` drops the startup half and leaves the operator's own terminal
+ungoverned. Login-time tooling (pyenv, nvm, brew) shells out to `rm`, `ln`,
+`sort` and similar before the interactive session exists; with the shim
+directory on `PATH` at that point, those calls resolve through the policy and
+fail wherever a rule denies one — a `pyenv rehash` interrupted this way leaves
+its prototype behind and every later login reports it. A host that selects
+`apexe-sh` reaches the shims without any startup block, so `--no-rc` is the
+setting to use when the governance boundary is the agent rather than the human
+shell.
 Use `--reload` when newly scanned eligible tools or subcommands change the shim
 list or routing, or when changing the prefix/tag filter. For example, adding
 reviewed `ls` to an installation previously covering `cat` and `head` needs
