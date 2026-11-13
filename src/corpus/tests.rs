@@ -10,6 +10,45 @@ struct Fixture {
     home: PathBuf,
 }
 
+/// Path to the `apexe` binary a test should spawn.
+///
+/// Cargo sets `CARGO_BIN_EXE_<name>` for integration tests only, so this unit
+/// test has to locate the built binary itself. `assert_cmd`'s fallback derives
+/// the directory from the test executable and assumes the classic
+/// `<target>/<profile>/deps/<test>` layout: with Cargo's `build.build-dir`
+/// layout the test runs from `<target>/<profile>/build/<package>/<hash>/out/`,
+/// the derivation yields a directory that holds no binary, and the suite panics
+/// before reaching an assertion. Walking up from the test executable and taking
+/// the first directory that actually contains one covers both layouts, and the
+/// environment variable stays the contract when it exists.
+fn apexe_binary() -> PathBuf {
+    if let Some(path) = std::env::var_os("CARGO_BIN_EXE_apexe") {
+        return PathBuf::from(path);
+    }
+    let executable = std::env::current_exe().expect("test binary path");
+    let directory = executable.parent().expect("test binary directory");
+    find_binary_upwards(directory).unwrap_or_else(|| {
+        panic!(
+            "could not locate the apexe binary from {}; build it first (cargo build) or set CARGO_BIN_EXE_apexe",
+            executable.display()
+        )
+    })
+}
+
+/// The nearest ancestor of `start` holding an `apexe` executable.
+fn find_binary_upwards(start: &Path) -> Option<PathBuf> {
+    let mut directory = start.to_path_buf();
+    loop {
+        let candidate = directory.join(format!("apexe{}", std::env::consts::EXE_SUFFIX));
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if !directory.pop() {
+            return None;
+        }
+    }
+}
+
 /// `PATH` with any apexe shim directory removed.
 ///
 /// The suite is routinely run from an apexe-governed shell, where `PATH` starts
@@ -44,7 +83,7 @@ impl Fixture {
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::cargo_bin("apexe").unwrap();
+        let mut command = Command::new(apexe_binary());
         command
             .env("APEXE_OFFLINE", "true")
             .env("HOME", &self.home)
@@ -695,4 +734,23 @@ fn test_scan_automatic_corpus_rejects_invalid_downloaded_rules() {
     let policy =
         apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml")).unwrap();
     assert_eq!(policy.explain_external("cli.fixture").effect, "deny");
+}
+
+#[test]
+fn test_finds_the_binary_from_the_build_dir_layout() {
+    // Cargo's `build.build-dir` layout puts the test executable in
+    // `<target>/<profile>/build/<package>/<hash>/out/`. Deriving the target
+    // directory from that path, which `assert_cmd` does, yields `out/`, where
+    // nothing lives; walking up reaches the profile directory that holds the
+    // binary.
+    let temporary = tempfile::tempdir().unwrap();
+    let out = temporary.path().join("debug/build/apexe/abc123/out");
+    std::fs::create_dir_all(&out).unwrap();
+    let binary = temporary
+        .path()
+        .join("debug")
+        .join(format!("apexe{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(&binary, b"").unwrap();
+
+    assert_eq!(find_binary_upwards(&out), Some(binary));
 }
