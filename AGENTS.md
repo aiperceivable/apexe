@@ -6,6 +6,68 @@
 
 ---
 
+## Change Discipline
+
+Understand the existing architecture and business design before adding a
+feature or changing code. Read the code and the document that owns the area,
+and be able to name the mechanism that is supposed to handle the problem. If
+one already can, the change belongs to that mechanism's data or configuration —
+not to a second path around it. An extension that works by duplicating an
+existing layer is a design regression, even when it passes the tests.
+
+### Decide in this order, and stop at the first answer
+
+1. **Is this a bug in a layer that already covers the case?** Fix that layer.
+   A wrong annotation, a misleading refusal message or a parser defect is a
+   defect in the existing design, not a missing feature.
+2. **Does an existing configuration or policy expression solve it?** ACL rules,
+   `env --scanned` / `--also` / `--exclude`, the `agent` host integration,
+   approval ceilings and curated overlays are the designed extension points.
+   Use them before considering code.
+3. **Is the answer new data rather than new code?** An overlay, an ACL rule or
+   a provenance record is a reviewed assertion an operator can audit and
+   change without a rebuild. Prefer it to a switch nobody can explain.
+4. **Only then extend the design.** State which existing mechanism cannot
+   express the need and why. Keep the extension in the layer that owns the
+   concept, and update the document that describes it in the same change.
+
+### May, should, must not
+
+- **May**: fix the layer that owns the decision; add a curated overlay with
+  provenance; add a model field the contract genuinely needs (and bump
+  `SCAN_FORMAT_VERSION`); add or reorder ACL rules; correct an annotation that
+  is demonstrably too broad for the real installation.
+- **Should**: prefer the narrowest mechanism that expresses the intent; keep
+  the coverage gate and the policy gate answering their own questions; leave
+  every refusal saying which layer actually decided; link to the owning
+  document instead of restating it.
+- **Must not**: widen the surface to make one call succeed (`--unmanaged`,
+  a catch-all ACL rule, `--scanned all` as a reflex); write an overlay from
+  memory or to make `exec` accept a scanned tool; change an annotation to clear
+  a prompt; treat `requires_approval` as a verdict instead of a ceiling; add a
+  configuration knob for behaviour an ACL rule, overlay or policy flag already
+  expresses; tell a shim-governed host to wrap its commands in `exec`.
+
+### The layer that owns the decision
+
+Two gates are evaluated in order — coverage (is this route expressible?) then
+policy (is this caller allowed?) — and three tiers label what the grammar is
+(reviewed, scanned, legacy). A change belongs to exactly one layer and must not
+move a decision into a layer that does not own it.
+
+| Layer | Owns | Must not |
+|---|---|---|
+| Scanner / overlay | the declared surface and its grammar | widen the surface to make one call succeed; write an overlay from memory |
+| Executor | how an admitted route runs (native argv, scanned argv passthrough, module JSON, MCP/A2A) | admit scanned grammar through the native path; add a third execution surface for a case an existing one covers |
+| ACL / approval | who may call what, and where a human must confirm | use a catch-all to make a policy question disappear; change an annotation to clear a prompt |
+| Host integration | how a client's commands enter apexe | wrap a call that is already governed, or route a shim-governed host through `exec` |
+
+The operator-facing rules live in [`docs/overlays.md`](docs/overlays.md) and
+[the user manual](docs/user-manual.md#coverage-and-policy-are-two-gates). Keep
+this section short and link to them rather than restating the procedures.
+
+---
+
 ## Rust Code Quality
 
 ### Readability
