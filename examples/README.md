@@ -1,4 +1,4 @@
-# apexe 0.11.2 Examples
+# apexe 0.11.1 Examples
 
 Explore governed CLI execution, contract verification and HTTP API import.
 Choose an example based on whether you are operating the `apexe` command or

@@ -163,6 +163,19 @@ The local policy is a trust decision, not isolation: a wrapped tool can read
 and use the caller's credentials, and commands it starts inherit the same
 environment.
 
+**Every local call is one caller.** Native `exec`, PATH shims and `apexe sh`
+present the same `local` caller, so no ACL rule can tell the operator's terminal
+from an agent the operator started. What the shims do give you is a split by
+*activation*, not by identity: a shell with the shim directory on `PATH` is
+governed, one without it is not. That is why `apexe env --enable --no-rc`
+together with `apexe agent <host> --write` leaves the human shell outside the
+boundary while the agent's `apexe-sh` is inside it. Anything stronger needs an
+identity the wrapped process cannot mint: a separate Unix user, or a container
+with its own ACL and bindings, or the MCP/A2A caller identities, which are
+authenticated and do not exist on the local surface. An `APEXE_CALLER`-style
+environment variable would be attribution, not enforcement — a process that can
+run the tool can also unset it.
+
 ### 4.6 Resource bounds
 
 Output is capped at 64 MiB per stream (`DEFAULT_MAX_OUTPUT_BYTES`). A timeout,

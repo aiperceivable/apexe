@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
-## [0.11.2] - 2026-11-13
+## [0.11.1] - 2026-11-13
 
 ### Added
 - `apexe env --enable` names the commands whose whole surface is a heuristic
@@ -36,10 +36,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   behind, and every later login reports `cannot rehash`. A host that selects
   `apexe-sh` reaches the shims without any startup block, so this is the setting
   to use when the governance boundary is the agent rather than the human shell.
-
----
-
-## [0.11.1] - 2026-11-13
 
 ### Fixed
 - `apexe exec` no longer reports a coverage gap in the shim's words. A command
