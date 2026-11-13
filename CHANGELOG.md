@@ -9,6 +9,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 ## [0.11.1] - 2026-11-13
 
 ### Fixed
+- `apexe exec` no longer reports a coverage gap in the shim's words. A command
+  the installed shim manifest knew only as `scanned` was inserted into the
+  native route table with an empty route list, so route selection fell through
+  to the shim's *"Shim 'bun' has no route for 'bun run' … re-run `apexe env
+  --reload --scanned all`"*. That flag belongs to `env` and cannot reach native
+  execution, so an operator who followed it changed a policy that was never the
+  deciding layer; a pi host read it as "the shim is missing a route" and stopped
+  work. A command with no installed reviewed route now stays absent from the
+  native table, which reaches the honest answer: the binding exists, its grammar
+  is not reviewed, and the refusal names the two surfaces that do work — its
+  shim in a governed shell, or `apexe exec <module> --input`.
+- That refusal names the binding the arguments selected instead of the first
+  module that targets the same binary. `bun` has six routes, so a `bun run`
+  caller was told `cli.bun.exec` had no reviewed grammar and was pointed at the
+  wrong `--input` property set.
 - A multi-word angle-bracket placeholder is one operand again. The usage-line
   parser runs three passes over the same line and the bare pass re-read the words
   *inside* `<...>`: `bun run`'s `Usage: bun run [flags] <file or script>`

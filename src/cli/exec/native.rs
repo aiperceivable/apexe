@@ -130,15 +130,34 @@ fn retain_installed_routes(
     if installed.bindings_dir.canonicalize()? != bindings.canonicalize()? {
         return Ok(());
     }
-    for (name, routes) in installed.commands {
+    extend_with_verified_routes(commands, installed.commands);
+    Ok(())
+}
+
+/// Add the routes of an installed shim manifest that native execution may use.
+///
+/// A command whose installed routes are all `scanned` contributes nothing here:
+/// it is admissible through the shim that installed it, not through `apexe
+/// exec`. Inserting the name with an empty route list made `manifest_route_name`
+/// treat it as a native route, so the refusal came out of the shim's resolver —
+/// advising `apexe env --reload --scanned all`, a flag this subcommand does not
+/// have and a policy that cannot reach native execution. An absent entry falls
+/// through to the honest answer: the binding exists, its grammar is not
+/// reviewed, so the route is a coverage gap.
+fn extend_with_verified_routes(
+    commands: &mut BTreeMap<String, Vec<Route>>,
+    installed: BTreeMap<String, Vec<Route>>,
+) {
+    for (name, routes) in installed {
+        let verified: Vec<Route> = routes
+            .into_iter()
+            .filter(|route| route.tier == super::super::shim::RouteTier::Verified)
+            .collect();
+        if verified.is_empty() {
+            continue;
+        }
         let current = commands.entry(name).or_default();
-        for route in routes {
-            // An installed `--scanned` route is admitted by the shim policy that
-            // built that manifest, not by this call. Native execution keeps its
-            // own rule: reviewed grammar only.
-            if route.tier != super::super::shim::RouteTier::Verified {
-                continue;
-            }
+        for route in verified {
             if !current
                 .iter()
                 .any(|existing| existing.module_id == route.module_id)
@@ -147,7 +166,6 @@ fn retain_installed_routes(
             }
         }
     }
-    Ok(())
 }
 
 fn resolve_invocation(
@@ -183,10 +201,9 @@ fn resolve_invocation(
     // guessed wrong" into a raw execution. The operator is told to fix the
     // grammar instead.
     if registered_module(&binary, modules).is_some() {
-        return Err(super::super::shim::coverage_refusal(format!(
-            "Command '{name}' has a binding but no reviewed grammar for this route; --unmanaged cannot substitute for coverage. Scan it with an overlay that covers this command"
-        ))
-        .into());
+        return Err(
+            coverage_gap_error(name, selected_binding(&binary, name, &args[1..], modules)).into(),
+        );
     }
     if policy == UnmanagedPolicy::Deny {
         return Err(super::super::shim::coverage_refusal(format!(
@@ -195,6 +212,73 @@ fn resolve_invocation(
         .into());
     }
     unmanaged_invocation(name, &binary, &args[1..], policy, config)
+}
+
+/// The refusal an `apexe exec` caller gets for a route the scan only guessed at.
+///
+/// Native execution is the reviewed path, so the message names the binding the
+/// caller actually asked for and the two surfaces that would work — its shim in
+/// a governed shell, or the module with `--input` — instead of the shim's
+/// remedy. It deliberately does not mention `env --reload --scanned all`: that
+/// flag configures shims and cannot reach this surface, and an operator who
+/// follows it changes a policy that was never the deciding layer.
+fn coverage_gap_error(name: &str, module_id: Option<&str>) -> apcore::ModuleError {
+    let subject = module_id.map_or_else(
+        || format!("Command '{name}' has a binding"),
+        |module_id| format!("Command '{name}' has a binding ({module_id})"),
+    );
+    let call = module_id.map_or_else(
+        || "call the module with --input".to_string(),
+        |module_id| format!("call {module_id} with --input"),
+    );
+    super::super::shim::coverage_refusal(format!(
+        "{subject} but no reviewed grammar for this route: `apexe exec` executes \
+         reviewed grammar only, and --unmanaged cannot substitute for coverage. Run it \
+         through its shim in a governed shell, or {call}; to make native argv available, \
+         cover the route in a curated overlay and rescan"
+    ))
+}
+
+/// The binding the caller actually asked for, when one can be identified.
+///
+/// [`registered_module`] only proves that *some* module targets the binary:
+/// `bun` has six, and naming the first one made the refusal report
+/// `cli.bun.exec` for a call to `bun run`. The route is the longest declared
+/// command path whose tail the arguments start with — the same rule the shim
+/// uses to select a route — among the modules that target this binary.
+fn selected_binding<'a>(
+    binary: &Path,
+    name: &str,
+    args: &[String],
+    modules: &'a [ScannedModule],
+) -> Option<&'a str> {
+    let actual = binary.canonicalize().ok()?;
+    let mut candidates: Vec<(&str, usize)> = modules
+        .iter()
+        .filter_map(|module| {
+            let target = crate::scanner::resolver::extract_binary_path(&module.target)?;
+            if Path::new(&target).canonicalize().ok()? != actual {
+                return None;
+            }
+            let path: Vec<String> = module
+                .metadata
+                .get("command_path")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok())?;
+            if path.first().map(String::as_str) != Some(name) {
+                return None;
+            }
+            let tail = &path[1..];
+            let matches = tail.len() <= args.len()
+                && tail
+                    .iter()
+                    .zip(args)
+                    .all(|(expected, given)| expected == given);
+            matches.then_some((module.module_id.as_str(), path.len()))
+        })
+        .collect();
+    candidates.sort_by_key(|(_, length)| std::cmp::Reverse(*length));
+    candidates.first().map(|(module_id, _)| *module_id)
 }
 
 /// The route name to use for a command, when the manifest carries routes for it.
@@ -406,5 +490,117 @@ mod tests {
             manifest_route_name("git", &binary, &[guessed_route()], &manifest),
             Some("git".into())
         );
+    }
+
+    #[test]
+    fn test_extend_with_verified_routes_skips_a_command_whose_routes_are_all_scanned() {
+        // `apexe env --enable --scanned all` installs `bun: 6 scanned`. Those
+        // routes are admissible through the shim, not through native execution,
+        // and the name must not become an empty native entry: that entry is what
+        // routed the refusal through the shim's resolver and told an `apexe exec`
+        // caller to re-run `apexe env --reload --scanned all`.
+        let mut commands: BTreeMap<String, Vec<Route>> = BTreeMap::new();
+        let installed = BTreeMap::from([(
+            "bun".to_string(),
+            vec![Route {
+                module_id: "cli.bun.run".into(),
+                command_path: vec!["bun".into(), "run".into()],
+                tier: RouteTier::Scanned,
+                tombstone: false,
+            }],
+        )]);
+
+        extend_with_verified_routes(&mut commands, installed);
+
+        assert!(
+            commands.is_empty(),
+            "a scanned-only command must not become a native route"
+        );
+    }
+
+    #[test]
+    fn test_extend_with_verified_routes_adds_a_reviewed_route() {
+        let mut commands: BTreeMap<String, Vec<Route>> = BTreeMap::new();
+        let installed = BTreeMap::from([(
+            "ls".to_string(),
+            vec![Route {
+                module_id: "cli.ls".into(),
+                command_path: vec!["ls".into()],
+                tier: RouteTier::Verified,
+                tombstone: false,
+            }],
+        )]);
+
+        extend_with_verified_routes(&mut commands, installed);
+
+        assert_eq!(commands.get("ls").map(Vec::len), Some(1));
+        assert_eq!(commands["ls"][0].module_id, "cli.ls");
+    }
+
+    #[test]
+    fn test_coverage_gap_names_the_binding_and_the_surfaces_that_work() {
+        let error = coverage_gap_error("bun", Some("cli.bun.run"));
+
+        assert!(error.message.contains("cli.bun.run"), "{}", error.message);
+        assert!(
+            error.message.contains("reviewed grammar only"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("--input"), "{}", error.message);
+        // The shim's remedy is inapplicable on this surface, and an agent that
+        // follows it changes a policy that was never the deciding layer.
+        assert!(!error.message.contains("--scanned"), "{}", error.message);
+        assert!(!error.message.contains("env --reload"), "{}", error.message);
+        assert_eq!(
+            error.details.get("layer").and_then(|layer| layer.as_str()),
+            Some("coverage")
+        );
+    }
+
+    /// One `bun <tail>` binding that targets this test binary.
+    fn bun_route(module_id: &str, tail: &str) -> ScannedModule {
+        let binary = std::env::current_exe().expect("test binary path");
+        let mut module = ScannedModule::new(
+            module_id.into(),
+            format!("bun {tail}"),
+            json!({"type": "object", "properties": {}}),
+            json!({"type": "object"}),
+            vec!["test".into()],
+            format!("exec://{} {tail}", binary.display()),
+        );
+        module
+            .metadata
+            .insert("command_path".into(), json!(["bun", tail]));
+        module
+            .metadata
+            .insert(crate::models::GRAMMAR_KEY.into(), json!("scanned"));
+        module
+    }
+
+    #[test]
+    fn test_selected_binding_names_the_route_the_arguments_select() {
+        // `bun` has six bindings; naming the first one told a `bun run` caller
+        // that `cli.bun.exec` had no reviewed grammar.
+        let modules = [
+            bun_route("cli.bun.run", "run"),
+            bun_route("cli.bun.exec", "exec"),
+        ];
+        let binary = std::env::current_exe().expect("test binary path");
+        let args = ["run".to_string(), "test:extension".to_string()];
+
+        assert_eq!(
+            selected_binding(&binary, "bun", &args, &modules),
+            Some("cli.bun.run")
+        );
+    }
+
+    #[test]
+    fn test_selected_binding_reports_none_when_no_declared_route_matches() {
+        let modules = [bun_route("cli.bun.run", "run")];
+        let binary = std::env::current_exe().expect("test binary path");
+        let args = ["repl".to_string()];
+
+        assert_eq!(selected_binding(&binary, "bun", &args, &modules), None);
     }
 }
