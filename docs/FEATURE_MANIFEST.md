@@ -8,7 +8,7 @@ locally, and serves CLI and imported OpenAPI operations through MCP and A2A.
 Configured access controls, approval checks and audit records accompany the
 execution path.
 
-**Version:** 0.11.1.
+**Version:** 0.12.0.
 
 **Status:** CLI discovery, initialization, binding/Skill generation, local
 module execution, reviewed native argv and PATH shims, MCP/A2A serving, OpenAPI

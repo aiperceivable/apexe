@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
-## [0.11.1] - 2026-11-13
+## [0.12.0] - 2026-11-13
 
 ### Added
 - `apexe env --enable` names the commands whose whole surface is a heuristic
