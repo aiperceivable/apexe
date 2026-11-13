@@ -6,6 +6,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
+## [0.11.1] - 2026-11-13
+
+### Fixed
+- A multi-word angle-bracket placeholder is one operand again. The usage-line
+  parser runs three passes over the same line and the bare pass re-read the words
+  *inside* `<...>`: `bun run`'s `Usage: bun run [flags] <file or script>`
+  produced `file_or_script` from the angle pass and then a second, required
+  operand `file`, and `<input file>` produced three. Deduplication by name could
+  not catch it, because the two names differ. A binding carrying the duplicate
+  rendered `bun run <script> <script>`, so `bun run test` reached the script
+  runner as `bun test test`: the call exits 0 while the extra token changes what
+  the script is asked to do. Bare and bracketed tokens opening inside an angle
+  placeholder are now skipped.
+- **`SCAN_FORMAT_VERSION` is bumped to 5, so an existing install actually
+  receives the fix.** A cached scan is a replay of what an older build
+  understood, and every field added to the scanned model carries
+  `#[serde(default)]`, so a pre-fix document still deserializes and is returned
+  before any parsing runs. Without the bump `apexe scan bun` keeps emitting the
+  duplicate operand at exit 0, with nothing saying the new scanner never ran.
+
+---
+
 ## [0.11.0] - 2026-11-12
 
 ### Added
