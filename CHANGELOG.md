@@ -19,6 +19,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   is a policy that protects nothing, which is why the distinction is kept.
 - `apexe config init` writes the commented template from
   `docs/config.example.yaml` instead of a bare `serde_yaml` dump of the defaults.
+  The template describes only what this release enforces: the command-labelling
+  lists remain compiled in, and documenting them as editable before they are
+  read would be a file that claims control it does not have.
   The file an operator receives and the file the manual points at are now the
   same text, and a build-time `include_str!` fails if one moves without the
   other.

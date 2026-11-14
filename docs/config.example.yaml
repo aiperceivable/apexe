@@ -1,11 +1,7 @@
 # apexe configuration.
 #
-# This file answers two questions:
-#
-#   paths        what a governed command may read or write, and where
-#   annotations  how apexe labels a command it has no curated rules for
-#
-# A third question — who may run which command — lives in acl.yaml, not here.
+# This file answers one question: what may a governed command read or write, and
+# where. A second question — who may run which command — lives in acl.yaml.
 # The three gates are evaluated in this order:
 #
 #   coverage (bindings)  ->  permission (acl.yaml)  ->  access (this file)
@@ -14,18 +10,18 @@
 # let it write to /etc: `paths.read_only` still refuses that write.
 #
 # Permission vocabularies come from the systems that own these ideas:
-#   read_only   systemd ReadOnlyPaths=    may read, may not write
-#   read_write  systemd ReadWritePaths=   may read and write
-#   no_access   systemd InaccessiblePaths= neither
-#   write_only  AppArmor's `w` right      may write, may not read
+#   read_only   systemd ReadOnlyPaths=      may read, may not write
+#   read_write  systemd ReadWritePaths=     may read and write
+#   no_access   systemd InaccessiblePaths=  neither
+#   write_only  AppArmor's `w` right        may write, may not read
 #
-# Path entries resolve as the kernel resolves them: relative paths are joined
-# to the working directory, symlinks are followed, `..` is collapsed. The most
-# specific (deepest) matching entry decides; a path may appear in only one
-# list. A path in no list is read_write.
+# Path entries resolve as the kernel resolves them: relative paths are joined to
+# the working directory, symlinks are followed, `..` is collapsed. The most
+# specific (deepest) matching entry decides; a path may appear in only one list.
+# A path in no list is read_write.
 #
-# `schema_version` is required. A file without it is rejected rather than
-# guessed at; run `apexe config migrate` to add it.
+# `schema_version` is required. A file without it is rejected rather than guessed
+# at.
 schema_version: 1
 
 # Which built-in defaults this file was seeded from. `apexe config check`
@@ -89,49 +85,3 @@ paths:
   # makes every other entry unreachable, which means the file says the opposite
   # of what its author intended.
   read_write: []
-
-annotations:
-  # Used only when neither the curated corpus nor a local overlay describes a
-  # command. A per-tool overlay always wins over these lists — they are a floor,
-  # not a guarantee, and `apexe list --verbose` prints `annotation_source` so a
-  # reader can tell a reviewed assertion from a heuristic one.
-  #
-  # Key names are apcore's ModuleAnnotations fields, unchanged: readonly,
-  # destructive, open_world, requires_approval, idempotent. `runs_other_commands`
-  # is structural, not an annotation: it says the command executes another
-  # program, so its risk is read from whatever it wraps.
-  #
-  # Matchers:
-  #   tool_names              the executable's file name, exact
-  #   command_path_words      any space-separated word of the command path,
-  #                           exact (`git clean` is ["git", "clean"])
-  #   command_path_substrings anywhere in the command path, case-insensitive
-  #                           (`git cleanup` matches "clean")
-  #   flags                   arguments actually sent, exact
-  #
-  # When a command matches more than one list the precedence is
-  # destructive > open_world > readonly.
-
-  destructive:
-    command_path_words: [rm, mv, rmdir, shred, truncate]
-    command_path_substrings: [delete, remove, destroy, purge, drop, kill, prune, clean, reset, format, wipe, erase]
-
-  open_world:
-    command_path_words: [curl, wget, ssh, scp, sftp, rsync, nc, netcat, telnet, ftp, http, httpie, wscat,
-                         push, pull, fetch, clone, publish, upload, download, install, uninstall, deploy, sync,
-                         login, logout]
-
-  readonly:
-    command_path_words: [list, ls, show, get, status, info, version, help, describe, view, cat, log, diff, search]
-
-  # A ceiling, not a verdict: the approval gate reads the arguments actually
-  # sent and stands down when none of these is present. `sed -n '1,5p' file`
-  # runs; `sed -i 's/a/b/' file` asks first.
-  requires_approval:
-    flags: [--force, -f, --hard, -r, --all, --prune, --no-preserve-root, --cascade, --purge, --yes, -y]
-
-  idempotent:
-    command_path_words: [get, list, show, status, info, describe, version, help, check]
-
-  runs_other_commands:
-    tool_names: [env, xargs, nice, ionice, nohup, timeout, chroot, setsid, stdbuf, script, watch, time, sudo, doas]
