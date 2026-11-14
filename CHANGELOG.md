@@ -55,6 +55,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   filesystem unless `-delete`/`-exec` is given, so a blanket `requires_approval`
   makes it unusable and no marking leaves arbitrary programs ungated.
 
+  A flag list naming a property the module does not declare is dropped, with an
+  error that names the unknown property and the real ones. Applying it would be
+  worse than dropping it: a trigger that can never fire checks a writing call at
+  read strength, while dropping leaves the module at write strength — the same
+  conservative state as a module with no lists.
+
   `AnnotationOverrides` also refuses unknown keys now. Before this, an author who
   misspelled one was silently ignored — an overlay that loads and does nothing is
   indistinguishable from one that works, which is the failure mode this project

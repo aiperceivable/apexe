@@ -427,6 +427,7 @@ impl CliToolConverter {
                     .get(path_key)
                     .cloned()
                     .unwrap_or_default(),
+                &input_schema,
             ),
             documentation: Self::command_documentation(&command.raw_help),
             examples: command.examples.clone(),
@@ -542,8 +543,35 @@ fn synthesize_root_command(tool: &ScannedCLITool) -> ScannedCommand {
 fn apply_annotation_overrides(
     mut annotations: ModuleAnnotations,
     overrides: crate::models::AnnotationOverrides,
+    input_schema: &serde_json::Value,
 ) -> ModuleAnnotations {
     let overrides = &overrides;
+    // The two flag lists name *schema properties*. A name the module does not
+    // declare can never match an argument, so the trigger it describes would
+    // never fire — and for `writes_with` that means a call that writes would be
+    // checked at read strength. Dropping the whole list keeps the conservative
+    // direction (write strength, which is what a module without the key gets),
+    // and the error log names both the bad property and the real ones so the
+    // author can fix it instead of wondering why the entry does nothing.
+    let property_names: Vec<String> = input_schema["properties"]
+        .as_object()
+        .map(|properties| properties.keys().cloned().collect())
+        .unwrap_or_default();
+    let undeclared: Vec<&String> = overrides
+        .approval_flags
+        .iter()
+        .chain(overrides.writes_with.iter())
+        .filter(|name| !property_names.iter().any(|known| known == *name))
+        .collect();
+    if !undeclared.is_empty() {
+        tracing::error!(
+            undeclared = ?undeclared,
+            declared = ?property_names,
+            "overlay names properties this module does not declare; the flag-scoped \
+             annotations are dropped so the command stays at write strength"
+        );
+        return apply_booleans(annotations, overrides);
+    }
     if let Some(readonly) = overrides.readonly {
         annotations.readonly = readonly;
     }
@@ -592,6 +620,32 @@ fn apply_annotation_overrides(
             annotations::WRITES_WITH_KEY.to_string(),
             serde_json::json!(writes_with),
         );
+    }
+    annotations.cacheable = annotations.readonly && annotations.idempotent;
+    annotations
+}
+
+/// The boolean half of [`apply_annotation_overrides`], used unchanged when a
+/// flag list is malformed: an overlay's boolean assertions are independent of
+/// its flag names and stay in force.
+fn apply_booleans(
+    mut annotations: ModuleAnnotations,
+    overrides: &crate::models::AnnotationOverrides,
+) -> ModuleAnnotations {
+    if let Some(readonly) = overrides.readonly {
+        annotations.readonly = readonly;
+    }
+    if let Some(destructive) = overrides.destructive {
+        annotations.destructive = destructive;
+    }
+    if let Some(idempotent) = overrides.idempotent {
+        annotations.idempotent = idempotent;
+    }
+    if let Some(requires_approval) = overrides.requires_approval {
+        annotations.requires_approval = requires_approval;
+    }
+    if let Some(open_world) = overrides.open_world {
+        annotations.open_world = open_world;
     }
     annotations.cacheable = annotations.readonly && annotations.idempotent;
     annotations
@@ -1079,7 +1133,9 @@ mod tests {
             approval_flags: vec!["delete".to_string(), "exec".to_string()],
             ..Default::default()
         };
-        let annotations = apply_annotation_overrides(ModuleAnnotations::default(), overrides);
+        let schema = serde_json::json!({"type":"object","properties":{"delete":{"type":"boolean"},"exec":{"type":"boolean"},"force":{"type":"boolean"}}});
+        let annotations =
+            apply_annotation_overrides(ModuleAnnotations::default(), overrides, &schema);
 
         assert!(annotations.readonly);
         assert!(
@@ -1108,7 +1164,9 @@ mod tests {
             writes_with: vec!["delete".to_string()],
             ..Default::default()
         };
-        let annotations = apply_annotation_overrides(ModuleAnnotations::default(), overrides);
+        let schema = serde_json::json!({"type":"object","properties":{"delete":{"type":"boolean"},"exec":{"type":"boolean"},"force":{"type":"boolean"}}});
+        let annotations =
+            apply_annotation_overrides(ModuleAnnotations::default(), overrides, &schema);
 
         assert_eq!(
             annotations
@@ -1119,6 +1177,39 @@ mod tests {
         assert_eq!(
             annotations.extra.get("x-apexe-escalating-params"),
             Some(&serde_json::json!(["force"]))
+        );
+    }
+
+    /// A property name the module does not declare cannot ever match an
+    /// argument. Dropping the list keeps write strength — the same state a
+    /// module without the key has — which is the safe direction; applying it
+    /// would check a writing call at read strength.
+    #[test]
+    fn test_an_undeclared_property_name_drops_the_flag_lists() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"delete": {"type": "boolean"}}
+        });
+        let overrides = crate::models::AnnotationOverrides {
+            approval_flags: vec!["deleting".to_string()],
+            ..Default::default()
+        };
+        let annotations =
+            apply_annotation_overrides(ModuleAnnotations::default(), overrides, &schema);
+
+        assert!(
+            !annotations
+                .extra
+                .contains_key(crate::adapter::annotations::WRITES_WITH_KEY),
+            "a typo must not produce a write trigger that never fires"
+        );
+        assert!(
+            !annotations.extra.contains_key("x-apexe-escalating-params"),
+            "nor an approval gate that never prompts"
+        );
+        assert!(
+            !annotations.requires_approval,
+            "the ceiling follows the list, so it is not raised either"
         );
     }
 

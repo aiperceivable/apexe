@@ -157,6 +157,29 @@ Installing metadata does not install command binaries, grant ACL permissions,
 or establish the truth of a `verified` assertion: the procedure below still
 applies to every human claim.
 
+## Flag-scoped annotations
+
+`annotations` may name *schema properties* instead of asserting a module-wide
+boolean, for tools whose danger is confined to specific flags:
+
+```yaml
+annotations:
+  readonly: true
+  approval_flags: [delete, exec]   # these put the call to a human
+  writes_with: [delete]            # these make the call write; omit to inherit approval_flags
+```
+
+Property names follow the scanner's rule and can be derived from the man page
+rather than guessed: a long flag loses its dashes and gets underscores
+(`--in-place` → `in_place`), and a flag that exists only in short form keeps its
+letters (`-delete` → `delete`).
+
+A name the module does not declare is a defect, and apexe treats it as one: the
+whole flag list is dropped and an error naming the unknown property and the real
+ones is logged. Dropping keeps the module at **write** strength — the same state
+as a module with no lists at all — because applying a trigger that can never fire
+would check a writing call at read strength.
+
 ## Native shim capabilities (format 1.1)
 
 The converter writes these facts to root schema keywords:
