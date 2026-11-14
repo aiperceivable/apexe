@@ -26,7 +26,7 @@ git/docker scan tests and the macOS native example are opt-in.
 | Terminal-agent execution routing | `skills/apexe/SKILL.md`, `scripts/install_agent_skill.py` | Fallback Claude Code/Codex/pi/OpenCode Skill for hosts without shell/hook integration; host integration uses `apexe agent` and `apexe sh`, and the Skill routes exec only when no host integration is active |
 | Binding and agent guidance output | `output`; `scan --skills-dir` | YAML bindings and optional Claude Skills; Rust API tool-definition export |
 | Policy authorship | `governance::acl`; `acl` | `acl init` writes a starter policy once (`--profile developer\|strict`), `acl sync` refreshes only the destructive and open-world denials, `acl explain` names the rule that decided a module. `scan` writes bindings and never policy |
-| Discovery and policy inspection | `list --verbose`, `policy` | Module schemas, annotations, ACL context, validated evidence and filesystem boundary checks |
+| Discovery and policy inspection | `list --verbose`, `paths` | Module schemas, annotations, ACL context, validated evidence and filesystem boundary checks |
 | Local execution | `cli::exec`, `module`; `exec` | Module JSON and reviewed native argv; preflight dry-run, child status and native streams |
 | Shell integration | `cli::env`, `shim`, `shell_init`; `env` | Eligible external-command PATH shims, startup activation, refresh, removal and diagnostics; `--scanned` routes execute the original argv after schema validation |
 | Agent shell launcher | `cli::sh`; `sh` | Executes a real shell with the installed shim environment; readiness diagnostics and host config snippets. Not a full-governance boundary |
@@ -121,7 +121,7 @@ src/
 │   └── overlay      ToolOverlay: curated flag/arg descriptions, apply_overlay
 ├── auth             Transport authentication for the HTTP-family MCP/A2A
 │                    transports (token/JWT, loopback-bind detection)
-├── cli/             clap CLI entry point (scan/serve/a2a/exec/sh/hook/agent/env/verify/init/list/acl/config/policy)
+├── cli/             clap CLI entry point (scan/serve/a2a/exec/sh/hook/agent/env/verify/init/list/acl/config/paths)
 │   ├── init         Reviewed source bootstrap, binding ownership and starter ACL
 │   ├── exec         Module JSON and native argv through shared governance
 │   ├── config_set   Persistent log-level updates preserving other settings
@@ -137,7 +137,7 @@ src/
 │   ├── audit        AuditManager, apexe's own JSONL execution/refusal record
 │   └── path_guard   PathGuard: resolves every x-apexe-path argument and checks
 │                    it against the system/credential baselines. Always-on, no
-│                    flag; `apexe policy` reports it. CLI process controls
+│                    flag; `apexe paths` reports it. CLI process controls
 │                    are in module/executor.rs and module/io.rs
 ├── mcp/             MCP server integration
 │   └── server       McpServerBuilder wrapping apcore_mcp::APCoreMCP
@@ -224,7 +224,7 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 ### Governance (v0.1.0 rewritten, extended through v0.7.0)
 - `AclManager`: wraps `apcore::ACL`, generates default rules from annotations; fails closed when a configured ACL is missing/malformed. **Opt-in** — a server started without `--acl` enforces no access control
 - `AuditManager`: apexe's own append-only JSONL trail (log `0o600`); records executions, refusals (`event`, `trace_id`, `caller_id`, `error_code`) and ACL allow/deny decisions. No input values, hashed or otherwise — see user-manual §9.2
-- `PathGuard` (v0.7.0): resolves every argument the schema types `x-apexe-path` and checks it against two compiled-in baselines — system paths bind writers, credential paths bind readers and writers alike. **Always-on, no flag.** `config.yaml` extends it with `additional_denied_paths` and relaxes it with `allowed_paths`; `apexe policy` reports the installed boundary
+- `PathGuard` (v0.7.0): resolves every argument the schema types `x-apexe-path` and checks it against two compiled-in baselines — system paths bind writers, credential paths bind readers and writers alike. **Always-on, no flag.** `config.yaml` extends it with `additional_denied_paths` and relaxes it with `allowed_paths`; `apexe paths` reports the installed boundary
 - `ApprovalGate`: weighs actual escalating inputs and audits refusals. Local execution installs it automatically. MCP interactive approval is opt-in via `--enable-approval`; approval stores can be supplied through the MCP/A2A library builders
 - CLI process controls: always-on in `module/executor.rs` and `module/io.rs` — env scrubbing, direct argv, captured output cap, timeout + `kill_on_drop`, plus option-injection, control-character and `x-apexe-exec` guards. Captured execution is bounded by `default_timeout`; local passthrough is unbounded by default (`local_timeout: 0`) because the caller owns a terminal. Native streams are inherited; there is no normal-execution SandboxManager
 

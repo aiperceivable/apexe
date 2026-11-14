@@ -328,12 +328,12 @@ def validate_execution(session, fixture):
 
 def validate_policy(session, fixture):
     for fmt in ["table", "json"]:
-        session.run("policy summary " + fmt, ["policy", "--format", fmt])
+        session.run("paths summary " + fmt, ["paths", "--format", fmt])
         for mode in ["read", "write"]:
             session.run(
                 "policy allowed " + fmt + mode,
                 [
-                    "policy",
+                    "paths",
                     "--format",
                     fmt,
                     "--path",
@@ -345,7 +345,7 @@ def validate_policy(session, fixture):
             session.run(
                 "policy denied " + fmt + mode,
                 [
-                    "policy",
+                    "paths",
                     "--format",
                     fmt,
                     "--path",
@@ -1348,8 +1348,8 @@ def validate_invalid_arguments(session, fixture):
         ["verify", "--record"],
         ["verify", "--allow-dry-run"],
         ["verify", "--isolation", "invalid"],
-        ["policy", "--mode", "execute"],
-        ["policy", "--format", "yaml"],
+        ["paths", "--mode", "execute"],
+        ["paths", "--format", "yaml"],
         ["serve", "--port", "0"],
         ["serve", "--port", "65536"],
         ["serve", "--transport", "invalid"],

@@ -349,19 +349,19 @@ circuit and deny `cli.rm` to everyone else.
 Unlike `--acl` and `--enable-approval`, this is **on by default and has no
 off switch** (§5.3 does not apply to it).
 
-**The boundary is inspectable without running a server.** `apexe policy` prints
+**The boundary is inspectable without running a server.** `apexe paths` prints
 the guard as installed — both compiled-in baselines, whatever
 `additional_denied_paths` added, the `allowed_paths` carve-outs, and the derived
 temp-directory exemption — read off the live guard rather than re-derived from
 `config.yaml`, so it cannot describe a policy other than the one in force.
-`apexe policy --path <p> --mode read|write` calls the guard's own `check`, the
+`apexe paths --path <p> --mode read|write` calls the guard's own `check`, the
 same call a wrapped tool's argument goes through:
 
 ```bash
-apexe policy                                   # the whole boundary
-apexe policy --path /etc/passwd                # refused to a writer
-apexe policy --path /etc/passwd --mode read    # allowed to a readonly module
-apexe policy --path ~/.ssh/id_rsa --mode read  # refused: credentials bind readers
+apexe paths                                   # the whole boundary
+apexe paths --path /etc/passwd                # refused to a writer
+apexe paths --path /etc/passwd --mode read    # allowed to a readonly module
+apexe paths --path ~/.ssh/id_rsa --mode read  # refused: credentials bind readers
 ```
 
 This matters for review rather than enforcement: §5.2's remedy is "check the

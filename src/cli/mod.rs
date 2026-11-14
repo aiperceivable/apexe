@@ -101,6 +101,7 @@ pub enum ScannedPolicy {
 }
 
 #[derive(Debug, Subcommand)]
+
 pub enum Commands {
     /// Scan CLI tools and generate apcore binding files.
     #[command(display_order = 70)]
@@ -144,10 +145,10 @@ pub enum Commands {
     /// policy decides who may run it, and only this command writes the latter.
     #[command(display_order = 95)]
     Acl(AclArgs),
-    /// Show the filesystem access boundary wrapped tools are checked
-    /// against, or check one path against it.
+    /// Show the path policy wrapped tools are checked against, or check one
+    /// path against it.
     #[command(display_order = 90)]
-    Policy(PolicyArgs),
+    Paths(PathsArgs),
 }
 
 impl Cli {
@@ -189,7 +190,7 @@ impl Cli {
             Commands::Init(args) => args.execute(&config),
             Commands::List(args) => args.execute(&config),
             Commands::Config(args) => args.execute(&config),
-            Commands::Policy(args) => args.execute(&config),
+            Commands::Paths(args) => args.execute(&config),
             Commands::Acl(args) => args.execute(&config),
         }
         .map(|()| 0)
@@ -1690,7 +1691,8 @@ impl ConfigArgs {
 /// the exact call a wrapped tool's argument goes through, so its verdict
 /// cannot drift from what a real invocation would get.
 #[derive(Debug, clap::Args)]
-pub struct PolicyArgs {
+
+pub struct PathsArgs {
     /// Check this path against the guard instead of printing the whole
     /// policy. Resolved the same way a wrapped tool's argument would be:
     /// joined to the working directory, symlinks followed, `..` collapsed.
@@ -1708,7 +1710,7 @@ pub struct PolicyArgs {
     pub format: String,
 }
 
-impl PolicyArgs {
+impl PathsArgs {
     pub fn execute(self, _config: &ApexeConfig) -> anyhow::Result<()> {
         let guard = crate::governance::path_guard::active();
         match &self.path {
@@ -3084,16 +3086,16 @@ mod tests {
         );
     }
 
-    // PolicyArgs tests
+    // PathsArgs tests
     #[test]
     fn test_policy_parses_with_no_args() {
-        let cli = Cli::try_parse_from(["apexe", "policy"]).unwrap();
-        if let Commands::Policy(args) = cli.command {
+        let cli = Cli::try_parse_from(["apexe", "paths"]).unwrap();
+        if let Commands::Paths(args) = cli.command {
             assert_eq!(args.path, None);
             assert_eq!(args.mode, "write");
             assert_eq!(args.format, "table");
         } else {
-            panic!("expected Commands::Policy");
+            panic!("expected Commands::Paths");
         }
     }
 
@@ -3101,7 +3103,7 @@ mod tests {
     fn test_policy_parses_path_and_mode() {
         let cli = Cli::try_parse_from([
             "apexe",
-            "policy",
+            "paths",
             "--path",
             "/etc/hosts",
             "--mode",
@@ -3110,18 +3112,18 @@ mod tests {
             "json",
         ])
         .unwrap();
-        if let Commands::Policy(args) = cli.command {
+        if let Commands::Paths(args) = cli.command {
             assert_eq!(args.path.as_deref(), Some("/etc/hosts"));
             assert_eq!(args.mode, "read");
             assert_eq!(args.format, "json");
         } else {
-            panic!("expected Commands::Policy");
+            panic!("expected Commands::Paths");
         }
     }
 
     #[test]
     fn test_policy_invalid_mode_fails() {
-        let result = Cli::try_parse_from(["apexe", "policy", "--path", "/x", "--mode", "execute"]);
+        let result = Cli::try_parse_from(["apexe", "paths", "--path", "/x", "--mode", "execute"]);
         assert!(result.is_err());
     }
 
@@ -3134,7 +3136,7 @@ mod tests {
         let home = dirs::home_dir().expect("home directory");
         let ssh_key = home.join(".ssh/id_rsa").to_string_lossy().into_owned();
 
-        let args = PolicyArgs {
+        let args = PathsArgs {
             path: Some(ssh_key.clone()),
             mode: "read".to_string(),
             format: "json".to_string(),
@@ -3157,7 +3159,7 @@ mod tests {
             PathBuf::from("/"),
             crate::governance::GuardConfig::default(),
         );
-        let args = PolicyArgs {
+        let args = PathsArgs {
             path: Some("/srv/data/work.txt".to_string()),
             mode: "write".to_string(),
             format: "json".to_string(),
@@ -3183,7 +3185,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let args = PolicyArgs {
+        let args = PathsArgs {
             path: None,
             mode: "write".to_string(),
             format: "json".to_string(),

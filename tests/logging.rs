@@ -41,7 +41,7 @@ fn test_commands_default_to_warn_file_logs_with_quiet_terminal() {
     for arguments in [
         vec!["config", "--show"],
         vec!["list", "--format", "json"],
-        vec!["policy", "--format", "json"],
+        vec!["paths", "--format", "json"],
     ] {
         fixture
             .command()

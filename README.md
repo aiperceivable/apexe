@@ -473,18 +473,18 @@ apexe config --init     # Create ~/.apexe/config.yaml
 apexe config set log.level debug  # Update the saved diagnostic log level
 ```
 
-### `apexe policy`
+### `apexe paths`
 
 Show the filesystem boundary every wrapped tool is checked against, or check one
 path against it. The summary is read off the **installed** guard rather than
 re-derived from config, so it always describes the policy actually in force.
 
 ```bash
-apexe policy                                   # The whole boundary
-apexe policy --format json                     # Machine-readable
-apexe policy --path /etc/passwd                # Refused to a writer
-apexe policy --path /etc/passwd --mode read    # Allowed to a readonly module
-apexe policy --path ~/.ssh/id_rsa --mode read  # Refused: credentials bind readers
+apexe paths                                    # The whole boundary
+apexe paths --format json                     # Machine-readable
+apexe paths --path /etc/passwd                # Refused to a writer
+apexe paths --path /etc/passwd --mode read    # Allowed to a readonly module
+apexe paths --path ~/.ssh/id_rsa --mode read  # Refused: credentials bind readers
 ```
 
 `--path` calls the guard's own check — the same call a wrapped tool's argument

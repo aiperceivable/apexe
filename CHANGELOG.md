@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ## [Unreleased]
 
+### Changed
+- `apexe policy` is now `apexe paths`, matching the `paths:` section it reports
+  on. `policy` was the wrong word for it: the ACL is policy too, and the command
+  only ever described locations. No alias is kept — the command is rarely used
+  and an alias that reads `policy` while printing `paths` vocabulary would
+  preserve the confusion it was renamed to remove.
+
 ### Added
 - `config.yaml` gains an `annotations:` section: the lists that label a command
   when nothing has reviewed it are now the operator's. A configured list

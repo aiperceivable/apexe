@@ -192,7 +192,7 @@ for a controlled denial test without changing your normal ACL.
 | The model cannot start | Check the host's provider, credentials and account-supported model. No tool calls means agent routing has not been tested. |
 | A later tool call loses shim activation | Independent tool calls may start new shells. Keep explicit exec, or activate and verify shims in the same shell that executes the task. |
 
-### Host ACL reading and apexe policy checks
+### Host ACL reading and apexe paths checks
 
 A host reader's permission refusal is different from apexe's `ACL_DENIED`.
 Resolve the selected ACL to its canonical path and grant the host only the

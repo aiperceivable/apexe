@@ -334,7 +334,7 @@ apexe config [OPTIONS]
 | `--show` | Print resolved configuration as YAML |
 | `--init` | Create default config at `~/.apexe/config.yaml` |
 
-### 4.6 `apexe policy`
+### 4.6 `apexe paths`
 
 Prints the path policy every wrapped tool is checked against, or checks one
 path against it. This is the only way to inspect the third gate (§9.7) without
@@ -355,14 +355,14 @@ invented: `read_only` / `read_write` / `no_access` are systemd's
 AppArmor's `w` right. The deepest matching entry decides; a path in no list is
 `read_write`.
 
-### 4.6 `apexe policy`
+### 4.6 `apexe paths`
 
 Prints the filesystem access boundary every wrapped tool is checked against, or
 checks one path against it. This is the only way to inspect the path guard
 (§9.7) without standing up a server and driving it with a client.
 
 ```
-apexe policy [OPTIONS]
+apexe paths [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -378,11 +378,11 @@ both compiled-in baselines, anything `additional_denied_paths` added, the
 `allowed_paths` carve-outs, and the derived temp-directory exemption.
 
 ```bash
-apexe policy                                   # the whole boundary
-apexe policy --format json                     # same, machine-readable
-apexe policy --path /etc/passwd                # would a writer be refused?
-apexe policy --path /etc/passwd --mode read    # would a readonly module?
-apexe policy --path ~/.ssh/id_rsa --mode read  # credentials bind readers too
+apexe paths                                   # the whole boundary
+apexe paths --format json                     # same, machine-readable
+apexe paths --path /etc/passwd                # would a writer be refused?
+apexe paths --path /etc/passwd --mode read    # would a readonly module?
+apexe paths --path ~/.ssh/id_rsa --mode read  # credentials bind readers too
 ```
 
 `--path` calls the guard's own `check`, the same call a real argument goes
@@ -391,14 +391,14 @@ modes disagree exactly where §9.7 says they should — a system path is legible
 a reader and refused to a writer:
 
 ```
-$ apexe policy --path /etc/passwd
+$ apexe paths --path /etc/passwd
 DENY   /etc/passwd  (mode: write)
   the given --path resolves to '/private/etc/passwd', which is protected by '/private/etc'
   hint: '/etc/passwd' resolves to '/private/etc/passwd', inside or above the protected
         location '/private/etc'. This is a compiled-in boundary that no configuration
         removes. Choose a path outside the protected system and credential directories.
 
-$ apexe policy --path /etc/passwd --mode read
+$ apexe paths --path /etc/passwd --mode read
 ALLOW  /etc/passwd  (mode: read)
 ```
 
