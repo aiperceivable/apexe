@@ -42,6 +42,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   preserve the confusion it was renamed to remove.
 
 ### Added
+- `x-apexe-writes-with` narrows the path guard's access mode **per call**: when
+  none of the named properties is set, a non-`readonly` module's path arguments
+  are checked at read strength. Module-level annotation was the wrong
+  granularity for tools that only write when asked — `find -delete` exists, so
+  every read-only `find` was checked as a writer. The key can only narrow, never
+  widen: a module that can write without the named properties must not carry it,
+  and `sed` is the standing example (`sed -n 'w /etc/x' file` writes with no flag
+  at all). Absent the key, nothing changes.
 - `config.yaml` gains an `annotations:` section: the lists that label a command
   when nothing has reviewed it are now the operator's. A configured list
   *replaces* the compiled default rather than adding to it, because a machine

@@ -314,6 +314,14 @@ pub const APPROVAL_BASIS_FLAGS: &str = "flags";
 /// a reason to prompt rather than to stand down.
 pub const ESCALATING_PARAMS_KEY: &str = "x-apexe-escalating-params";
 
+/// Annotation `extra` key naming the schema properties whose presence makes a
+/// command write.
+///
+/// Read by the path guard's access-mode decision: when none of them is set, the
+/// call is checked at read strength. It can only narrow a module to `ReadOnly`,
+/// so a module that can write without them must never carry the key.
+pub const WRITES_WITH_KEY: &str = "x-apexe-writes-with";
+
 /// Whether a flag literal escalates the call that carries it.
 ///
 /// Takes the literal (`--force`, `-f`) rather than a [`ScannedFlag`] so the

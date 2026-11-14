@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use serde_json::{Map, Value};
 
 use super::executor;
+use crate::adapter::annotations::WRITES_WITH_KEY;
 use crate::adapter::argv::OpaqueTail;
 use crate::governance::path_guard::AccessMode;
 use crate::governance::AuditManager;
@@ -203,7 +204,11 @@ impl CliModule {
             return self.execution_argv_with_opaque_tail(&kwargs, tail);
         }
         self.apply_json_default(&mut kwargs);
-        let rendered = executor::build_argv(&kwargs, Some(&self.input_schema), self.access_mode())?;
+        let rendered = executor::build_argv(
+            &kwargs,
+            Some(&self.input_schema),
+            self.access_mode(&Value::Object(kwargs.clone())),
+        )?;
         Ok(self.assemble_arguments(rendered))
     }
 
@@ -242,7 +247,7 @@ impl CliModule {
         let rendered = executor::build_argv_with_separator(
             &tail.prefix,
             schema,
-            self.access_mode(),
+            self.access_mode(&Value::Object(input.clone())),
             Some(tail.separator),
         )?;
         let mut argv = self.assemble_arguments(rendered);
@@ -425,8 +430,40 @@ impl CliModule {
     ///
     /// An unannotated module reads as `Write`, which is the safe direction:
     /// a command nobody classified is assumed able to destroy.
-    fn access_mode(&self) -> AccessMode {
-        AccessMode::from_readonly(self.annotations.readonly)
+    ///
+    /// A module may narrow that per call. `x-apexe-writes-with` names the schema
+    /// properties whose presence makes the command write (`find`'s `delete`,
+    /// `tar`'s `extract`); when none of them is set, the call is checked at read
+    /// strength. This exists because module-level annotation is the wrong
+    /// granularity for tools that only write when asked: refusing `find`'s
+    /// read-only uses because `find -delete` exists is a false positive the
+    /// operator pays for on every call.
+    ///
+    /// It can only ever *narrow* to ReadOnly, never widen: the absence of the
+    /// declared properties is the caller's claim that nothing was written, and
+    /// a module that could write without them must not carry the key. `sed` is
+    /// the standing example — `sed -n 'w /etc/x' file` writes with no flag at
+    /// all, so it must never declare one.
+    fn access_mode(&self, inputs: &Value) -> AccessMode {
+        if self.annotations.readonly {
+            return AccessMode::ReadOnly;
+        }
+        match self.annotations.extra.get(WRITES_WITH_KEY) {
+            Some(Value::Array(properties)) if !properties.is_empty() => {
+                let writes = properties.iter().any(|property| {
+                    property
+                        .as_str()
+                        .and_then(|name| inputs.get(name))
+                        .is_some_and(|value| !value.is_null() && value != &Value::Bool(false))
+                });
+                if writes {
+                    AccessMode::Write
+                } else {
+                    AccessMode::ReadOnly
+                }
+            }
+            _ => AccessMode::Write,
+        }
     }
 
     /// Refuse a path-typed input that resolves into a protected location.
@@ -442,7 +479,7 @@ impl CliModule {
         ) else {
             return Ok(());
         };
-        let mode = self.access_mode();
+        let mode = self.access_mode(inputs);
         for (name, property) in properties {
             let Some(value) = values.get(name) else {
                 continue;
@@ -626,6 +663,91 @@ impl Module for CliModule {
 
         let duration_ms = start.elapsed().as_millis() as u64;
         Ok(self.finish_execution(output, ctx, duration_ms).await)
+    }
+}
+
+#[cfg(test)]
+mod access_mode_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn module_with(annotations: ModuleAnnotations) -> CliModule {
+        CliModule::new(CliModuleConfig {
+            module_id: "cli.fixture".to_string(),
+            description: "fixture".to_string(),
+            input_schema: json!({"type": "object", "properties": {}}),
+            output_schema: json!({"type": "object"}),
+            annotations,
+            binary_path: "/bin/true".to_string(),
+            command_parts: Vec::new(),
+            json_flag: None,
+            timeout_ms: 1000,
+            max_output_bytes: executor::DEFAULT_MAX_OUTPUT_BYTES,
+        })
+    }
+
+    fn annotated(extra: Value) -> ModuleAnnotations {
+        let mut annotations = ModuleAnnotations {
+            readonly: false,
+            destructive: false,
+            open_world: false,
+            ..Default::default()
+        };
+        if let Some(map) = extra.as_object() {
+            annotations.extra = map
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+        }
+        annotations
+    }
+
+    /// The default direction: a command nobody narrowed the writing behaviour of
+    /// is checked at write strength, which is what the guard already did.
+    #[test]
+    fn test_an_undeclared_module_is_checked_at_write_strength() {
+        let module = module_with(annotated(json!({})));
+        assert_eq!(module.access_mode(&json!({})), AccessMode::Write);
+    }
+
+    /// `find` without `-delete`/`-exec` cannot write, so its read paths are
+    /// checked at read strength — the false positive this key exists for.
+    #[test]
+    fn test_a_declared_module_narrows_to_read_strength_when_no_trigger_is_set() {
+        let module = module_with(annotated(json!({
+            WRITES_WITH_KEY: ["delete", "exec"]
+        })));
+        assert_eq!(module.access_mode(&json!({})), AccessMode::ReadOnly);
+        assert_eq!(
+            module.access_mode(&json!({"delete": false})),
+            AccessMode::ReadOnly,
+            "an explicit false is not a trigger"
+        );
+    }
+
+    /// Sending the trigger restores write strength for that call only.
+    #[test]
+    fn test_a_declared_module_is_checked_at_write_strength_when_a_trigger_is_sent() {
+        let module = module_with(annotated(json!({
+            WRITES_WITH_KEY: ["delete"]
+        })));
+        assert_eq!(
+            module.access_mode(&json!({"delete": true})),
+            AccessMode::Write
+        );
+    }
+
+    /// `readonly` wins over a declared trigger: a module that promises not to
+    /// write is never checked at write strength.
+    #[test]
+    fn test_readonly_outranks_a_declared_trigger() {
+        let mut annotations = annotated(json!({ WRITES_WITH_KEY: ["force"] }));
+        annotations.readonly = true;
+        let module = module_with(annotations);
+        assert_eq!(
+            module.access_mode(&json!({"force": true})),
+            AccessMode::ReadOnly
+        );
     }
 }
 

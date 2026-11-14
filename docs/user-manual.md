@@ -1614,6 +1614,7 @@ together by the converter:
 | Key | Value | Meaning |
 |-----|-------|---------|
 | `x-apexe-approval-basis` | `"flags"` | `requires_approval` was set because the command *accepts* an escalating flag, not because it is destructive by name — so the gate may stand down (§8) |
+| `x-apexe-writes-with` | array of property names | Narrow the path guard's access mode per call: when none of these properties is set, the call's path arguments are checked at **read** strength even though the module is not `readonly`. It can only narrow, never widen, so a module that writes without them must not carry the key — `sed` is the standing example (`sed -n 'w /etc/x' file` writes with no flag at all). Without the key the module is checked at write strength, which is the safe direction |
 | `x-apexe-escalating-params` | array of property names | Which properties those are. A `"flags"` basis without this list is a corrupted annotation, and the gate prompts rather than standing down |
 
 A binding written by an older apexe carries only the keywords that existed then.
