@@ -1260,6 +1260,35 @@ mod tests {
         );
     }
 
+    /// End to end through the flat spelling: `ToolOverlay::flat_route` stores a
+    /// tool's own assertions under the empty path, so a lookup keyed on the full
+    /// command path silently missed them. The overlay loaded, matched, and
+    /// changed nothing — indistinguishable from one that works.
+    #[test]
+    fn test_a_flat_overlay_annotation_reaches_the_module() {
+        let mut overlay = serde_json::json!({
+            "schema_version": "2.0",
+            "command": "find",
+            "variant": "bsd",
+            "match": {"platform": ["macos"]},
+            "annotations": {"readonly": true, "approval_flags": ["delete"]},
+        });
+        overlay["annotations"]["approval_flags"] = serde_json::json!([]);
+        let overlay: crate::adapter::overlay::ToolOverlay =
+            serde_json::from_value(overlay).unwrap();
+
+        let mut tool = make_tool("find", vec![]);
+        tool.annotation_scopes
+            .insert(String::new(), overlay.annotations.clone());
+
+        let modules = CliToolConverter::new().convert(&tool);
+        let annotations = modules[0].annotations.as_ref().unwrap();
+        assert!(
+            annotations.readonly,
+            "a flat overlay annotation must reach the module: {annotations:?}"
+        );
+    }
+
     #[test]
     fn test_overlay_can_state_open_world_where_the_name_cannot() {
         // `sed` is on no name list, so inference calls it closed-world. That is
