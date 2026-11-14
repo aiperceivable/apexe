@@ -57,11 +57,23 @@ removing.
 > declares. Any token that cannot be classified refuses the whole call and names
 > the token.
 
-`opaque_after` therefore changes meaning: not "stop validating", but "stop
-assigning tokens to this operand; the rest is parsed as flags". The schema
-description and `docs/overlays.md` must say so, and the release note must say the
-meaning changed, because an existing overlay relying on today's pass-through
-behaviour would otherwise silently start validating.
+### This must be a new marker, not a redefinition of `opaque_after`
+
+Redefining `x-apexe-opaque-after` would make one overlay file mean two different
+things on two releases — and the older meaning is load-bearing: `node <script>
+args…` relies on the tail being passed through untouched, so parsing it as `node`
+flags would refuse `node tsc.js --noEmit`. The marker introduced here is
+therefore **additive**:
+
+| Marker | Meaning | Used by |
+|---|---|---|
+| `x-apexe-opaque-after` (unchanged) | tail is passed through, unvalidated | `node <script> …` |
+| `x-apexe-tail-parsed` (new) | the boundary is the first declared-flag token; the rest is parsed normally, so every dangerous flag reaches the gates | `find`, `tar` |
+
+An overlay that names the new marker on an older binary fails to load — the
+positional schema sets `additionalProperties: false` — which is the behaviour we
+want: a corpus requiring a capability must be refused by a binary that lacks it,
+rather than silently ignored.
 
 ### Effects
 
@@ -83,9 +95,10 @@ answer, and the message must say so rather than reporting a grammar defect.
 | `src/adapter/argv.rs:373` `validate_operands` | allow a second array operand **iff** the last one is `opaque_after` and the earlier ones are `before_flags`; every other combination keeps refusing |
 | `src/adapter/argv.rs:357` `locate_opaque_operand` | keep the "last operand, variadic" requirement; add "the operands before it must be `before_flags`" |
 | `src/adapter/argv.rs:390` `parse` | at the boundary, hand the remaining tokens back to the flag matcher instead of emitting `OpaqueTail`; propagate an unknown-token refusal that names the token |
-| `src/adapter/schema.rs:563` | description of `x-apexe-opaque-after` states the new meaning |
-| `docs/overlays.md` | the rule above, plus the semantic change |
-| `CHANGELOG.md` | "meaning changed", not "field added" |
+| `src/adapter/schema.rs` | emit the new `x-apexe-tail-parsed` marker; `x-apexe-opaque-after` is untouched |
+| `schemas/tool-overlay.schema.json` (corpus) | allow `tail_parsed` on a positional, alongside the existing `opaque_after` |
+| `docs/overlays.md` | the rule above, and the difference between the two markers |
+| `CHANGELOG.md` | "marker added"; nothing existing changes meaning |
 
 `OpaqueTail` stays for the case it was built for — `node <script> …`, where the
 tail really is an interpreter's argument vector and no validation is possible.
@@ -117,6 +130,6 @@ compiled interface keeps being exercised.
 3. `find`/`tar` measured on macOS by the operator, and on Linux by the same
    container route used for the GNU `find` verification
    (`rust:slim` build + `debian:stable-slim` run);
-4. Only then does the corpus keep `opaque_after` on `find`'s expression — it is
-   already there and currently inert, which is itself worth noting: the marker
-   must not be shipped in a release whose parser does not honour it.
+4. Only then does the corpus declare `tail_parsed` on `find`'s expression. It is
+   **not** there today on purpose: a marker a release does not honour is a file
+   claiming something nothing does.
