@@ -9,6 +9,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 ## [Unreleased]
 
 ### Added
+- `config.yaml` gains an `annotations:` section: the lists that label a command
+  when nothing has reviewed it are now the operator's. A configured list
+  *replaces* the compiled default rather than adding to it, because a machine
+  that removes `rm` from `destructive` expects `rm` to stop being labelled — an
+  additive merge would silently ignore that. Root executables and subcommand
+  words stay separate: merging them marked `/usr/bin/sync` as network-reaching,
+  a regression the existing test for it caught.
 - `config.yaml` gains a `paths:` section that states the path policy in the
   vocabulary the idea came from: `read_only` (systemd `ReadOnlyPaths=`),
   `read_write` (`ReadWritePaths=`), `no_access` (`InaccessiblePaths=`) and
@@ -19,9 +26,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   is a policy that protects nothing, which is why the distinction is kept.
 - `apexe config init` writes the commented template from
   `docs/config.example.yaml` instead of a bare `serde_yaml` dump of the defaults.
-  The template describes only what this release enforces: the command-labelling
-  lists remain compiled in, and documenting them as editable before they are
-  read would be a file that claims control it does not have.
+  The template describes only what this release enforces.
   The file an operator receives and the file the manual points at are now the
   same text, and a build-time `include_str!` fails if one moves without the
   other.

@@ -13,6 +13,10 @@ use super::{annotations, schema};
 pub struct CliToolConverter {
     namespace: String,
     json_output_preference: bool,
+    /// The operator's `annotations:` lists, or the compiled defaults. Held on
+    /// the converter because a scan labels thousands of commands in one pass and
+    /// the lists must not be re-derived per command.
+    annotation_defaults: crate::config::AnnotationDefaults,
 }
 
 /// Fields extracted from a (real or synthesized) command, used to assemble a module.
@@ -31,13 +35,21 @@ impl CliToolConverter {
         Self {
             namespace: "cli".to_string(),
             json_output_preference: true,
+            annotation_defaults: crate::config::AnnotationDefaults::default(),
         }
+    }
+
+    /// Label commands with the operator's `annotations:` lists.
+    pub fn with_annotation_defaults(mut self, defaults: crate::config::AnnotationDefaults) -> Self {
+        self.annotation_defaults = defaults;
+        self
     }
 
     /// Create a converter with a custom namespace prefix.
     pub fn with_namespace(namespace: &str) -> Self {
         Self {
             namespace: namespace.to_string(),
+            annotation_defaults: crate::config::AnnotationDefaults::default(),
             json_output_preference: true,
         }
     }
@@ -141,7 +153,13 @@ impl CliToolConverter {
         segments.extend(path.iter().map(|segment| sanitize_id_segment(segment)));
 
         let path_key = path.join(" ");
-        let fields = Self::extract_command_fields(tool, command_opt, is_root, &path_key);
+        let fields = Self::extract_command_fields(
+            tool,
+            command_opt,
+            is_root,
+            &path_key,
+            &self.annotation_defaults,
+        );
         let help_format_name =
             help_format_to_tag(command_opt.map_or(HelpFormat::Unknown, |c| c.help_format));
 
@@ -343,6 +361,7 @@ impl CliToolConverter {
         command_opt: Option<&&ScannedCommand>,
         is_root: bool,
         path_key: &str,
+        annotation_defaults: &crate::config::AnnotationDefaults,
     ) -> CommandFields {
         // Borrowed, not cloned: `raw_help` holds a whole help text, and this
         // runs once per module. `synth` outlives the borrow because it is
@@ -400,7 +419,10 @@ impl CliToolConverter {
             input_schema: input_schema.clone(),
             output_schema: schema::build_output_schema(command),
             annotations: apply_annotation_overrides(
-                mark_escalating_params(annotations::infer(command), &input_schema),
+                mark_escalating_params(
+                    annotations::infer_with(command, annotation_defaults),
+                    &input_schema,
+                ),
                 tool.annotation_scopes
                     .get(path_key)
                     .cloned()

@@ -4,6 +4,84 @@ use apcore::module::ModuleAnnotations;
 
 use crate::models::ScannedCommand;
 
+use crate::config::AnnotationDefaults;
+
+/// The approval-flag list, still consulted through [`flag_literal_escalates`].
+///
+/// Kept as a newtype so the compiled list has exactly one reader; the
+/// configurable path goes through [`AnnotationDefaults::approval_flags`].
+struct ApprovalFlags(Vec<String>);
+
+impl Default for ApprovalFlags {
+    fn default() -> Self {
+        Self(
+            APPROVAL_FLAGS
+                .iter()
+                .map(|flag| (*flag).to_string())
+                .collect(),
+        )
+    }
+}
+
+impl Default for AnnotationDefaults {
+    /// The compiled lists. Used when `config.yaml` has no `annotations:`
+    /// section — which is what an installation that never edited it looks like,
+    /// and the only state in which these constants are still the judgement.
+    fn default() -> Self {
+        fn words(list: &[&str]) -> Vec<String> {
+            list.iter().map(|s| (*s).to_string()).collect()
+        }
+        Self {
+            destructive: crate::config::PathWords {
+                command_path_words: words(DESTRUCTIVE_PATTERNS),
+                command_path_substrings: Vec::new(),
+            },
+            readonly: crate::config::PathWords {
+                command_path_words: words(READONLY_PATTERNS),
+                ..Default::default()
+            },
+            idempotent: crate::config::PathWords {
+                command_path_words: words(IDEMPOTENT_PATTERNS),
+                ..Default::default()
+            },
+            open_world: crate::config::OpenWorldWords {
+                tool_names: words(OPEN_WORLD_TOOLS),
+                subcommand_words: words(OPEN_WORLD_SUBCOMMANDS),
+            },
+            requires_approval: crate::config::FlagWords {
+                flags: words(APPROVAL_FLAGS),
+            },
+            runs_other_commands: crate::config::ToolNames {
+                tool_names: words(EXEC_WRAPPER_TOOLS),
+            },
+        }
+    }
+}
+
+impl AnnotationDefaults {
+    /// Exact, case-insensitive word match against any of `words`.
+    fn matches<'a>(&self, words: impl Iterator<Item = &'a String>, value: &str) -> bool {
+        words
+            .into_iter()
+            .any(|word| word.eq_ignore_ascii_case(value))
+    }
+
+    /// A destructive verdict from either the exact words or the substrings.
+    ///
+    /// Substrings exist for stems (`delete`, `clean`): a tool named
+    /// `remove-deleted` should read as destructive without the operator listing
+    /// the whole name, while exact words keep `rm` from also matching `rmdir`
+    /// when the operator meant only `rm`.
+    fn destructive_matches(&self, name_lower: &str) -> bool {
+        self.matches(self.destructive.command_path_words.iter(), name_lower)
+            || self
+                .destructive
+                .command_path_substrings
+                .iter()
+                .any(|stem| name_lower.contains(&stem.to_lowercase()))
+    }
+}
+
 const READONLY_PATTERNS: &[&str] = &[
     "list", "ls", "show", "get", "status", "info", "version", "help", "describe", "view", "cat",
     "log", "diff", "search", "find", "check", "inspect", "display", "print", "whoami", "env",
@@ -129,9 +207,9 @@ const APPROVAL_FLAGS: &[&str] = &[
 /// Name-based, so it is a floor rather than a guarantee — a tool that opens a
 /// socket under an unremarkable name is not caught, and an overlay's
 /// `annotation_overrides` remains the way to state the truth for a specific one.
-fn infer_open_world(command: &ScannedCommand) -> bool {
+fn infer_open_world(command: &ScannedCommand, d: &AnnotationDefaults) -> bool {
     let executable = executable_name(command);
-    if OPEN_WORLD_TOOLS.iter().any(|tool| executable == *tool) {
+    if d.open_world.tool_names.contains(&executable) {
         return true;
     }
     // The subcommand table only applies to actual subcommands. `install`,
@@ -142,7 +220,7 @@ fn infer_open_world(command: &ScannedCommand) -> bool {
         return false;
     }
     let name_lower = command.name.to_lowercase();
-    OPEN_WORLD_SUBCOMMANDS.iter().any(|sub| name_lower == *sub)
+    d.open_world.subcommand_words.contains(&name_lower)
 }
 
 /// The executable a scanned command belongs to, lowercased and unqualified.
@@ -161,22 +239,30 @@ fn executable_name(command: &ScannedCommand) -> String {
 /// Whether this command's arguments are themselves a command to run.
 ///
 /// See [`EXEC_WRAPPER_TOOLS`] for why this outranks the name patterns.
-fn is_exec_wrapper(command: &ScannedCommand) -> bool {
+fn is_exec_wrapper(command: &ScannedCommand, d: &AnnotationDefaults) -> bool {
     let executable = executable_name(command);
-    EXEC_WRAPPER_TOOLS.iter().any(|tool| executable == *tool)
+    d.runs_other_commands.tool_names.contains(&executable)
 }
 
 /// Infer behavioral annotations from command name and flags.
 pub fn infer(command: &ScannedCommand) -> ModuleAnnotations {
+    infer_with(command, &AnnotationDefaults::default())
+}
+
+/// [`infer`] with the operator's `annotations:` lists instead of the compiled
+/// defaults. The corpus and any local overlay still win: they describe a
+/// specific tool, while these lists are what apexe falls back to for a command
+/// nobody has reviewed.
+pub fn infer_with(command: &ScannedCommand, d: &AnnotationDefaults) -> ModuleAnnotations {
     let name_lower = command.name.to_lowercase();
 
     // An exec wrapper outranks both name lists. `env` matches READONLY_PATTERNS
     // on its name and can run anything at all, and of the two facts only the
     // second one matters to a policy.
-    let exec_wrapper = is_exec_wrapper(command);
-    let destructive = exec_wrapper || DESTRUCTIVE_PATTERNS.iter().any(|p| name_lower == *p);
-    let readonly = !destructive && READONLY_PATTERNS.iter().any(|p| name_lower == *p);
-    let idempotent = IDEMPOTENT_PATTERNS.iter().any(|p| name_lower == *p);
+    let exec_wrapper = is_exec_wrapper(command, d);
+    let destructive = exec_wrapper || d.destructive_matches(&name_lower);
+    let readonly = !destructive && d.matches(d.readonly.command_path_words.iter(), &name_lower);
+    let idempotent = d.matches(d.idempotent.command_path_words.iter(), &name_lower);
 
     // No flag boosting here. `infer` sees the flags a command *accepts*, and
     // both annotations a declared flag used to move are statements about a
@@ -198,7 +284,7 @@ pub fn infer(command: &ScannedCommand) -> ModuleAnnotations {
         destructive,
         idempotent,
         requires_approval,
-        open_world: infer_open_world(command),
+        open_world: infer_open_world(command, d),
         streaming: false,
         cacheable,
         cache_ttl: 0,
@@ -237,7 +323,77 @@ pub const ESCALATING_PARAMS_KEY: &str = "x-apexe-escalating-params";
 ///
 /// [`ScannedFlag`]: crate::models::ScannedFlag
 pub fn flag_literal_escalates(literal: &str) -> bool {
-    APPROVAL_FLAGS.contains(&literal)
+    ApprovalFlags::default()
+        .0
+        .iter()
+        .any(|flag| flag == literal)
+}
+
+#[cfg(test)]
+mod annotation_defaults_tests {
+    use super::*;
+    use crate::models::ScannedCommand;
+
+    fn command(name: &str) -> ScannedCommand {
+        let mut command = ScannedCommand {
+            name: name.to_string(),
+            full_command: name.to_string(),
+            description: String::new(),
+            flags: Vec::new(),
+            positional_args: Vec::new(),
+            subcommands: Vec::new(),
+            examples: Vec::new(),
+            ..Default::default()
+        };
+        command.name = name.to_string();
+        command
+    }
+
+    /// The operator's lists replace the compiled ones, they do not add to them:
+    /// a machine that removes `rm` from `destructive` expects `rm` to stop being
+    /// labelled destructive, which an additive merge would silently ignore.
+    #[test]
+    fn test_configured_lists_replace_the_compiled_defaults() {
+        let defaults = AnnotationDefaults {
+            destructive: crate::config::PathWords {
+                command_path_words: vec!["nuke".to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(infer_with(&command("nuke"), &defaults).destructive);
+        assert!(
+            !infer_with(&command("rm"), &defaults).destructive,
+            "rm is not in the configured destructive list, so it must not be"
+        );
+    }
+
+    /// Substrings exist for stems, and stay case-insensitive.
+    #[test]
+    fn test_configured_substrings_match_a_stem_case_insensitively() {
+        let defaults = AnnotationDefaults {
+            destructive: crate::config::PathWords {
+                command_path_words: Vec::new(),
+                command_path_substrings: vec!["Delete".to_string()],
+            },
+            ..Default::default()
+        };
+
+        assert!(infer_with(&command("Remove-Deleted"), &defaults).destructive);
+        assert!(!infer_with(&command("remove"), &defaults).destructive);
+    }
+
+    /// The config surface parses under the key names the template uses.
+    #[test]
+    fn test_the_annotations_section_parses_into_the_defaults() {
+        let config: crate::config::ApexeConfig = serde_yaml::from_str(
+            "schema_version: 1\nannotations:\n  destructive:\n    command_path_words: [nuke]\n",
+        )
+        .unwrap();
+        let defaults = config.annotations.expect("section present");
+        assert!(infer_with(&command("nuke"), &defaults).destructive);
+    }
 }
 
 #[cfg(test)]

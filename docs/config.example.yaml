@@ -20,6 +20,11 @@
 # specific (deepest) matching entry decides; a path may appear in only one list.
 # A path in no list is read_write.
 #
+# `annotations:` describes how a command is labelled when nothing has reviewed
+# it. These are a floor, not a guarantee: a curated corpus entry or a local
+# overlay for the same tool wins, because those describe that tool while these
+# lists describe a guess from its name.
+#
 # `schema_version` is required. A file without it is rejected rather than guessed
 # at.
 schema_version: 1
@@ -85,3 +90,39 @@ paths:
   # makes every other entry unreachable, which means the file says the opposite
   # of what its author intended.
   read_write: []
+
+annotations:
+  # Matchers read the command path by default (`git clean` is ["git", "clean"]):
+  #   command_path_words       any word of the path, exact
+  #   command_path_substrings  case-insensitive substring anywhere in the path
+  #   tool_names               the executable's file name, exact
+  #   flags                    arguments actually sent, exact
+  # When a command matches more than one list:
+  #   destructive > open_world > readonly.
+  destructive:
+    command_path_words: [rm, mv, rmdir, shred, truncate]
+    command_path_substrings: [delete, remove, destroy, purge, drop, kill, prune, clean, reset, format, wipe, erase]
+
+  # Root executables and subcommand words are separate lists on purpose: `sync`,
+  # `login` and `install` are ordinary local executable names too, and one shared
+  # list marked /usr/bin/sync as network-reaching.
+  open_world:
+    tool_names: [curl, wget, ssh, scp, sftp, rsync, nc, netcat, telnet, ftp, http, httpie, wscat]
+    subcommand_words: [push, pull, fetch, clone, publish, upload, download, install, uninstall, deploy, sync, login, logout]
+
+  readonly:
+    command_path_words: [list, ls, show, get, status, info, version, help, describe, view, cat, log, diff, search]
+
+  # A ceiling, not a verdict: the gate reads the arguments actually sent and
+  # stands down when none of these is present, so `sed -n '1,5p' file` runs and
+  # `sed -i 's/a/b/' file` asks first.
+  requires_approval:
+    flags: [--force, -f, --hard, -r, --all, --prune, --no-preserve-root, --cascade, --purge, --yes, -y]
+
+  idempotent:
+    command_path_words: [get, list, show, status, info, describe, version, help, check]
+
+  # Structural, not an annotation: these execute another program, so their risk
+  # is read from whatever they wrap.
+  runs_other_commands:
+    tool_names: [env, xargs, nice, ionice, nohup, timeout, chroot, setsid, stdbuf, script, watch, time, sudo, doas]

@@ -378,7 +378,8 @@ impl ScanArgs {
             .unwrap_or_else(|| config.bindings_dir.clone());
 
         let converter = crate::adapter::CliToolConverter::new()
-            .with_json_output_preference(config.json_output_preference);
+            .with_json_output_preference(config.json_output_preference)
+            .with_annotation_defaults(config.annotations.clone().unwrap_or_default());
         let modules = converter.convert_all(&outcome.tools);
 
         // These are the command's deliverables. A failed write must surface as

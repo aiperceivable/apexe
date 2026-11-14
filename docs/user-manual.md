@@ -342,8 +342,8 @@ standing up a server and driving it with a client.
 
 The policy itself lives in `~/.apexe/config.yaml` under `paths:`. That file is
 the reference — read it (or the template below), not this page, for the field
-list. The template describes only what the current release enforces; command
-labelling defaults are not yet configurable and stay compiled in.
+list. The template describes only what the current release enforces: `paths:` and
+`annotations:`, both read by this release.
 
 ```
 docs/config.example.yaml      the shape `apexe config init` writes, fully commented

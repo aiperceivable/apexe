@@ -142,6 +142,7 @@ impl VerifyArgs {
                 continue;
             }
             let fresh = crate::adapter::CliToolConverter::new()
+                .with_annotation_defaults(config.annotations.clone().unwrap_or_default())
                 .with_json_output_preference(config.json_output_preference)
                 .convert_all(&outcome.tools);
             report.extend(crate::verification::compare(&previous, &fresh)?);

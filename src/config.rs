@@ -91,6 +91,14 @@ pub struct ApexeConfig {
     /// `~/.config` needs no entry here; it is not guarded in the first place.
     pub allowed_paths: Vec<PathBuf>,
 
+    /// The command-labelling lists, as `annotations:` in `config.yaml`.
+    ///
+    /// `None` means the file did not describe them and the compiled defaults
+    /// apply — the same convention as [`Self::paths`], for the same reason: an
+    /// absent section is "use the defaults", not "label nothing".
+    #[serde(default)]
+    pub annotations: Option<AnnotationDefaults>,
+
     /// The four-way path permission policy, as `paths:` in `config.yaml`.
     ///
     /// `None` means the file did not describe one, and the compiled-in baseline
@@ -134,6 +142,78 @@ pub struct ApexeConfig {
     /// apcore core configuration for ecosystem integration.
     #[serde(skip)]
     pub core_config: Option<CoreConfig>,
+}
+
+/// Matchers that read the command path: exact words and, optionally, stems.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PathWords {
+    /// Any word of the command path, exact (`git clean` is ["git", "clean"]).
+    #[serde(default)]
+    pub command_path_words: Vec<String>,
+    /// Case-insensitive substring anywhere in the command path.
+    #[serde(default)]
+    pub command_path_substrings: Vec<String>,
+}
+
+/// Matchers for network reach: root executables and subcommand words.
+///
+/// Kept apart because `sync`, `login` and `install` are ordinary local
+/// executable names as well: one shared list marked `/usr/bin/sync` as
+/// network-reaching.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenWorldWords {
+    #[serde(default)]
+    pub tool_names: Vec<String>,
+    #[serde(default)]
+    pub subcommand_words: Vec<String>,
+}
+
+/// Matcher for the arguments a call actually sends.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FlagWords {
+    #[serde(default)]
+    pub flags: Vec<String>,
+}
+
+/// Matcher for an executable's file name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolNames {
+    #[serde(default)]
+    pub tool_names: Vec<String>,
+}
+
+/// The `annotations:` section: how a command is labelled when nothing has
+/// reviewed it.
+///
+/// Key names are apcore's `ModuleAnnotations` fields, unchanged, so a reader can
+/// match this file against `apexe list --verbose` output word for word. Each
+/// entry is a matcher *name* plus a list: `command_path_words` (exact, any word
+/// of the command path), `command_path_substrings` (case-insensitive, anywhere
+/// in the path), `tool_names` (exact executable name) and `flags` (arguments
+/// actually sent).
+///
+/// These are a floor, not a guarantee: a curated corpus entry or a local overlay
+/// for the same tool wins, because those describe that tool while these lists
+/// describe a guess from its name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnnotationDefaults {
+    #[serde(default)]
+    pub destructive: PathWords,
+    #[serde(default)]
+    pub readonly: PathWords,
+    #[serde(default)]
+    pub idempotent: PathWords,
+    #[serde(default)]
+    pub open_world: OpenWorldWords,
+    #[serde(default)]
+    pub requires_approval: FlagWords,
+    #[serde(default)]
+    pub runs_other_commands: ToolNames,
 }
 
 /// The commented template `apexe config init` writes.
@@ -213,6 +293,7 @@ impl Default for ApexeConfig {
             json_output_preference: true,
             additional_denied_paths: Vec::new(),
             allowed_paths: Vec::new(),
+            annotations: None,
             paths: None,
             overlay_dirs: Vec::new(),
             default_overlay_repository: DEFAULT_OVERLAY_REPOSITORY.to_string(),

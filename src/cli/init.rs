@@ -152,6 +152,7 @@ impl InitArgs {
             &mut report,
             self.format,
             config.json_output_preference,
+            &config.annotations.clone().unwrap_or_default(),
         )?;
         let existing = crate::output::load_modules_from_dir(
             &config.bindings_dir,
@@ -295,6 +296,7 @@ fn discover_modules(
     report: &mut InitReport,
     format: ReportFormat,
     json_output_preference: bool,
+    annotation_defaults: &crate::config::AnnotationDefaults,
 ) -> anyhow::Result<Vec<ScannedModule>> {
     let mut modules = Vec::new();
     for (index, name) in scan.tools.iter().enumerate() {
@@ -314,6 +316,7 @@ fn discover_modules(
             fallback,
             report,
             json_output_preference,
+            annotation_defaults,
         ));
     }
     Ok(modules)
@@ -326,6 +329,7 @@ fn discover_command(
     fallback: bool,
     report: &mut InitReport,
     json_output_preference: bool,
+    annotation_defaults: &crate::config::AnnotationDefaults,
 ) -> Vec<ScannedModule> {
     if !super::shim::valid_name(name) {
         report
@@ -357,6 +361,7 @@ fn discover_command(
             .tools
             .push(tool_report(name, ToolStatus::Ready, tool.overlay.clone()));
         let mut converted = crate::adapter::CliToolConverter::new()
+            .with_annotation_defaults(annotation_defaults.clone())
             .with_json_output_preference(json_output_preference)
             .convert(&tool);
         for module in &mut converted {
