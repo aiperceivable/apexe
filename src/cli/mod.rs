@@ -1344,6 +1344,67 @@ impl ListArgs {
         census::print(&census, &self.format)
     }
 
+    /// Modules this caller may run that are not `readonly`.
+    ///
+    /// The path guard checks the paths a call *declares*. A command that hands
+    /// its arguments to another program, or computes a path inside code the
+    /// caller wrote, is outside that check by construction — `python3 -c
+    /// 'open("/etc/hosts","w")'` reaches a file that `rm` cannot. Denying `rm`
+    /// while granting an interpreter constrains which tool is *spelled*, not what
+    /// can be done, and nothing said so.
+    ///
+    /// Diagnostics can only report it: the set is "every granted command that is
+    /// not readonly", because apexe cannot know which of them compute paths
+    /// internally. The list is short on a normal install and the explanation
+    /// beside it is the point.
+    fn advisory_modules(
+        &self,
+        modules: &[apcore_toolkit::ScannedModule],
+        config: &ApexeConfig,
+    ) -> anyhow::Result<Vec<String>> {
+        let Some(path) = local::acl_path(self.acl.as_deref(), config)? else {
+            return Ok(Vec::new());
+        };
+        let acl = crate::governance::AclManager::from_config(&path)?;
+        Ok(modules
+            .iter()
+            .filter(|module| {
+                !module.annotations.as_ref().is_some_and(|a| a.readonly)
+                    && acl.explain_for(&self.caller, &module.module_id).effect == "allow"
+            })
+            .map(|module| module.module_id.clone())
+            .collect())
+    }
+
+    fn print_advisory(modules: &[String]) {
+        if modules.is_empty() {
+            return;
+        }
+        println!();
+        println!(
+            "{} granted module(s) are not readonly, so their path checks cover only the",
+            modules.len()
+        );
+        println!("arguments a call declares:");
+        let shown: Vec<&str> = modules.iter().take(10).map(String::as_str).collect();
+        println!("  {}", shown.join(", "));
+        if modules.len() > shown.len() {
+            println!("  … and {} more", modules.len() - shown.len());
+        }
+        println!(
+            "  A command that computes its own paths — an interpreter, a script, a pipeline —"
+        );
+        println!(
+            "  is outside that check: `python3 -c 'os.remove(...)'` reaches files `rm` cannot."
+        );
+        println!(
+            "  This is every granted non-readonly module, not a verdict on each: apexe cannot"
+        );
+        println!("  tell which ones compute paths internally. A precise list needs a corpus");
+        println!("  annotation; until then, remove grants that must not write, or confine them");
+        println!("  (docs/sandbox.md).");
+    }
+
     fn print_diagnostics(
         &self,
         modules: &[apcore_toolkit::ScannedModule],
@@ -1351,6 +1412,7 @@ impl ListArgs {
     ) -> anyhow::Result<()> {
         let closed = Self::closed_routes(modules);
         let acl = self.unmatched_acl_targets(modules, config)?;
+        let advisory = self.advisory_modules(modules, config)?;
         if self.format == "json" {
             if let Some(targets) = &acl {
                 println!(
@@ -1358,6 +1420,7 @@ impl ListArgs {
                     serde_json::to_string_pretty(&serde_json::json!({
                         "scan_inventory": closed,
                         "unmatched_acl_targets": targets,
+                        "path_checks_are_advisory_for": advisory,
                     }))?
                 );
             } else {
@@ -1371,6 +1434,7 @@ impl ListArgs {
         if let Some(targets) = &acl {
             Self::print_unmatched_acl_targets(targets);
         }
+        Self::print_advisory(&advisory);
         Ok(())
     }
 

@@ -58,6 +58,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   preserve the confusion it was renamed to remove.
 
 ### Added
+- `list --diagnostics` names the granted modules that are not `readonly`, because
+  their path checks cover only the arguments a call declares. A command that
+  computes its own paths — an interpreter, a script, a pipeline — is outside that
+  check: denying `rm` while granting `python3` constrains which tool is spelled,
+  not what can be done, and nothing said so. The list is deliberately labelled as
+  every granted non-readonly module rather than a verdict on each, because apexe
+  cannot tell which ones compute paths internally; a precise classification needs
+  a corpus annotation.
+### Added
 - `acl sync` reports readonly modules that match no allow rule. A corpus update
   that turns `destructive` into `readonly` removes the module from the deny rule
   and, because sync never generates an allow, leaves it matching nothing — it
