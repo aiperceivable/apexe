@@ -197,6 +197,26 @@ impl Cli {
     }
 }
 
+/// The two list-shaped halves of the path policy: entries refused to readers
+/// and writers alike, and entries carved back out.
+///
+/// `paths:` is the policy when the file describes one; the older
+/// `allowed_paths`/`additional_denied_paths` keys keep working alongside it so
+/// an existing file is not silently reinterpreted. `no_access` joins the
+/// credential list (refused both ways) and `read_write` joins the carve-outs,
+/// which is exactly what those two guard lists mean.
+fn path_policy_lists(
+    config: &crate::config::ApexeConfig,
+) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
+    let mut denied: Vec<std::path::PathBuf> = config.additional_denied_paths.clone();
+    let mut allowed: Vec<std::path::PathBuf> = config.allowed_paths.clone();
+    if let Some(policy) = config.paths.as_ref() {
+        denied.extend(policy.no_access.iter().cloned());
+        allowed.extend(policy.read_write.iter().cloned());
+    }
+    (denied, allowed)
+}
+
 /// Install the process-wide path guard from configuration.
 ///
 /// Called before any subcommand runs, so every path a wrapped tool receives is
@@ -213,19 +233,8 @@ impl Cli {
 /// configured the compiled-in baseline is identical either way, so there is
 /// nothing to refuse over.
 fn install_path_guard(config: &crate::config::ApexeConfig) -> anyhow::Result<()> {
-    // `paths:` is the policy when the file describes one; the older
-    // `allowed_paths`/`additional_denied_paths` keys keep working alongside it
-    // so an existing file is not silently reinterpreted.
+    let (denied, allowed) = path_policy_lists(config);
     let policy = config.paths.as_ref();
-    let mut denied: Vec<std::path::PathBuf> = config.additional_denied_paths.clone();
-    let mut allowed: Vec<std::path::PathBuf> = config.allowed_paths.clone();
-    if let Some(policy) = policy {
-        // `no_access` is refused to readers and writers alike, which is what the
-        // guard's credential list already means; `read_write` is the override
-        // list, which is the guard's carve-out list.
-        denied.extend(policy.no_access.iter().cloned());
-        allowed.extend(policy.read_write.iter().cloned());
-    }
     let guard_config = crate::governance::GuardConfig {
         denied: &denied,
         allowed: &allowed,
@@ -1711,8 +1720,21 @@ pub struct PathsArgs {
 }
 
 impl PathsArgs {
-    pub fn execute(self, _config: &ApexeConfig) -> anyhow::Result<()> {
-        let guard = crate::governance::path_guard::active();
+    pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
+        // Built from this configuration rather than read from the installed
+        // one: the command exists to report *what the file says*, and an
+        // already-installed global guard would answer for whatever config
+        // installed it — which is how `paths:` came to be ignored by the very
+        // command that documents it.
+        let (denied, allowed) = path_policy_lists(config);
+        let policy = config.paths.as_ref();
+        let guard = crate::governance::PathGuard::from_env(crate::governance::GuardConfig {
+            denied: &denied,
+            allowed: &allowed,
+            write_denied: policy.map(|p| p.read_only.as_slice()).unwrap_or(&[]),
+            read_denied: policy.map(|p| p.write_only.as_slice()).unwrap_or(&[]),
+        });
+        let guard = &guard;
         match &self.path {
             Some(path) => self.check_path(guard, path),
             None => self.print_summary(guard),

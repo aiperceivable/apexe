@@ -14,8 +14,10 @@
 //! leave the majority of the registry unguarded — the unsafe failure
 //! direction.
 //!
-//! So the baseline lives here, in code, and cannot be removed. Operators may
-//! *add* to it through `config.yaml`; nothing subtracts from it.
+//! So the baseline lives here, in code, as the *default*: `apexe config init`
+//! writes it into `config.yaml` under `paths:`, and from then on the file is the
+//! policy. An absent section falls back to these lists, which is what keeps a
+//! deleted or never-created file from silently protecting nothing.
 //!
 //! # Two lists, because reading and writing are different risks
 //!
@@ -394,6 +396,7 @@ impl PathGuard {
             .collect();
 
         let mut credential: Vec<PathBuf> = Vec::new();
+        let root_for_entries = root.clone();
         let mut home_write_denied: Vec<PathBuf> = Vec::new();
         if let Some(home) = dirs::home_dir() {
             for entry in BASELINE_CREDENTIAL_HOME_SUBPATHS {
@@ -457,8 +460,20 @@ impl PathGuard {
             system,
             credential,
             home_write_denied,
-            configured_write_denied: config.write_denied.to_vec(),
-            configured_read_denied: config.read_denied.to_vec(),
+            // Resolved the same way a caller's argument will be. Storing the
+            // literal would miss every macOS path that starts `/tmp` (a symlink
+            // to `/private/tmp`), which is how a configured `read_only` entry
+            // silently protected nothing.
+            configured_write_denied: config
+                .write_denied
+                .iter()
+                .flat_map(|entry| baseline_spellings(entry, &root_for_entries))
+                .collect(),
+            configured_read_denied: config
+                .read_denied
+                .iter()
+                .flat_map(|entry| baseline_spellings(entry, &root_for_entries))
+                .collect(),
             credential_baseline,
             credential_configured,
             exempt,
@@ -817,10 +832,10 @@ fn protected_path_error(
     .with_details(details)
     .with_ai_guidance(format!(
         "'{requested}' resolves to '{}', inside or above the protected location \
-         '{}'. The baseline is compiled in and cannot be removed, but an operator \
-         may carve out a narrower subtree with `allowed_paths` in config.yaml. \
-         Otherwise choose a path outside the protected system and credential \
-         directories.",
+         '{}'. The policy is `paths` in config.yaml: name the subtree under \
+         `read_write` to open it, or edit the entry itself. This is the access \
+         gate, not your ACL — no rule in acl.yaml can allow it. Inspect with \
+         `apexe paths --path <path> --mode write`.",
         resolved.display(),
         denied.display()
     ))
@@ -1590,6 +1605,37 @@ mod tests {
                 .check("file", &policy.to_string_lossy(), AccessMode::Write)
                 .is_err(),
             "the policy must not be writable through a governed tool"
+        );
+    }
+
+    #[test]
+    /// A configured entry must be resolved the way a caller's argument is.
+    /// Storing the literal missed every macOS path under `/tmp` — a symlink to
+    /// `/private/tmp` — so `paths.read_only: [/tmp/x]` silently protected
+    /// nothing while the same entry written as `/private/tmp/x` worked.
+    fn test_configured_write_denied_entries_are_resolved_before_comparison() {
+        let root = tempfile::tempdir().unwrap();
+        let configured = [root.path().join("protected")];
+        let guard = PathGuard::new(
+            PathBuf::from("/"),
+            GuardConfig {
+                write_denied: &configured,
+                ..Default::default()
+            },
+        );
+
+        let target = configured[0].join("file");
+        assert!(
+            guard
+                .check("file", &target.to_string_lossy(), AccessMode::Write)
+                .is_err(),
+            "a configured read_only entry must refuse a write"
+        );
+        assert!(
+            guard
+                .check("file", &target.to_string_lossy(), AccessMode::ReadOnly)
+                .is_ok(),
+            "read_only means reads still work"
         );
     }
 

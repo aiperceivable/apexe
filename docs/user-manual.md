@@ -2160,7 +2160,7 @@ a call comes from the module's `readonly` annotation (§8):
 
 | List | Locations | Compiled in |
 |------|-----------|-------------|
-| System | `/bin` `/boot` `/dev` `/etc` `/lib` `/lib32` `/lib64` `/proc` `/run` `/sbin` `/sys` `/usr` `/var` — plus `/System` `/Library` `/Applications` `/private/etc` `/private/var` on macOS | yes, cannot be removed |
+| `read_only` | `/bin` `/boot` `/dev` `/etc` `/lib` `/lib32` `/lib64` `/proc` `/run` `/sbin` `/sys` `/usr` `/var` — plus `/System` `/Library` `/Applications` `/private/etc` `/private/var` on macOS | writes refused; editable in `config.yaml` |
 | Credential | `~/.ssh` `~/.aws` `~/.gnupg` `~/.kube` `~/.docker` `~/.config/gh` `~/.config/gcloud` `~/.config/apcore` `~/.git-credentials` `~/.netrc` | read and write |
 | apexe's own state | `~/.apexe` (policy, audit trail, security evidence) | **write only** — legible, so an operator or an agent can see what is enforced; refused to writers, so a tool cannot govern itself |
 
@@ -2300,7 +2300,7 @@ operator can change without a release. Reach for code last.
 |---|---|---|
 | Allow or deny a module | `acl.yaml` rules — first match wins, so rule *order* is the policy | — |
 | Require approval for a module | `approval: required` on an `acl.yaml` rule | It can only **add** approval. An approval demanded by the module's annotation cannot be cancelled here; `apcore` unions the two sources |
-| Let a command write into a system directory | `config.yaml` → `allowed_paths`, with `additional_denied_paths` to re-deny a subtree inside it | The compiled-in baseline cannot be removed, only carved into. A reader is not held to the system list at all |
+| Let a command write into a system directory | name the subtree under `paths.read_write` | The deepest matching entry wins, so the subtree is opened without editing the `read_only` entry. A reader is not held to the write list at all |
 | Grammar: flags, operands, where validation stops | A local overlay in `~/.apexe/overlays/` | It must match at least as strongly as the corpus file it amends, and it replaces that file wholesale |
 | Classification: `destructive`, `open_world`, `requires_approval`, `risk` | The same overlay's `annotations` | Same two limits |
 | What a *fresh* `apexe init` writes for everyone | `EXEC_WRAPPER_TOOLS` and the other lists in `src/adapter/annotations.rs` | This is the last resort: it changes a default, and every machine that has written its own data already outranks it |
