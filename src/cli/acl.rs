@@ -193,6 +193,7 @@ impl AclSyncArgs {
              were left untouched.",
             path.display()
         );
+        report_unadmitted(&modules, &synced, &path);
         Ok(())
     }
 }
@@ -256,6 +257,55 @@ pub(super) fn write_starter_or_sync(
     write_policy(&policy, acl_path)
 }
 
+/// Say so when the current annotations describe modules the policy refuses.
+///
+/// Not a fix and deliberately not automatic: regenerating the allow rule is a
+/// decision that belongs to whoever reviews the corpus change.
+fn report_unadmitted(modules: &[ScannedModule], acl: &AclManager, path: &Path) {
+    let unadmitted = unadmitted_readonly(modules, acl, "local");
+    if unadmitted.is_empty() {
+        return;
+    }
+    let shown: Vec<&str> = unadmitted.iter().take(8).map(String::as_str).collect();
+    println!(
+        "{} readonly module(s) match no allow rule and fall to default_effect: deny{}",
+        unadmitted.len(),
+        if unadmitted.len() > shown.len() {
+            ", …"
+        } else {
+            ""
+        }
+    );
+    println!("  {}", shown.join(", "));
+    println!(
+        "  This is what a corpus change looks like before the allow rule is \
+         regenerated. Run `apexe acl init --force` (or `apexe scan <tool> \
+         --write-acl`) to rebuild it from the current annotations in {}.",
+        path.display()
+    );
+}
+
+/// Readonly modules the policy does not admit for `caller`.
+///
+/// `acl sync` refreshes the two deny rules and leaves allow rules untouched, by
+/// design: a generated allow is a grant nobody reviewed. The consequence is a
+/// gap it must report rather than fix — when a corpus update moves a module from
+/// `destructive` to `readonly`, sync removes it from the deny rule and nothing
+/// admits it, so it silently falls to `default_effect: deny` and the upgrade
+/// looks like it did nothing.
+fn unadmitted_readonly(modules: &[ScannedModule], acl: &AclManager, caller: &str) -> Vec<String> {
+    modules
+        .iter()
+        .filter(|module| {
+            module.annotations.as_ref().is_some_and(|annotations| {
+                annotations.readonly && !annotations.destructive && !annotations.open_world
+            })
+        })
+        .map(|module| module.module_id.clone())
+        .filter(|module_id| acl.explain_for(caller, module_id).effect != "allow")
+        .collect()
+}
+
 fn write_policy(policy: &AclManager, path: &Path) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -291,4 +341,64 @@ fn render_diff(path: &Path, synced: &AclManager) -> anyhow::Result<String> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod unadmitted_tests {
+    use super::*;
+    use crate::governance::{AclManager, PolicyProfile};
+
+    fn module(id: &str, readonly: bool, destructive: bool) -> ScannedModule {
+        let mut module = ScannedModule::new(
+            id.to_string(),
+            "t".to_string(),
+            serde_json::json!({"type": "object"}),
+            serde_json::json!({"type": "object"}),
+            vec!["cli".to_string()],
+            "exec:///bin/true".to_string(),
+        );
+        // `ModuleAnnotations::default()` is open_world: true on purpose, so the
+        // fixture has to say otherwise or every module is filtered out.
+        let annotations = apcore::module::ModuleAnnotations {
+            open_world: false,
+            readonly,
+            destructive,
+            ..Default::default()
+        };
+        module.annotations = Some(annotations);
+        module
+    }
+
+    /// The gap this exists for: a corpus update turns `destructive` into
+    /// `readonly`, `acl sync` drops it from the deny rule, and nothing admits it
+    /// — so the command silently falls to `default_effect: deny` and the upgrade
+    /// looks like it did nothing. Sync reports it instead of granting it.
+    #[test]
+    fn test_a_readonly_module_with_no_allow_rule_is_reported() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("acl.yaml");
+        // A strict starter: no local catch-all, and the module is not in the
+        // readonly rule because it was destructive when the policy was written.
+        AclManager::generate_starter(&[module("cli.other", true, false)], PolicyProfile::Strict)
+            .write_config(&path)
+            .unwrap();
+        let acl = AclManager::from_config(&path).unwrap();
+
+        let reported = unadmitted_readonly(&[module("cli.find", true, false)], &acl, "local");
+
+        assert_eq!(reported, vec!["cli.find".to_string()]);
+    }
+
+    /// A module the policy already admits is not noise in the report.
+    #[test]
+    fn test_an_admitted_module_is_not_reported() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("acl.yaml");
+        AclManager::generate_starter(&[module("cli.find", true, false)], PolicyProfile::Strict)
+            .write_config(&path)
+            .unwrap();
+        let acl = AclManager::from_config(&path).unwrap();
+
+        assert!(unadmitted_readonly(&[module("cli.find", true, false)], &acl, "local").is_empty());
+    }
 }

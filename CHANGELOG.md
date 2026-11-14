@@ -58,6 +58,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   preserve the confusion it was renamed to remove.
 
 ### Added
+- `acl sync` reports readonly modules that match no allow rule. A corpus update
+  that turns `destructive` into `readonly` removes the module from the deny rule
+  and, because sync never generates an allow, leaves it matching nothing — it
+  falls to `default_effect: deny` and the upgrade looks like it did nothing. In
+  the strict profile that was the whole effect of the change. Sync now names the
+  modules and the command that rebuilds the allow rule; it does not grant them,
+  because an allow the operator did not review is the thing this separation
+  exists to prevent.
+### Added
 - An overlay can scope approval and write behaviour to *flags* instead of the
   whole module. `AnnotationOverrides` gains `approval_flags` (properties whose
   presence puts the call to a human) and `writes_with` (properties whose presence
