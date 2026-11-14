@@ -292,10 +292,10 @@ Successful JSON listings keep these shapes when empty: `[]`, or an envelope
 whose `modules` array is empty. Human onboarding messages are emitted only in
 table mode. `--available-only` follows the same rule when it filters everything.
 
-#### Coverage and policy are two gates
+#### Coverage, policy and access are three gates
 
-A route executes only when **both** gates admit it, and they are evaluated in
-this order:
+A route executes only when **all three** gates admit it, and they are evaluated
+in this order:
 
 1. **Coverage** — is the route part of the declared surface? `apexe exec` and the
    shims resolve the invocation against the reviewed grammar first. A route a
@@ -333,6 +333,26 @@ apexe config [OPTIONS]
 |--------|-------------|
 | `--show` | Print resolved configuration as YAML |
 | `--init` | Create default config at `~/.apexe/config.yaml` |
+
+### 4.6 `apexe policy`
+
+Prints the path policy every wrapped tool is checked against, or checks one
+path against it. This is the only way to inspect the third gate (§9.7) without
+standing up a server and driving it with a client.
+
+The policy itself lives in `~/.apexe/config.yaml` under `paths:`. That file is
+the reference — read it (or the template below), not this page, for the field
+list:
+
+```
+docs/config.example.yaml      the shape `apexe config init` writes, fully commented
+```
+
+Its vocabulary is taken from the systems that own these ideas rather than
+invented: `read_only` / `read_write` / `no_access` are systemd's
+`ReadOnlyPaths=` / `ReadWritePaths=` / `InaccessiblePaths=`, and `write_only` is
+AppArmor's `w` right. The deepest matching entry decides; a path in no list is
+`read_write`.
 
 ### 4.6 `apexe policy`
 
@@ -2086,6 +2106,41 @@ There is no CLI flag for this — `apcore-mcp`'s `InMemoryApprovalStore` is docu
 
 ### 9.7 Path Guard (always-on)
 
+Three gates decide whether a wrapped call runs, in this order:
+
+| Gate | Answers | Lives in | Inspect with |
+|---|---|---|---|
+| Coverage | can this route be expressed at all? | `~/.apexe/bindings/` | `apexe list --verbose` |
+| Permission | may this caller run this command? | `~/.apexe/acl.yaml` | `apexe acl explain <module-id>` |
+| Access | may it touch this location? | `~/.apexe/config.yaml` → `paths:` | `apexe paths --path <p> --mode write` |
+
+A refusal names the gate that decided, because the fix differs per gate: a
+coverage refusal is a rescan, a permission refusal is an ACL rule, an access
+refusal is a `paths:` entry. Allowing `cli.rm` in `acl.yaml` does not let it
+write `/etc`; `paths.read_only` still refuses that write.
+
+Paths already configured the old way map one-to-one:
+
+| Before (`config.yaml`) | After |
+|---|---|
+| `allowed_paths: [/x]` | `paths.read_write: [/x]` |
+| `additional_denied_paths: [/y]` | `paths.no_access: [/y]` |
+| (compiled system paths) | `paths.read_only: [...]` — shipped in the file, editable |
+| (compiled credential dirs) | `paths.no_access: [...]` — shipped in the file, editable |
+
+Both key sets are read: the old `allowed_paths`/`additional_denied_paths` keep
+working and are merged with `paths:` when both are present, so an existing file
+is never silently reinterpreted. `apexe config init` writes the new shape for a
+machine that has no file yet.
+
+The built-in defaults are compiled in for three jobs only — seeding
+`config.yaml` on first run, standing in when that file (or its `paths:`
+section) is missing, and telling an upgrade which entries are new. When the
+file exists, its `paths:` section is the policy; the compiled lists are not
+consulted.
+
+
+
 The ACL (§9.1) decides *whether a module may be called*. It cannot decide *what
 a call may touch* — apcore ACL rules match on caller and target module id, not
 on argument values. `rm` is not a command to forbid outright; `rm /etc` is.
@@ -2105,7 +2160,8 @@ a call comes from the module's `readonly` annotation (§8):
 | List | Locations | Compiled in |
 |------|-----------|-------------|
 | System | `/bin` `/boot` `/dev` `/etc` `/lib` `/lib32` `/lib64` `/proc` `/run` `/sbin` `/sys` `/usr` `/var` — plus `/System` `/Library` `/Applications` `/private/etc` `/private/var` on macOS | yes, cannot be removed |
-| Credential | `~/.ssh` `~/.aws` `~/.gnupg` `~/.kube` `~/.docker` `~/.apexe` `~/.config/gh` `~/.config/gcloud` `~/.config/apcore` `~/.git-credentials` `~/.netrc` | yes, cannot be removed |
+| Credential | `~/.ssh` `~/.aws` `~/.gnupg` `~/.kube` `~/.docker` `~/.config/gh` `~/.config/gcloud` `~/.config/apcore` `~/.git-credentials` `~/.netrc` | read and write |
+| apexe's own state | `~/.apexe` (policy, audit trail, security evidence) | **write only** — legible, so an operator or an agent can see what is enforced; refused to writers, so a tool cannot govern itself |
 
 `cat /etc/hosts` and `ls /usr/bin` are ordinary work, so a `readonly` module may
 name a system path — refusing it protected nothing, since the file is

@@ -91,6 +91,21 @@ pub struct ApexeConfig {
     /// `~/.config` needs no entry here; it is not guarded in the first place.
     pub allowed_paths: Vec<PathBuf>,
 
+    /// The four-way path permission policy, as `paths:` in `config.yaml`.
+    ///
+    /// `None` means the file did not describe one, and the compiled-in baseline
+    /// is the policy — that is the state of a fresh install before
+    /// `apexe config init`, and it is deliberately *not* the same as an empty
+    /// policy: an empty `paths:` section is a policy that protects nothing.
+    ///
+    /// Vocabulary follows the systems that own the idea: `read_only` is
+    /// systemd's `ReadOnlyPaths=`, `read_write` its `ReadWritePaths=`,
+    /// `no_access` its `InaccessiblePaths=`, and `write_only` is AppArmor's `w`
+    /// right. The deepest matching entry decides; a path in no list is
+    /// `read_write`.
+    #[serde(default)]
+    pub paths: Option<PathPolicy>,
+
     /// Overlay directories to read *in addition to* `<config_dir>/overlays`.
     ///
     /// Additive by construction, like [`Self::additional_denied_paths`]: the
@@ -121,6 +136,66 @@ pub struct ApexeConfig {
     pub core_config: Option<CoreConfig>,
 }
 
+/// The commented template `apexe config init` writes.
+///
+/// Kept in `docs/` rather than in this crate so the file an operator receives
+/// and the file the manual points at cannot drift apart; `include_str!` makes
+/// the build fail if one moves without the other.
+pub const CONFIG_TEMPLATE: &str = include_str!("../docs/config.example.yaml");
+
+/// The `paths:` section: what a governed command may read or write, and where.
+///
+/// One entry per access-mode combination, named after the resulting permission
+/// rather than an allow/deny verdict — a file that says `read_only` cannot be
+/// misread as "may write", which is exactly the ambiguity an `allow`/`deny` pair
+/// invites. Because the four names are the four subsets of `{read, write}`,
+/// there is no fifth state to explain and no contradictory configuration to
+/// validate away.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PathPolicy {
+    /// May read, may not write (systemd `ReadOnlyPaths=`).
+    #[serde(default)]
+    pub read_only: Vec<PathBuf>,
+    /// May read and write (systemd `ReadWritePaths=`).
+    #[serde(default)]
+    pub read_write: Vec<PathBuf>,
+    /// Neither read nor write (systemd `InaccessiblePaths=`).
+    #[serde(default)]
+    pub no_access: Vec<PathBuf>,
+    /// May write, may not read (AppArmor's `w` right).
+    #[serde(default)]
+    pub write_only: Vec<PathBuf>,
+}
+
+impl PathPolicy {
+    /// Every entry, for the "a path may appear in only one list" check.
+    ///
+    /// A path in two lists is not an ordering question — the deepest-match rule
+    /// would answer it arbitrarily between equals — so it is refused instead of
+    /// resolved. See [`Self::conflict`].
+    pub fn conflict(&self) -> Option<&PathBuf> {
+        let lists = [
+            &self.read_only,
+            &self.read_write,
+            &self.no_access,
+            &self.write_only,
+        ];
+        for (index, list) in lists.iter().enumerate() {
+            for entry in list.iter() {
+                let duplicated = lists
+                    .iter()
+                    .enumerate()
+                    .any(|(other, list)| other != index && list.contains(entry));
+                if duplicated {
+                    return Some(entry);
+                }
+            }
+        }
+        None
+    }
+}
+
 impl Default for ApexeConfig {
     fn default() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -138,6 +213,7 @@ impl Default for ApexeConfig {
             json_output_preference: true,
             additional_denied_paths: Vec::new(),
             allowed_paths: Vec::new(),
+            paths: None,
             overlay_dirs: Vec::new(),
             default_overlay_repository: DEFAULT_OVERLAY_REPOSITORY.to_string(),
             core_config: None,
@@ -1214,5 +1290,60 @@ mod tests {
         assert!(config.bindings_dir.exists());
         assert!(config.cache_dir.exists());
         assert!(config.config_dir.exists());
+    }
+}
+
+#[cfg(test)]
+mod paths_policy_tests {
+    use super::*;
+
+    /// The four names are the four subsets of {read, write}; a path may live in
+    /// only one of them, because two entries would let the deepest-match rule
+    /// decide between equals.
+    #[test]
+    fn test_a_path_in_two_permission_lists_is_a_conflict() {
+        let policy = PathPolicy {
+            read_only: vec![PathBuf::from("/etc")],
+            read_write: vec![PathBuf::from("/etc")],
+            ..Default::default()
+        };
+        assert_eq!(policy.conflict(), Some(&PathBuf::from("/etc")));
+    }
+
+    #[test]
+    fn test_disjoint_permission_lists_have_no_conflict() {
+        let policy = PathPolicy {
+            read_only: vec![PathBuf::from("/etc")],
+            no_access: vec![PathBuf::from("/root/.ssh")],
+            ..Default::default()
+        };
+        assert_eq!(policy.conflict(), None);
+    }
+
+    /// `paths:` absent and `paths:` empty are different policies: the first
+    /// leaves the compiled-in baseline in force, the second protects nothing.
+    #[test]
+    fn test_an_absent_paths_section_is_not_an_empty_policy() {
+        let absent: ApexeConfig = serde_yaml::from_str("schema_version: 1\n").unwrap();
+        assert!(absent.paths.is_none());
+
+        let empty: ApexeConfig = serde_yaml::from_str("schema_version: 1\npaths: {}\n").unwrap();
+        assert_eq!(empty.paths, Some(PathPolicy::default()));
+    }
+
+    /// The shipped template is the documentation users read, and `config init`
+    /// writes it verbatim — every key in it must parse.
+    #[test]
+    fn test_the_shipped_template_parses() {
+        let template = include_str!("../docs/config.example.yaml");
+        let config: ApexeConfig = serde_yaml::from_str(template).unwrap();
+        let policy = config.paths.expect("the template describes a paths policy");
+        assert!(policy.read_only.contains(&PathBuf::from("/etc")));
+        assert!(
+            policy.read_only.iter().any(|path| path.ends_with(".apexe")),
+            "apexe's own state is readable and not writable: {:?}",
+            policy.read_only
+        );
+        assert_eq!(policy.conflict(), None);
     }
 }

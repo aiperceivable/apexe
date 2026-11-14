@@ -9,6 +9,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 ## [Unreleased]
 
 ### Added
+- `config.yaml` gains a `paths:` section that states the path policy in the
+  vocabulary the idea came from: `read_only` (systemd `ReadOnlyPaths=`),
+  `read_write` (`ReadWritePaths=`), `no_access` (`InaccessiblePaths=`) and
+  `write_only` (AppArmor's `w` right). The four names are the four subsets of
+  {read, write}, so there is no fifth state to explain and no allow/deny pair to
+  misread — the deepest matching entry decides, and a path may appear in only one
+  list. An absent section leaves the compiled-in baseline in force; an empty one
+  is a policy that protects nothing, which is why the distinction is kept.
+- `apexe config init` writes the commented template from
+  `docs/config.example.yaml` instead of a bare `serde_yaml` dump of the defaults.
+  The file an operator receives and the file the manual points at are now the
+  same text, and a build-time `include_str!` fails if one moves without the
+  other.
+- The manual's "coverage and policy are two gates" model is now three: coverage
+  (bindings), permission (`acl.yaml`) and access (`paths:`), with the command
+  that inspects each and the migration table from the old path keys.
+
 - `apexe list --path-census` reports the three states a command on this machine
   can be in: `granted` (bound and allowed for `--caller`), `denied` (bound and
   refused by the policy), and `unscanned` (on `PATH` with no binding at all —
@@ -35,6 +52,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   one part of the file that explains its rule order was erased by every sync.
 
 ### Changed
+- `~/.apexe` is readable through a governed tool and still not writable. It holds
+  the policy, the audit trail and the recorded security evidence, so reading is
+  how an operator — or the agent helping them — finds out what is actually
+  enforced; the old read refusal bought nothing, since the agent's own file tools
+  already reach it and no shim governs those. Writing stays refused: a wrapped
+  tool that can rewrite the policy can govern itself, including deleting the
+  record of what it did.
 - `apexe scan` no longer writes `acl.yaml`. It produces bindings, which is its
   declared deliverable; writing the policy as a side effect of learning about a
   tool is what let a policy drift away from any review. `--write-acl` keeps an

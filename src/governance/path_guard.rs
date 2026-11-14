@@ -152,13 +152,28 @@ const BASELINE_SYSTEM_PATHS: &[&str] = &[
 /// needs in order to protect the token sharing the file. An operator who wants
 /// them covered adds them through [`GuardConfig::denied`], which joins this
 /// list at runtime.
+/// Home subpaths a wrapped tool may **read** but never write.
+///
+/// `~/.apexe` used to sit in the credential list, refused to readers as well,
+/// with the argument that "a wrapped tool that can read the policy can plan
+/// around it". That traded a real gain — an agent can explain a refusal to the
+/// person it is helping, and an operator can inspect what is actually enforced
+/// — for a very small one: the policy is also readable through the agent's own
+/// file tools, which no shim governs (see `docs/threat-model.md` §5.7), so the
+/// read refusal only made the *governed* path blind.
+///
+/// Writing stays refused. That is the half that matters: apexe's own policy,
+/// its security evidence and its audit trail live here, and a wrapped tool that
+/// can rewrite them can govern itself — including deleting the record of what
+/// it did.
+const BASELINE_HOME_WRITE_DENIED: &[&str] = &[".apexe"];
+
 const BASELINE_CREDENTIAL_HOME_SUBPATHS: &[&str] = &[
     ".ssh",
     ".aws",
     ".gnupg",
     ".kube",
     ".docker",
-    ".apexe",
     ".config/gh",
     ".config/gcloud",
     ".config/apcore",
@@ -200,10 +215,18 @@ impl AccessMode {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GuardConfig<'a> {
     /// Appended to the credential list — refused to readers and writers alike.
+    ///
+    /// Config vocabulary: `paths.no_access`.
     pub denied: &'a [PathBuf],
     /// Carve-outs *out of* the compiled-in baselines. Empty by default; see
     /// [`PathGuard::new`] for what an operator takes on by using it.
+    ///
+    /// Config vocabulary: `paths.read_write`.
     pub allowed: &'a [PathBuf],
+    /// Refused to writers only. Config vocabulary: `paths.read_only`.
+    pub write_denied: &'a [PathBuf],
+    /// Refused to readers only. Config vocabulary: `paths.write_only`.
+    pub read_denied: &'a [PathBuf],
 }
 
 /// Locations that stay usable even though a denied entry contains them.
@@ -306,6 +329,13 @@ pub struct PathGuard {
     /// [`credential_baseline`]: PathGuard::credential_baseline
     /// [`credential_configured`]: PathGuard::credential_configured
     credential: Vec<PathBuf>,
+    /// Home subpaths refused to writers only, and legible to readers. See
+    /// [`BASELINE_HOME_WRITE_DENIED`].
+    home_write_denied: Vec<PathBuf>,
+    /// Operator entries refused to writers only (`paths.read_only`).
+    configured_write_denied: Vec<PathBuf>,
+    /// Operator entries refused to readers only (`paths.write_only`).
+    configured_read_denied: Vec<PathBuf>,
     /// The compiled-in half of [`credential`](PathGuard::credential), before
     /// the operator's `additional_denied_paths` are merged in. Exists only so
     /// `apexe policy` can report which entries are built-in versus
@@ -364,9 +394,13 @@ impl PathGuard {
             .collect();
 
         let mut credential: Vec<PathBuf> = Vec::new();
+        let mut home_write_denied: Vec<PathBuf> = Vec::new();
         if let Some(home) = dirs::home_dir() {
             for entry in BASELINE_CREDENTIAL_HOME_SUBPATHS {
                 credential.extend(baseline_spellings(&home.join(entry), &root));
+            }
+            for entry in BASELINE_HOME_WRITE_DENIED {
+                home_write_denied.extend(baseline_spellings(&home.join(entry), &root));
             }
         } else {
             tracing::warn!(
@@ -422,6 +456,9 @@ impl PathGuard {
             root,
             system,
             credential,
+            home_write_denied,
+            configured_write_denied: config.write_denied.to_vec(),
+            configured_read_denied: config.read_denied.to_vec(),
             credential_baseline,
             credential_configured,
             exempt,
@@ -579,11 +616,16 @@ impl PathGuard {
     ///
     /// Credentials are in both modes; system locations only bind a writer.
     fn applicable(&self, mode: AccessMode) -> impl Iterator<Item = &PathBuf> {
-        let system = match mode {
-            AccessMode::Write => Some(self.system.iter()),
-            AccessMode::ReadOnly => None,
-        };
-        self.credential.iter().chain(system.into_iter().flatten())
+        let mut mode_specific: Vec<&PathBuf> = Vec::new();
+        match mode {
+            AccessMode::Write => {
+                mode_specific.extend(self.home_write_denied.iter());
+                mode_specific.extend(self.configured_write_denied.iter());
+                mode_specific.extend(self.system.iter());
+            }
+            AccessMode::ReadOnly => mode_specific.extend(self.configured_read_denied.iter()),
+        }
+        self.credential.iter().chain(mode_specific)
     }
 }
 
@@ -1195,6 +1237,7 @@ mod tests {
             GuardConfig {
                 denied: &[PathBuf::from("/etc/nginx/conf.d/secrets")],
                 allowed: &[PathBuf::from("/etc/nginx/conf.d")],
+                ..Default::default()
             },
         );
 
@@ -1234,6 +1277,9 @@ mod tests {
             root: PathBuf::from("/"),
             system: Vec::new(),
             credential: vec![PathBuf::from("/home/u/.ssh")],
+            home_write_denied: Vec::new(),
+            configured_write_denied: Vec::new(),
+            configured_read_denied: Vec::new(),
             exempt: vec![PathBuf::from("/home/u/.ssh")],
             credential_baseline: Vec::new(),
             credential_configured: Vec::new(),
@@ -1254,6 +1300,7 @@ mod tests {
             GuardConfig {
                 denied: &[PathBuf::from("/etc/nginx/conf.d/secrets")],
                 allowed: &[PathBuf::from("/etc/nginx/conf.d")],
+                ..Default::default()
             },
         );
         assert!(guard
@@ -1330,6 +1377,9 @@ mod tests {
             root: PathBuf::from("/"),
             system: vec![PathBuf::from("/var")],
             credential: vec![tmp.join("fakehome/.ssh")],
+            home_write_denied: Vec::new(),
+            configured_write_denied: Vec::new(),
+            configured_read_denied: Vec::new(),
             exempt: vec![tmp.clone()],
             credential_baseline: Vec::new(),
             credential_configured: Vec::new(),
@@ -1357,6 +1407,9 @@ mod tests {
             root: PathBuf::from("/"),
             system: Vec::new(),
             credential: vec![PathBuf::from("/home/u/.ssh")],
+            home_write_denied: Vec::new(),
+            configured_write_denied: Vec::new(),
+            configured_read_denied: Vec::new(),
             exempt: vec![PathBuf::from("/home/u/.ssh")],
             credential_baseline: Vec::new(),
             credential_configured: Vec::new(),
@@ -1373,6 +1426,9 @@ mod tests {
             root: PathBuf::from("/"),
             system: vec![PathBuf::from("/var")],
             credential: vec![PathBuf::from("/var/scratch/golden")],
+            home_write_denied: Vec::new(),
+            configured_write_denied: Vec::new(),
+            configured_read_denied: Vec::new(),
             exempt: vec![PathBuf::from("/var/scratch")],
             credential_baseline: Vec::new(),
             credential_configured: Vec::new(),
@@ -1407,6 +1463,9 @@ mod tests {
             root: PathBuf::from("/"),
             system: vec![PathBuf::from("/data")],
             credential: Vec::new(),
+            home_write_denied: Vec::new(),
+            configured_write_denied: Vec::new(),
+            configured_read_denied: Vec::new(),
             exempt: vec![PathBuf::from("/data")],
             credential_baseline: Vec::new(),
             credential_configured: Vec::new(),
@@ -1503,6 +1562,36 @@ mod tests {
     }
 
     // ---- Introspection accessors, for `apexe policy` --------------------
+
+    #[test]
+    /// `~/.apexe` is legible and not writable: the policy, the audit trail and
+    /// the security evidence live there, so reading is how an operator — or the
+    /// agent helping them — finds out what is actually enforced, while writing
+    /// is how a tool would govern itself.
+    fn test_the_apexe_directory_is_readable_and_not_writable() {
+        let home = dirs::home_dir().unwrap();
+        let guard = PathGuard::new(
+            PathBuf::from("/work"),
+            GuardConfig {
+                denied: &[],
+                allowed: &[],
+                ..Default::default()
+            },
+        );
+        let policy = home.join(".apexe/acl.yaml");
+        assert!(
+            guard
+                .check("file", &policy.to_string_lossy(), AccessMode::ReadOnly)
+                .is_ok(),
+            "the policy must be readable through a governed tool"
+        );
+        assert!(
+            guard
+                .check("file", &policy.to_string_lossy(), AccessMode::Write)
+                .is_err(),
+            "the policy must not be writable through a governed tool"
+        );
+    }
 
     #[test]
     fn test_credential_baseline_and_configured_are_reported_separately() {

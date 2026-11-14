@@ -212,9 +212,24 @@ impl Cli {
 /// configured the compiled-in baseline is identical either way, so there is
 /// nothing to refuse over.
 fn install_path_guard(config: &crate::config::ApexeConfig) -> anyhow::Result<()> {
+    // `paths:` is the policy when the file describes one; the older
+    // `allowed_paths`/`additional_denied_paths` keys keep working alongside it
+    // so an existing file is not silently reinterpreted.
+    let policy = config.paths.as_ref();
+    let mut denied: Vec<std::path::PathBuf> = config.additional_denied_paths.clone();
+    let mut allowed: Vec<std::path::PathBuf> = config.allowed_paths.clone();
+    if let Some(policy) = policy {
+        // `no_access` is refused to readers and writers alike, which is what the
+        // guard's credential list already means; `read_write` is the override
+        // list, which is the guard's carve-out list.
+        denied.extend(policy.no_access.iter().cloned());
+        allowed.extend(policy.read_write.iter().cloned());
+    }
     let guard_config = crate::governance::GuardConfig {
-        denied: &config.additional_denied_paths,
-        allowed: &config.allowed_paths,
+        denied: &denied,
+        allowed: &allowed,
+        write_denied: policy.map(|p| p.read_only.as_slice()).unwrap_or(&[]),
+        read_denied: policy.map(|p| p.write_only.as_slice()).unwrap_or(&[]),
     };
     let configured = guard_config.denied.len() + guard_config.allowed.len();
     let guard = crate::governance::PathGuard::from_env(guard_config);
@@ -1647,9 +1662,13 @@ impl ConfigArgs {
         if self.init {
             let config_path = config.config_dir.join("config.yaml");
             if !config_path.exists() {
-                let default = ApexeConfig::default();
-                let yaml = serde_yaml::to_string(&default)?;
-                std::fs::write(&config_path, yaml)?;
+                // The shipped template *is* the documentation: it carries the
+                // four permission lists, their vocabulary, the deepest-match
+                // rule and the migration mapping in comments beside the values.
+                // Writing `serde_yaml::to_string(Default)` instead produced a
+                // file of bare keys with no explanation, so the one document an
+                // operator actually reads said nothing about the model.
+                std::fs::write(&config_path, crate::config::CONFIG_TEMPLATE)?;
                 println!("Config written to {}", config_path.display());
             } else {
                 println!("Config already exists at {}", config_path.display());

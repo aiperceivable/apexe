@@ -223,6 +223,7 @@ fn demonstrate_carve_out() {
         GuardConfig {
             denied: &denied,
             allowed: &allowed,
+            ..Default::default()
         },
     );
 
@@ -303,6 +304,7 @@ mod tests {
             GuardConfig {
                 denied: &denied,
                 allowed: &allowed,
+                ..Default::default()
             },
         );
 
