@@ -821,10 +821,19 @@ fn protected_path_error(
         "protected_path".to_string(),
         serde_json::json!(denied.display().to_string()),
     );
+    // Two different facts reach this function: the requested path lies *inside*
+    // a protected location, or it *contains* one (`rm -r /tmp` where `~` is under
+    // `/tmp`). Saying "protected by" for both described the second one backwards:
+    // the message named the protected path as the protector.
+    let relation = if denied.starts_with(resolved) {
+        "which contains the protected location"
+    } else {
+        "which is protected by"
+    };
     ModuleError::new(
         ErrorCode::ACLDenied,
         format!(
-            "{subject} resolves to '{}', which is protected by '{}'",
+            "{subject} resolves to '{}', {relation} '{}'",
             resolved.display(),
             denied.display()
         ),
@@ -1636,6 +1645,38 @@ mod tests {
                 .check("file", &target.to_string_lossy(), AccessMode::ReadOnly)
                 .is_ok(),
             "read_only means reads still work"
+        );
+    }
+
+    #[test]
+    /// Refusing `rm -r /tmp` because `~/.aws` lives under it is correct, but the
+    /// message used to name the protected path as the *protector* — "… resolves
+    /// to '/tmp', which is protected by '/tmp/h/.aws'". The relation runs the
+    /// other way and the sentence now says so, because a wrong explanation sends
+    /// an operator to change the wrong entry.
+    fn test_a_containing_path_is_reported_as_containing_not_protected() {
+        let root = tempfile::tempdir().unwrap();
+        let protected = root.path().join("inner");
+        std::fs::create_dir_all(&protected).unwrap();
+        let guard = PathGuard::new(
+            PathBuf::from("/"),
+            GuardConfig {
+                denied: std::slice::from_ref(&protected),
+                ..Default::default()
+            },
+        );
+
+        let error = guard
+            .check(
+                "the given --path",
+                &root.path().to_string_lossy(),
+                AccessMode::Write,
+            )
+            .unwrap_err();
+        let message = format!("{error}");
+        assert!(
+            message.contains("contains the protected location"),
+            "the message must say which way the containment runs: {message}"
         );
     }
 

@@ -9,6 +9,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 ## [Unreleased]
 
 ### Fixed
+- A refusal for a path that *contains* a protected location no longer reports the
+  protected path as the protector. `rm -r /tmp` where `~/.aws` lives under `/tmp`
+  said "'/tmp' … which is protected by '/tmp/h/.aws'" — the relation runs the
+  other way, and the sentence now says "which contains the protected location",
+  so an operator is not sent to change the wrong entry.
 - `exec --dry-run`'s `path_guard` summary uses the same access mode as the call
   it describes. It derived the mode from `annotations.readonly` alone, so a call
   whose `argv` check refused a path still reported `allowed: true` beside it — a
