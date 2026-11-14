@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
+## [Unreleased]
+
+---
+
 ## [0.13.0] - 2026-11-13
 
 ### Fixed
