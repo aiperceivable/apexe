@@ -21,7 +21,7 @@ fi
 echo "=== Scan commands with verified cli-permissions overlays ==="
 echo "Corpus: $OVERLAY_DIR"
 APEXE_OVERLAY_DIRS="$OVERLAY_DIR" \
-    apexe scan ls grep sort tail --no-cache --output-dir "$BINDINGS_DIR"
+    apexe scan ls grep sort tail --no-cache --output-dir "$BINDINGS_DIR" --write-acl
 echo
 
 echo "=== Review generated bindings and ACL decisions ==="

@@ -12,7 +12,11 @@ echo "  ls   — options and operands; schema depends on your implementation"
 echo "  jq   — boolean flags, parsed from GNU-format help"
 echo "  curl — the widest surface here; flag count depends on your build"
 echo
-apexe scan ls jq curl --no-cache --output-dir "$BINDINGS_DIR" --format table
+# `--write-acl` is the compatibility spelling: a scan produces the inventory,
+# `acl init` writes the policy once, and this applies the scan to it in one step.
+# Without it the ACL below would not exist — `scan` no longer writes policy.
+apexe scan ls jq curl --no-cache --output-dir "$BINDINGS_DIR" --format table \
+    --write-acl
 echo
 
 echo "=== Step 2: List generated modules ==="
@@ -33,7 +37,7 @@ echo "ACL path: $ACL_PATH"
 if [ -f "$ACL_PATH" ]; then
     sed -n '1,160p' "$ACL_PATH"
 else
-    echo "ACL was not found. Run 'apexe scan' again and inspect your configuration."
+    echo "ACL was not found. Run 'apexe acl init' to write a starter policy."
 fi
 echo
 
