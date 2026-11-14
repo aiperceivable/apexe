@@ -242,7 +242,13 @@ pub(super) fn write_starter_or_sync(
     modules: &[ScannedModule],
 ) -> anyhow::Result<()> {
     let policy = if acl_path.exists() {
-        let synced = AclManager::sync_deny_floor(acl_path, modules)?;
+        // `merge_default`, not `sync_deny_floor`: this path is the operator
+        // applying a scan to the policy, and a scan can turn a module readonly as
+        // well as dangerous. Refreshing only the denials left a module that the
+        // corpus had just made readonly matching nothing — it fell to
+        // `default_effect: deny` and the upgrade looked like it did nothing.
+        // `acl sync` stays deny-only on purpose; this is the explicit write.
+        let synced = AclManager::merge_default(acl_path, modules)?;
         // Rewriting an unchanged document costs the operator their formatting
         // and rule order for nothing, so the write is skipped when the floor it
         // expresses is the one already on disk.

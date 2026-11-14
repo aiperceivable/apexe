@@ -9,6 +9,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 ## [Unreleased]
 
 ### Fixed
+- `scan --write-acl` refreshes the readonly allow rule again. The compatibility
+  path was wired to `acl sync`'s deny-only floor, so a scan that made a module
+  `readonly` — which is what a corpus update does when a command stops being
+  `destructive` — left it matching no rule at all: it fell to
+  `default_effect: deny` and the upgrade looked like it changed nothing. Applying
+  a scan is the explicit write and merges the full default; `acl sync` stays
+  deny-only.
 - A refusal for a path that *contains* a protected location no longer reports the
   protected path as the protector. `rm -r /tmp` where `~/.aws` lives under `/tmp`
   said "'/tmp' … which is protected by '/tmp/h/.aws'" — the relation runs the
