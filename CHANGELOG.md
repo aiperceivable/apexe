@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
-## [Unreleased]
+## [0.14.0] - 2026-11-14
 
 ### Added
 - `x-apexe-tail-parsed` lets an overlay declare a trailing mini-language that is
