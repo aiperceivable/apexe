@@ -444,7 +444,7 @@ impl CliModule {
     /// a module that could write without them must not carry the key. `sed` is
     /// the standing example — `sed -n 'w /etc/x' file` writes with no flag at
     /// all, so it must never declare one.
-    fn access_mode(&self, inputs: &Value) -> AccessMode {
+    pub(crate) fn access_mode(&self, inputs: &Value) -> AccessMode {
         let declared = match self.annotations.extra.get(WRITES_WITH_KEY) {
             Some(Value::Array(properties)) if !properties.is_empty() => Some(properties),
             _ => None,

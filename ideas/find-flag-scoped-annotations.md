@@ -123,6 +123,42 @@ nobody can re-run is indistinguishable from a guess.
 | `find /etc -delete` | readonly allow | prompt | write | refused (`/etc` is `read_only`) |
 | `find . -exec rm {} \;` | readonly allow | **prompt** | write | runs after approval — see §7 |
 
+## 6.1 Verified against the real binary
+
+Run in an isolated `HOME` with the corpus entry's 97 declared flags kept and only
+the `annotations` block changed, then `scan find --write-acl`:
+
+```
+acl explain cli.find            -> allow / rule 0 "Auto-allow readonly CLI commands"
+list --verbose (cli.find)       -> readonly: true, destructive: false,
+                                   requires_approval: true, open_world: false
+                                   extra: x-apexe-writes-with ["delete","exec","execdir","ok","okdir"]
+                                          x-apexe-approval-basis "flags"
+                                          x-apexe-escalating-params [same five]
+```
+
+With `writes_with` set to `["delete"]` alone, to isolate the path guard from the
+approval gate:
+
+```
+exec cli.find --input '{"f":["/etc/hosts"]}'          -> valid: true
+                                                         path_guard allowed: true   (read)
+exec cli.find --input '{"delete":true,"f":["/etc/hosts"]}'
+                                                      -> valid: false
+                                                         path_guard allowed: false  (write)
+                                                         checks: argv -> ACL_DENIED,
+                                                         '/private/etc' is protected
+```
+
+That second line is the whole point of the proposal: the write form is refused by
+the path policy *after* the module was allowed, so a flag-scoped grant does not
+open protected paths.
+
+This run also found an apexe defect that unit tests had encoded as correct —
+`access_mode` consulted `readonly` before `x-apexe-writes-with`, so the write
+form was still checked at read strength. Fixed in `11e5148`; the entry below is
+only safe to ship on top of it.
+
 ## 7. Residual risk (do not ship the proposal without this paragraph)
 
 `-exec` runs the named program itself. The program never passes through apexe,

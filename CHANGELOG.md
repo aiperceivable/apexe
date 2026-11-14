@@ -9,6 +9,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 ## [Unreleased]
 
 ### Fixed
+- `exec --dry-run`'s `path_guard` summary uses the same access mode as the call
+  it describes. It derived the mode from `annotations.readonly` alone, so a call
+  whose `argv` check refused a path still reported `allowed: true` beside it — a
+  summary disagreeing with the verdict it summarises.
 - A `readonly` module that declares `x-apexe-writes-with` is now checked at the
   strength its *arguments* call for. `access_mode` consulted `readonly` first and
   returned before reading the list, which made the list unreachable for exactly

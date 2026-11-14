@@ -467,11 +467,11 @@ fn add_command_plan(
         .with_opaque_tail(opaque_tail);
     result["annotations"] = serde_json::to_value(scanned.annotations.clone().unwrap_or_default())?;
     result["binary_path"] = json!(module.binary_path());
-    result["path_guard"] = inspect_paths(
-        input,
-        &scanned.input_schema,
-        scanned.annotations.as_ref().is_some_and(|a| a.readonly),
-    );
+    // The same mode the call itself will be checked under. Deriving it from
+    // `annotations.readonly` alone reported `allowed: true` for a call whose
+    // `argv` check refused the path — a summary that disagreed with the verdict
+    // it was summarising.
+    result["path_guard"] = inspect_paths(input, &scanned.input_schema, module.access_mode(input));
     match module.planned_argv(input) {
         Ok(argv) => result["argv"] = json!(argv),
         Err(error) => {
@@ -485,7 +485,11 @@ fn add_command_plan(
     Ok(())
 }
 
-fn inspect_paths(input: &Value, schema: &Value, readonly: bool) -> Value {
+fn inspect_paths(
+    input: &Value,
+    schema: &Value,
+    mode: crate::governance::path_guard::AccessMode,
+) -> Value {
     let mut verdicts = Vec::new();
     if let Some(properties) = input.as_object() {
         for (name, value) in properties {
@@ -500,10 +504,8 @@ fn inspect_paths(input: &Value, schema: &Value, readonly: bool) -> Value {
             };
             for value in values {
                 if let Some(path) = value.as_str() {
-                    let (resolved, allowed) = crate::governance::path_guard::active().inspect(
-                        path,
-                        crate::governance::path_guard::AccessMode::from_readonly(readonly),
-                    );
+                    let (resolved, allowed) =
+                        crate::governance::path_guard::active().inspect(path, mode);
                     verdicts.push(json!({"parameter":name, "requested":path, "resolved":resolved, "allowed":allowed}));
                 }
             }
