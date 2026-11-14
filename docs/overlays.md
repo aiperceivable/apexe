@@ -909,6 +909,43 @@ Set today on exactly two operands, both verified against the real binaries:
 and `sudo` all place an operand before a trailing command and may need the same
 treatment — do not guess at a tool you have not checked.
 
+### A trailing mini-language: `opaque_after` versus `tail_parsed`
+
+`find path ... [expression]` needs two variadic operands, which the native
+resolver refuses by default because nothing in the schema says where the first
+one ends. The end is declared on the trailing operand:
+
+```json
+{ "name": "expression", "type": "string", "variadic": true, "tail_parsed": true }
+```
+
+It reaches `ScannedArg.tail_parsed` and then the contract, as
+`x-apexe-tail-parsed: true` on that property. The boundary is the first token
+that matches a declared trailing flag; an option marked `before_operands` does
+not close the leading operand, because the executor renders it ahead of the
+paths (`find -L path ... -name x`). Tokens before the boundary are the leading
+operand's values, type-checked as usual. Every token from the boundary on is
+parsed against the declared flags, and a token no flag explains refuses the
+whole call and names the token.
+
+Two rules for setting it:
+
+- **It is not `opaque_after`, and must never be read as it.** `opaque_after`
+  forwards the tail without validation, which is right for `node <script>
+  args…` — parsing those as `node` flags would refuse `node tsc.js --noEmit` —
+  and wrong here: `find . -delete` would then be checked at read strength. The
+  expression's flags must reach `input`, because that is what the approval gate
+  and `x-apexe-writes-with` read. The markers are separate keywords, and a
+  grammar declaring both is refused rather than guessed at.
+- **The ceiling is honest.** `find . -exec rm {} \;` is refused: the tokens
+  after `-exec` are another program's argv, and no schema can validate them.
+  The refusal names the token and points at `apexe exec cli.find --input …`,
+  where the module contract and its approval ceiling still apply.
+
+The marker requires the last, variadic operand and `before_flags` on everything
+before it. Any other shape with two variadic operands keeps the old "ambiguous
+declared positional grammar" refusal.
+
 ### `end_of_options` — passing a value that begins with `-`
 
 apexe refuses any caller-supplied value starting with `-`, because the wrapped

@@ -381,6 +381,27 @@ pub struct ScannedArg {
     /// field existed still load.
     #[serde(default)]
     pub opaque_after: bool,
+    /// Whether this operand starts a trailing mini-language that is *parsed*
+    /// rather than forwarded.
+    ///
+    /// The counterpart of [`Self::opaque_after`] for grammars whose tail is
+    /// still the command's own grammar, only written with option-shaped tokens:
+    /// `find path ... [expression]` puts `-name` and `-delete` after variadic
+    /// paths. Forwarding that tail the way an interpreter's script arguments
+    /// are forwarded would make `-delete` invisible to the approval gate and to
+    /// the path guard, which is the one thing this project refuses to do. The
+    /// marker therefore states a different rule: the leading operand keeps
+    /// taking values until the first token that matches a declared trailing
+    /// flag, and every token from there is parsed against the declared flags.
+    /// A token that cannot be classified refuses the call rather than being
+    /// forwarded, because a grammar nobody reviewed must not become a path
+    /// around the gates.
+    ///
+    /// Valid only on the last, variadic operand, and only when every earlier
+    /// operand is [`Self::before_flags`]. Defaulted on deserialize so caches and
+    /// bindings written before the field existed still load.
+    #[serde(default)]
+    pub tail_parsed: bool,
     /// Human-readable description.
     pub description: String,
     /// Inferred type.
@@ -937,6 +958,7 @@ mod tests {
             value_type: ValueType::Path,
             required: true,
             opaque_after: false,
+            tail_parsed: false,
             risk: FlagRisk::None,
             variadic: false,
             before_flags: false,
@@ -957,6 +979,7 @@ mod tests {
             value_type: ValueType::Path,
             required: false,
             opaque_after: false,
+            tail_parsed: false,
             risk: FlagRisk::None,
             variadic: true,
             before_flags: false,

@@ -1,7 +1,11 @@
 # Native argv for commands with a trailing mini-language (`find`, `tar`, `awk`)
 
-**Status:** specification. Not implemented. This is the last blocker for running
-`find` through a shim rather than only through module JSON.
+**Status:** implemented in 0.14.0 as `x-apexe-tail-parsed`. The resolver, the
+emitted keyword and the refusal messages are in place and covered by unit
+tests; the corpus schema and the `find` entries are the remaining step, followed
+by the two-platform measurement (`docs/overlays.md` owns the authoring rule).
+This was the last blocker for running `find` through a shim rather than only
+through module JSON.
 
 ## 1. The problem
 
@@ -50,12 +54,17 @@ removing.
 ## 3. The rule
 
 > When an overlay declares a leading `before_flags` variadic operand **and** a
-> trailing variadic operand marked `opaque_after`, the boundary between them is
-> the first token that matches a declared flag. Tokens before it are the leading
-> operand's values, type-checked as today. Tokens from the boundary onward are
-> parsed **normally** — every one must be a declared flag, with the arity it
-> declares. Any token that cannot be classified refuses the whole call and names
-> the token.
+> trailing variadic operand marked `tail_parsed`, the boundary between them is
+> the first token that matches a declared trailing flag. Tokens before it are
+> the leading operand's values, type-checked as today. Tokens from the boundary
+> onward are parsed **normally** — every one must be a declared flag, with the
+> arity it declares. Any token that cannot be classified refuses the whole call
+> and names the token.
+>
+> A flag the overlay marks `before_operands` does not close the leading operand:
+> the executor renders it ahead of the paths (`find -L path ... -name x`), so a
+> resolver that treated it as the boundary would refuse the very argv the
+> module-JSON path renders.
 
 ### This must be a new marker, not a redefinition of `opaque_after`
 
@@ -92,13 +101,13 @@ answer, and the message must say so rather than reporting a grammar defect.
 
 | File | Change |
 |---|---|
-| `src/adapter/argv.rs:373` `validate_operands` | allow a second array operand **iff** the last one is `opaque_after` and the earlier ones are `before_flags`; every other combination keeps refusing |
-| `src/adapter/argv.rs:357` `locate_opaque_operand` | keep the "last operand, variadic" requirement; add "the operands before it must be `before_flags`" |
-| `src/adapter/argv.rs:390` `parse` | at the boundary, hand the remaining tokens back to the flag matcher instead of emitting `OpaqueTail`; propagate an unknown-token refusal that names the token |
-| `src/adapter/schema.rs` | emit the new `x-apexe-tail-parsed` marker; `x-apexe-opaque-after` is untouched |
-| `schemas/tool-overlay.schema.json` (corpus) | allow `tail_parsed` on a positional, alongside the existing `opaque_after` |
-| `docs/overlays.md` | the rule above, and the difference between the two markers |
-| `CHANGELOG.md` | "marker added"; nothing existing changes meaning |
+| `src/adapter/argv.rs` `validate_operands` | **Done.** A second array operand is allowed **iff** the last one carries `tail_parsed` and earlier ones are `before_flags`; every other combination keeps refusing |
+| `src/adapter/argv.rs` `locate_opaque_operand` | **Done** as `locate_tail_parsed_operand`: the marker must sit on the last, variadic operand, and declaring both markers is refused |
+| `src/adapter/argv.rs` `parse` | **Done.** The boundary flag ends the leading operand; the rest of argv is shadow-parsed into `input` and forwarded verbatim from the boundary token |
+| `src/adapter/schema.rs` | **Done.** Emits `x-apexe-tail-parsed`; `x-apexe-opaque-after` is untouched |
+| `schemas/tool-overlay.schema.json` (corpus) | pending: allow `tail_parsed` on a positional, alongside the existing `opaque_after` |
+| `docs/overlays.md` | **Done:** the rule above, and the difference between the two markers |
+| `CHANGELOG.md` | **Done:** marker added; nothing existing changes meaning |
 
 `OpaqueTail` stays for the case it was built for — `node <script> …`, where the
 tail really is an interpreter's argument vector and no validation is possible.

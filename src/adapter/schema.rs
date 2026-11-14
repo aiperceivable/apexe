@@ -566,6 +566,14 @@ fn arg_to_schema(arg: &ScannedArg, index: usize) -> JsonValue {
         // Execution still forwards the caller's original argv.
         schema["x-apexe-opaque-after"] = json!(true);
     }
+    if arg.tail_parsed {
+        // `find . -name x`: from this operand on the tokens are the command's
+        // own expression grammar, spelled like flags, so the parser resolves
+        // them against the declared flags instead of forwarding them. The two
+        // markers describe opposite treatments of the same tail and are never
+        // emitted together; the resolver rejects a schema declaring both.
+        schema["x-apexe-tail-parsed"] = json!(true);
+    }
     if arg.before_flags {
         schema["x-apexe-operand-position"] = json!("before-flags");
     }
@@ -1540,6 +1548,7 @@ mod tests {
             value_type: ValueType::String,
             required: true,
             opaque_after: false,
+            tail_parsed: false,
             risk: FlagRisk::None,
             variadic: false,
             before_flags: false,
@@ -1561,6 +1570,7 @@ mod tests {
             required: false,
             variadic: false,
             opaque_after: false,
+            tail_parsed: false,
             before_flags: false,
             risk: FlagRisk::Escalates,
         };
@@ -1573,6 +1583,28 @@ mod tests {
         let schema = arg_to_schema(&arg, 1);
         assert_eq!(schema["x-apexe-exec"], json!(true));
         assert!(schema.get("x-apexe-escalates").is_none());
+    }
+
+    #[test]
+    fn test_parsed_tail_operand_emits_its_own_marker() {
+        // `find path ... [expression]`: the expression is a mini-language of
+        // flag-shaped tokens that must be parsed, not forwarded like a script's
+        // arguments. The two markers are separate keywords on purpose, so an
+        // older binary refuses the overlay instead of reading one as the other.
+        let arg = ScannedArg {
+            name: "expression".to_string(),
+            description: String::new(),
+            value_type: ValueType::String,
+            required: false,
+            variadic: true,
+            opaque_after: false,
+            tail_parsed: true,
+            before_flags: false,
+            risk: FlagRisk::None,
+        };
+        let schema = arg_to_schema(&arg, 1);
+        assert_eq!(schema["x-apexe-tail-parsed"], json!(true));
+        assert!(schema.get("x-apexe-opaque-after").is_none());
     }
 
     #[test]
@@ -1594,6 +1626,7 @@ mod tests {
             value_type: ValueType::String,
             required: true,
             opaque_after: false,
+            tail_parsed: false,
             risk: FlagRisk::None,
             variadic: false,
             before_flags: false,
@@ -1633,6 +1666,7 @@ mod tests {
             value_type: ValueType::String,
             required: true,
             opaque_after: false,
+            tail_parsed: false,
             risk: FlagRisk::None,
             variadic: false,
             before_flags: false,
@@ -1678,6 +1712,7 @@ mod tests {
             value_type: ValueType::String,
             required: true,
             opaque_after: false,
+            tail_parsed: false,
             risk: FlagRisk::None,
             variadic: false,
             before_flags: false,
@@ -1709,6 +1744,7 @@ mod tests {
             value_type: ValueType::Path,
             required: true,
             opaque_after: false,
+            tail_parsed: false,
             risk: FlagRisk::None,
             variadic: false,
             before_flags: false,
@@ -1734,6 +1770,7 @@ mod tests {
             value_type: ValueType::Path,
             required: false,
             opaque_after: false,
+            tail_parsed: false,
             risk: FlagRisk::None,
             variadic: true,
             before_flags: false,
@@ -1794,6 +1831,7 @@ mod tests {
             value_type: ValueType::Path,
             required: true,
             opaque_after: false,
+            tail_parsed: false,
             risk: FlagRisk::None,
             variadic: false,
             before_flags: false,
@@ -1804,6 +1842,7 @@ mod tests {
             value_type: ValueType::Path,
             required: true,
             opaque_after: false,
+            tail_parsed: false,
             risk: FlagRisk::None,
             variadic: true,
             before_flags: false,
@@ -1836,6 +1875,7 @@ mod tests {
             value_type: ValueType::Url,
             required: true,
             opaque_after: false,
+            tail_parsed: false,
             risk: FlagRisk::None,
             variadic: false,
             before_flags: false,
@@ -1846,6 +1886,7 @@ mod tests {
             value_type: ValueType::Url,
             required: false,
             opaque_after: false,
+            tail_parsed: false,
             risk: FlagRisk::None,
             variadic: true,
             before_flags: false,
@@ -1867,6 +1908,7 @@ mod tests {
             value_type: ValueType::String,
             required: true,
             opaque_after: false,
+            tail_parsed: false,
             risk: FlagRisk::None,
             variadic: true,
             before_flags: false,
@@ -1901,6 +1943,7 @@ mod tests {
             value_type: ValueType::Path,
             required: true,
             opaque_after: false,
+            tail_parsed: false,
             risk: FlagRisk::None,
             variadic: true,
             before_flags: true,
@@ -1942,6 +1985,7 @@ mod tests {
             value_type: ValueType::String,
             required: false,
             opaque_after: false,
+            tail_parsed: false,
             risk: FlagRisk::None,
             variadic: true,
             before_flags: false,

@@ -372,6 +372,7 @@ pub(super) fn resolve_route<'a>(
             args,
             schema.as_ref(),
             &route.command_path[1..],
+            Some(&module.module_id),
         )
         .map_err(|error| {
             anyhow::Error::new(error).context(RouteRefusal {
@@ -787,6 +788,10 @@ mod tests {
     }
 
     fn manifest(routes: Vec<Route>) -> Manifest {
+        manifest_for("git", routes)
+    }
+
+    fn manifest_for(name: &str, routes: Vec<Route>) -> Manifest {
         Manifest {
             version: MANIFEST_VERSION,
             executable: binary(),
@@ -794,7 +799,7 @@ mod tests {
             bindings_pattern: None,
             acl: None,
             filter: ModuleFilter::default(),
-            commands: BTreeMap::from([("git".to_string(), routes)]),
+            commands: BTreeMap::from([(name.to_string(), routes)]),
             scanned: crate::cli::ScannedPolicy::Off,
             activation_script: None,
             deactivation_script: None,
@@ -825,6 +830,52 @@ mod tests {
         assert_eq!(selected.module_id, "cli.git.status");
         assert_eq!(input.input["short"], json!(true));
         assert!(replay.is_none());
+    }
+
+    /// A parsed tail is resolved through the same route selection that `exec
+    /// --input` uses, so the shim's `find . -delete` reaches the approval gate
+    /// as a delete rather than as a read-only walk.
+    #[test]
+    fn test_resolve_route_parses_a_tail_into_the_caller_input() {
+        let mut module = module("cli.find", &["find"], true);
+        module.input_schema["x-apexe-end-of-options"] = json!(true);
+        module.input_schema["properties"] = json!({
+            "path": {
+                "type": "array",
+                "items": {"type": "string"},
+                "x-apexe-positional": 0,
+                "x-apexe-operand-position": "before-flags"
+            },
+            "expression": {
+                "type": "array",
+                "items": {"type": "string"},
+                "x-apexe-positional": 1,
+                "x-apexe-tail-parsed": true
+            },
+            "name": {"type": "string", "x-apexe-flag": "-name"},
+            "delete": {"type": "boolean", "x-apexe-flag": "-delete"}
+        });
+        let modules = [module];
+        let manifest = manifest_for("find", vec![route("cli.find", &["find"])]);
+
+        let (_, input, _) = resolve_route(
+            "find",
+            &[".".to_string(), "-delete".to_string()],
+            &manifest,
+            &modules,
+        )
+        .expect("the parsed tail must resolve");
+
+        assert_eq!(
+            input.input["delete"],
+            json!(true),
+            "the approval gate and x-apexe-writes-with read this object"
+        );
+        assert_eq!(input.input["path"], json!(["."]));
+        assert_eq!(
+            input.opaque_tail.expect("forwarded").argv,
+            vec!["-delete".to_string()]
+        );
     }
 
     /// A scanned-tier binding whose tool-level `-c` is marked `executes`.

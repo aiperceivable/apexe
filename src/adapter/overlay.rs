@@ -271,6 +271,14 @@ pub struct OverlayArg {
     /// script, so the rest of argv belongs to that script.
     #[serde(default)]
     pub opaque_after: bool,
+    /// This operand starts a trailing mini-language whose flags are parsed.
+    ///
+    /// See [`ScannedArg::tail_parsed`]. The complement of
+    /// [`Self::opaque_after`], not a variant of it: the tail is validated
+    /// against the declared flags so every write or execution trigger reaches
+    /// the approval gate, and a token no flag explains refuses the call.
+    #[serde(default)]
+    pub tail_parsed: bool,
     /// What sending this operand does beyond passing its value.
     ///
     /// See [`ScannedArg::risk`]. It reaches the emitted schema as the same
@@ -943,6 +951,7 @@ impl OverlayArg {
             required: self.required,
             variadic: self.variadic,
             opaque_after: self.opaque_after,
+            tail_parsed: self.tail_parsed,
             before_flags: self.before_flags,
             risk: self.risk,
         }
@@ -1871,6 +1880,56 @@ mod tests {
         );
     }
 
+    /// `find path ... [expression]` is the grammar the parsed-tail marker was
+    /// added for: the expression is validated, not forwarded, so the two
+    /// markers must stay distinct all the way to the emitted keyword.
+    #[test]
+    fn test_overlay_tail_parsed_reaches_its_own_schema_marker() {
+        let mut overlay = overlay(OverlayMode::Authoritative);
+        overlay.command = "find".to_string();
+        overlay.commands[0].flags = Vec::new();
+        overlay.commands[0].positional_args = vec![
+            OverlayArg {
+                name: "path".to_string(),
+                value_type: ValueType::Path,
+                variadic: true,
+                before_flags: true,
+                ..Default::default()
+            },
+            OverlayArg {
+                name: "expression".to_string(),
+                value_type: ValueType::String,
+                variadic: true,
+                tail_parsed: true,
+                ..Default::default()
+            },
+        ];
+        let mut tool = ScannedCLITool {
+            name: "find".into(),
+            variant: ToolVariant::Unknown,
+            ..Default::default()
+        };
+        apply_overlay(&mut tool, &overlay);
+        let module = crate::adapter::CliToolConverter::new()
+            .convert(&tool)
+            .remove(0);
+        let properties = module.input_schema["properties"].as_object().unwrap();
+        assert_eq!(
+            properties["expression"]["x-apexe-tail-parsed"],
+            serde_json::json!(true)
+        );
+        assert!(
+            properties["expression"]
+                .get("x-apexe-opaque-after")
+                .is_none(),
+            "the expression must not inherit the forwarding marker"
+        );
+        assert_eq!(
+            properties["path"]["x-apexe-operand-position"],
+            serde_json::json!("before-flags")
+        );
+    }
+
     /// The `-N` count shorthand is declared per flag and must survive the
     /// loader: `OverlayFlag` denies unknown fields, so a corpus overlay that
     /// uses the keyword before apexe understands it fails to load -- which is
@@ -2184,6 +2243,10 @@ mod tests {
         let document = r#"{ "name": "file", "type": "path" }"#;
         let arg: OverlayArg = serde_json::from_str(document).unwrap();
         assert!(!arg.before_flags);
+        assert!(
+            !arg.tail_parsed,
+            "a tail must not become parsed because the field was added"
+        );
     }
 
     #[test]

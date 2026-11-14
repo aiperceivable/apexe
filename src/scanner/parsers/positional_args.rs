@@ -218,9 +218,11 @@ fn scanned_operand(name: String, required: bool, variadic: bool) -> ScannedArg {
         value_type: ValueType::String,
         required,
         variadic,
-        // A scan cannot know where a tool stops interpreting its own argv; only
-        // an overlay can assert that (see `ScannedArg::opaque_after`).
+        // A scan cannot know where a tool stops interpreting its own argv, nor
+        // where a tail becomes its own mini-language; only an overlay can assert
+        // either (see `ScannedArg::opaque_after` and `ScannedArg::tail_parsed`).
         opaque_after: false,
+        tail_parsed: false,
         risk: FlagRisk::None,
         before_flags: false,
     }

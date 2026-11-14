@@ -8,6 +8,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ## [Unreleased]
 
+### Added
+- `x-apexe-tail-parsed` lets an overlay declare a trailing mini-language that is
+  **parsed** rather than forwarded, and the native resolver now accepts the
+  grammar it was added for: `find path ... [expression]`. Until now every
+  `find` invocation through a shim was refused with "Ambiguous declared
+  positional grammar": the overlay declares two variadic operands (the paths
+  and the expression), and nothing said where the first one ends. The new marker
+  says it. The boundary is the first token matching a declared trailing flag —
+  an option marked `x-apexe-flag-position: "before-operands"` stays ahead of the
+  paths, because that is where the executor renders it; the tokens before the
+  boundary are the leading operand's values, type-checked as today; and every
+  token from there on is resolved against the declared flags rather than
+  forwarded. `find /etc -name '*.conf'` runs at read strength, `find . -delete`
+  reaches the approval gate and is path-checked at write strength because
+  `delete` lands in the input `x-apexe-writes-with` reads, and an unclassifiable
+  token refuses the call and names it: `find . -exec rm {} \;` says the token
+  cannot be classified and points at `apexe exec cli.find --input …`, since the
+  arguments of `-exec` are another program's argv. The argv the caller typed is
+  still forwarded verbatim, in order, exactly as the module-JSON path renders
+  it, and `--` keeps its meaning (a declared flag behind it is still seen, so a
+  write cannot hide there). `x-apexe-opaque-after` is untouched: `node <script>
+  args…` still forwards its tail unvalidated, and a grammar declaring both
+  markers is refused rather than guessed at. No existing grammar changes: a
+  module without the marker parses byte-for-byte as in 0.13.0.
+
 ---
 
 ## [0.13.0] - 2026-11-13

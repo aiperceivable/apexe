@@ -24,6 +24,11 @@ enum FlagPosition {
 
 struct Parser<'a> {
     schema: &'a Value,
+    /// The module this argv will be dispatched to, when the caller knows it.
+    ///
+    /// Used only to name the contract a refusal tells the caller to use
+    /// instead (`apexe exec cli.find --input …`); parsing never reads it.
+    module: Option<&'a str>,
     /// Flags usable after the declared subcommand path, and the only flags a
     /// root-level module has.
     flags: BTreeMap<String, Property<'a>>,
@@ -44,6 +49,19 @@ struct Parser<'a> {
     /// Index (among operands) of the operand from which the rest of argv is
     /// forwarded verbatim. `None` when nothing declares it.
     opaque_operand: Option<usize>,
+    /// Index (among operands) of the trailing mini-language that is parsed
+    /// rather than forwarded. `None` when nothing declares it.
+    tail_parsed_operand: Option<usize>,
+}
+
+/// Whether a property includes the operand in the *leading* group, which is
+/// what `x-apexe-tail-parsed` requires of everything before the tail.
+///
+/// Deliberately not [`is_global_property`]: that one also covers
+/// `before-subcommand`, which is about the namespace a flag lives in rather
+/// than about which side of the operands it is rendered on.
+fn is_before_operands(schema: &Value) -> bool {
+    schema["x-apexe-flag-position"].as_str() == Some("before-operands")
 }
 
 /// Whether a property describes a tool-level option, which must precede the
@@ -76,7 +94,7 @@ fn invalid(message: impl Into<String>) -> ModuleError {
 
 #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
 pub fn resolve_argv(argv: &[String], schema: &Value) -> Result<Value, ModuleError> {
-    resolve_command_argv(argv, schema, &[]).map(|resolved| resolved.input)
+    resolve_command_argv(argv, schema, &[], None).map(|resolved| resolved.input)
 }
 
 #[derive(Debug)]
@@ -94,11 +112,16 @@ pub(crate) struct OpaqueTail {
     pub(crate) converted_paths: Value,
 }
 
-struct OpaqueBoundary<'a, 'b> {
+struct TailBoundary<'a, 'b> {
     start: usize,
     preceding_operands: usize,
     separator: bool,
+    /// Every flag parsed at or after `start`, so the tail can be forwarded
+    /// verbatim without the prefix rendering it a second time.
     flags: Vec<ParsedFlag<'a, 'b>>,
+    /// Whether every token from `start` on was validated. `false` for an opaque
+    /// tail, whose tokens are another program's argv and were never parsed.
+    parsed: bool,
 }
 
 struct ParsedFlag<'a, 'b> {
@@ -106,13 +129,35 @@ struct ParsedFlag<'a, 'b> {
     raw_value: Option<&'b str>,
 }
 
+/// One flag token's effect: the values it wrote and whether it starts an opaque
+/// tail.
+struct ParsedFlags<'a, 'b> {
+    flags: Vec<ParsedFlag<'a, 'b>>,
+    opaque: bool,
+}
+
+/// The state one left-to-right pass over argv accumulates.
+struct Scan<'a, 'b> {
+    input: Map<String, Value>,
+    operands: Vec<&'b str>,
+    cursor: usize,
+    command_cursor: usize,
+    ended: bool,
+    boundary: Option<TailBoundary<'a, 'b>>,
+    /// A parsed tail's boundary token, the token after its flag, and the flags
+    /// parsed so far. The remaining tokens are parsed in [`Parser::finish`],
+    /// where the complete `input` is in hand.
+    parsed_tail: Option<(usize, usize, Vec<ParsedFlag<'a, 'b>>)>,
+}
+
 #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
 pub(crate) fn resolve_command_argv(
     argv: &[String],
     schema: &Value,
     command: &[String],
+    module: Option<&str>,
 ) -> Result<ResolvedArgv, ModuleError> {
-    Parser::new(schema)?.parse(argv, command)
+    Parser::new(schema, module)?.parse(argv, command)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -284,7 +329,7 @@ fn skip_value(
 
 impl<'a> Parser<'a> {
     #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
-    fn new(schema: &'a Value) -> Result<Self, ModuleError> {
+    fn new(schema: &'a Value, module: Option<&'a str>) -> Result<Self, ModuleError> {
         if schema["x-apexe-cross-flag-ordering"] == true {
             return Err(invalid(
                 "Cross-flag ordering cannot be represented by a JSON object",
@@ -295,11 +340,13 @@ impl<'a> Parser<'a> {
         })?;
         let mut parser = Self {
             schema,
+            module,
             flags: BTreeMap::new(),
             global_flags: BTreeMap::new(),
             operands: vec![],
             digit_value: None,
             opaque_operand: None,
+            tail_parsed_operand: None,
         };
         for (name, value) in properties {
             let property = Property {
@@ -338,6 +385,7 @@ impl<'a> Parser<'a> {
             .sort_by_key(|property| property.schema["x-apexe-positional"].as_u64());
         parser.validate_operands()?;
         parser.opaque_operand = parser.locate_opaque_operand()?;
+        parser.tail_parsed_operand = parser.locate_tail_parsed_operand()?;
         Ok(parser)
     }
 
@@ -373,83 +421,244 @@ impl<'a> Parser<'a> {
     fn validate_operands(&self) -> Result<(), ModuleError> {
         if self.operands.windows(2).any(|pair| {
             pair[0].schema["x-apexe-positional"] == pair[1].schema["x-apexe-positional"]
-        }) || self
+        }) {
+            return Err(invalid("Ambiguous declared positional grammar"));
+        }
+        let variadic = self
             .operands
             .iter()
             .filter(|property| property.schema["type"] == "array")
-            .count()
-            > 1
-        {
+            .count();
+        if variadic > 1 && !self.declares_parsed_tail() {
             return Err(invalid("Ambiguous declared positional grammar"));
         }
         Ok(())
     }
 
+    /// Whether the operands describe the one grammar that needs two variadic
+    /// slots: a leading `before_flags` operand and a trailing parsed tail.
+    ///
+    /// The exception is stated here, before any marker is located, because this
+    /// is the check that refuses two variadic operands. Everything else keeps
+    /// the old refusal: an overlay cannot make an ambiguous grammar readable by
+    /// adding the marker to a shape where the boundary means nothing.
+    fn declares_parsed_tail(&self) -> bool {
+        let Some((tail, leading)) = self.operands.split_last() else {
+            return false;
+        };
+        let leading_variadic = leading
+            .iter()
+            .filter(|property| property.schema["type"] == "array")
+            .count();
+        tail.schema["x-apexe-tail-parsed"] == true
+            && leading_variadic == 1
+            && leading
+                .iter()
+                .all(|property| property.schema["x-apexe-operand-position"] == "before-flags")
+    }
+
+    /// Find the operand that starts the parsed tail, if any.
+    ///
+    /// Like the opaque marker, the declaration is only meaningful on the last,
+    /// variadic operand: everything from it onward is the tail, so a later
+    /// declared operand would have nothing left to match. Declaring both
+    /// treatments on one grammar is refused rather than guessed at, because one
+    /// of them would silently win.
+    #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    fn locate_tail_parsed_operand(&self) -> Result<Option<usize>, ModuleError> {
+        let Some(index) = self
+            .operands
+            .iter()
+            .position(|property| property.schema["x-apexe-tail-parsed"] == true)
+        else {
+            return Ok(None);
+        };
+        let property = self.operands[index];
+        if index + 1 != self.operands.len() || property.schema["type"] != "array" {
+            return Err(invalid(format!(
+                "'x-apexe-tail-parsed' must sit on the last operand and that operand must be \
+                 variadic; '{}' is not",
+                property.name
+            )));
+        }
+        if let Some(opaque) = self
+            .operands
+            .iter()
+            .find(|operand| operand.schema["x-apexe-opaque-after"] == true)
+        {
+            return Err(invalid(format!(
+                "'x-apexe-tail-parsed' and 'x-apexe-opaque-after' are opposite treatments of \
+                 the same tail and cannot both be declared; '{}' and '{}' carry them",
+                property.name, opaque.name
+            )));
+        }
+        Ok(Some(index))
+    }
+
     #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
     fn parse(&self, argv: &[String], command: &[String]) -> Result<ResolvedArgv, ModuleError> {
-        let mut input = Map::new();
-        let mut operands = Vec::new();
-        let mut cursor = 0;
-        let mut command_cursor = 0;
-        let mut ended = false;
-        let boundary = loop {
-            let Some(token) = argv.get(cursor) else {
-                break None;
-            };
-            let start = cursor;
-            cursor += 1;
-            if !ended && token == "--" {
-                if self.schema["x-apexe-end-of-options"] != true || command_cursor < command.len() {
+        let scan = self.scan_argv(argv, command)?;
+        self.finish(argv, command, scan)
+    }
+
+    /// The phase a flag token is resolved in.
+    fn position(&self, command: &[String], command_cursor: usize) -> FlagPosition {
+        if command.is_empty() {
+            FlagPosition::Root
+        } else if command_cursor < command.len() {
+            FlagPosition::BeforeCommand
+        } else {
+            FlagPosition::AfterCommand
+        }
+    }
+
+    /// Walk argv once, separating the declared subcommand, the flags, the
+    /// leading operands and, for a parsed tail, the token the tail starts at.
+    #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    fn scan_argv<'b>(
+        &self,
+        argv: &'b [String],
+        command: &[String],
+    ) -> Result<Scan<'a, 'b>, ModuleError> {
+        let mut scan = Scan {
+            input: Map::new(),
+            operands: Vec::new(),
+            cursor: 0,
+            command_cursor: 0,
+            ended: false,
+            boundary: None,
+            parsed_tail: None,
+        };
+        while let Some(token) = argv.get(scan.cursor) {
+            let start = scan.cursor;
+            scan.cursor += 1;
+            let position = self.position(command, scan.command_cursor);
+            if !scan.ended && token == "--" {
+                if self.schema["x-apexe-end-of-options"] != true
+                    || scan.command_cursor < command.len()
+                {
                     return Err(invalid("This command does not declare -- at this position"));
                 }
-                ended = true;
-            } else if !ended && token.starts_with('-') && token != "-" {
-                if let Some(flags) = self.parse_flag(
-                    token,
-                    argv,
-                    &mut cursor,
-                    &mut input,
-                    if command.is_empty() {
-                        FlagPosition::Root
-                    } else if command_cursor < command.len() {
-                        FlagPosition::BeforeCommand
-                    } else {
-                        FlagPosition::AfterCommand
-                    },
-                )? {
-                    if command_cursor < command.len() {
-                        return Err(invalid("Opaque arguments cannot start before a subcommand"));
-                    }
-                    break Some(OpaqueBoundary {
-                        start,
-                        preceding_operands: operands.len(),
-                        separator: false,
-                        flags,
-                    });
+                scan.ended = true;
+            } else if token.starts_with('-')
+                && token != "-"
+                && (!scan.ended || self.token_starts_flag(token, position))
+            {
+                let before_subcommand = scan.command_cursor < command.len();
+                if !self.scan_flag(token, argv, start, before_subcommand, position, &mut scan)? {
+                    break;
                 }
-            } else if command_cursor < command.len() {
-                if token != &command[command_cursor] {
+            } else if scan.command_cursor < command.len() {
+                if token != &command[scan.command_cursor] {
                     return Err(invalid(
                         "Subcommand path does not match command_path metadata",
                     ));
                 }
-                command_cursor += 1;
-            } else if self.opaque_operand == Some(operands.len()) {
-                cursor = start;
-                break Some(OpaqueBoundary {
+                scan.command_cursor += 1;
+            } else if self.opaque_operand == Some(scan.operands.len()) {
+                scan.cursor = start;
+                scan.boundary = Some(TailBoundary {
                     start,
-                    preceding_operands: operands.len(),
-                    separator: ended,
+                    preceding_operands: scan.operands.len(),
+                    separator: scan.ended,
                     flags: Vec::new(),
+                    parsed: false,
                 });
+                break;
             } else {
-                operands.push(token.as_str());
+                scan.operands.push(token.as_str());
             }
-        };
-        if command_cursor != command.len() {
+        }
+        if scan.command_cursor != command.len() {
             return Err(invalid("Missing declared subcommand"));
         }
-        operands.extend(argv[cursor..].iter().map(String::as_str));
+        Ok(scan)
+    }
+
+    /// Consume one flag token and decide what it does to the scan.
+    ///
+    /// Returns `false` when the token ended the scan: either it triggers an
+    /// opaque tail, or it is the first token of a parsed tail.
+    #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    fn scan_flag<'b>(
+        &self,
+        token: &'b str,
+        argv: &'b [String],
+        start: usize,
+        before_subcommand: bool,
+        position: FlagPosition,
+        scan: &mut Scan<'a, 'b>,
+    ) -> Result<bool, ModuleError> {
+        let parsed = self.parse_flag(token, argv, &mut scan.cursor, &mut scan.input, position)?;
+        if parsed.opaque {
+            if before_subcommand {
+                return Err(invalid("Opaque arguments cannot start before a subcommand"));
+            }
+            if self.tail_parsed_operand.is_some() {
+                return Err(invalid(format!(
+                    "Flag '{token}' declares an opaque tail inside an operand marked \
+                     'x-apexe-tail-parsed'; the two treatments of the same tail cannot both apply"
+                )));
+            }
+            scan.boundary = Some(TailBoundary {
+                start,
+                preceding_operands: scan.operands.len(),
+                separator: false,
+                flags: parsed.flags,
+                parsed: false,
+            });
+            return Ok(false);
+        }
+        // A tool-level option may still precede the leading operand it is
+        // rendered before (`find -L path ... -name x`). Only a flag on the other
+        // side of the operands closes them and starts the tail.
+        let closes_leading_operand = self.tail_parsed_operand.is_some()
+            && !parsed
+                .flags
+                .iter()
+                .all(|flag| is_before_operands(flag.property.schema));
+        if closes_leading_operand {
+            scan.parsed_tail = Some((start, scan.cursor, parsed.flags));
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// Finish the call: parse a trailing mini-language, assign the operands and
+    /// build the tail the executor forwards.
+    #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    fn finish<'b>(
+        &self,
+        argv: &'b [String],
+        command: &[String],
+        scan: Scan<'a, 'b>,
+    ) -> Result<ResolvedArgv, ModuleError> {
+        let Scan {
+            mut input,
+            mut operands,
+            cursor,
+            mut boundary,
+            parsed_tail,
+            ended,
+            ..
+        } = scan;
+        if let Some((start, after_flag, flags)) = parsed_tail {
+            boundary = Some(TailBoundary {
+                start,
+                preceding_operands: operands.len(),
+                separator: ended,
+                flags: self.parse_shadowed_tail(
+                    argv,
+                    after_flag,
+                    flags,
+                    &mut input,
+                    command.is_empty(),
+                )?,
+                parsed: true,
+            });
+        } else {
+            operands.extend(argv[cursor..].iter().map(String::as_str));
+        }
         self.assign_operands(&operands, &mut input)?;
         let opaque_tail =
             boundary.map(|boundary| self.opaque_tail(argv, &operands, &input, boundary));
@@ -459,6 +668,121 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Whether a token after `--` is still one of this command's own flags.
+    ///
+    /// Only a parsed tail needs the question. Everywhere else `--` means "no
+    /// more flags", and answering differently here would change the meaning of
+    /// the separator for grammars that never asked for it.
+    fn token_starts_flag(&self, token: &str, position: FlagPosition) -> bool {
+        self.tail_parsed_operand.is_some() && self.lookup_token(token, position).is_some()
+    }
+
+    /// Resolve a token to a declared property without consuming anything.
+    ///
+    /// The read-only mirror of [`Self::parse_flag`]: it applies the same
+    /// spelling rules (long form, `=value`, the digit shorthand, short bundles)
+    /// so that "is this a flag?" and "parse this flag" cannot disagree.
+    fn lookup_token(&self, token: &str, position: FlagPosition) -> Option<Property<'a>> {
+        let literal = if token.starts_with("--") {
+            token.split_once('=').map_or(token, |(name, _value)| name)
+        } else {
+            token
+        };
+        if let Some(property) = self.lookup(literal, position) {
+            return Some(property);
+        }
+        if self.digit_value.is_some() && is_digit_run(token) {
+            return self.digit_value;
+        }
+        if token.starts_with("--") || self.schema["x-apexe-short-flag-bundling"] != true {
+            return None;
+        }
+        let mut first = None;
+        for character in token[1..].chars() {
+            let literal = format!("-{character}");
+            let property = self.lookup(&literal, position)?;
+            first.get_or_insert(property);
+            if !boolean_only(property.schema) {
+                break;
+            }
+        }
+        first
+    }
+
+    /// Parse every token after a parsed tail's boundary.
+    ///
+    /// The tokens are forwarded verbatim so argv order survives, but each one is
+    /// also resolved here: the approval gate and the path guard read `input`,
+    /// and would otherwise never see `-delete` or `-exec`. A token no declared
+    /// flag explains is refused rather than forwarded, which is the one shape
+    /// this grammar cannot express: `find . -exec rm {} \;` ends in another
+    /// program's argv.
+    #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    fn parse_shadowed_tail<'b>(
+        &self,
+        argv: &'b [String],
+        mut cursor: usize,
+        mut flags: Vec<ParsedFlag<'a, 'b>>,
+        input: &mut Map<String, Value>,
+        root: bool,
+    ) -> Result<Vec<ParsedFlag<'a, 'b>>, ModuleError> {
+        let position = if root {
+            FlagPosition::Root
+        } else {
+            FlagPosition::AfterCommand
+        };
+        while let Some(token) = argv.get(cursor) {
+            let index = cursor;
+            cursor += 1;
+            if token == "--" {
+                // The tool stops reading options, but its expression grammar
+                // continues. Keep the token in the forwarded argv and keep
+                // classifying, so `-delete` cannot hide behind the separator.
+                if self.schema["x-apexe-end-of-options"] != true {
+                    return Err(invalid("This command does not declare -- at this position"));
+                }
+                continue;
+            }
+            if !token.starts_with('-') || token == "-" {
+                return Err(self.unclassified_tail_token(token, index));
+            }
+            let parsed = self.parse_flag(token, argv, &mut cursor, input, position)?;
+            if parsed.opaque {
+                return Err(invalid(format!(
+                    "Flag '{token}' declares an opaque tail inside one that is parsed; the two \
+                     treatments cannot both apply"
+                )));
+            }
+            flags.extend(parsed.flags);
+        }
+        Ok(flags)
+    }
+
+    /// Refuse a tail token that is not a declared flag.
+    ///
+    /// Some parsed tails are mini-languages whose tokens are another program's
+    /// argv, and no schema can validate those. Forwarding them would hide a
+    /// write from the approval gate, which is the failure the marker exists to
+    /// prevent, so the call is refused and the token is named.
+    fn unclassified_tail_token(&self, token: &str, index: usize) -> ModuleError {
+        let call = self.module.map_or_else(
+            || "`apexe exec <module> --input …`".to_string(),
+            |module| format!("`apexe exec {module} --input …`"),
+        );
+        ModuleError::new(
+            ErrorCode::GeneralInvalidInput,
+            format!(
+                "Token '{token}' at argument {index} cannot be classified: after the expression \
+                 boundary every token must be a declared flag, and an -exec/-ok argument list is \
+                 another program's command line rather than a flag"
+            ),
+        )
+        .with_ai_guidance(format!(
+            "Send the call through the module contract instead: {call}, so every value still \
+             reaches the approval gate and the path guard."
+        ))
+    }
+
     /// Keep the normal typed prefix and preserve the original tokens from the
     /// trigger onward. The full input still supplies the schema and path checks.
     fn opaque_tail(
@@ -466,19 +790,25 @@ impl<'a> Parser<'a> {
         argv: &[String],
         operands: &[&str],
         input: &Map<String, Value>,
-        boundary: OpaqueBoundary<'_, '_>,
+        boundary: TailBoundary<'_, '_>,
     ) -> OpaqueTail {
         let mut prefix = input.clone();
         let mut converted_paths = Map::new();
-        let trigger_value = boundary.flags.last().and_then(|flag| {
-            let raw = flag.raw_value?;
-            let value = &input[flag.property.name];
-            let scalar = value
-                .as_array()
-                .and_then(|items| items.last())
-                .unwrap_or(value);
-            Some((raw.into(), scalar.is_number()))
-        });
+        let trigger_value = if boundary.parsed {
+            // A parsed tail was validated token by token while it was shadow-
+            // parsed; there is no single trigger value left to re-check.
+            None
+        } else {
+            boundary.flags.last().and_then(|flag| {
+                let raw = flag.raw_value?;
+                let value = &input[flag.property.name];
+                let scalar = value
+                    .as_array()
+                    .and_then(|items| items.last())
+                    .unwrap_or(value);
+                Some((raw.into(), scalar.is_number()))
+            })
+        };
         self.remove_tail_operands(
             &mut prefix,
             &mut converted_paths,
@@ -548,7 +878,7 @@ impl<'a> Parser<'a> {
     }
 
     #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
-    /// Consume one flag token. Returns whether it starts an opaque tail.
+    /// Consume one flag token, recording the values it carries.
     fn parse_flag<'b>(
         &self,
         token: &'b str,
@@ -556,7 +886,7 @@ impl<'a> Parser<'a> {
         cursor: &mut usize,
         input: &mut Map<String, Value>,
         position: FlagPosition,
-    ) -> Result<Option<Vec<ParsedFlag<'a, 'b>>>, ModuleError> {
+    ) -> Result<ParsedFlags<'a, 'b>, ModuleError> {
         let (literal, attached) = if token.starts_with("--") {
             token
                 .split_once('=')
@@ -570,12 +900,13 @@ impl<'a> Parser<'a> {
             // is forwarded rather than validated against python3's grammar.
             let opaque = property.schema["x-apexe-opaque-after"] == true;
             let raw_value = self.consume(property, attached, argv, cursor, input, position)?;
-            return Ok(opaque.then(|| {
-                vec![ParsedFlag {
+            return Ok(ParsedFlags {
+                flags: vec![ParsedFlag {
                     property,
                     raw_value,
-                }]
-            }));
+                }],
+                opaque,
+            });
         }
         // `head -20`: the digit run is the value of the flag the overlay marked,
         // not a bundle of `-2` and `-0`. Only a declared flag is resolved this
@@ -584,12 +915,13 @@ impl<'a> Parser<'a> {
         if let Some(property) = self.digit_value.filter(|_| is_digit_run(token)) {
             let digits = token.trim_start_matches('-');
             let raw_value = self.consume(property, Some(digits), argv, cursor, input, position)?;
-            return Ok((property.schema["x-apexe-opaque-after"] == true).then(|| {
-                vec![ParsedFlag {
+            return Ok(ParsedFlags {
+                flags: vec![ParsedFlag {
                     property,
                     raw_value,
-                }]
-            }));
+                }],
+                opaque: property.schema["x-apexe-opaque-after"] == true,
+            });
         }
         if token.starts_with("--") || self.schema["x-apexe-short-flag-bundling"] != true {
             return Err(invalid(format!(
@@ -618,7 +950,10 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok(opaque.then_some(bundle))
+        Ok(ParsedFlags {
+            flags: bundle,
+            opaque,
+        })
     }
 
     /// Resolve one flag spelling for the phase the call is in.
@@ -1090,7 +1425,8 @@ mod tests {
             resolve_command_argv(
                 &args(&["-C", "/tmp", "status", "-C", "2", "-v"]),
                 &two_sided_schema(),
-                &args(&["status"])
+                &args(&["status"]),
+                None,
             )
             .unwrap()
             .input,
@@ -1100,7 +1436,8 @@ mod tests {
             resolve_command_argv(
                 &args(&["-v", "status"]),
                 &two_sided_schema(),
-                &args(&["status"])
+                &args(&["status"]),
+                None,
             )
             .unwrap()
             .input,
@@ -1113,6 +1450,7 @@ mod tests {
             &args(&["status", "--version"]),
             &two_sided_schema(),
             &args(&["status"]),
+            None,
         )
         .unwrap_err();
         assert!(
@@ -1128,7 +1466,8 @@ mod tests {
             resolve_command_argv(
                 &args(&["-C", "tmp", "cat-file", "object"]),
                 &schema,
-                &args(&["cat-file"])
+                &args(&["cat-file"]),
+                None,
             )
             .unwrap()
             .input,
@@ -1164,7 +1503,7 @@ mod tests {
         let argv = args(&["--count", "invalid", "danger"]);
         let command = args(&["danger"]);
         assert!(matcher.matches(&argv, &command).unwrap());
-        assert!(resolve_command_argv(&argv, &schema, &command).is_err());
+        assert!(resolve_command_argv(&argv, &schema, &command, None).is_err());
     }
 
     #[test]
@@ -1190,5 +1529,170 @@ mod tests {
             "shared":{"type":"string","x-apexe-flag":"--shared","x-apexe-flag-position":"before-subcommand"}
         }});
         assert!(CommandMatcher::new(&[(&root, true), (&leaf, false)]).is_err());
+    }
+
+    /// `find [option] path ... [expression]`: the two-variadic shape the
+    /// `x-apexe-tail-parsed` marker exists for.
+    fn find_schema() -> Value {
+        json!({
+            "type": "object",
+            "x-apexe-end-of-options": true,
+            "properties": {
+                "path": {
+                    "type": "array",
+                    "items": {"type": "string", "x-apexe-path": true},
+                    "x-apexe-positional": 0,
+                    "x-apexe-operand-position": "before-flags"
+                },
+                "expression": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "x-apexe-positional": 1,
+                    "x-apexe-tail-parsed": true
+                },
+                "L": {
+                    "type": "boolean",
+                    "x-apexe-flag": "-L",
+                    "x-apexe-flag-position": "before-operands"
+                },
+                "name": {"type": "string", "x-apexe-flag": "-name"},
+                "delete": {"type": "boolean", "x-apexe-flag": "-delete"},
+                "print": {"type": "boolean", "x-apexe-flag": "-print"},
+                "exec": {"type": "string", "x-apexe-flag": "-exec"}
+            }
+        })
+    }
+
+    fn find_argv(argv: &[&str]) -> ResolvedArgv {
+        resolve_command_argv(&args(argv), &find_schema(), &[], Some("cli.find"))
+            .unwrap_or_else(|error| panic!("{error:?}"))
+    }
+
+    /// The boundary is the first token matching a declared trailing flag: before
+    /// it the leading operand keeps taking values, from it on the tokens are the
+    /// command's expression.
+    #[test]
+    fn test_parsed_tail_splits_paths_from_the_expression() {
+        let resolved = find_argv(&["/etc", "-name", "*.conf", "-print"]);
+        assert_eq!(
+            resolved.input,
+            json!({"path": ["/etc"], "name": "*.conf", "print": true})
+        );
+        let tail = resolved.opaque_tail.expect("the expression is forwarded");
+        assert_eq!(tail.argv, args(&["-name", "*.conf", "-print"]));
+        assert_eq!(Value::Object(tail.prefix), json!({"path": ["/etc"]}));
+        assert!(!tail.separator);
+    }
+
+    /// The security invariant: `-delete` must reach `input`, because that is
+    /// what the approval gate and `x-apexe-writes-with` read. A tail that is
+    /// forwarded without being parsed would run at read strength.
+    #[test]
+    fn test_parsed_tail_makes_a_write_flag_visible_to_the_input() {
+        let resolved = find_argv(&[".", "-delete"]);
+        assert_eq!(resolved.input, json!({"path": ["."], "delete": true}));
+        assert_eq!(
+            resolved.opaque_tail.expect("forwarded").argv,
+            args(&["-delete"])
+        );
+    }
+
+    /// `-exec`'s arguments are another program's argv. Refusing is the honest
+    /// ceiling, and the refusal has to name the token and the way out.
+    #[test]
+    fn test_parsed_tail_refuses_a_token_that_is_not_a_flag() {
+        let error = resolve_command_argv(
+            &args(&[".", "-exec", "rm", "{}", ";"]),
+            &find_schema(),
+            &[],
+            Some("cli.find"),
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains("'{}'") && error.message.contains("cannot be classified"),
+            "{}",
+            error.message
+        );
+        let guidance = error.ai_guidance.unwrap_or_default();
+        assert!(
+            guidance.contains("apexe exec cli.find --input"),
+            "{guidance}"
+        );
+    }
+
+    #[test]
+    fn test_parsed_tail_refuses_a_flag_missing_its_value() {
+        let error =
+            resolve_command_argv(&args(&[".", "-name"]), &find_schema(), &[], None).unwrap_err();
+        assert!(
+            error.message.contains("requires a value"),
+            "{}",
+            error.message
+        );
+    }
+
+    /// The rendered module JSON puts a pre-operand option ahead of the paths
+    /// (`find -L . -name x`), so the resolver has to accept that spelling too or
+    /// the shim and `--input` disagree about the same call.
+    #[test]
+    fn test_parsed_tail_keeps_a_pre_operand_option_ahead_of_the_paths() {
+        let resolved = find_argv(&["-L", ".", "-name", "x"]);
+        assert_eq!(
+            resolved.input,
+            json!({"L": true, "path": ["."], "name": "x"})
+        );
+        assert_eq!(
+            resolved.opaque_tail.expect("forwarded").argv,
+            args(&["-name", "x"])
+        );
+    }
+
+    /// A separator before the boundary must not turn a write flag behind it
+    /// into an invisible operand: `find -- . -delete` deletes.
+    #[test]
+    fn test_parsed_tail_still_sees_a_write_flag_after_the_separator() {
+        let resolved = find_argv(&["--", ".", "-delete"]);
+        assert_eq!(resolved.input, json!({"path": ["."], "delete": true}));
+        let tail = resolved.opaque_tail.expect("forwarded");
+        assert_eq!(tail.argv, args(&["-delete"]));
+        assert!(tail.separator, "the caller's separator must survive");
+    }
+
+    #[test]
+    fn test_parsed_tail_marker_must_be_last_and_variadic() {
+        let schema = json!({"type":"object","properties":{
+            "expression":{"type":"string","x-apexe-positional":0,
+                          "x-apexe-tail-parsed":true}
+        }});
+        let error = resolve_argv(&args(&["-name", "x"]), &schema).unwrap_err();
+        assert!(
+            error.message.contains("must sit on the last operand"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn test_two_variadic_operands_stay_ambiguous_without_the_marker() {
+        let mut schema = find_schema();
+        schema["properties"]["expression"]
+            .as_object_mut()
+            .unwrap()
+            .remove("x-apexe-tail-parsed");
+        assert!(resolve_argv(&args(&["-name", "x"]), &schema).is_err());
+    }
+
+    #[test]
+    fn test_opaque_and_parsed_tails_on_one_operand_are_refused() {
+        let mut schema = find_schema();
+        schema["properties"]["expression"]["x-apexe-opaque-after"] = json!(true);
+        let error = resolve_argv(&args(&[".", "-name", "x"]), &schema).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("opposite treatments of the same tail"),
+            "{}",
+            error.message
+        );
     }
 }

@@ -83,6 +83,7 @@ mod tests {
                 value_type: crate::models::ValueType::Path,
                 required: true,
                 opaque_after: false,
+                tail_parsed: false,
                 risk: FlagRisk::None,
                 variadic: false,
                 before_flags: false,

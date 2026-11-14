@@ -2175,6 +2175,164 @@ fn test_shim_approval_required_is_refused_without_spawning() {
     assert!(!marker.exists());
 }
 
+/// `find path ... [expression]`: the expression is a mini-language of
+/// flag-shaped tokens that must be parsed so the approval gate and the path
+/// guard can see them.
+fn find_schema() -> Value {
+    json!({
+        "type": "object",
+        "x-apexe-end-of-options": true,
+        "x-apexe-short-flag-bundling": false,
+        "properties": {
+            "path": {
+                "type": "array",
+                "items": {"type": "string", "x-apexe-path": true},
+                "x-apexe-positional": 0,
+                "x-apexe-operand-position": "before-flags"
+            },
+            "expression": {
+                "type": "array",
+                "items": {"type": "string"},
+                "x-apexe-positional": 1,
+                "x-apexe-tail-parsed": true
+            },
+            "name": {"type": "string", "x-apexe-flag": "-name"},
+            "print": {"type": "boolean", "x-apexe-flag": "-print"},
+            "delete": {"type": "boolean", "x-apexe-flag": "-delete"},
+            "exec": {"type": "string", "x-apexe-flag": "-exec"}
+        },
+        "additionalProperties": false
+    })
+}
+
+/// Install `find` as a readonly module gated only by its write/exec primaries,
+/// the shape the corpus entry has after the flag-scoped annotation change.
+fn find_fixture() -> Fixture {
+    let fixture = Fixture::new();
+    fixture.write("cli.find", "find", "/usr/bin/find", find_schema(), false);
+    let mut modules = apexe::output::load_modules_from_dir(&fixture.bindings(), None).unwrap();
+    let annotations = modules[0].annotations.as_mut().unwrap();
+    annotations.requires_approval = true;
+    annotations
+        .extra
+        .insert("x-apexe-approval-basis".into(), json!("flags"));
+    annotations.extra.insert(
+        "x-apexe-escalating-params".into(),
+        json!(["delete", "exec"]),
+    );
+    annotations
+        .extra
+        .insert("x-apexe-writes-with".into(), json!(["delete", "exec"]));
+    apexe::output::YamlOutput::without_verification()
+        .write(&modules, &fixture.bindings(), false)
+        .unwrap();
+    fixture.enable();
+    fixture
+}
+
+#[test]
+fn test_shim_find_parsed_tail_runs_a_read_only_search() {
+    let fixture = find_fixture();
+    std::fs::write(fixture.home.path().join("a.txt"), "a").unwrap();
+    std::fs::write(fixture.home.path().join("b.log"), "b").unwrap();
+    fixture
+        .shim("find")
+        .args([".", "-name", "*.txt", "-print"])
+        .assert()
+        .success()
+        .stdout("./a.txt\n");
+    let audit = std::fs::read_to_string(fixture.home.path().join(".apexe/audit.jsonl")).unwrap();
+    assert!(audit.contains("cli.find"), "{audit}");
+}
+
+/// The security invariant, end to end: `-delete` is in the expression, and it
+/// has to be in the input the gate reads. If it were forwarded unparsed this
+/// call would be admitted at read strength and delete without a prompt.
+#[test]
+fn test_shim_find_delete_reaches_the_approval_gate() {
+    let fixture = find_fixture();
+    let victim = fixture.home.path().join("victim.txt");
+    std::fs::write(&victim, "keep me").unwrap();
+    fixture
+        .shim("find")
+        .args([".", "-delete"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("no controlling terminal"));
+    assert!(victim.exists(), "the write ran without an approval prompt");
+}
+
+#[test]
+fn test_shim_find_exec_tail_is_refused_with_the_module_hint() {
+    let fixture = find_fixture();
+    fixture
+        .shim("find")
+        .args([".", "-exec", "rm", "{}", ";"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("cannot be classified"))
+        .stderr(predicates::str::contains("apexe exec cli.find --input"));
+}
+
+#[test]
+fn test_shim_find_flag_missing_its_value_is_refused() {
+    let fixture = find_fixture();
+    fixture
+        .shim("find")
+        .args([".", "-name"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("requires a value"));
+}
+
+#[test]
+fn test_shim_find_separator_keeps_its_existing_meaning() {
+    let fixture = find_fixture();
+    std::fs::write(fixture.home.path().join("a.txt"), "a").unwrap();
+    fixture
+        .shim("find")
+        .args(["--", ".", "-name", "*.txt"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("a.txt"));
+}
+
+/// The control: a grammar with one variadic operand is untouched by the new
+/// marker, including its bundled short flags.
+#[test]
+fn test_shim_grep_grammar_is_unchanged_by_the_parsed_tail() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "cli.grep",
+        "grep",
+        "/usr/bin/grep",
+        json!({
+            "type": "object",
+            "x-apexe-end-of-options": true,
+            "properties": {
+                "pattern": {"type": "string", "x-apexe-positional": 0},
+                "files": {
+                    "type": "array",
+                    "items": {"type": "string", "x-apexe-path": true},
+                    "x-apexe-positional": 1
+                },
+                "r": {"type": "boolean", "x-apexe-flag": "-r"},
+                "n": {"type": "boolean", "x-apexe-flag": "-n"}
+            },
+            "additionalProperties": false
+        }),
+        false,
+    );
+    fixture.enable();
+    std::fs::write(fixture.home.path().join("a.txt"), "needle\n").unwrap();
+    fixture
+        .shim("grep")
+        .args(["-rn", "needle", "."])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("needle"));
+}
+
 #[test]
 fn test_plain_shell_command_prefix_still_invokes_the_path_shim() {
     let fixture = Fixture::new();
