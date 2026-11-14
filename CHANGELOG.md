@@ -9,6 +9,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 ## [Unreleased]
 
 ### Fixed
+- A flag list dropped for naming an undeclared property is now recorded on the
+  module (`metadata["x-apexe-overlay-undeclared"]`), not only logged. Dropping is
+  still the right call — a trigger that can never fire would check a writing call
+  at read strength — but the drop is a claim that did not take effect, and a log
+  line nobody reads is indistinguishable from silence. `apexe list --format json`
+  now shows it, and one helper computes it for both the drop and the record so the
+  two cannot disagree.
 - `scan --write-acl` refreshes the readonly allow rule again. The compatibility
   path was wired to `acl sync`'s deny-only floor, so a scan that made a module
   `readonly` — which is what a corpus update does when a command stops being

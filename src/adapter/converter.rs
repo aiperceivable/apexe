@@ -163,6 +163,11 @@ impl CliToolConverter {
         let help_format_name =
             help_format_to_tag(command_opt.map_or(HelpFormat::Unknown, |c| c.help_format));
 
+        let undeclared = tool
+            .annotation_scopes
+            .get(&path_key)
+            .map(|overrides| undeclared_override_properties(overrides, &fields.input_schema))
+            .unwrap_or_default();
         let mut module = ScannedModule::new(
             segments.join("."),
             fields.description,
@@ -176,8 +181,19 @@ impl CliToolConverter {
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
         module.annotations = Some(fields.annotations);
+        // A dropped flag list is a claim that did not take effect. Recorded on
+        // the module so `apexe list --format json` reports it, instead of the
         module.documentation = fields.documentation;
         module.metadata = self.build_metadata(tool, path, help_format_name);
+        // After `build_metadata`, which replaces the map: a dropped flag list is
+        // a claim that did not take effect, and it belongs where `list` shows it
+        // rather than only in a log line nobody reads.
+        if !undeclared.is_empty() {
+            module.metadata.insert(
+                "x-apexe-overlay-undeclared".to_string(),
+                serde_json::json!(undeclared),
+            );
+        }
         self.set_output_preference(
             tool,
             command_opt,
@@ -540,6 +556,30 @@ fn synthesize_root_command(tool: &ScannedCLITool) -> ScannedCommand {
 ///
 /// Inference reads command names and flag names; an overlay states the answer.
 /// Only fields the overlay actually set are replaced.
+/// Flag-list names an overlay asserted that the module does not declare.
+///
+/// A name can never match an argument, so a trigger built on it can never fire.
+/// Returned rather than only logged: the drop is conservative (the module stays
+/// at write strength) but it is still a claim that did not take effect, and a log
+/// line nobody reads is indistinguishable from silence. Callers record this on
+/// the module so `list` can show it.
+fn undeclared_override_properties(
+    overrides: &crate::models::AnnotationOverrides,
+    input_schema: &serde_json::Value,
+) -> Vec<String> {
+    let declared: Vec<String> = input_schema["properties"]
+        .as_object()
+        .map(|properties| properties.keys().cloned().collect())
+        .unwrap_or_default();
+    overrides
+        .approval_flags
+        .iter()
+        .chain(overrides.writes_with.iter())
+        .filter(|name| !declared.iter().any(|known| known == *name))
+        .cloned()
+        .collect()
+}
+
 fn apply_annotation_overrides(
     mut annotations: ModuleAnnotations,
     overrides: crate::models::AnnotationOverrides,
@@ -553,20 +593,11 @@ fn apply_annotation_overrides(
     // direction (write strength, which is what a module without the key gets),
     // and the error log names both the bad property and the real ones so the
     // author can fix it instead of wondering why the entry does nothing.
-    let property_names: Vec<String> = input_schema["properties"]
-        .as_object()
-        .map(|properties| properties.keys().cloned().collect())
-        .unwrap_or_default();
-    let undeclared: Vec<&String> = overrides
-        .approval_flags
-        .iter()
-        .chain(overrides.writes_with.iter())
-        .filter(|name| !property_names.iter().any(|known| known == *name))
-        .collect();
+    let undeclared = undeclared_override_properties(overrides, input_schema);
     if !undeclared.is_empty() {
         tracing::error!(
             undeclared = ?undeclared,
-            declared = ?property_names,
+            declared = ?input_schema["properties"].as_object().map(|p| p.keys().cloned().collect::<Vec<_>>()),
             "overlay names properties this module does not declare; the flag-scoped \
              annotations are dropped so the command stays at write strength"
         );
@@ -1177,6 +1208,29 @@ mod tests {
         assert_eq!(
             annotations.extra.get("x-apexe-escalating-params"),
             Some(&serde_json::json!(["force"]))
+        );
+    }
+
+    /// The drop is conservative, but it is still a claim that did not take
+    /// effect. A log line nobody reads is indistinguishable from silence, so the
+    /// module records it where `list` can show it.
+    #[test]
+    fn test_an_undeclared_override_property_is_recorded_on_the_module() {
+        let mut tool = make_tool("find", vec![]);
+        tool.annotation_scopes.insert(
+            String::new(),
+            crate::models::AnnotationOverrides {
+                approval_flags: vec!["deleting".to_string()],
+                ..Default::default()
+            },
+        );
+
+        let modules = CliToolConverter::new().convert(&tool);
+
+        assert_eq!(
+            modules[0].metadata.get("x-apexe-overlay-undeclared"),
+            Some(&serde_json::json!(["deleting"])),
+            "the module must carry the name the overlay got wrong"
         );
     }
 

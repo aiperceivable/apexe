@@ -1614,6 +1614,7 @@ together by the converter:
 | Key | Value | Meaning |
 |-----|-------|---------|
 | `x-apexe-approval-basis` | `"flags"` | `requires_approval` was set because the command *accepts* an escalating flag, not because it is destructive by name — so the gate may stand down (§8) |
+| `x-apexe-overlay-undeclared` | array of property names (metadata) | Recorded on a module when an overlay's `approval_flags`/`writes_with` named properties the module does not declare. The lists are dropped — conservative, because a trigger that can never fire would check a writing call at read strength — and this is where that fact is visible, since a log line nobody reads is indistinguishable from silence |
 | `x-apexe-writes-with` | array of property names | Narrow the path guard's access mode per call: when none of these properties is set, the call's path arguments are checked at **read** strength even though the module is not `readonly`. It can only narrow, never widen, so a module that writes without them must not carry the key — `sed` is the standing example (`sed -n 'w /etc/x' file` writes with no flag at all). Without the key the module is checked at write strength, which is the safe direction |
 | `x-apexe-escalating-params` | array of property names | Which properties those are. A `"flags"` basis without this list is a corrupted annotation, and the gate prompts rather than standing down |
 
