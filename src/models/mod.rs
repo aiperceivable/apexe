@@ -623,6 +623,7 @@ impl ToolVariant {
 /// Every field is optional: an overlay states only what it actually knows, and
 /// an unset field leaves the inferred value alone.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AnnotationOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub readonly: Option<bool>,
@@ -640,6 +641,26 @@ pub struct AnnotationOverrides {
     /// GNU sed executes `s///e` as a shell command; BSD sed rejects the flag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_world: Option<bool>,
+    /// Schema properties whose presence makes the call require approval.
+    ///
+    /// The flag-scoped counterpart of `requires_approval`, for the tools where a
+    /// blanket mark is wrong in both directions: `find` reads the filesystem
+    /// unless `-delete` or `-exec` is given, so gating every `find` makes it
+    /// unusable while leaving it ungated runs arbitrary programs without asking.
+    /// Naming the properties keeps `requires_approval` a ceiling the gate can
+    /// stand down from — the same shape the scanner derives for flags it
+    /// recognizes, written down by an author for a tool it does not.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approval_flags: Vec<String>,
+    /// Schema properties whose presence means the call may write.
+    ///
+    /// Read by the path guard to choose the access mode per call. Empty means
+    /// "inherit `approval_flags`", because the two answer one question — which
+    /// arguments are the dangerous ones — and a second hand-maintained list is a
+    /// second thing to drift. Set it explicitly only when writing and needing
+    /// approval genuinely differ.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writes_with: Vec<String>,
 }
 
 impl AnnotationOverrides {

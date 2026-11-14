@@ -564,6 +564,35 @@ fn apply_annotation_overrides(
     if let Some(open_world) = overrides.open_world {
         annotations.open_world = open_world;
     }
+    // Flag-scoped approval: the module is marked as a ceiling and the properties
+    // that reach that ceiling are named, so the gate can stand down for a call
+    // that sends none of them. Applied after the blanket field above, because an
+    // author who named properties said something more specific than `true`.
+    if !overrides.approval_flags.is_empty() {
+        annotations.requires_approval = true;
+        annotations.extra.insert(
+            annotations::APPROVAL_BASIS_KEY.to_string(),
+            serde_json::json!(annotations::APPROVAL_BASIS_FLAGS),
+        );
+        annotations.extra.insert(
+            annotations::ESCALATING_PARAMS_KEY.to_string(),
+            serde_json::json!(overrides.approval_flags),
+        );
+    }
+    // The path guard's per-call access mode. Falls back to the approval list:
+    // both answer "which arguments are the dangerous ones", and a second
+    // hand-maintained list is a second thing to drift.
+    let writes_with: &[String] = if overrides.writes_with.is_empty() {
+        &overrides.approval_flags
+    } else {
+        &overrides.writes_with
+    };
+    if !writes_with.is_empty() {
+        annotations.extra.insert(
+            annotations::WRITES_WITH_KEY.to_string(),
+            serde_json::json!(writes_with),
+        );
+    }
     annotations.cacheable = annotations.readonly && annotations.idempotent;
     annotations
 }
@@ -1041,6 +1070,76 @@ mod tests {
     }
 
     #[test]
+    /// An overlay can now say "gate only these flags" and "writes only with
+    /// these flags". Both land in `annotations.extra`, which is what the
+    /// approval gate and the path guard read.
+    fn test_flag_scoped_overrides_reach_the_gate_and_the_path_guard() {
+        let overrides = crate::models::AnnotationOverrides {
+            readonly: Some(true),
+            approval_flags: vec!["delete".to_string(), "exec".to_string()],
+            ..Default::default()
+        };
+        let annotations = apply_annotation_overrides(ModuleAnnotations::default(), overrides);
+
+        assert!(annotations.readonly);
+        assert!(
+            annotations.requires_approval,
+            "a flag-scoped rule is still a ceiling"
+        );
+        assert_eq!(
+            annotations.extra.get("x-apexe-escalating-params"),
+            Some(&serde_json::json!(["delete", "exec"]))
+        );
+        assert_eq!(
+            annotations
+                .extra
+                .get(crate::adapter::annotations::WRITES_WITH_KEY),
+            Some(&serde_json::json!(["delete", "exec"])),
+            "writes-with inherits the approval list when it is not given"
+        );
+    }
+
+    /// An explicit write list wins, for the tools where writing and needing
+    /// approval genuinely differ.
+    #[test]
+    fn test_an_explicit_write_list_outranks_the_approval_list() {
+        let overrides = crate::models::AnnotationOverrides {
+            approval_flags: vec!["force".to_string()],
+            writes_with: vec!["delete".to_string()],
+            ..Default::default()
+        };
+        let annotations = apply_annotation_overrides(ModuleAnnotations::default(), overrides);
+
+        assert_eq!(
+            annotations
+                .extra
+                .get(crate::adapter::annotations::WRITES_WITH_KEY),
+            Some(&serde_json::json!(["delete"]))
+        );
+        assert_eq!(
+            annotations.extra.get("x-apexe-escalating-params"),
+            Some(&serde_json::json!(["force"]))
+        );
+    }
+
+    /// A key the parser does not know must fail to load, not be dropped: an
+    /// overlay that is accepted and ignored is indistinguishable from one that
+    /// works.
+    #[test]
+    fn test_an_unknown_annotation_override_is_refused() {
+        let document = serde_json::json!({
+            "annotations": {"requires_approval": true, "writes_when": ["delete"]}
+        });
+        assert!(
+            serde_json::from_value::<crate::models::AnnotationOverrides>(
+                document["annotations"].clone()
+            )
+            .is_err(),
+            "an unknown override key must be an error, not a silent no-op"
+        );
+    }
+
+    #[test]
     fn test_annotation_overrides_beat_name_inference() {
         // `rm` is inferred destructive from its name alone. An overlay that
         // states otherwise must win, because it was reviewed and the inference
@@ -1054,6 +1153,7 @@ mod tests {
                 idempotent: Some(true),
                 requires_approval: Some(false),
                 open_world: None,
+                ..Default::default()
             },
         );
         let modules = CliToolConverter::new().convert(&tool);

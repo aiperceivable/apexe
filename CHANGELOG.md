@@ -42,6 +42,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   preserve the confusion it was renamed to remove.
 
 ### Added
+- An overlay can scope approval and write behaviour to *flags* instead of the
+  whole module. `AnnotationOverrides` gains `approval_flags` (properties whose
+  presence puts the call to a human) and `writes_with` (properties whose presence
+  means the call may write), both written into `annotations.extra` where the
+  approval gate and the path guard already read them. `writes_with` defaults to
+  the approval list, because the two answer one question — which arguments are
+  the dangerous ones — and a second hand-maintained list is a second thing to
+  drift.
+
+  This is what makes a tool like `find` expressible at all: it reads the
+  filesystem unless `-delete`/`-exec` is given, so a blanket `requires_approval`
+  makes it unusable and no marking leaves arbitrary programs ungated.
+
+  `AnnotationOverrides` also refuses unknown keys now. Before this, an author who
+  misspelled one was silently ignored — an overlay that loads and does nothing is
+  indistinguishable from one that works, which is the failure mode this project
+  keeps having to fix.
 - `x-apexe-writes-with` narrows the path guard's access mode **per call**: when
   none of the named properties is set, a non-`readonly` module's path arguments
   are checked at read strength. Module-level annotation was the wrong
