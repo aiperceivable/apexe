@@ -63,7 +63,7 @@ move a decision into a layer that does not own it.
 | Host integration | how a client's commands enter apexe | wrap a call that is already governed, or route a shim-governed host through `exec` |
 
 The operator-facing rules live in [`docs/overlays.md`](docs/overlays.md) and
-[the user manual](docs/user-manual.md#coverage-and-policy-are-two-gates). Keep
+[the user manual](docs/user-manual.md#coverage-policy-and-access-are-three-gates). Keep
 this section short and link to them rather than restating the procedures.
 
 ---

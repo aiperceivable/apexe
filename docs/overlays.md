@@ -95,7 +95,7 @@ Consequences worth stating plainly:
   `general_invalid_input` rather than `general_internal_error`). Two reports
   keep the pair honest: `apexe list --diagnostics` shows the routes each overlay
   left closed and any ACL target that matches no loaded module, and
-  [the user manual](user-manual.md#coverage-and-policy-are-two-gates) documents
+  [the user manual](user-manual.md#coverage-policy-and-access-are-three-gates) documents
   the order in which the two gates are evaluated.
 
 ## Initializing from a corpus and packaging it

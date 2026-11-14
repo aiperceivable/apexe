@@ -134,7 +134,7 @@ actual canonical bindings and ACL paths. State that the selected `--acl` must
 appear before `--` in every task exec, including the first preflight. For
 example, the shape is `apexe exec --acl /actual/reviewed-acl.yaml --dry-run -- ls -la`;
 replace that example path with your real path. Provide the host access to the
-selected files. See [ACL reading](#host-acl-reading-and-apexe-policy-checks).
+selected files. See [ACL reading](#host-acl-reading-and-apexe-paths-checks).
 
 Installing the Skill makes it available; project or task instructions establish
 where the routing rule applies. Automatic selection depends on the host and

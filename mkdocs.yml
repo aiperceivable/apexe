@@ -59,6 +59,9 @@ nav:
   - Contract Verification: verification.md
   - OpenAPI Import: openapi.md
   - Threat Model: threat-model.md
+  - Sandboxing: sandbox.md
+  - Sandbox Testing: sandbox-testing.md
+  - Shell Integration (reference): agent-shell-integration.md
   - Authoring Overlays: overlays.md
   - Overlay Consumers: overlay-consumers.md
   - Developer Guide: developer-guide.md
