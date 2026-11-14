@@ -9,6 +9,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 ## [Unreleased]
 
 ### Fixed
+- A `readonly` module that declares `x-apexe-writes-with` is now checked at the
+  strength its *arguments* call for. `access_mode` consulted `readonly` first and
+  returned before reading the list, which made the list unreachable for exactly
+  the tools it exists for: a `readonly` `find` given `-delete` was still checked
+  at read strength, so a protected path stayed writable through it. Found by
+  driving the real binary rather than by the unit tests, which had encoded the
+  wrong order as an expectation.
 - The shipped `config.yaml` template now means exactly what the compiled
   defaults mean. It disagreed in three lists — `readonly` was missing nine words
   the baseline has (`find`, `ps`, `whoami`, …), `requires_approval` omitted

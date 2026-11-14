@@ -445,11 +445,19 @@ impl CliModule {
     /// the standing example — `sed -n 'w /etc/x' file` writes with no flag at
     /// all, so it must never declare one.
     fn access_mode(&self, inputs: &Value) -> AccessMode {
-        if self.annotations.readonly {
-            return AccessMode::ReadOnly;
-        }
-        match self.annotations.extra.get(WRITES_WITH_KEY) {
-            Some(Value::Array(properties)) if !properties.is_empty() => {
+        let declared = match self.annotations.extra.get(WRITES_WITH_KEY) {
+            Some(Value::Array(properties)) if !properties.is_empty() => Some(properties),
+            _ => None,
+        };
+        match declared {
+            // A declared list overrides `readonly`, in both directions. The
+            // module-level mark says what the command usually does; the list
+            // says when it does something else, and a `find` that was handed
+            // `-delete` is writing no matter how the module is annotated.
+            // Checking `readonly` first made the list unreachable for exactly
+            // the tools it exists for, and the runtime check caught it: the
+            // write form was still checked at read strength.
+            Some(properties) => {
                 let writes = properties.iter().any(|property| {
                     property
                         .as_str()
@@ -462,7 +470,8 @@ impl CliModule {
                     AccessMode::ReadOnly
                 }
             }
-            _ => AccessMode::Write,
+            None if self.annotations.readonly => AccessMode::ReadOnly,
+            None => AccessMode::Write,
         }
     }
 
@@ -737,16 +746,23 @@ mod access_mode_tests {
         );
     }
 
-    /// `readonly` wins over a declared trigger: a module that promises not to
-    /// write is never checked at write strength.
+    /// A declared list outranks `readonly` in both directions: the module mark
+    /// describes the usual case, the list describes the exceptions. Checking
+    /// `readonly` first made the list unreachable for the tools it exists for —
+    /// a `readonly` `find` with `-delete` was checked at read strength.
     #[test]
-    fn test_readonly_outranks_a_declared_trigger() {
+    fn test_a_declared_trigger_raises_a_readonly_module_to_write_strength() {
         let mut annotations = annotated(json!({ WRITES_WITH_KEY: ["force"] }));
         annotations.readonly = true;
         let module = module_with(annotations);
         assert_eq!(
             module.access_mode(&json!({"force": true})),
-            AccessMode::ReadOnly
+            AccessMode::Write
+        );
+        assert_eq!(
+            module.access_mode(&json!({})),
+            AccessMode::ReadOnly,
+            "and stays read strength while the trigger is absent"
         );
     }
 }
