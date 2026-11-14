@@ -8,6 +8,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ## [Unreleased]
 
+### Documentation
+- `docs/sandbox.md` and `docs/sandbox-testing.md` add the specification for
+  delegating confinement to an existing backend (`systemd-run`, `bwrap`, a
+  container runtime) instead of implementing one. **No behaviour changes: no
+  backend is implemented.** The contract answers two questions an operator asks
+  first — what can the backend actually express (`capabilities`, including
+  `deny_within_grant`), and what happened on this call (`sandbox_backend`,
+  `sandbox_enforcement`, `sandbox_outcome`, `sandbox_policy_digest` in
+  `audit.jsonl`) — plus the selection rule (opt-in per module id, never a blanket
+  wrapper) and the measured reason macOS is `advisory`: on macOS 26.3 (arm64)
+  `sandbox-exec` accepted a profile denying writes beneath a directory and did
+  not block the write, with the commands and output recorded in the document so
+  the finding can be re-run rather than believed.
+
 ### Changed
 - `apexe policy` is now `apexe paths`, matching the `paths:` section it reports
   on. `policy` was the wrong word for it: the ACL is policy too, and the command
