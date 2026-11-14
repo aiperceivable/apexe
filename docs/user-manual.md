@@ -127,6 +127,7 @@ apexe scan <TOOLS>... [OPTIONS]
 | `--format <FMT>` | `table` | Output format: `json`, `yaml`, or `table` |
 | `--skills-dir <DIR>` | - | Also write a Claude Skill (`SKILL.md`) per module under `<DIR>/.claude/skills/<module_id>/` |
 | `--overlay <PATH>` | - | Load one explicit curated overlay file (JSON/YAML). See [§6.5 Tool Overlays](#65-tool-overlays) |
+| `--write-acl` | off | Deprecated. Refresh the policy's destructive and open-world denials after scanning, writing a starter policy only when none exists. `scan` writes bindings, not policy: use `apexe acl init` and `apexe acl sync` |
 | `--verify` | off | Fail the command when a written binding does not verify. The YAML verifier runs either way; without this a failure is a warning and the scan still exits 0 |
 | `--dry-run` | off | Report what would be written — bindings, ACL and skills — without creating or overwriting anything |
 
@@ -273,6 +274,7 @@ apexe list [OPTIONS]
 | `--verbose` | off | Print each module's behavioral annotations and, with `--acl`, the ACL decision for the `--caller` identity |
 | `--acl <PATH>` | `<config_dir>/acl.yaml` if present | ACL policy file to evaluate against in `--verbose` output, and to check for targets that match no loaded module in `--diagnostics`. Read-only report — does not enable enforcement anywhere |
 | `--caller <ID>` | `local` | Caller identity the `--verbose` ACL decision is evaluated as. `local` is what a shim and `apexe exec` run as on this machine; pass `@external` for the server-facing answer an unauthenticated `apexe serve` / `apexe a2a` client would get. The result is echoed as `x-acl-caller`, so a report always states which surface it describes |
+| `--path-census` | off | Three states for the commands on this machine: `granted` (bound and allowed for `--caller`), `denied` (bound and refused by the policy), `unscanned` (on `PATH` with no binding). Reads directory entries and the policy only — it never scans or executes |
 | `--diagnostics` | off | Show the scan inventory — routes a curated overlay left out of the declared surface — and, when a policy is loaded, the ACL targets that match no module on disk. See [Coverage and policy are two gates](#coverage-and-policy-are-two-gates) |
 | `--available-only` | off | Only list modules whose binary is reachable on this machine right now. `apexe serve`/`apexe a2a` apply this check unconditionally; here it is opt-in so the plain listing still shows everything ever scanned — see [Availability Filtering](#availability-filtering) |
 
@@ -1207,6 +1209,34 @@ The hook uses `updatedInput`; the tested Claude Code 2.1.318 release
 version before relying on enforcement; without `updatedInput` support the hook
 can only deny or ask.
 
+### 4.14 `apexe acl`
+
+Writes and explains the caller-permission policy. `apexe scan` produces an
+inventory; this is the only command group that turns it into permissions.
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `acl init --profile <developer\|strict>` | `developer` | Grant model for the starter policy. `developer` lets the local shell run `cli.*` below the denials; `strict` grants nothing implicitly |
+| `acl init --path <PATH>` | `<config_dir>/acl.yaml` | Where to write the policy |
+| `acl init --force` | off | Replace an existing policy. There is no backup |
+| `acl init --stdout` | off | Print the policy instead of writing it |
+| `acl sync --path <PATH>` | `<config_dir>/acl.yaml` | Policy to refresh; it must already exist |
+| `acl sync --bindings-dir <DIR>` | configured | Bindings the denials are derived from |
+| `acl sync --dry-run` | off | Show what would change and exit non-zero when the file differs — the form a pipeline uses for drift detection |
+| `acl explain <module-id> --caller <ID>` | `local` | Which rule decides this module for this caller |
+| `acl explain --path <PATH>` | `<config_dir>/acl.yaml` | Policy to evaluate |
+
+```bash
+apexe acl init                      # starter policy, refuses to overwrite
+apexe acl init --profile strict     # nothing granted implicitly
+apexe acl sync --dry-run            # drift check for CI
+apexe acl explain cli.git.status --caller @external
+```
+
+`acl sync` rewrites only the `destructive` and `open-world` deny rules. An allow
+is never generated after `init`, so a scan can never hand out a permission
+nobody reviewed, and a newly scanned readonly module does not become a grant.
+
 ### 4.13 `apexe agent`
 
 Print the supported host configuration, or check the launcher and host
@@ -1668,8 +1698,29 @@ Risk is derived from annotations plus an `open_world` signal — the executable 
 
 ### 9.1 Access Control (ACL)
 
-`apexe scan` automatically generates `~/.apexe/acl.yaml` from the scanned modules
-using a **default-deny** model. Matching corpus annotations override the built-in
+`apexe acl init` writes `~/.apexe/acl.yaml` once, from the scanned modules and a
+named profile, using a **default-deny** model. `apexe scan` does not write it:
+a scan produces an inventory (which routes exist, what each does), while the
+policy decides who may run them, and only `apexe acl` writes the policy.
+
+| Command | Writes | When to run |
+|---|---|---|
+| `apexe scan <tool>` | bindings only | whenever a tool or its version changes |
+| `apexe acl init [--profile developer\|strict]` | a starter policy, once | after the first scan; refuses to overwrite an existing file |
+| `apexe acl sync` | the destructive and open-world denials, nothing else | after scanning tools whose annotations changed; safe in CI |
+| `apexe acl explain <module-id> [--caller X]` | nothing | when a call is refused and you want to know which rule decided |
+
+`--profile developer` (the default) adds one rule below the denials:
+`callers: ['local']` may run `cli.*`. The local shell means this machine's
+shims and `apexe exec` — the human at the keyboard — so installing a tool is
+the grant, and a module the scanner could not classify stays usable instead of
+falling to `default_effect: deny`. Unauthenticated `serve`/`a2a` clients
+(`@external`) are unaffected by that rule. `--profile strict` omits it: every
+grant is one you write yourself.
+
+Only `acl sync`'s two deny rules are ever regenerated, because a generated
+denial can only restrict. An allow is never generated after `init`, so a new
+scan cannot hand a caller a permission nobody reviewed. Matching corpus annotations override the built-in
 name-based inference; a mismatched or absent overlay does not grant access on its
 own. The corpus describes command capabilities, rather than caller permissions.
 New ACLs use the following rules:

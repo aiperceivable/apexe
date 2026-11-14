@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use apcore::{ErrorCode, ModuleError};
 use apcore_toolkit::{BindingLoadError, BindingLoader, ScannedModule};
@@ -51,6 +51,168 @@ pub fn load_modules_from_dir(
         )
     })?;
     Ok(modules)
+}
+
+/// Load only the binding files belonging to `module_ids`.
+///
+/// The shim hot path already knows, from its manifest, exactly which routes a
+/// shim can serve, so parsing the whole installation's grammar on every command
+/// is wasted work: a governed `ls` paid for every installed tool's bindings
+/// (7 MB across 174 files, ~105 ms measured) before it ran `ls` at all. This
+/// narrows that to the files the shim could possibly select, leaving the cost
+/// of a call independent of how many tools are installed.
+///
+/// Selection is by filename prefix (`<module_id>.`), which is the
+/// `{sanitized_module_id}.binding.yaml` convention [`crate::output::YamlOutput`]
+/// writes and which also holds for a file whose suffix pattern an operator
+/// changed. Narrowing may only ever be a performance decision, never a coverage
+/// decision, so every input that could make the subset disagree with a full
+/// load falls back to [`load_modules_from_dir`]: an empty `module_ids` slice, no
+/// file matching any of them, or an unreadable directory.
+#[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+pub fn load_modules_for_ids(
+    dir: &Path,
+    module_ids: &[String],
+) -> Result<Vec<ScannedModule>, ModuleError> {
+    let Some(selected) = select_binding_files(dir, module_ids) else {
+        return load_modules_from_dir(dir, None);
+    };
+    let mut modules: Vec<ScannedModule> = Vec::new();
+    for path in selected {
+        modules.extend(load_binding_file(&path)?);
+    }
+    crate::verification::attach_evidence(dir, &mut modules).map_err(|error| {
+        ModuleError::new(
+            ErrorCode::GeneralInternalError,
+            format!("Invalid behavioral evidence: {error}"),
+        )
+    })?;
+    Ok(modules)
+}
+
+/// Load the routes one native invocation could select under `tool_id`.
+///
+/// A native call knows two things before it reads any binding: the tool
+/// (`argv[0]`), and — unless the first argument is a flag — the subcommand
+/// token. Route resolution can only ever pick a route whose `command_path`
+/// starts with those tokens, plus the tool's own root route, so parsing the
+/// tool's whole namespace (150 bindings for `git`, 6.5 MB) is wasted when one
+/// subcommand's grammar is the whole candidate set.
+///
+/// The root route is included unconditionally: `command_path == ["git"]`
+/// matches any argv, and excluding it would refuse calls that used to work.
+/// When the token matches nothing — a subcommand spelled with a character the
+/// id sanitizer rewrote, or a flag the scan never declared — the whole tool
+/// namespace is loaded instead, because narrowing may never remove a candidate
+/// the full load would have offered.
+#[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+pub fn load_modules_for_tool_route(
+    dir: &Path,
+    tool_id: &str,
+    token: Option<&str>,
+) -> Result<Vec<ScannedModule>, ModuleError> {
+    let root = format!("{tool_id}.binding.yaml");
+    let subcommand = token
+        .map(|token| format!("{tool_id}.{token}."))
+        .filter(|prefix| !prefix.is_empty());
+    let Some(entries) = select_files_matching(dir, &root, subcommand.as_deref()) else {
+        return load_modules_for_ids(dir, &[tool_id.to_string()]);
+    };
+    if let Some(prefix) = &subcommand {
+        let matched_subcommand = entries.iter().any(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(prefix))
+        });
+        if !matched_subcommand {
+            return load_modules_for_ids(dir, &[tool_id.to_string()]);
+        }
+    }
+    let mut modules: Vec<ScannedModule> = Vec::new();
+    for path in entries {
+        modules.extend(load_binding_file(&path)?);
+    }
+    crate::verification::attach_evidence(dir, &mut modules).map_err(|error| {
+        ModuleError::new(
+            ErrorCode::GeneralInternalError,
+            format!("Invalid behavioral evidence: {error}"),
+        )
+    })?;
+    Ok(modules)
+}
+
+/// Files named `root` or starting with `subcommand`, or `None` when the
+/// directory cannot be read or holds neither.
+fn select_files_matching(dir: &Path, root: &str, subcommand: Option<&str>) -> Option<Vec<PathBuf>> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut selected: Vec<PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !path.is_file() {
+            continue;
+        }
+        let matches = name == root || subcommand.is_some_and(|prefix| name.starts_with(prefix));
+        if matches {
+            selected.push(path);
+        }
+    }
+    (!selected.is_empty()).then_some(selected)
+}
+
+/// The binding files that belong to `module_ids`, or `None` to load them all.
+///
+/// `None` is the safe answer: it is returned whenever the subset cannot be
+/// proved to be a strict narrowing, and the caller then takes the full path.
+fn select_binding_files(dir: &Path, module_ids: &[String]) -> Option<Vec<PathBuf>> {
+    if module_ids.is_empty() {
+        return None;
+    }
+    let prefixes: Vec<String> = module_ids
+        .iter()
+        .filter(|id| !id.is_empty())
+        .map(|id| format!("{id}."))
+        .collect();
+    if prefixes.is_empty() {
+        return None;
+    }
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut selected: Vec<PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if prefixes.iter().any(|prefix| name.starts_with(prefix)) {
+            selected.push(path);
+        }
+    }
+    if selected.is_empty() {
+        None
+    } else {
+        Some(selected)
+    }
+}
+
+/// Parse one binding file, reporting a defect against the file that holds it.
+#[allow(clippy::result_large_err)] // Same crate-boundary boundary as `load_modules_for_ids`
+fn load_binding_file(path: &Path) -> Result<Vec<ScannedModule>, ModuleError> {
+    BindingLoader::new()
+        .load_with_pattern(
+            path, /* strict */ true, /* recursive */ false, None,
+        )
+        .map_err(|error| match error {
+            BindingLoadError::PathNotFound { path } => ModuleError::new(
+                ErrorCode::GeneralInternalError,
+                format!("Bindings directory not found: {path}"),
+            ),
+            other => ModuleError::new(ErrorCode::GeneralInternalError, other.to_string()),
+        })
 }
 
 /// The pre-0.8.0 default bindings directory, when it still holds bindings.
@@ -211,6 +373,147 @@ mod tests {
 
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].module_id, "loader_read");
+    }
+
+    /// A native call narrows to its subcommand plus the tool's root route:
+    /// `git status` must not parse the other 149 git bindings, and the root
+    /// route must survive because `command_path == ["git"]` matches any argv.
+    #[test]
+    fn test_tool_route_loads_the_subcommand_and_the_root_route() {
+        let dir = TempDir::new().unwrap();
+        YamlOutput::without_verification()
+            .write(
+                &[
+                    make_test_module("cli.git.status"),
+                    make_test_module("cli.git.log"),
+                    make_test_module("cli.git"),
+                ],
+                dir.path(),
+                false,
+            )
+            .unwrap();
+
+        let loaded = load_modules_for_tool_route(dir.path(), "cli.git", Some("status")).unwrap();
+
+        let mut ids: Vec<&str> = loaded.iter().map(|m| m.module_id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["cli.git", "cli.git.status"]);
+    }
+
+    /// A token the bindings do not spell (a sanitized subcommand, an
+    /// undeclared flag) must fall back to the whole tool namespace. Narrowing
+    /// that dropped it would refuse a call the full load resolves.
+    #[test]
+    fn test_tool_route_falls_back_when_the_token_matches_nothing() {
+        let dir = TempDir::new().unwrap();
+        YamlOutput::without_verification()
+            .write(
+                &[
+                    make_test_module("cli.git.status"),
+                    make_test_module("cli.git.log"),
+                ],
+                dir.path(),
+                false,
+            )
+            .unwrap();
+
+        let loaded = load_modules_for_tool_route(dir.path(), "cli.git", Some("rebase")).unwrap();
+
+        assert_eq!(
+            loaded.len(),
+            2,
+            "an unmatched token loads the tool's whole namespace, not nothing"
+        );
+    }
+
+    /// The shim hot path loads only the bindings of the routes its command can
+    /// reach. If the subset is not actually a subset of what a full load would
+    /// return, a route that used to run would suddenly be "no longer
+    /// registered", so the narrowing has to be provably narrow.
+    #[test]
+    fn test_loading_for_ids_returns_only_the_requested_bindings() {
+        let dir = TempDir::new().unwrap();
+        let output = YamlOutput::without_verification();
+        let modules = vec![
+            make_test_module("cli.git.status"),
+            make_test_module("cli.git.log"),
+            make_test_module("cli.ls"),
+        ];
+        output.write(&modules, dir.path(), false).unwrap();
+
+        let loaded = load_modules_for_ids(dir.path(), &["cli.ls".to_string()]).unwrap();
+
+        assert_eq!(loaded.len(), 1, "only the requested route may be parsed");
+        assert_eq!(loaded[0].module_id, "cli.ls");
+    }
+
+    /// A sibling whose id merely *starts* with a requested one must not be
+    /// swept in: `cli.git.log` and a hypothetical `cli.git.logx` are different
+    /// routes, and the prefix test has to end at the id boundary.
+    #[test]
+    fn test_loading_for_ids_stops_at_the_id_boundary() {
+        let root = TempDir::new().unwrap();
+        let dir = root.path().join("bindings");
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = YamlOutput::without_verification();
+        output
+            .write(
+                &[
+                    make_test_module("cli.git.log"),
+                    make_test_module("cli.git.logx"),
+                ],
+                &dir,
+                false,
+            )
+            .unwrap();
+
+        let loaded = load_modules_for_ids(&dir, &["cli.git.log".to_string()]).unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].module_id, "cli.git.log");
+    }
+
+    /// A manifest can name a route whose binding file was removed (a rescan
+    /// pruned it, or the tool was uninstalled). Narrowing must then degrade to
+    /// the full load rather than report the route as missing on its own, or the
+    /// refusal would blame the wrong layer.
+    #[test]
+    fn test_loading_for_ids_falls_back_when_no_file_matches() {
+        let dir = TempDir::new().unwrap();
+        let output = YamlOutput::without_verification();
+        output
+            .write(&[make_test_module("cli.ls")], dir.path(), false)
+            .unwrap();
+
+        let loaded = load_modules_for_ids(dir.path(), &["cli.vanished".to_string()]).unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(
+            loaded[0].module_id, "cli.ls",
+            "an unmatched id must fall back to the full load, not to nothing"
+        );
+    }
+
+    /// Operators may change `bindings.pattern`, which changes the file *suffix*
+    /// but not the id prefix the writer embeds. Prefix selection has to keep
+    /// working across that, or every custom-pattern installation loses the
+    /// narrowing without saying so.
+    #[test]
+    fn test_loading_for_ids_matches_a_custom_file_suffix() {
+        let dir = TempDir::new().unwrap();
+        YamlOutput::without_verification()
+            .write(&[make_test_module("cli.demo")], dir.path(), false)
+            .unwrap();
+        std::fs::rename(
+            dir.path().join("cli.demo.binding.yaml"),
+            dir.path().join("cli.demo.team.yaml"),
+        )
+        .unwrap();
+
+        let loaded = load_modules_for_ids(dir.path(), &["cli.demo".to_string()]).unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].module_id, "cli.demo");
     }
 
     /// The approval gate's stand-down decision reads `annotations.extra`, and

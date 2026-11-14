@@ -877,8 +877,9 @@ fn test_scan_dry_run_writes_nothing() {
         "a dry run must still name the bindings it skipped: {stderr}"
     );
     assert!(
-        stderr.contains("Would write ACL policy"),
-        "the ACL is a deliverable too: {stderr}"
+        stderr.contains("ACL policy not written"),
+        "a scan must say that the policy was left alone, so nobody reads its \
+         absence as an accident: {stderr}"
     );
 
     let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");

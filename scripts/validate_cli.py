@@ -122,6 +122,10 @@ def validate_scan(session, fixture):
             fixture.overlay,
             "--verify",
             "--prune",
+            # The policy is fixture data for the shim stages below, and `scan`
+            # no longer writes one: the compat flag is what turns the scanned
+            # annotations into the acl.yaml those stages load.
+            "--write-acl",
         ]
         session.run(
             "scan output " + fmt,
@@ -179,6 +183,20 @@ def validate_configuration(session, fixture):
 
 
 def validate_list(session, fixture):
+    for fmt in ["table", "json"]:
+        session.run(
+            "list path census " + fmt,
+            [
+                "list",
+                "--bindings-dir",
+                fixture.bindings,
+                "--acl",
+                fixture.acl,
+                "--format",
+                fmt,
+                "--path-census",
+            ],
+        )
     for fmt in ["table", "json"]:
         for verbose in [False, True]:
             session.run(
@@ -340,6 +358,46 @@ def validate_policy(session, fixture):
                 if fmt == "table"
                 else lambda p: equal(json_output(p)["decision"], "deny"),
             )
+
+
+def validate_acl(session, fixture):
+    """`acl` authors the policy; `scan` no longer does."""
+    policy = session.home / "acl-authored.yaml"
+    session.run("acl without a subcommand", ["acl"], code=2)
+    for profile in ["developer", "strict"]:
+        session.run(
+            "acl init stdout " + profile,
+            ["acl", "init", "--stdout", "--profile", profile],
+            check=contains("default_effect: deny"),
+        )
+    session.run(
+        "acl init write",
+        ["acl", "init", "--path", policy, "--profile", "developer"],
+        check=lambda p: equal(policy.exists(), True),
+    )
+    session.run(
+        "acl init refuses to overwrite",
+        ["acl", "init", "--path", policy],
+        code=1,
+    )
+    session.run("acl init force", ["acl", "init", "--path", policy, "--force"])
+    session.run(
+        "acl sync",
+        ["acl", "sync", "--path", policy, "--bindings-dir", fixture.bindings],
+    )
+    session.run(
+        "acl sync dry run in sync",
+        ["acl", "sync", "--path", policy, "--bindings-dir", fixture.bindings, "--dry-run"],
+    )
+    session.run(
+        "acl explain local",
+        ["acl", "explain", "cli.toy", "--caller", "local", "--path", fixture.acl],
+        check=contains("cli.toy as local"),
+    )
+    session.run(
+        "acl explain external",
+        ["acl", "explain", "cli.toy", "--caller", "@external", "--path", fixture.acl],
+    )
 
 
 def validate_source_verification(session, fixture):
@@ -1343,6 +1401,7 @@ def validate_cli(session):
     validate_list(session, fixture)
     validate_execution(session, fixture)
     validate_policy(session, fixture)
+    validate_acl(session, fixture)
     validate_source_verification(session, fixture)
     validate_shells(session, fixture)
     validate_shim_names(session, fixture)

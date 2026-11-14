@@ -24,6 +24,21 @@ impl Fixture {
         command
             .env("HOME", self.home.path())
             .env("RUST_LOG", "info")
+            // The host's shim directory must not reach a fixture's child. These
+            // tests run `apexe` with a temporary HOME and their own bindings, but
+            // PATH is inherited: a script whose body runs `touch started` was
+            // resolved through the *host's* governed `touch` shim, which the
+            // fixture ACL denies, so the exec call failed with a refusal that
+            // belonged to the machine rather than to the test. Filtering the shim
+            // entries keeps every assertion about this fixture's own policy.
+            .env(
+                "PATH",
+                std::env::join_paths(
+                    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                        .filter(|entry| !entry.to_string_lossy().contains("/.apexe/")),
+                )
+                .unwrap_or_default(),
+            )
             .env_remove("APEXE_BINDINGS_DIR")
             .env_remove("APCORE_CONFIG")
             .env_remove("APEXE_SHIM_DIR")

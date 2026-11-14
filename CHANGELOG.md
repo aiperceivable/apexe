@@ -6,6 +6,60 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
+## [Unreleased]
+
+### Added
+- `apexe list --path-census` reports the three states a command on this machine
+  can be in: `granted` (bound and allowed for `--caller`), `denied` (bound and
+  refused by the policy), and `unscanned` (on `PATH` with no binding at all —
+  the only one `apexe scan <tool>` fixes). It reads directory entries and the
+  policy and never scans or executes anything, so "this command does not work
+  here" becomes a one-line diagnosis instead of a refusal met one call at a
+  time. On this machine it reports 2017 executables, 27 bound, 1990 unscanned.
+- `apexe acl init` / `apexe acl sync` / `apexe acl explain` split policy
+  authorship out of `scan`. `init` writes a starter policy once and refuses to
+  overwrite one, `sync` refreshes only the destructive and open-world denials,
+  and `explain` names the rule that decided a given module for a given caller.
+  The split follows the authority: a generated denial can only restrict, while a
+  generated allow is a grant nobody reviewed — which is how a policy came to be
+  a projection of the last scan rather than an operator's document.
+- `acl init --profile developer` grants the local shell the rest of what this
+  machine installed (`callers: ['local']` → `cli.*`, placed below the denials so
+  first-match-wins ordering still refuses `rm`). It replaces the per-module
+  enumeration every developer had to hand-write: a module the scanner could not
+  classify is now usable locally instead of falling to `default_effect: deny`.
+  `--profile strict` keeps the previous shape, where every grant is one you
+  wrote. Unauthenticated `serve`/`a2a` clients are unaffected by the local rule.
+- Generated policies carry a header stating the model and the evaluation order,
+  and a rewrite preserves it — YAML drops comments on parse, so without this the
+  one part of the file that explains its rule order was erased by every sync.
+
+### Changed
+- `apexe scan` no longer writes `acl.yaml`. It produces bindings, which is its
+  declared deliverable; writing the policy as a side effect of learning about a
+  tool is what let a policy drift away from any review. `--write-acl` keeps an
+  existing script working for one release: it writes a starter only when none
+  exists, then syncs the denials, and never grants.
+- `apexe scan` narrows the bindings it loads to the tool it scanned, and a shim
+  loads only the bindings its own command can reach, not every installed
+  tool's. The shim already knows from its manifest which routes a command
+  serves, so `apexe` no longer parses the whole installation's grammar before
+  running anything: a governed `ls` on an install with 174 bindings went from
+  ~150 ms to ~10 ms, and the cost of a call no longer grows with the number of
+  tools installed. Selection is by module-id prefix, matching the
+  `{module_id}.binding.yaml` convention the writer uses, and every case that
+  could make the subset narrower than the full load — no matching file, an empty
+  route list, an operator-declared `bindings.pattern` — falls back to the full
+  load, so narrowing stays a performance decision and never a coverage one.
+- `apexe exec` narrows the same way: a module-id call loads only its own
+  binding, and a native call (`apexe exec -- ls -la`) loads the `cli.<tool>`
+  namespace of `argv[0]`, which is the whole scope route resolution consults.
+  A tool with many subcommands (e.g. `git`) still loads that tool's full route
+  set, because resolving a subcommand needs its siblings to disambiguate;
+  `apexe exec -- ls` went from ~130 ms to ~10 ms.
+
+---
+
 ## [0.12.0] - 2026-11-13
 
 ### Added

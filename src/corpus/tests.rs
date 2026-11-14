@@ -204,6 +204,11 @@ impl Fixture {
             .arg("--log-stderr")
             .args(["scan"])
             .arg(binary)
+            // These cases are about what a *scan* derives from the corpus, so
+            // they take the deprecated ACL write deliberately: `scan` itself no
+            // longer authors policy (that is `apexe acl init` / `acl sync`), and
+            // the compat flag is what still turns annotations into a file.
+            .arg("--write-acl")
             .args(["--format", "json"]);
         command
     }

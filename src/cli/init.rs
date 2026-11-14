@@ -189,9 +189,17 @@ fn save_bindings(
 ) -> anyhow::Result<()> {
     if !admitted.is_empty() {
         scan.write_bindings(admitted, &config.bindings_dir)?;
-        scan.write_acl(admitted, config)?;
-    } else if !acl.exists() && !existing.is_empty() {
-        scan.write_acl(existing, config)?;
+    }
+    // The starter policy is written once and never overwritten: the moment an
+    // operator edits it, the file is theirs. Every later `init` only refreshes
+    // the denials, which cannot grant anything.
+    let modules = if admitted.is_empty() {
+        existing
+    } else {
+        admitted
+    };
+    if !modules.is_empty() {
+        super::acl::write_starter_or_sync(acl, modules)?;
     }
     Ok(())
 }
@@ -274,6 +282,9 @@ fn scan_options(config: &ApexeConfig, tools: Vec<String>) -> super::ScanArgs {
         verify: true,
         prune: false,
         dry_run: false,
+        // `init` writes the starter policy itself, once, under its own rules
+        // (refuse to overwrite); `scan`'s deprecated ACL write is not the path.
+        write_acl: false,
     }
 }
 

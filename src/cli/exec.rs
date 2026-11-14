@@ -137,8 +137,7 @@ impl ExecArgs {
         };
         let acl = self.acl_path(config)?;
         let dir = self.bindings_dir.as_ref().unwrap_or(&config.bindings_dir);
-        let modules =
-            crate::output::load_modules_from_dir(dir, config.bindings_pattern.as_deref())?;
+        let modules = self.load_callable_modules(config, dir)?;
         let context = self.context();
         let options = self.executor_options(config, dir, acl.as_deref());
         tokio::runtime::Runtime::new()?.block_on(async {
@@ -150,6 +149,88 @@ impl ExecArgs {
             };
             self.execute_call(call, &context, acl.is_some()).await
         })
+    }
+
+    /// Load the grammar this call could select, rather than every installed
+    /// tool's.
+    ///
+    /// A module-id call knows its route outright; a native call knows its tool
+    /// from `argv[0]`, and route resolution only ever consults routes whose
+    /// `command_path[0]` is that tool (see [`native::resolve`], which builds its
+    /// manifest from exactly these modules). So the subset is provable, and the
+    /// cost of `apexe exec` stops growing with the number of tools installed.
+    ///
+    /// Two cases deliberately load everything: an operator-declared
+    /// `bindings.pattern` (which decides what counts as a binding at all — a
+    /// second copy of that rule here could silently disagree with it), and a
+    /// `argv[0]` that is not a plausible tool name (a path, a wrapper name
+    /// whose binding lives under a sanitized id). Narrowing that finds no file
+    /// falls back inside [`crate::output::load_modules_for_ids`].
+    fn load_callable_modules(
+        &self,
+        config: &ApexeConfig,
+        dir: &std::path::Path,
+    ) -> anyhow::Result<Vec<apcore_toolkit::ScannedModule>> {
+        let Some(namespace) = self.module_namespace() else {
+            return Ok(crate::output::load_modules_from_dir(
+                dir,
+                config.bindings_pattern.as_deref(),
+            )?);
+        };
+        if config.bindings_pattern.is_some() {
+            return Ok(crate::output::load_modules_from_dir(
+                dir,
+                config.bindings_pattern.as_deref(),
+            )?);
+        }
+        if let Some(tool_id) = self.module_namespace_tool() {
+            let token = self.subcommand_token();
+            return Ok(crate::output::load_modules_for_tool_route(
+                dir,
+                &tool_id,
+                token.as_deref(),
+            )?);
+        }
+        Ok(crate::output::load_modules_for_ids(dir, &[namespace])?)
+    }
+
+    /// The `cli.<tool>` id of a native call, when the tool name is plausible.
+    fn module_namespace_tool(&self) -> Option<String> {
+        let tool = std::path::Path::new(self.native.first()?)
+            .file_name()?
+            .to_str()?;
+        let plausible = !tool.is_empty()
+            && tool
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || "_-.".contains(character))
+            && !tool.starts_with('.');
+        plausible.then(|| format!("cli.{tool}"))
+    }
+
+    /// The subcommand token a native call starts with, or `None` for a flag.
+    ///
+    /// `git --no-pager status` yields `None`: the token is not where route
+    /// resolution looks first, so the caller falls back to the tool namespace
+    /// rather than guessing.
+    fn subcommand_token(&self) -> Option<String> {
+        let token = self.native.get(1)?;
+        (!token.starts_with('-')).then(|| token.clone())
+    }
+
+    /// The module-id namespace this call can reach, or `None` to load it all.
+    fn module_namespace(&self) -> Option<String> {
+        if let Some(module_id) = &self.module_id {
+            return Some(module_id.clone());
+        }
+        let tool = std::path::Path::new(self.native.first()?)
+            .file_name()?
+            .to_str()?;
+        let plausible = !tool.is_empty()
+            && tool
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || "_-.".contains(character))
+            && !tool.starts_with('.');
+        plausible.then(|| format!("cli.{tool}"))
     }
 
     async fn execute_call(

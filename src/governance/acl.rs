@@ -21,6 +21,62 @@ const DESTRUCTIVE_RULE_DESCRIPTION: &str = "Block destructive CLI commands by de
 /// Marks the rule built from `open_world` annotations; see
 /// [`READONLY_RULE_DESCRIPTION`].
 const OPEN_WORLD_RULE_DESCRIPTION: &str = "Block open-world CLI commands by default";
+/// Marks the rule `generate_default` builds for the local shell, so an
+/// operator can tell a generated grant from a hand-written one.
+///
+/// Only `generate_default` ever writes this rule; `merge_default` never adds
+/// it. Generation may tighten a policy on its own, but granting the local
+/// shell the whole installed surface is a decision an operator makes once,
+/// explicitly — including by choosing `PolicyProfile::Strict`.
+const LOCAL_RULE_DESCRIPTION: &str = "Allow the local shell the surface it installed";
+
+/// Which default grant model `apexe acl init` writes.
+///
+/// Both profiles deny destructive and open-world routes to every caller and
+/// allow readonly ones to every caller. They differ in exactly one decision:
+/// whether the local shell (the shims and `apexe exec`, which stand in for the
+/// human at the keyboard) may run the rest of what this machine installed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyProfile {
+    /// The local shell runs what it installed, except the denials above. The
+    /// default for a developer's machine: installing a tool is the grant, and
+    /// an unclassified module is usable instead of unusable.
+    #[default]
+    Developer,
+    /// Nothing is granted implicitly; an operator names every module the local
+    /// shell may run, above the generated rules. The default a locked-down
+    /// installation will re-write anyway, offered so the choice is explicit
+    /// rather than discovered one refusal at a time.
+    Strict,
+}
+
+impl PolicyProfile {
+    /// The header written above a starter policy, so the file states the model
+    /// it implements instead of leaving a reader to infer it from rule order.
+    fn header(self) -> &'static str {
+        match self {
+            PolicyProfile::Developer => {
+                "# apexe policy (first-match-wins; write narrower rules ABOVE broader ones)\n\
+                 #   destructive / network-reaching : denied to every caller\n\
+                 #   readonly                        : allowed to every caller\n\
+                 #   everything else                 : allowed to `local` (the shims and\n\
+                 #                                     `apexe exec`), denied to unauthenticated\n\
+                 #                                     serve/a2a clients (@external)\n\
+                 # `default_effect` decides whatever no rule matches.\n"
+            }
+            PolicyProfile::Strict => {
+                "# apexe policy (first-match-wins; write narrower rules ABOVE broader ones)\n\
+                 #   destructive / network-reaching : denied to every caller\n\
+                 #   readonly                        : allowed to every caller\n\
+                 #   everything else                 : denied to every caller — add the\n\
+                 #                                     modules the local shell may run above\n\
+                 #                                     these rules\n\
+                 # `default_effect` decides whatever no rule matches.\n"
+            }
+        }
+    }
+}
 
 /// Manages access control for CLI modules using apcore's ACL system.
 ///
@@ -46,6 +102,11 @@ pub struct AclManager {
     acl: ACL,
     /// Cached default_effect so we can serialize without needing an accessor on ACL.
     default_effect: String,
+    /// The comment block written above the rules, carried so a rewrite keeps the
+    /// model statement the file starts with. `None` for a policy that never had
+    /// one: apexe writes a header only for a policy it generated, and never
+    /// invents one for a document the operator wrote.
+    header: Option<String>,
 }
 
 impl AclManager {
@@ -77,11 +138,23 @@ impl AclManager {
         Ok(Self {
             acl,
             default_effect,
+            header: Self::read_header(config_path),
         })
     }
 
-    /// Generate default ACL from scanned modules based on annotations.
+    /// Generate the deny/allow floor from scanned modules' annotations.
+    ///
+    /// Order is the policy: readonly {"allow"} first, then destructive and
+    /// open-world {"deny"}, so a module that is both cannot be allowed by the
+    /// first rule. `default_effect` stays `deny`, which is what makes an
+    /// unclassified module fall to a refusal rather than a grant.
     pub fn generate_default(modules: &[ScannedModule]) -> Self {
+        Self::generate_starter(modules, PolicyProfile::Strict)
+    }
+
+    /// Generate a starter policy: the floor above, plus the local shell's grant
+    /// when the profile grants one.
+    pub fn generate_starter(modules: &[ScannedModule], profile: PolicyProfile) -> Self {
         let readonly_ids = Self::readonly_ids(modules);
         let destructive_ids = Self::destructive_ids(modules);
         let open_world_ids = Self::open_world_ids(modules);
@@ -96,11 +169,17 @@ impl AclManager {
         if !open_world_ids.is_empty() {
             rules.push(Self::open_world_rule(open_world_ids));
         }
+        // Last on purpose: every deny above it wins, which is what makes this
+        // grant "anything except the denials" rather than "anything".
+        if matches!(profile, PolicyProfile::Developer) {
+            rules.push(Self::local_rule());
+        }
 
         let acl = ACL::new(rules, "deny", None);
         Self {
             acl,
             default_effect: "deny".to_string(),
+            header: Some(profile.header().to_string()),
         }
     }
 
@@ -190,6 +269,91 @@ impl AclManager {
         Ok(Self {
             acl,
             default_effect,
+            header: existing.header,
+        })
+    }
+
+    /// Refresh only the rules that refuse: the `destructive` and `open_world`
+    /// floors.
+    ///
+    /// This is the whole of what `apexe acl sync` may do. Regenerating the
+    /// allow side would re-grant whatever the current scan happens to call
+    /// readonly — a permission the operator never reviewed — so the allow rules
+    /// are left exactly as written. A rule is matched by its fixed description;
+    /// everything else in the file, including a hand-written rule that happens
+    /// to share a target, is carried through untouched and in place.
+    #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+    pub fn sync_deny_floor(
+        existing_path: &Path,
+        modules: &[ScannedModule],
+    ) -> Result<Self, ModuleError> {
+        let existing = Self::from_config(existing_path)?;
+        let batch_ids: std::collections::HashSet<&str> =
+            modules.iter().map(|m| m.module_id.as_str()).collect();
+        let tool_segments = Self::rescanned_tool_segments(modules);
+        let destructive_ids = Self::destructive_ids(modules);
+        let open_world_ids = Self::open_world_ids(modules);
+        let mut rules = existing.acl.rules().to_vec();
+        // An id already refused by an *earlier* deny rule needs no second
+        // entry: evaluation is first-match-wins, so the earlier rule decides
+        // and adding it here would only produce a duplicate target plus a drift
+        // report every run. Operators split `mv`/`chmod`/`ln` out of the
+        // generated rule for a clearer refusal message, and sync must respect
+        // that rather than argue with it.
+        let already_denied = Self::denied_before_each_rule(&rules);
+        let mut saw_destructive = false;
+        let mut saw_open_world = false;
+        for (index, rule) in rules.iter_mut().enumerate() {
+            match rule.description.as_deref() {
+                Some(DESTRUCTIVE_RULE_DESCRIPTION) => {
+                    // Same merge rule the full generator uses: an id is only
+                    // replaced when *this* batch rescanned its tool. A caller
+                    // that hands over one tool's modules must not erase the
+                    // denials that belong to every other tool.
+                    Self::retain_mergeable_targets(&mut rule.targets, &batch_ids, &tool_segments);
+                    let earlier = &already_denied[index];
+                    rule.targets.extend(
+                        destructive_ids
+                            .iter()
+                            .filter(|id| !earlier.contains(*id))
+                            .cloned(),
+                    );
+                    saw_destructive = true;
+                }
+                Some(OPEN_WORLD_RULE_DESCRIPTION) => {
+                    Self::retain_mergeable_targets(&mut rule.targets, &batch_ids, &tool_segments);
+                    let earlier = &already_denied[index];
+                    rule.targets.extend(
+                        open_world_ids
+                            .iter()
+                            .filter(|id| !earlier.contains(*id))
+                            .cloned(),
+                    );
+                    saw_open_world = true;
+                }
+                _ => {}
+            }
+        }
+        if !saw_destructive && !destructive_ids.is_empty() {
+            rules.push(Self::destructive_rule(destructive_ids));
+        }
+        if !saw_open_world && !open_world_ids.is_empty() {
+            rules.push(Self::open_world_rule(open_world_ids));
+        }
+        // A deny rule whose set became empty protects nothing and would be
+        // reported as an inert target list, so drop it rather than leave it.
+        rules.retain(|rule| {
+            !matches!(
+                rule.description.as_deref(),
+                Some(DESTRUCTIVE_RULE_DESCRIPTION) | Some(OPEN_WORLD_RULE_DESCRIPTION)
+            ) || !rule.targets.is_empty()
+        });
+        let default_effect = existing.default_effect.clone();
+        let acl = ACL::new(rules, &default_effect, None);
+        Ok(Self {
+            acl,
+            default_effect,
+            header: existing.header,
         })
     }
 
@@ -349,6 +513,27 @@ impl AclManager {
         rule
     }
 
+    /// The local shell's grant: everything this machine installed, minus the
+    /// denials that precede it in the generated order.
+    ///
+    /// `cli.*` rather than an enumeration, because the enumeration is the thing
+    /// that made a generated policy unusable: a module the scanner could not
+    /// classify fell to `default_effect: deny`, so every newly installed tool
+    /// was refused until an operator hand-listed it — and the list they wrote
+    /// drifted from the annotations it was meant to mirror (`git branch -D`
+    /// allowed, `git rm` denied). Here the burden sits on the denies, which the
+    /// annotations do maintain, and a `@external` caller still gets nothing by
+    /// omission because this rule never matches it.
+    fn local_rule() -> ACLRule {
+        let mut rule = ACLRule::new(
+            vec!["local".to_string()],
+            vec!["cli.*".to_string()],
+            "allow",
+        );
+        rule.description = Some(LOCAL_RULE_DESCRIPTION.to_string());
+        rule
+    }
+
     /// Destructive commands are denied outright here rather than gated on a
     /// human, which is deliberate for a *generated* default: apexe cannot know
     /// at scan time which caller should be trusted to confirm.
@@ -377,6 +562,27 @@ impl AclManager {
         let mut rule = ACLRule::new(vec!["*".to_string()], targets, "deny");
         rule.description = Some(DESTRUCTIVE_RULE_DESCRIPTION.to_string());
         rule
+    }
+
+    /// For each rule, the targets already refused by a `deny` rule above it.
+    ///
+    /// A later deny rule cannot change a decision an earlier one already made,
+    /// so a target listed in both is dead weight: it makes `acl sync` report a
+    /// difference on every run and gives the file two places to change when the
+    /// intent changes. Only `deny` rules count — an allow above would be
+    /// overridden, and the caller-specific patterns a rule may carry are
+    /// ignored on purpose: refusing an id for everybody is the reading that
+    /// cannot be wrong in the dangerous direction.
+    fn denied_before_each_rule(rules: &[ACLRule]) -> Vec<std::collections::HashSet<String>> {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut per_rule: Vec<std::collections::HashSet<String>> = Vec::with_capacity(rules.len());
+        for rule in rules {
+            per_rule.push(seen.clone());
+            if rule.effect == "deny" {
+                seen.extend(rule.targets.iter().cloned());
+            }
+        }
+        per_rule
     }
 
     /// Whether `other` would render the same policy document as this manager.
@@ -421,13 +627,64 @@ impl AclManager {
                 format!("Failed to serialize ACL: {e}"),
             )
         })?;
-        std::fs::write(path, yaml).map_err(|e| {
+        let document = match &self.header {
+            Some(header) => format!("{header}{yaml}"),
+            None => yaml,
+        };
+        std::fs::write(path, document).map_err(|e| {
             ModuleError::new(
                 ErrorCode::GeneralInternalError,
                 format!("Failed to write ACL file: {e}"),
             )
         })?;
         Ok(())
+    }
+
+    /// The document this manager would write, header included.
+    #[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+    pub fn render(&self) -> Result<String, ModuleError> {
+        let config = AclConfig {
+            rules: self.acl.rules().to_vec(),
+            default_effect: self.default_effect.clone(),
+        };
+        let yaml = serde_yaml::to_string(&config).map_err(|e| {
+            ModuleError::new(
+                ErrorCode::GeneralInternalError,
+                format!("Failed to serialize ACL: {e}"),
+            )
+        })?;
+        Ok(match &self.header {
+            Some(header) => format!("{header}{yaml}"),
+            None => yaml,
+        })
+    }
+
+    /// The target ids of the destructive and open-world deny rules, keyed by
+    /// the description that identifies each rule.
+    ///
+    /// `acl sync` writes nothing else, so this is the whole surface a sync can
+    /// change — and the whole surface a drift report has to describe.
+    pub fn deny_floor_targets(&self) -> std::collections::BTreeMap<String, Vec<String>> {
+        let mut floors = std::collections::BTreeMap::new();
+        for rule in self.acl.rules() {
+            let Some(description) = rule.description.as_deref() else {
+                continue;
+            };
+            if matches!(
+                description,
+                DESTRUCTIVE_RULE_DESCRIPTION | OPEN_WORLD_RULE_DESCRIPTION
+            ) {
+                // Sorted and deduped: the order of a deny rule's targets
+                // carries no meaning, and comparing raw vectors reported
+                // permanent drift whenever a sync re-appended them in a
+                // different order than the operator wrote them.
+                let mut targets = rule.targets.clone();
+                targets.sort();
+                targets.dedup();
+                floors.insert(description.to_string(), targets);
+            }
+        }
+        floors
     }
 
     /// Consume the manager and return the inner ACL.
@@ -518,6 +775,29 @@ impl AclManager {
             .and_then(|s| serde_yaml::from_str::<serde_json::Value>(&s).ok())
             .and_then(|v| v.get("default_effect")?.as_str().map(String::from))
             .unwrap_or_else(|| "deny".to_string())
+    }
+
+    /// The leading comment block of a policy file, verbatim.
+    ///
+    /// YAML drops comments on parse, so a rewrite would otherwise erase the
+    /// model statement at the top of a generated policy — the one part of the
+    /// file that explains *why* its rules are ordered as they are. Reading it
+    /// back as text keeps an operator's edits to that statement, and keeps
+    /// apexe from inventing a header for a document that never had one.
+    fn read_header(path: &Path) -> Option<String> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let mut header = String::new();
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if !line.trim_start().starts_with('#') {
+                break;
+            }
+            header.push_str(line);
+            header.push('\n');
+        }
+        (!header.is_empty()).then_some(header)
     }
 }
 
@@ -892,6 +1172,189 @@ mod tests {
         assert_eq!(policy.acl.rules().len(), 1);
     }
 
+    /// The developer profile grants the local shell the surface it installed,
+    /// and the grant must sit *after* the denials: first-match-wins makes the
+    /// order the policy, so a local allow above the destructive deny would
+    /// silently re-open `rm`.
+    #[test]
+    fn test_starter_developer_grants_the_local_shell_below_every_denial() {
+        let modules = vec![
+            make_module_with_annotations("cli.ls", true, false),
+            make_module_with_annotations("cli.git.clean", false, true),
+        ];
+        let mgr = AclManager::generate_starter(&modules, PolicyProfile::Developer);
+        let rules = mgr.acl.rules();
+        let local: Vec<usize> = rules
+            .iter()
+            .enumerate()
+            .filter(|(_, rule)| rule.callers == vec!["local".to_string()])
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(local.len(), 1, "one local rule, not a per-module list");
+        assert!(rules[local[0]].description.as_deref() == Some(LOCAL_RULE_DESCRIPTION));
+        assert_eq!(rules[local[0]].targets, vec!["cli.*".to_string()]);
+        assert!(
+            rules
+                .iter()
+                .position(|rule| rule.description.as_deref() == Some(DESTRUCTIVE_RULE_DESCRIPTION))
+                .unwrap()
+                < local[0],
+            "the denial must be evaluated before the local grant"
+        );
+        assert_eq!(
+            mgr.explain_for("local", "cli.unclassified").effect,
+            "allow",
+            "a module the scan could not classify is usable locally, not refused"
+        );
+        assert_eq!(
+            mgr.explain_for("@external", "cli.unclassified").effect,
+            "deny",
+            "the same module stays closed to an unauthenticated client"
+        );
+    }
+
+    /// The strict profile is the previous behaviour, kept for installations
+    /// that name every grant themselves.
+    #[test]
+    fn test_starter_strict_grants_nothing_to_the_local_shell() {
+        let modules = vec![make_module_with_annotations("cli.ls", true, false)];
+        let mgr = AclManager::generate_starter(&modules, PolicyProfile::Strict);
+        assert_eq!(mgr.explain_for("local", "cli.unclassified").effect, "deny");
+        assert!(
+            !mgr.acl
+                .rules()
+                .iter()
+                .any(|rule| rule.callers == vec!["local".to_string()]),
+            "strict writes no local rule at all"
+        );
+    }
+
+    /// `acl sync` refreshes denials and nothing else. A scan that learns about a
+    /// new readonly module must not hand it to a caller the operator never
+    /// granted — that is the whole reason generation was split from policy.
+    #[test]
+    fn test_sync_never_adds_an_allow_to_a_narrowed_policy() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("acl.yaml");
+        let strict = AclManager::generate_starter(
+            &[make_module_with_annotations("cli.ls", true, false)],
+            PolicyProfile::Strict,
+        );
+        strict.write_config(&path).unwrap();
+        let before = AclManager::from_config(&path).unwrap();
+
+        let synced = AclManager::sync_deny_floor(
+            &path,
+            &[
+                make_module_with_annotations("cli.new.readonly", true, false),
+                make_module_with_annotations("cli.new.destructive", false, true),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            synced.explain_for("@external", "cli.new.readonly").effect,
+            before.explain_for("@external", "cli.new.readonly").effect,
+            "sync must not turn a newly scanned readonly module into a grant"
+        );
+        assert_eq!(
+            synced
+                .explain_for("@external", "cli.new.destructive")
+                .effect,
+            "deny",
+            "a newly scanned destructive module joins the floor"
+        );
+    }
+
+    /// A sync given one tool's modules must leave the denials of every other
+    /// tool alone. `scan --write-acl` (the compat path) hands over a batch, and
+    /// a merge that treated the batch as the whole surface erased the rest.
+    #[test]
+    fn test_sync_keeps_denials_belonging_to_tools_the_batch_never_touched() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("acl.yaml");
+        let floor = AclManager::generate_starter(
+            &[
+                make_module_with_annotations("cli.rm", false, true),
+                make_module_with_annotations("cli.git.clean", false, true),
+            ],
+            PolicyProfile::Strict,
+        );
+        floor.write_config(&path).unwrap();
+
+        let synced = AclManager::sync_deny_floor(
+            &path,
+            &[make_module_with_annotations("cli.rm", false, true)],
+        )
+        .unwrap();
+
+        assert_eq!(
+            synced.explain_for("local", "cli.git.clean").effect,
+            "deny",
+            "a git rescan must not drop the coreutils denial"
+        );
+    }
+
+    /// An operator who splits `mv` out of the generated deny rule gets a
+    /// clearer refusal message, and sync must not keep re-adding it: a target
+    /// already refused above cannot change a decision, so re-adding it would
+    /// only report drift on every run.
+    #[test]
+    fn test_sync_does_not_re_add_a_target_an_earlier_deny_already_covers() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("acl.yaml");
+        std::fs::write(
+            &path,
+            "default_effect: deny\nrules:\n  - callers: ['*']\n    targets: ['cli.mv']\n    \
+             effect: deny\n    description: Deny mv for every caller\n  - callers: ['*']\n    \
+             targets: ['cli.cp']\n    effect: deny\n    description: Block destructive CLI \
+             commands by default\n",
+        )
+        .unwrap();
+
+        let synced = AclManager::sync_deny_floor(
+            &path,
+            &[
+                make_module_with_annotations("cli.mv", false, true),
+                make_module_with_annotations("cli.cp", false, true),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            synced.deny_floor_targets()[DESTRUCTIVE_RULE_DESCRIPTION],
+            vec!["cli.cp".to_string()],
+            "mv is already refused above, so the generated rule must not repeat it"
+        );
+    }
+
+    /// The model statement at the top of a generated policy survives a rewrite,
+    /// because it is the only part of the file that says why the rules are in
+    /// this order — YAML drops comments on parse, so a rewrite that ignored them
+    /// would erase it.
+    #[test]
+    fn test_a_generated_header_survives_a_sync() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("acl.yaml");
+        let starter = AclManager::generate_starter(
+            &[make_module_with_annotations("cli.rm", false, true)],
+            PolicyProfile::Developer,
+        );
+        starter.write_config(&path).unwrap();
+        let synced = AclManager::sync_deny_floor(
+            &path,
+            &[make_module_with_annotations("cli.cp", false, true)],
+        )
+        .unwrap();
+        synced.write_config(&path).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.starts_with("# apexe policy"),
+            "the header must still be the first thing in the file: {text}"
+        );
+    }
+
     #[test]
     fn test_acl_generate_default_readonly() {
         let modules = vec![
@@ -1110,6 +1573,7 @@ mod tests {
         AclManager {
             acl: ACL::new(vec![rule], "deny", None),
             default_effect: "deny".to_string(),
+            header: None,
         }
         .write_config(&path)
         .unwrap();
@@ -1657,6 +2121,7 @@ mod tests {
         let mgr = AclManager {
             acl,
             default_effect: "deny".to_string(),
+            header: None,
         };
 
         let decision = mgr.explain_external("cli.deploy");

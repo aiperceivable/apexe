@@ -1,5 +1,7 @@
+mod acl;
 mod activation;
 mod agent;
+mod census;
 mod config_gen;
 mod config_set;
 mod env;
@@ -14,6 +16,7 @@ mod shell_init;
 mod shim;
 mod source_scripts;
 mod verify;
+pub use acl::{AclArgs, AclCommand, AclExplainArgs, AclInitArgs, AclProfile, AclSyncArgs};
 pub use agent::AgentArgs;
 pub use config_set::ConfigAction;
 pub use env::EnvArgs;
@@ -29,7 +32,6 @@ use clap::{Parser, Subcommand};
 use tracing::info;
 
 use crate::config::{load_config, ApexeConfig};
-
 pub fn is_shim_invocation(raw: &[std::ffi::OsString]) -> bool {
     raw.first()
         .and_then(|value| std::path::Path::new(value).file_name())
@@ -136,6 +138,12 @@ pub enum Commands {
     /// Show, initialize or update apexe configuration.
     #[command(display_order = 100)]
     Config(ConfigArgs),
+    /// Write, refresh or explain the caller-permission policy (ACL).
+    ///
+    /// Separate from `scan` on purpose: a scan learns what a command does, a
+    /// policy decides who may run it, and only this command writes the latter.
+    #[command(display_order = 95)]
+    Acl(AclArgs),
     /// Show the filesystem access boundary wrapped tools are checked
     /// against, or check one path against it.
     #[command(display_order = 90)]
@@ -182,6 +190,7 @@ impl Cli {
             Commands::List(args) => args.execute(&config),
             Commands::Config(args) => args.execute(&config),
             Commands::Policy(args) => args.execute(&config),
+            Commands::Acl(args) => args.execute(&config),
         }
         .map(|()| 0)
     }
@@ -297,6 +306,33 @@ pub struct ScanArgs {
     /// skills — so a dry run never touches the filesystem.
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Also refresh the ACL's deny floor after scanning (deprecated).
+    ///
+    /// `scan` produces an inventory: bindings, whose annotations describe what a
+    /// command does. It is not a decision about who may run what, and writing
+    /// one used to happen here on every scan, so a policy silently changed as a
+    /// side effect of learning about a tool. That now belongs to `apexe acl`:
+    /// `acl init` writes a starter policy once, and `acl sync` refreshes the
+    /// destructive and open-world denials — and nothing else.
+    ///
+    /// This flag keeps an existing script working for one release. It writes a
+    /// starter policy only when none exists, then syncs the deny floor; it never
+    /// grants anything.
+    #[arg(long)]
+    pub write_acl: bool,
+}
+
+/// Load every installed binding, for a command whose subject is the whole
+/// surface rather than one route (`acl init`, `acl sync`, `list`).
+#[allow(clippy::result_large_err)] // ModuleError is 184 bytes; acceptable at crate boundary
+pub(crate) fn load_all_modules(
+    config: &ApexeConfig,
+) -> anyhow::Result<Vec<apcore_toolkit::ScannedModule>> {
+    Ok(crate::output::load_modules_from_dir(
+        &config.bindings_dir,
+        config.bindings_pattern.as_deref(),
+    )?)
 }
 
 impl ScanArgs {
@@ -558,28 +594,27 @@ impl ScanArgs {
         config: &ApexeConfig,
     ) -> anyhow::Result<()> {
         let acl_path = config.config_dir.join("acl.yaml");
+        if !self.write_acl {
+            // Nothing to do by default: a scan learns what a command does, and
+            // the policy decides who may run it. Recording that decision as a
+            // side effect of the former is how a policy came to be a projection
+            // of the last scan rather than a reviewed document.
+            info!(
+                path = %acl_path.display(),
+                "ACL policy not written; `apexe acl init` writes a starter policy and \
+                 `apexe acl sync` refreshes the denials"
+            );
+            return Ok(());
+        }
+        tracing::warn!(
+            "`scan --write-acl` is deprecated; use `apexe acl init` (once) and \
+             `apexe acl sync` (denials only)"
+        );
         if self.dry_run {
             info!(path = %acl_path.display(), "Would write ACL policy");
             return Ok(());
         }
-        let acl_manager = if acl_path.exists() {
-            let existing = crate::governance::AclManager::from_config(&acl_path)
-                .map_err(|e| anyhow::anyhow!("Failed to load existing ACL: {e}"))?;
-            let merged = crate::governance::AclManager::merge_default(&acl_path, modules)
-                .map_err(|e| anyhow::anyhow!("Failed to load existing ACL for merge: {e}"))?;
-            // A scan that changes no rule must not rewrite the file: the write
-            // re-serializes the document and takes the operator's comments and
-            // ordering with it, as a side effect of scanning a tool.
-            if existing.same_document(&merged)? {
-                info!(path = %acl_path.display(), "ACL policy unchanged; leaving the file untouched");
-                return Ok(());
-            }
-            merged
-        } else {
-            crate::governance::AclManager::generate_default(modules)
-        };
-        acl_manager
-            .write_config(&acl_path)
+        crate::cli::acl::write_starter_or_sync(&acl_path, modules)
             .map_err(|e| anyhow::anyhow!("Failed to write ACL: {e}"))?;
         Ok(())
     }
@@ -1188,6 +1223,17 @@ pub struct ListArgs {
     #[arg(long, default_value = "local")]
     pub caller: String,
 
+    /// Report the three states a command on this machine can be in.
+    ///
+    /// `granted` — bound and allowed for `--caller`; `denied` — bound and
+    /// refused by the policy; `unscanned` — on `PATH` with no binding at all,
+    /// which is the only one of the three that `apexe scan <tool>` fixes.
+    /// Reads directory entries and the policy only: it never scans or executes
+    /// anything, so it is cheap enough to run whenever a command "does not
+    /// work here".
+    #[arg(long)]
+    pub path_census: bool,
+
     /// Only list modules whose underlying binary is still reachable on this
     /// machine.
     ///
@@ -1206,6 +1252,9 @@ impl ListArgs {
         let bindings_dir = self.bindings_dir.as_ref().unwrap_or(&config.bindings_dir);
 
         let mut modules = self.load_modules(bindings_dir, config.bindings_pattern.as_deref())?;
+        if self.path_census {
+            return self.print_path_census(&modules, config);
+        }
         if modules.is_empty() {
             return self.print_empty(config,
                 "No modules found. Run 'apexe init' first, or 'apexe scan <tool>' for a custom tool.");
@@ -1247,6 +1296,28 @@ impl ListArgs {
     /// derived from: an overlay that narrows its declared surface stops
     /// producing modules, and an operator reading `acl.yaml` otherwise sees
     /// permissions nothing can exercise until a route is reopened.
+    /// Print the census, resolving the policy the same way `--verbose` does.
+    ///
+    /// An absent policy is reported as such rather than as "nothing granted":
+    /// with no ACL loaded there is no decision to report, and calling everything
+    /// denied would be a claim the tool cannot support.
+    fn print_path_census(
+        &self,
+        modules: &[apcore_toolkit::ScannedModule],
+        config: &ApexeConfig,
+    ) -> anyhow::Result<()> {
+        let directories = census::census_directories(&std::env::var_os("PATH").unwrap_or_default());
+        let acl = match local::acl_path(self.acl.as_deref(), config)? {
+            Some(path) => Some(crate::governance::AclManager::from_config(&path)?),
+            None => None,
+        };
+        if acl.is_none() && self.format != "json" {
+            println!("No ACL loaded; every bound tool is reported as denied until one exists.\n");
+        }
+        let census = census::collect(&directories, modules, acl.as_ref(), &self.caller);
+        census::print(&census, &self.format)
+    }
+
     fn print_diagnostics(
         &self,
         modules: &[apcore_toolkit::ScannedModule],
@@ -1876,6 +1947,7 @@ mod tests {
             verify: false,
             prune: false,
             dry_run: false,
+            write_acl: false,
             tools: vec!["echo".to_string()],
             output_dir: None,
             depth: 1,
@@ -2566,6 +2638,7 @@ mod tests {
             verbose: false,
             acl: None,
             available_only: true,
+            path_census: false,
             caller: "local".to_string(),
         };
         let loaded = args.load_modules(tmp.path(), None).unwrap();
@@ -2597,6 +2670,7 @@ mod tests {
             verbose: true,
             acl: Some(explicit_acl.clone()),
             available_only: false,
+            path_census: false,
             caller: "local".to_string(),
         };
         assert_eq!(args.resolve_acl_path(&config), Some(explicit_acl));
@@ -2619,6 +2693,7 @@ mod tests {
             verbose: true,
             acl: None,
             available_only: false,
+            path_census: false,
             caller: "local".to_string(),
         };
         assert_eq!(args.resolve_acl_path(&config), Some(default_acl));
@@ -2638,6 +2713,7 @@ mod tests {
             verbose: true,
             acl: None,
             available_only: false,
+            path_census: false,
             caller: "local".to_string(),
         };
         assert_eq!(args.resolve_acl_path(&config), None);
@@ -2845,6 +2921,7 @@ mod tests {
             verify: false,
             prune: false,
             dry_run: false,
+            write_acl: false,
             tools: vec!["nonexistent_tool_xyz_12345".to_string()],
             output_dir: None,
             depth: 2,
@@ -2876,6 +2953,7 @@ mod tests {
             verify: false,
             prune: false,
             dry_run: false,
+            write_acl: false,
             tools: vec!["echo".to_string()],
             output_dir: None,
             depth: 2,
@@ -2916,6 +2994,9 @@ mod tests {
             verify: false,
             prune: false,
             dry_run: false,
+            // This case exercises the merge contract of the ACL write, which is
+            // now reached through the deprecated flag rather than by scanning.
+            write_acl: true,
             tools: vec!["ls".to_string()],
             output_dir: None,
             depth: 1,
@@ -2973,6 +3054,7 @@ mod tests {
             verbose: false,
             acl: None,
             available_only: false,
+            path_census: false,
             caller: "local".to_string(),
         };
         let result = args.load_modules(tmp.path(), None);

@@ -25,6 +25,7 @@ git/docker scan tests and the macOS native example are opt-in.
 | Reviewed source initialization | `corpus`, `cli::init`; `init` | Cached Git rules, revision pinning, offline use, refresh and binding/policy preservation |
 | Terminal-agent execution routing | `skills/apexe/SKILL.md`, `scripts/install_agent_skill.py` | Fallback Claude Code/Codex/pi/OpenCode Skill for hosts without shell/hook integration; host integration uses `apexe agent` and `apexe sh`, and the Skill routes exec only when no host integration is active |
 | Binding and agent guidance output | `output`; `scan --skills-dir` | YAML bindings and optional Claude Skills; Rust API tool-definition export |
+| Policy authorship | `governance::acl`; `acl` | `acl init` writes a starter policy once (`--profile developer\|strict`), `acl sync` refreshes only the destructive and open-world denials, `acl explain` names the rule that decided a module. `scan` writes bindings and never policy |
 | Discovery and policy inspection | `list --verbose`, `policy` | Module schemas, annotations, ACL context, validated evidence and filesystem boundary checks |
 | Local execution | `cli::exec`, `module`; `exec` | Module JSON and reviewed native argv; preflight dry-run, child status and native streams |
 | Shell integration | `cli::env`, `shim`, `shell_init`; `env` | Eligible external-command PATH shims, startup activation, refresh, removal and diagnostics; `--scanned` routes execute the original argv after schema validation |
@@ -120,7 +121,7 @@ src/
 │   └── overlay      ToolOverlay: curated flag/arg descriptions, apply_overlay
 ├── auth             Transport authentication for the HTTP-family MCP/A2A
 │                    transports (token/JWT, loopback-bind detection)
-├── cli/             clap CLI entry point (scan/serve/a2a/exec/sh/hook/agent/env/verify/init/list/config/policy)
+├── cli/             clap CLI entry point (scan/serve/a2a/exec/sh/hook/agent/env/verify/init/list/acl/config/policy)
 │   ├── init         Reviewed source bootstrap, binding ownership and starter ACL
 │   ├── exec         Module JSON and native argv through shared governance
 │   ├── config_set   Persistent log-level updates preserving other settings

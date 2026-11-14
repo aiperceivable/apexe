@@ -537,10 +537,7 @@ fn execute(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let modules = crate::output::load_modules_from_dir(
-        &manifest.bindings_dir,
-        manifest.bindings_pattern.as_deref(),
-    )?;
+    let modules = load_routable_modules(name, manifest)?;
     let (selected, input, replay) = match resolve_route(name, args, manifest, &modules) {
         Ok(resolved) => resolved,
         Err(error) => {
@@ -591,6 +588,38 @@ fn execute(
 /// here, because the caller already owns the descriptor.
 pub(super) fn passthrough_stdin_mode() -> StdinMode {
     StdinMode::Inherit
+}
+
+/// Load the grammar this shim could possibly select.
+///
+/// A shim stands in for one command, and the manifest already records every
+/// route that command can reach, so the subset is known before argv is even
+/// read: `ls` loads one binding instead of the whole installation's. Route
+/// resolution then runs against that subset exactly as it ran against the full
+/// list, because [`resolve_route`] only ever consults the routes named in
+/// `manifest.commands[name]`.
+///
+/// A configured `bindings.pattern` disables the narrowing on purpose. The
+/// pattern decides which files count as bindings at all, and re-deriving that
+/// here with a filename-prefix test would be a second copy of the rule that can
+/// silently disagree with the operator's.
+fn load_routable_modules(name: &str, manifest: &Manifest) -> anyhow::Result<Vec<ScannedModule>> {
+    let routes = manifest
+        .commands
+        .get(name)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if manifest.bindings_pattern.is_some() || routes.is_empty() {
+        return Ok(crate::output::load_modules_from_dir(
+            &manifest.bindings_dir,
+            manifest.bindings_pattern.as_deref(),
+        )?);
+    }
+    let module_ids: Vec<String> = routes.iter().map(|route| route.module_id.clone()).collect();
+    Ok(crate::output::load_modules_for_ids(
+        &manifest.bindings_dir,
+        &module_ids,
+    )?)
 }
 
 fn build_executor_for_scanned(

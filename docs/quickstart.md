@@ -84,11 +84,15 @@ apexe list --verbose
 apexe list --format json
 ```
 
-Module IDs normally use the `cli.*` namespace. Inspect the bindings and generated
-ACL before executing. A new policy defaults to deny; local readonly operations
-receive allow rules, while destructive, network-reaching and unknown modules
-are denied. Initialization preserves manual rules and an existing policy default.
-These are generated suggestions rather than your own review.
+Module IDs normally use the `cli.*` namespace. `apexe scan` writes bindings
+only — it produces the inventory, not the policy. Inspect them, then write a
+starter policy with `apexe acl init` (or let `apexe init` do it once). The
+policy defaults to deny: destructive and network-reaching modules are refused to
+every caller, readonly ones are allowed to every caller, and `--profile
+developer` grants the local shell (`cli.*`) everything above the denials while
+`--profile strict` grants nothing implicitly. A later scan never changes an
+allow: `apexe acl sync` refreshes the two denial rules and nothing else. These
+are generated suggestions rather than your own review.
 
 ## 4. Execute locally
 
