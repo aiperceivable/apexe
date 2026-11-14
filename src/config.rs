@@ -91,6 +91,20 @@ pub struct ApexeConfig {
     /// `~/.config` needs no entry here; it is not guarded in the first place.
     pub allowed_paths: Vec<PathBuf>,
 
+    /// The configuration schema this file was written against.
+    ///
+    /// A field rather than a comment because the shipped template states it and
+    /// a key the binary silently ignores is a promise the file does not keep. An
+    /// unsupported version is refused with the version named, so the failure
+    /// lands on the file rather than on a rule that quietly stopped applying.
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+
+    /// Which built-in defaults this file was seeded from, for upgrade
+    /// comparison. Reported by `apexe config check`; never enforced.
+    #[serde(default)]
+    pub defaults_revision: u32,
+
     /// The command-labelling lists, as `annotations:` in `config.yaml`.
     ///
     /// `None` means the file did not describe them and the compiled defaults
@@ -142,6 +156,13 @@ pub struct ApexeConfig {
     /// apcore core configuration for ecosystem integration.
     #[serde(skip)]
     pub core_config: Option<CoreConfig>,
+}
+
+/// The schema version this binary writes and understands.
+pub const CONFIG_SCHEMA_VERSION: u32 = 1;
+
+fn default_schema_version() -> u32 {
+    CONFIG_SCHEMA_VERSION
 }
 
 /// Matchers that read the command path: exact words and, optionally, stems.
@@ -293,6 +314,8 @@ impl Default for ApexeConfig {
             json_output_preference: true,
             additional_denied_paths: Vec::new(),
             allowed_paths: Vec::new(),
+            schema_version: default_schema_version(),
+            defaults_revision: 0,
             annotations: None,
             paths: None,
             overlay_dirs: Vec::new(),
@@ -1371,6 +1394,36 @@ mod tests {
         assert!(config.bindings_dir.exists());
         assert!(config.cache_dir.exists());
         assert!(config.config_dir.exists());
+    }
+}
+
+#[cfg(test)]
+mod template_matches_baseline_tests {
+    use super::*;
+
+    /// `config init` writes the template; the compiled defaults apply when the
+    /// section is absent. If the two disagree, running `config init` changes
+    /// decisions without changing anything the operator wrote — the exact
+    /// silent-drift shape this project keeps running into.
+    #[test]
+    fn test_the_template_labels_commands_exactly_like_the_compiled_defaults() {
+        let template: ApexeConfig =
+            serde_yaml::from_str(include_str!("../docs/config.example.yaml")).unwrap();
+        let from_template = template
+            .annotations
+            .expect("template describes annotations");
+        let compiled = crate::config::AnnotationDefaults::default();
+        assert_eq!(
+            from_template, compiled,
+            "the shipped template and the compiled defaults must be the same policy"
+        );
+    }
+
+    #[test]
+    fn test_the_template_declares_a_schema_version_the_binary_understands() {
+        let template: ApexeConfig =
+            serde_yaml::from_str(include_str!("../docs/config.example.yaml")).unwrap();
+        assert_eq!(template.schema_version, CONFIG_SCHEMA_VERSION);
     }
 }
 

@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ## [Unreleased]
 
+### Fixed
+- The shipped `config.yaml` template now means exactly what the compiled
+  defaults mean. It disagreed in three lists — `readonly` was missing nine words
+  the baseline has (`find`, `ps`, `whoami`, …), `requires_approval` omitted
+  `--recursive`, and `runs_other_commands` omitted `su` and `find` — so running
+  `apexe config init` silently changed decisions relative to having no file at
+  all. A test now compares the template against `AnnotationDefaults::default()`,
+  which is how the divergence was found and what keeps it from coming back.
+- `schema_version` and `defaults_revision` are real config fields. They were in
+  the shipped template while nothing read them, because `ApexeConfig` tolerates
+  unknown keys: a file stating its schema version was stating something the
+  binary never checked.
 ### Documentation
 - `docs/sandbox.md` and `docs/sandbox-testing.md` add the specification for
   delegating confinement to an existing backend (`systemd-run`, `bwrap`, a

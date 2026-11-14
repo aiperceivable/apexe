@@ -100,8 +100,11 @@ annotations:
   # When a command matches more than one list:
   #   destructive > open_world > readonly.
   destructive:
-    command_path_words: [rm, mv, rmdir, shred, truncate]
-    command_path_substrings: [delete, remove, destroy, purge, drop, kill, prune, clean, reset, format, wipe, erase]
+    command_path_words: [delete, rm, remove, destroy, purge, drop, kill, prune, clean, reset, format, wipe, erase]
+    # Substrings match anywhere in the command path (`git cleanup` matches
+    # "clean"). Empty here, matching the compiled baseline: a template that adds
+    # matching nobody reviewed would make `config init` change decisions.
+    command_path_substrings: []
 
   # Root executables and subcommand words are separate lists on purpose: `sync`,
   # `login` and `install` are ordinary local executable names too, and one shared
@@ -111,13 +114,14 @@ annotations:
     subcommand_words: [push, pull, fetch, clone, publish, upload, download, install, uninstall, deploy, sync, login, logout]
 
   readonly:
-    command_path_words: [list, ls, show, get, status, info, version, help, describe, view, cat, log, diff, search]
+    command_path_words: [list, ls, show, get, status, info, version, help, describe, view, cat, log, diff, search,
+                         find, check, inspect, display, print, whoami, env, top, ps]
 
   # A ceiling, not a verdict: the gate reads the arguments actually sent and
   # stands down when none of these is present, so `sed -n '1,5p' file` runs and
   # `sed -i 's/a/b/' file` asks first.
   requires_approval:
-    flags: [--force, -f, --hard, -r, --all, --prune, --no-preserve-root, --cascade, --purge, --yes, -y]
+    flags: [--force, -f, --hard, --recursive, -r, --all, --prune, --no-preserve-root, --cascade, --purge, --yes, -y]
 
   idempotent:
     command_path_words: [get, list, show, status, info, describe, version, help, check]
@@ -125,4 +129,5 @@ annotations:
   # Structural, not an annotation: these execute another program, so their risk
   # is read from whatever they wrap.
   runs_other_commands:
-    tool_names: [env, xargs, nice, ionice, nohup, timeout, chroot, setsid, stdbuf, script, watch, time, sudo, doas]
+    tool_names: [env, xargs, nice, ionice, nohup, timeout, chroot, setsid, stdbuf, script, watch, time, sudo, doas,
+                 su, find]
