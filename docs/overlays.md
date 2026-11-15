@@ -956,10 +956,11 @@ Two rules for setting it:
   expression's flags must reach `input`, because that is what the approval gate
   and `x-apexe-writes-with` read. The markers are separate keywords, and a
   grammar declaring both is refused rather than guessed at.
-- **The ceiling is honest.** `find . -exec rm {} \;` is refused: the tokens
-  after `-exec` are another program's argv, and no schema can validate them.
-  The refusal names the token and points at `apexe exec cli.find --input …`,
-  where the module contract and its approval ceiling still apply.
+- **The command list is declared, not guessed.** `find . -exec rm {} \;` puts
+  another program's argv in the tail; that flag is declared with `exec_list`
+  below and governed by `child_exec.mode` (refused by default, `analyze` or
+  `delegate` when reviewed). A program that computes its own paths — `sh -c`,
+  `sed 'w /etc/x'` — still needs a confinement backend.
 
 The marker requires the last, variadic operand and `before_flags` on everything
 before it. Any other shape with two variadic operands keeps the old "ambiguous

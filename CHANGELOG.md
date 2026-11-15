@@ -23,9 +23,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   forwarded. `find /etc -name '*.conf'` runs at read strength, `find . -delete`
   reaches the approval gate and is path-checked at write strength because
   `delete` lands in the input `x-apexe-writes-with` reads, and an unclassifiable
-  token refuses the call and names it: `find . -exec rm {} \;` says the token
-  cannot be classified and points at `apexe exec cli.find --input …`, since the
-  arguments of `-exec` are another program's argv. The argv the caller typed is
+  token refuses the call and names it. `-exec` is not left as a generic
+  unclassified tail token: the `exec_list` entry below makes it a policy
+  decision (refused by default, `analyze`/`delegate` when reviewed), because its
+  arguments are another program's argv. The argv the caller typed is
   still forwarded verbatim, in order, exactly as the module-JSON path renders
   it, and `--` keeps its meaning (a declared flag behind it is still seen, so a
   write cannot hide there). `x-apexe-opaque-after` is untouched: `node <script>

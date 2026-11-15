@@ -2,10 +2,12 @@
 
 **Status:** implemented in 0.14.0 as `x-apexe-tail-parsed`. The resolver, the
 emitted keyword and the refusal messages are in place and covered by unit
-tests; the corpus schema and the `find` entries are the remaining step, followed
-by the two-platform measurement (`docs/overlays.md` owns the authoring rule).
-This was the last blocker for running `find` through a shim rather than only
-through module JSON.
+tests, and the corpus declares it on both `find` entries. The `-exec` ceiling
+described below was subsequently handled by the child-execution policy:
+`exec_list` collects the command list and `child_exec.mode` governs it (refused
+by default; `analyze`/`delegate` when reviewed), so `apexe exec cli.find
+--input` no longer admits an exec-list. `sh -c` and programs that compute their
+own paths remain outside argv analysis and need a confinement backend.
 
 ## 1. The problem
 
@@ -90,7 +92,7 @@ rather than silently ignored.
 |---|---|---|
 | `find . -maxdepth 1 -name '*.rs' -print` | refused | runs; `-name` takes one value, `-print` takes none |
 | `find . -delete` | refused | runs; `-delete` is seen, so approval fires and the path check is at write strength |
-| `find . -exec rm {} \;` | refused | refused, naming `rm` (or `{}`), with "`-exec`'s argument list is a command line, not a flag; use `apexe exec cli.find --input …`" |
+| `find . -exec rm {} \;` | refused | collected as an `exec_list`; refused by default, analysed/delegated when `child_exec.mode` allows it. `sh -c` remains the confinement boundary |
 | `find . -name` | refused | refused: `-name` declares one value and none was given |
 | `find . \( -name '*.txt' -o -name '*.log' \)` | refused | runs; `(`, `)`, `!`, `,` are declared tail tokens, so the operators are skipped while `-name`/`-o` are still resolved |
 
