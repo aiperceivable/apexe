@@ -92,6 +92,11 @@ pub struct ExecutorOptions<'a> {
     /// auditing.
     pub audit_path: Option<&'a Path>,
     pub enable_logging: bool,
+    /// Optional sandbox runtime built from `config.yaml`'s `sandbox:` section.
+    /// The executor passes it to every `CliModule`; `None` leaves execution
+    /// unchanged. The runtime itself decides whether a module is selected.
+    pub sandbox: Option<std::sync::Arc<crate::governance::SandboxRuntime>>,
+
     /// Include each call's `inputs` and `output` in the structured log.
     ///
     /// Separate from `enable_logging` because the two protect different things.
@@ -191,7 +196,14 @@ pub(crate) fn build_executor_from_modules_with_io(
 
     let registry = Arc::new(Registry::new());
     let local_io = matches!(io, super::ExecutionIo::Passthrough { .. });
-    register_modules_with_io(&available, &registry, opts.timeout_ms, audit.clone(), io);
+    register_modules_with_io(
+        &available,
+        &registry,
+        opts.timeout_ms,
+        audit.clone(),
+        io,
+        opts.sandbox.clone(),
+    );
     tracing::info!(count = registry.count(), "Registered CLI modules");
     finish_executor(opts, registry, audit, local_io)
 }
@@ -207,7 +219,9 @@ pub(crate) fn build_executor_for_invocation(
         .audit_path
         .map(|path| Arc::new(crate::governance::AuditManager::new(path)));
     let registry = Arc::new(Registry::new());
-    let module = module.with_audit(audit.clone());
+    let module = module
+        .with_audit(audit.clone())
+        .with_sandbox(opts.sandbox.clone());
     let mut descriptor = build_descriptor(scanned);
     descriptor.output_schema = apcore::Module::output_schema(&module);
     registry.register(&scanned.module_id, Box::new(module), descriptor)?;
@@ -266,7 +280,8 @@ pub(crate) fn build_executor_for_replay(
     let mut module = CliModule::from_scanned(scanned, opts.timeout_ms)?
         .with_fixed_argv(argv)?
         .with_execution_io(io)
-        .with_audit(audit.clone());
+        .with_audit(audit.clone())
+        .with_sandbox(opts.sandbox.clone());
     if child_exec_analyzed {
         module = module.with_child_exec_analyzed();
     }
@@ -303,7 +318,13 @@ pub async fn build_executor_with_openapi(
         .collect();
     let available = filter_available(admitted);
     let registry = Arc::new(Registry::new());
-    register_modules(&available, &registry, opts.timeout_ms, audit.clone());
+    register_modules(
+        &available,
+        &registry,
+        opts.timeout_ms,
+        audit.clone(),
+        opts.sandbox.clone(),
+    );
     crate::openapi::register_operations(&registry, opts, openapi, audit.clone()).await?;
     finish_executor(opts, registry, audit, false)
 }
@@ -753,6 +774,7 @@ fn register_modules(
     registry: &Registry,
     timeout_ms: u64,
     audit: Option<Arc<crate::governance::AuditManager>>,
+    sandbox: Option<Arc<crate::governance::SandboxRuntime>>,
 ) {
     register_modules_with_io(
         modules,
@@ -760,6 +782,7 @@ fn register_modules(
         timeout_ms,
         audit,
         super::ExecutionIo::Captured,
+        sandbox,
     );
 }
 
@@ -769,6 +792,7 @@ fn register_modules_with_io(
     timeout_ms: u64,
     audit: Option<Arc<crate::governance::AuditManager>>,
     io: super::ExecutionIo,
+    sandbox: Option<Arc<crate::governance::SandboxRuntime>>,
 ) {
     for scanned in modules {
         if !crate::output::has_current_scan_format(scanned) {
@@ -776,7 +800,10 @@ fn register_modules_with_io(
                 "Binding uses a missing or incompatible apexe scan format; governance markers may be stale. Re-run apexe scan for this tool.");
         }
         let cli_module = match CliModule::from_scanned(scanned, timeout_ms) {
-            Ok(cli_module) => cli_module.with_audit(audit.clone()).with_execution_io(io),
+            Ok(cli_module) => cli_module
+                .with_audit(audit.clone())
+                .with_execution_io(io)
+                .with_sandbox(sandbox.clone()),
             Err(e) => {
                 tracing::warn!(
                     module_id = scanned.module_id,
@@ -810,6 +837,7 @@ mod tests {
             acl_path: None,
             filter: ModuleFilter::default(),
             audit_path: None,
+            sandbox: None,
             enable_logging: true,
             log_arguments: true,
             enable_approval: false,

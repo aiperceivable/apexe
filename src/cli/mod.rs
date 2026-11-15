@@ -11,6 +11,7 @@ mod hook;
 mod init;
 mod list_output;
 mod local;
+mod sandbox;
 mod sh;
 mod shell;
 mod shell_init;
@@ -24,6 +25,7 @@ pub use env::EnvArgs;
 pub use exec::{ExecArgs, UnmanagedPolicy};
 pub use hook::HookArgs;
 pub use init::{InitArgs, ReportFormat};
+pub use sandbox::SandboxArgs;
 pub use sh::{is_entry_invocation, run_entry, ShArgs};
 pub use verify::VerifyArgs;
 
@@ -140,6 +142,9 @@ pub enum Commands {
     /// Show, initialize or update apexe configuration.
     #[command(display_order = 100)]
     Config(ConfigArgs),
+    /// Inspect the sandbox delegation configuration and selected backend.
+    #[command(display_order = 92)]
+    Sandbox(SandboxArgs),
     /// Write, refresh or explain the caller-permission policy (ACL).
     ///
     /// Separate from `scan` on purpose: a scan learns what a command does, a
@@ -191,6 +196,7 @@ impl Cli {
             Commands::Init(args) => args.execute(&config),
             Commands::List(args) => args.execute(&config),
             Commands::Config(args) => args.execute(&config),
+            Commands::Sandbox(args) => args.execute(&config),
             Commands::Paths(args) => args.execute(&config),
             Commands::Acl(args) => args.execute(&config),
         }

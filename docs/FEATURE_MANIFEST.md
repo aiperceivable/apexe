@@ -8,7 +8,7 @@ locally, and serves CLI and imported OpenAPI operations through MCP and A2A.
 Configured access controls, approval checks and audit records accompany the
 execution path.
 
-**Version:** 0.14.1
+**Version:** 0.15.0
 
 **Status:** CLI discovery, initialization, binding/Skill generation, local
 module execution, reviewed native argv and PATH shims, MCP/A2A serving, OpenAPI
@@ -45,8 +45,9 @@ gate. Servers require `--acl` to enforce access control; MCP interactive approva
 requires `--enable-approval`, while A2A approval stores are library-only. OpenAPI
 modules use shared schema validation, configured ACLs and auditing, but not CLI
 filesystem checks. HTTP import is unavailable to local exec/shims. Normal
-execution is not OS-sandboxed today; the delegation specification is in
-[`docs/sandbox.md`](sandbox.md) and is not implemented. The current native BSD
+execution is not OS-sandboxed unless the module is selected in
+[`docs/sandbox.md`](sandbox.md); 0.15.0 implements opt-in delegation for the
+selected modules. The current native BSD
 pilot covers cat/head/ls; builtins and absolute paths can bypass PATH shims.
 
 A command that embeds another program's argv (`find . -exec rm {} \;`) is
@@ -55,13 +56,13 @@ module and applies that module's ACL, path policy and approval at the parent's
 starting paths; `delegate` runs each match through the installed child shim
 with a scoped delegated approval, so the actual `{}` path, symlinks and
 `-execdir` are judged per match. Neither mode is OS confinement: a child that
-computes its own paths is refused, and the sandbox delegation specification
-([`docs/sandbox.md`](sandbox.md)) is the intended enforcement boundary; it is not
-implemented yet. See the [user manual](user-manual.md#embedded-child-commands-find-exec)
+computes its own paths is refused, and the sandbox delegation in
+([`docs/sandbox.md`](sandbox.md)) is the enforcement boundary for selected
+modules (0.15.0). See the [user manual](user-manual.md#embedded-child-commands-find-exec)
 and [`docs/overlays.md`](overlays.md#a-trailing-mini-language-opaque_after-versus-tail_parsed).
 
 > The section headings below tagged "(v0.1.0 …)" record when each piece first
-> landed; the crate is now **0.14.1**. For the authoritative current state see
+> landed; the crate is now **0.15.0**. For the authoritative current state see
 > [`CHANGELOG.md`](../CHANGELOG.md) and [`docs/user-manual.md`](user-manual.md).
 
 ## Architecture
@@ -133,7 +134,7 @@ src/
 │   └── overlay      ToolOverlay: curated flag/arg descriptions, apply_overlay
 ├── auth             Transport authentication for the HTTP-family MCP/A2A
 │                    transports (token/JWT, loopback-bind detection)
-├── cli/             clap CLI entry point (scan/serve/a2a/exec/sh/hook/agent/env/verify/init/list/acl/config/paths)
+├── cli/             clap CLI entry point (scan/serve/a2a/exec/sh/hook/agent/env/verify/init/list/acl/sandbox/config/paths)
 │   ├── init         Reviewed source bootstrap, binding ownership and starter ACL
 │   ├── exec         Module JSON and native argv through shared governance
 │   ├── config_set   Persistent log-level updates preserving other settings
@@ -283,13 +284,13 @@ existing policy and custom/edited bindings, and reports fallback coverage.
   command eligible for native argv or PATH shims.
 - **Session daemon** — Deferred F8 stage; current shims invoke the apexe process
   for each command. See [F8](features/v2-f8-local-execution.md) for measurements.
-- **Normal execution sandboxing** — A specification exists in
-  [`docs/sandbox.md`](sandbox.md): contract + adapters, per-platform default
-  (macOS `sandbox-exec`, Linux `systemd-run` with `bwrap` preferred when
-  installed), fail-closed, and audit. It is not implemented yet; normal
-exec/serve remains unsandboxed. Explicit verification cases have their own
-macOS/Linux isolation backends. See [verification](verification.md) and the
-[threat model](threat-model.md).
+- **Normal execution sandboxing** — 0.15.0 implements opt-in delegation for
+  modules listed in `sandbox.modules`: contract + four built-in backends
+  (`systemd-run`, `bwrap`, `sandbox-exec`, `docker`), per-platform defaults,
+  fail-closed `required`/`auto`, and audit. Unselected modules remain
+  unsandboxed. Optional `nono`/Apple container/microVM/remote adapters are
+  later. See [`docs/sandbox.md`](sandbox.md), [F9](features/v2-f9-sandbox.md)
+  and the [threat model](threat-model.md).
 - **Additional HTTP proxy formats** — Multipart, per-input header/cookie
   parameters and non-JSON responses are outside the current OpenAPI surface.
   See [OpenAPI import](openapi.md) for supported method/parameter combinations.

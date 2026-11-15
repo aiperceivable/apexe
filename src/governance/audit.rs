@@ -114,6 +114,19 @@ pub(crate) struct ExecutionRecord<'a> {
     /// reviewed overlay; omitted for verified routes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tier: Option<&'a str>,
+    /// Sandbox backend that actually ran, or `None` when the module was not
+    /// selected. This is the field that lets an operator distinguish
+    /// "confined by bwrap" from "ran on the host".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) sandbox_backend: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) sandbox_enforcement: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) sandbox_outcome: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) sandbox_policy_digest: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) sandbox_reason: Option<&'a str>,
 }
 
 /// Appends governance events to a JSONL audit log.
@@ -152,6 +165,7 @@ impl AuditManager {
             exit_code,
             duration_ms,
             None,
+            None,
         )
         .await;
     }
@@ -169,6 +183,7 @@ impl AuditManager {
         exit_code: i32,
         duration_ms: u64,
         tier: Option<&str>,
+        sandbox: Option<&crate::governance::SandboxOutcome>,
     ) {
         self.append(&ExecutionRecord {
             timestamp: Self::now(),
@@ -182,6 +197,11 @@ impl AuditManager {
             error_code: None,
             duration_ms,
             tier,
+            sandbox_backend: sandbox.map(|value| value.backend.as_str()),
+            sandbox_enforcement: sandbox.map(|value| value.enforcement.as_str()),
+            sandbox_outcome: sandbox.map(|value| value.outcome.as_str()),
+            sandbox_policy_digest: sandbox.map(|value| value.policy_digest.as_str()),
+            sandbox_reason: sandbox.and_then(|value| value.reason.as_deref()),
         })
         .await;
     }
@@ -236,6 +256,11 @@ impl AuditManager {
             error_code: Some(error_code),
             duration_ms,
             tier: None,
+            sandbox_backend: None,
+            sandbox_enforcement: None,
+            sandbox_outcome: None,
+            sandbox_policy_digest: None,
+            sandbox_reason: None,
         })
         .await;
     }

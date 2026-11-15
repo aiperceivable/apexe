@@ -2948,3 +2948,169 @@ fn test_shim_local_timeout_bounds_the_run() {
         .failure()
         .stderr(predicates::str::contains("timed out after 1000ms"));
 }
+
+// ---------------------------------------------------------------------------
+// Sandbox delegation
+// ---------------------------------------------------------------------------
+
+fn write_sandbox_config(fixture: &Fixture) {
+    std::fs::write(
+        fixture.home.path().join(".apexe/config.yaml"),
+        "schema_version: 1\nsandbox:\n  backend: auto\n  default: required\n  modules: [cli.find]\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn test_sandbox_check_reports_required_module_selection() {
+    let fixture = find_fixture();
+    write_sandbox_config(&fixture);
+    let output = fixture
+        .command()
+        .args(["sandbox", "check", "--format", "json"])
+        .output()
+        .expect("sandbox check");
+    assert!(output.status.success(), "{output:?}");
+    let value: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(value["mode"], "required");
+    assert_eq!(value["modules"], json!(["cli.find"]));
+    assert_eq!(value["probe"], "static");
+    assert!(value["backend"]
+        .as_str()
+        .is_some_and(|name| !name.is_empty()));
+}
+
+#[test]
+fn test_exec_dry_run_reports_sandbox_plan_without_spawning() {
+    let fixture = find_fixture();
+    write_sandbox_config(&fixture);
+    let output = fixture
+        .command()
+        .args(["exec", "--dry-run", "--", "find", ".", "-name", "*.txt"])
+        .output()
+        .expect("sandbox dry-run");
+    assert!(output.status.success(), "{output:?}");
+    let value: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(value["sandbox"]["outcome"], "planned");
+    assert_eq!(value["sandbox"]["enforcement"], "enforcing");
+    assert!(value["sandbox"]["launch"]["argv"]
+        .as_array()
+        .is_some_and(|argv| !argv.is_empty()));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn test_exec_runs_selected_module_through_sandbox_exec() {
+    let fixture = find_fixture();
+    write_sandbox_config(&fixture);
+    fixture
+        .command()
+        .args(["exec", "--", "find", ".", "-name", "*.txt"])
+        .assert()
+        .success();
+    let audit =
+        std::fs::read_to_string(fixture.home.path().join(".apexe/audit.jsonl")).expect("audit log");
+    assert!(
+        audit.contains("\"sandbox_backend\":\"sandbox-exec\""),
+        "audit must name the backend: {audit}"
+    );
+    assert!(
+        audit.contains("\"sandbox_outcome\":\"applied\""),
+        "audit must record an applied sandbox: {audit}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn test_sandbox_exec_denies_denied_write_and_computed_path() {
+    use apexe::config::{PathPolicy, SandboxBackend, SandboxConfig, SandboxMode};
+    use apexe::governance::SandboxRuntime;
+    use std::process::Command as StdCommand;
+
+    let temp = tempfile::tempdir().unwrap();
+    let denied = temp.path().join("denied");
+    let allowed = temp.path().join("allowed");
+    std::fs::create_dir(&denied).unwrap();
+    std::fs::create_dir(&allowed).unwrap();
+    let policy = PathPolicy {
+        read_only: vec![denied.clone()],
+        read_write: vec![allowed.clone()],
+        ..PathPolicy::default()
+    };
+    let runtime = SandboxRuntime::new(
+        SandboxConfig {
+            backend: SandboxBackend::SandboxExec,
+            default: SandboxMode::Required,
+            modules: vec!["cli.sh".to_string()],
+            ..SandboxConfig::default()
+        },
+        policy,
+        temp.path().to_path_buf(),
+    );
+    let run = |script: &str| {
+        let plan = runtime
+            .plan("cli.sh", "/bin/sh", &["-c".to_string(), script.to_string()])
+            .expect("plan")
+            .expect("selected");
+        let status = StdCommand::new(&plan.program)
+            .args(&plan.args)
+            .current_dir(temp.path())
+            .status()
+            .expect("spawn sandbox-exec");
+        status.success()
+    };
+    assert!(!run("echo x > denied/f"), "denied write must fail");
+    assert!(!denied.join("f").exists(), "denied write must not land");
+    assert!(run("echo x > allowed/f"), "allowed write must succeed");
+    assert!(allowed.join("f").exists(), "allowed write must land");
+    assert!(
+        !run("p=denied/computed; echo x > \"$p\""),
+        "computed path must fail at the kernel"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_bwrap_denies_denied_write_when_available() {
+    use apexe::config::{PathPolicy, SandboxBackend, SandboxConfig, SandboxMode};
+    use apexe::governance::SandboxRuntime;
+    use std::process::Command as StdCommand;
+
+    if which::which("bwrap").is_err() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let denied = temp.path().join("denied");
+    let allowed = temp.path().join("allowed");
+    std::fs::create_dir(&denied).unwrap();
+    std::fs::create_dir(&allowed).unwrap();
+    let policy = PathPolicy {
+        read_only: vec![denied.clone()],
+        read_write: vec![allowed.clone()],
+        ..PathPolicy::default()
+    };
+    let runtime = SandboxRuntime::new(
+        SandboxConfig {
+            backend: SandboxBackend::Bwrap,
+            default: SandboxMode::Required,
+            modules: vec!["cli.sh".to_string()],
+            ..SandboxConfig::default()
+        },
+        policy,
+        temp.path().to_path_buf(),
+    );
+    let plan = runtime
+        .plan(
+            "cli.sh",
+            "/bin/sh",
+            &["-c".to_string(), "echo x > denied/f".to_string()],
+        )
+        .expect("plan")
+        .expect("selected");
+    let status = StdCommand::new(&plan.program)
+        .args(&plan.args)
+        .status()
+        .expect("spawn bwrap");
+    assert!(!status.success(), "denied write must fail");
+    assert!(!denied.join("f").exists());
+}

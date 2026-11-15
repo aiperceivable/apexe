@@ -26,8 +26,11 @@ pub struct PassthroughOutput {
 
 #[derive(Debug)]
 pub(crate) enum ExecutionOutput {
-    Captured(super::executor::SubprocessOutput),
-    Passthrough(PassthroughOutput),
+    Captured(
+        super::executor::SubprocessOutput,
+        Option<crate::governance::SandboxOutcome>,
+    ),
+    Passthrough(PassthroughOutput, Option<crate::governance::SandboxOutcome>),
 }
 
 pub(crate) fn exit_code(status: std::process::ExitStatus) -> i32 {
@@ -44,6 +47,7 @@ pub(crate) fn exit_code(status: std::process::ExitStatus) -> i32 {
 }
 
 #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+#[allow(clippy::too_many_arguments)] // Mirrors the execution inputs; a builder would only move them.
 pub(crate) async fn execute(
     binary: &str,
     args: &[String],
@@ -51,29 +55,59 @@ pub(crate) async fn execute(
     timeout_ms: u64,
     max_output_bytes: usize,
     io: ExecutionIo,
+    sandbox: Option<&crate::governance::SandboxRuntime>,
+    module_id: &str,
 ) -> Result<ExecutionOutput, ModuleError> {
+    // The sandbox plan sees the exact child argv. The JSON flag is appended by
+    // `execute_subprocess` for captured calls, so include it before translating;
+    // the non-sandbox path keeps passing the flag to that function unchanged.
+    let mut child_args = args.to_vec();
     if io == ExecutionIo::Captured {
-        return super::executor::execute_subprocess(
-            binary,
-            args,
+        if let Some(flag) = json_flag {
+            child_args.extend(shell_words::split(flag).unwrap_or_default());
+        }
+    }
+    let plan = sandbox
+        .map(|runtime| runtime.plan(module_id, binary, &child_args))
+        .transpose()
+        .map_err(crate::governance::SandboxError::into_module_error)?
+        .flatten();
+
+    if io == ExecutionIo::Captured {
+        let (program, program_args, json_flag) = match &plan {
+            Some(plan) => (plan.program.as_str(), plan.args.as_slice(), None),
+            None => (binary, args, json_flag),
+        };
+        let output = super::executor::execute_subprocess(
+            program,
+            program_args,
             json_flag,
             timeout_ms,
             max_output_bytes,
         )
-        .await
-        .map(ExecutionOutput::Captured);
+        .await?;
+        let sandbox_outcome = plan.as_ref().map(|plan| plan.outcome());
+        return Ok(ExecutionOutput::Captured(output, sandbox_outcome));
     }
+
+    let (program, program_args) = match &plan {
+        Some(plan) => (plan.program.as_str(), plan.args.as_slice()),
+        None => (binary, args),
+    };
     let run = async {
-        let mut child = super::executor::spawn_with_io(binary, args, io)?;
+        let mut child = super::executor::spawn_with_io(program, program_args, io)?;
         let status = child.wait().await.map_err(|error| {
             ModuleError::new(
                 ErrorCode::ModuleExecuteError,
-                format!("Failed to wait on '{binary}': {error}"),
+                format!("Failed to wait on '{program}': {error}"),
             )
         })?;
-        Ok(ExecutionOutput::Passthrough(PassthroughOutput {
-            exit_code: exit_code(status),
-        }))
+        Ok(ExecutionOutput::Passthrough(
+            PassthroughOutput {
+                exit_code: exit_code(status),
+            },
+            plan.as_ref().map(|plan| plan.outcome()),
+        ))
     };
     // `0` means the local surface configured no bound. A passthrough call is
     // the caller's own command, and the caller's terminal is a better stop
@@ -108,21 +142,39 @@ mod tests {
     /// a TUI was killed at 30 s and its inherited output arrived torn.
     #[tokio::test]
     async fn test_passthrough_with_zero_timeout_is_unbounded() {
-        let output = execute("sleep", &["1".to_string()], None, 0, 1024, passthrough())
-            .await
-            .expect("a zero local timeout must not arm a timer");
+        let output = execute(
+            "sleep",
+            &["1".to_string()],
+            None,
+            0,
+            1024,
+            passthrough(),
+            None,
+            "cli.test",
+        )
+        .await
+        .expect("a zero local timeout must not arm a timer");
         match output {
-            ExecutionOutput::Passthrough(output) => assert_eq!(output.exit_code, 0),
-            ExecutionOutput::Captured(_) => panic!("expected passthrough output"),
+            ExecutionOutput::Passthrough(output, _) => assert_eq!(output.exit_code, 0),
+            ExecutionOutput::Captured(_, _) => panic!("expected passthrough output"),
         }
     }
 
     /// The knob still works: an operator who sets `local_timeout` gets a bound.
     #[tokio::test]
     async fn test_passthrough_with_a_timeout_still_bounds_the_run() {
-        let error = execute("sleep", &["10".to_string()], None, 50, 1024, passthrough())
-            .await
-            .expect_err("a bounded passthrough call must time out");
+        let error = execute(
+            "sleep",
+            &["10".to_string()],
+            None,
+            50,
+            1024,
+            passthrough(),
+            None,
+            "cli.test",
+        )
+        .await
+        .expect_err("a bounded passthrough call must time out");
         assert_eq!(error.code, ErrorCode::ModuleTimeout);
     }
 }

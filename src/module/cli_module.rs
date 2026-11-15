@@ -50,6 +50,8 @@ pub struct CliModule {
     max_output_bytes: usize,
     /// Optional execution-audit sink (F5 §4.3). `None` disables audit.
     audit: Option<Arc<AuditManager>>,
+    /// Optional sandbox runtime; selection is by module id inside the runtime.
+    sandbox: Option<Arc<crate::governance::SandboxRuntime>>,
     audit_tier: Option<&'static str>,
     /// Whether this call's embedded child command lists were analyzed by the
     /// native-surface analyzer. False on every other surface, where an
@@ -74,6 +76,7 @@ impl CliModule {
             timeout_ms: config.timeout_ms,
             max_output_bytes: config.max_output_bytes,
             audit: None,
+            sandbox: None,
             audit_tier: None,
             child_exec_analyzed: false,
         }
@@ -90,6 +93,12 @@ impl CliModule {
     /// Record the route tier in the execution audit record.
     pub fn with_audit_tier(mut self, tier: &'static str) -> Self {
         self.audit_tier = Some(tier);
+        self
+    }
+
+    /// Attach the sandbox runtime built from the `sandbox:` configuration.
+    pub fn with_sandbox(mut self, sandbox: Option<Arc<crate::governance::SandboxRuntime>>) -> Self {
+        self.sandbox = sandbox;
         self
     }
 
@@ -386,6 +395,7 @@ impl CliModule {
         status: &str,
         exit_code: i32,
         duration_ms: u64,
+        sandbox: Option<&crate::governance::SandboxOutcome>,
     ) {
         if let Some(ref audit) = self.audit {
             audit
@@ -397,6 +407,7 @@ impl CliModule {
                     exit_code,
                     duration_ms,
                     self.audit_tier,
+                    sandbox,
                 )
                 .await;
         }
@@ -424,7 +435,8 @@ impl CliModule {
         // leaves exactly one refusal row. Other execution errors keep their
         // execution row here and suppress the middleware duplicate.
         if error.code != ErrorCode::ModuleTimeout {
-            self.audit_execution(ctx, "error", -1, elapsed_ms).await;
+            self.audit_execution(ctx, "error", -1, elapsed_ms, None)
+                .await;
         }
         if error.code == ErrorCode::ModuleTimeout {
             error.with_retryable(self.annotations.idempotent)
@@ -582,14 +594,16 @@ impl CliModule {
         ctx: &Context<Value>,
         duration_ms: u64,
     ) -> Value {
-        let (result, exit_code) = match output {
-            super::io::ExecutionOutput::Captured(output) => (
+        let (result, exit_code, sandbox) = match output {
+            super::io::ExecutionOutput::Captured(output, sandbox) => (
                 Value::Object(self.build_result(&output, ctx, duration_ms)),
                 output.exit_code,
+                sandbox,
             ),
-            super::io::ExecutionOutput::Passthrough(output) => (
+            super::io::ExecutionOutput::Passthrough(output, sandbox) => (
                 serde_json::json!({"io":"passthrough", "exit_code":output.exit_code, "trace_id":ctx.trace_id,"duration_ms":duration_ms}),
                 output.exit_code,
+                sandbox,
             ),
         };
 
@@ -602,7 +616,7 @@ impl CliModule {
         );
 
         let status = if exit_code == 0 { "success" } else { "error" };
-        self.audit_execution(ctx, status, exit_code, duration_ms)
+        self.audit_execution(ctx, status, exit_code, duration_ms, sandbox.as_ref())
             .await;
 
         result
@@ -716,6 +730,8 @@ impl Module for CliModule {
             self.timeout_ms,
             self.max_output_bytes,
             self.execution_io,
+            self.sandbox.as_deref(),
+            &self.module_id,
         )
         .await
         {

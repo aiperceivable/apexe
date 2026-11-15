@@ -29,6 +29,26 @@ child_exec:
   mode: refuse          # refuse | analyze | delegate
   trust_uncovered: []
 
+# Sandbox delegation. Opt-in per module; `off` is the safe default. The default
+# backend pair is macOS `sandbox-exec` (OS, deprecated, canonical paths) and
+# Linux `systemd-run` (OS), with `bwrap` (the `bubblewrap` package) preferred
+# when installed. Docker is an optional container fallback and needs an image.
+# `required` and `auto` refuse before spawn when no enforcing backend is
+# available; there is no silent host fallback.
+sandbox:
+  backend: auto          # auto | systemd-run | bwrap | sandbox-exec | docker
+  default: off           # off | required | auto
+  modules: []            # module ids only, e.g. [cli.sed, cli.python3]
+  external: none         # none | container (reserved in 0.15.0)
+  backends:
+    docker:
+      image: ""          # required for the docker backend
+      network: none
+      read_only: true
+      user: ""
+      memory: ""
+      pids: 0
+
 # `annotations:` describes how a command is labelled when nothing has reviewed
 # it. These are a floor, not a guarantee: a curated corpus entry or a local
 # overlay for the same tool wins, because those describe that tool while these

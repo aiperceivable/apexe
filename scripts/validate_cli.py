@@ -182,6 +182,16 @@ def validate_configuration(session, fixture):
         )
 
 
+
+def validate_sandbox(session, fixture):
+    session.run("sandbox", ["sandbox"], code=2)
+    for fmt in ["table", "json"]:
+        session.run(
+            "sandbox check " + fmt,
+            ["sandbox", "check", "--format", fmt],
+        )
+
+
 def validate_list(session, fixture):
     for fmt in ["table", "json"]:
         session.run(
@@ -1398,6 +1408,7 @@ def validate_cli(session):
     validate_help(session, fixture)
     validate_scan(session, fixture)
     validate_configuration(session, fixture)
+    validate_sandbox(session, fixture)
     validate_list(session, fixture)
     validate_execution(session, fixture)
     validate_policy(session, fixture)

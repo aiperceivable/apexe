@@ -57,6 +57,153 @@ pub struct ChildExecConfig {
     pub trust_uncovered: Vec<String>,
 }
 
+/// Which sandbox backend the operator selected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SandboxBackend {
+    /// Pick the first available enforcing backend for this platform.
+    #[default]
+    Auto,
+    SystemdRun,
+    Bwrap,
+    SandboxExec,
+    Docker,
+}
+
+impl SandboxBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::SystemdRun => "systemd-run",
+            Self::Bwrap => "bwrap",
+            Self::SandboxExec => "sandbox-exec",
+            Self::Docker => "docker",
+        }
+    }
+}
+
+impl std::fmt::Display for SandboxBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// How selected modules are treated.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxMode {
+    /// Explicitly run selected modules without a sandbox.
+    #[default]
+    Off,
+    /// Selected modules must be sandboxed; refuse if no backend is available.
+    Required,
+    /// Choose an available enforcing backend; refuse if none exists.
+    Auto,
+}
+
+impl SandboxMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Required => "required",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+/// Non-local caller routing. Reserved in 0.15.0; parsed and reported only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxExternal {
+    #[default]
+    None,
+    Container,
+}
+
+impl SandboxExternal {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Container => "container",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerNetwork {
+    #[default]
+    None,
+}
+
+impl DockerNetwork {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+        }
+    }
+}
+
+/// Typed Docker backend options. The image is required before this backend is
+/// considered available; an empty string is treated as absent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DockerSandboxConfig {
+    pub image: Option<String>,
+    pub network: DockerNetwork,
+    pub read_only: bool,
+    pub user: Option<String>,
+    pub memory: Option<String>,
+    pub pids: u32,
+}
+
+impl Default for DockerSandboxConfig {
+    fn default() -> Self {
+        Self {
+            image: None,
+            network: DockerNetwork::None,
+            read_only: true,
+            user: None,
+            memory: None,
+            pids: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SandboxBackendsConfig {
+    pub docker: DockerSandboxConfig,
+}
+
+/// The `sandbox:` section: which modules are confined, by which backend, and
+/// how a missing backend is treated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SandboxConfig {
+    pub backend: SandboxBackend,
+    pub default: SandboxMode,
+    /// Module ids to confine. Empty means nothing is confined, even under
+    /// `required` or `auto`.
+    pub modules: Vec<String>,
+    /// Reserved for non-local callers; parsed and reported, not applied in
+    /// 0.15.0.
+    pub external: SandboxExternal,
+    pub backends: SandboxBackendsConfig,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            backend: SandboxBackend::Auto,
+            default: SandboxMode::Off,
+            modules: Vec::new(),
+            external: SandboxExternal::None,
+            backends: SandboxBackendsConfig::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ApexeConfig {
@@ -173,6 +320,10 @@ pub struct ApexeConfig {
     /// How embedded child commands (`find -exec`) are treated.
     #[serde(default)]
     pub child_exec: ChildExecConfig,
+
+    /// The `sandbox:` section: selected modules, backend and fail-closed mode.
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
 
     /// Overlay directories to read *in addition to* `<config_dir>/overlays`.
     ///
@@ -365,6 +516,7 @@ impl Default for ApexeConfig {
             annotations: None,
             paths: None,
             child_exec: ChildExecConfig::default(),
+            sandbox: SandboxConfig::default(),
             overlay_dirs: Vec::new(),
             default_overlay_repository: DEFAULT_OVERLAY_REPOSITORY.to_string(),
             core_config: None,
@@ -1546,5 +1698,42 @@ mod paths_policy_tests {
             policy.read_only
         );
         assert_eq!(policy.conflict(), None);
+    }
+
+    #[test]
+    fn test_sandbox_defaults_to_off_and_an_empty_selection() {
+        let config = ApexeConfig::default();
+        assert_eq!(config.sandbox.backend, SandboxBackend::Auto);
+        assert_eq!(config.sandbox.default, SandboxMode::Off);
+        assert!(config.sandbox.modules.is_empty());
+        assert_eq!(config.sandbox.external, SandboxExternal::None);
+        assert!(config.sandbox.backends.docker.image.is_none());
+    }
+
+    #[test]
+    fn test_sandbox_section_parses_selected_modules_and_docker_image() {
+        let config: ApexeConfig = serde_yaml::from_str(
+            "schema_version: 1\nsandbox:\n  backend: docker\n  default: required\n  modules: [cli.sed, cli.python3]\n  external: container\n  backends:\n    docker:\n      image: example/tools:latest\n      network: none\n      read_only: true\n      pids: 64\n",
+        )
+        .unwrap();
+        assert_eq!(config.sandbox.backend, SandboxBackend::Docker);
+        assert_eq!(config.sandbox.default, SandboxMode::Required);
+        assert_eq!(config.sandbox.modules, vec!["cli.sed", "cli.python3"]);
+        assert_eq!(config.sandbox.external, SandboxExternal::Container);
+        assert_eq!(
+            config.sandbox.backends.docker.image.as_deref(),
+            Some("example/tools:latest")
+        );
+        assert_eq!(config.sandbox.backends.docker.pids, 64);
+    }
+
+    #[test]
+    fn test_the_shipped_template_documents_the_sandbox_section() {
+        let template = include_str!("../docs/config.example.yaml");
+        let config: ApexeConfig = serde_yaml::from_str(template).unwrap();
+        assert_eq!(config.sandbox.default, SandboxMode::Off);
+        assert!(template.contains("sandbox:"));
+        assert!(template.contains("default: off"));
+        assert!(template.contains("backends:"));
     }
 }

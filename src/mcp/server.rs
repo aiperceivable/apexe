@@ -323,6 +323,7 @@ impl McpServerBuilder {
                 exclude: Vec::new(),
             },
             audit_path: self.audit_path.as_deref(),
+            sandbox: None,
             enable_logging: self.enable_logging,
             log_arguments: self.log_arguments,
             enable_approval: self.enable_approval,

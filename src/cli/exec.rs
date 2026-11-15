@@ -125,6 +125,8 @@ struct PreparedCall {
     /// a later call cannot reuse it.
     #[allow(dead_code)]
     delegation: Option<crate::governance::delegation::DelegationHandle>,
+    /// The sandbox runtime attached to this executor, if `sandbox` is active.
+    sandbox: Option<std::sync::Arc<crate::governance::SandboxRuntime>>,
 }
 
 fn parse_caller(value: &str) -> Result<String, String> {
@@ -324,6 +326,7 @@ impl ExecArgs {
             opaque_tail: None,
             replay: None,
             delegation: None,
+            sandbox: options.sandbox.clone(),
         })
     }
 
@@ -418,6 +421,7 @@ impl ExecArgs {
             opaque_tail,
             replay,
             delegation,
+            sandbox: options.sandbox.clone(),
         })
     }
 
@@ -502,9 +506,65 @@ impl ExecArgs {
                 call.opaque_tail.clone(),
                 call.replay.as_ref(),
             )?;
+            add_sandbox_plan(&mut result, call, scanned, io)?;
         }
         Ok(result)
     }
+}
+
+fn add_sandbox_plan(
+    result: &mut Value,
+    call: &PreparedCall,
+    scanned: &apcore_toolkit::ScannedModule,
+    io: crate::module::ExecutionIo,
+) -> anyhow::Result<()> {
+    let Some(sandbox) = call.sandbox.as_ref() else {
+        result["sandbox"] = json!({"outcome": "not_configured"});
+        return Ok(());
+    };
+    let binary = result["binary_path"].as_str().unwrap_or_default();
+    let mut argv: Vec<String> = result["argv"]
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    if io == crate::module::ExecutionIo::Captured {
+        if let Some(flag) = scanned.metadata.get("json_flag").and_then(Value::as_str) {
+            argv.extend(shell_words::split(flag).unwrap_or_default());
+        }
+    }
+    match sandbox.plan(&call.module_id, binary, &argv) {
+        Ok(Some(plan)) => {
+            let outcome = plan.planned_outcome();
+            result["sandbox"] = json!({
+                "backend": outcome.backend,
+                "enforcement": outcome.enforcement,
+                "outcome": outcome.outcome,
+                "policy_digest": outcome.policy_digest,
+                "launch": {"program": plan.program, "argv": plan.args},
+            });
+        }
+        Ok(None) => {
+            result["sandbox"] = json!({"outcome": "not_selected"});
+        }
+        Err(error) => {
+            result["sandbox"] = json!({
+                "outcome": "refused",
+                "reason": error.to_string(),
+            });
+            result["valid"] = json!(false);
+            result["checks"]
+                .as_array_mut()
+                .ok_or_else(|| anyhow::anyhow!("Invalid preflight checks"))?
+                .push(json!({"check":"sandbox", "passed":false, "error":error.to_string()}));
+        }
+    }
+    Ok(())
 }
 
 fn add_command_plan(

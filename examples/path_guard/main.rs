@@ -82,6 +82,7 @@ fn build_demo_executor(bindings_dir: &Path) -> Arc<Executor> {
         acl_path: None,
         filter: apexe::module::ModuleFilter::default(),
         audit_path: None,
+        sandbox: None,
         enable_logging: false,
         log_arguments: false,
         enable_approval: false,

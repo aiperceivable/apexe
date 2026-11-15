@@ -1,6 +1,8 @@
 # Sandbox testing and integration
 
-**Status: specification. No sandbox backend is implemented yet.**
+**Status: 0.15.0 implements the four built-in backends. The conformance
+cases below run on a platform when that backend is available; an absent
+backend is skipped with its probe reason, not failed.**
 This document defines how a backend is accepted, and — just as important — which
 claims can be verified on which machine. Every statement below is either a
 command run in this repository or is marked *(spec)* / *(to verify)*.

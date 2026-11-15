@@ -17,11 +17,11 @@ filter syscalls. A wrapped tool that is permitted to run has the privileges of
 the `apexe` process. Explicit verification cases have separate OS isolation;
 that containment does not extend to ordinary tool calls.
 
-A separate specification, [`docs/sandbox.md`](sandbox.md), defines optional
-per-module delegation to an OS/backend sandbox. It is **not implemented** yet.
-When it lands it will not turn normal execution into a sandbox: only selected
-modules are confined, the backend must pass its probe, `required` refuses
-without a backend, and an adapter is a trusted component. The default pair is
+A separate implementation, [`docs/sandbox.md`](sandbox.md), provides optional
+per-module delegation to an OS/backend sandbox (0.15.0). It does not turn
+normal execution into a sandbox: only selected modules are confined, the
+backend must be available, `required` refuses without one, and an adapter is a
+trusted component. The default pair is
 macOS `sandbox-exec` (OS, deprecated, canonical paths) and Linux `systemd-run`
 (OS) with `bwrap` (the `bubblewrap` package) preferred when installed. `advisory`
 is a diagnostic level, not an execution mode.

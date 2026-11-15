@@ -52,10 +52,10 @@ Run `make check` for formatting, lint, character validation, the locked build,
 the full Rust suite, Rust example tests, validator regression tests, and all
 runnable examples. The pre-commit hook uses this same command. Runtime tests
 require Python 3.9+, Git, bash and system CLI tools. macOS uses system `sandbox-exec`. Linux requires `bwrap` and enabled unprivileged
-user namespaces. The normal-execution sandbox specification
-([`sandbox.md`](sandbox.md)) is separate: its default is macOS `sandbox-exec` and
-Linux `systemd-run` (zero third-party install), with `bwrap` preferred when
-installed; it is not implemented yet. The full example gate also requires `jq`,
+user namespaces. The normal-execution sandbox in
+([`sandbox.md`](sandbox.md)) is separate: 0.15.0 implements macOS
+`sandbox-exec`, Linux `systemd-run` and `bwrap` (preferred when the package is
+installed), and optional Docker. The full example gate also requires `jq`,
 `curl` and a reviewed cli-permissions checkout:
 
 ```bash

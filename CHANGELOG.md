@@ -6,6 +6,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
+## [0.15.0] - 2026-11-15
+
+### Added
+- Opt-in sandbox delegation for selected modules. `sandbox.modules` names module
+  ids (the same vocabulary as `acl.yaml`); `sandbox.default` is `off`,
+  `required` or `auto`; `sandbox.backend` is `auto` or one of `systemd-run`,
+  `bwrap`, `sandbox-exec`, `docker`. No `advisory` execution mode: a missing
+  backend, an inexpressible policy, a missing Docker image or a translation
+  error refuses before spawn under `required`/`auto`.
+- Four built-in backends. Linux prefers `bwrap` when the `bubblewrap` package is
+  installed and otherwise uses `systemd-run` (both are OS-provided or a small
+  package); macOS uses the OS-provided `sandbox-exec`; Docker is an optional
+  container backend that requires `sandbox.backends.docker.image`.
+- `apexe sandbox check` reports the selected backend, enforcement, capabilities,
+  mode, selected modules and reason in table or JSON. `apexe exec --dry-run`
+  reports the translated `sandbox` plan, enforcement, policy digest and launch
+  argv without spawning.
+- The runtime normalizes `paths:` to `PathSpelling` (original + resolved), then
+  to a `MountPlan`; `systemd-run`, `bwrap`, `sandbox-exec` and `docker`
+  translators consume it. `NoAccess` denies content and metadata; `WriteOnly`
+  is supported by `sandbox-exec` and refused by backends that cannot express it;
+  `DenyWithinGrant` is declared per backend.
+- Execution audits carry `sandbox_backend`, `sandbox_enforcement`,
+  `sandbox_outcome`, `sandbox_policy_digest` and `sandbox_reason`; `sandbox
+  check` writes a `sandbox_probe` governance event.
+- `docs/features/v2-f9-sandbox.md`, the contract/defaults/implementation notes
+  in `docs/sandbox.md`, the conformance cases in `docs/sandbox-testing.md`, and
+  the source review in `docs/ideas/sandbox-source-notes.md`.
+
+### Documentation
+- Corrected the earlier `sandbox-exec` false negative: `/tmp` resolves to
+  `/private/tmp`, and a profile that names only the spelling does not match.
+  `sandbox-exec` is deprecated but enforcing with canonical paths.
+
 ## [0.14.1] - 2026-11-15
 
 ### Fixed

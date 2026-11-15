@@ -46,6 +46,7 @@ fn exec_opts(dir: &Path) -> ExecutorOptions<'_> {
         acl_path: None,
         filter: apexe::module::ModuleFilter::default(),
         audit_path: None,
+        sandbox: None,
         enable_logging: false,
         log_arguments: false,
         enable_approval: false,

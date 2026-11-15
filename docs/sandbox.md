@@ -1,6 +1,9 @@
 # Sandbox delegation
 
-**Status: specification. Nothing in this document is implemented yet.**
+**Status: 0.15.0 implements the contract and the four built-in backends
+(`systemd-run`, `bwrap`, `sandbox-exec`, `docker`). Optional `nono`, Apple
+container, microVM and remote adapters are later; the out-of-process adapter
+protocol is 0.16.**
 It exists so that the implementation, the tests and the operator-facing
 documentation are written against one definition instead of three.
 
@@ -275,7 +278,9 @@ Rules:
    calls paid it.
 5. `external:` overrides `modules:` for callers that are not `local`: an
    unauthenticated client runs code we did not choose, so it is confined even
-   when the module is not listed.
+   when the module is not listed. **0.15.0 parses and reports `external` but
+   does not apply it**; selected local modules only. MCP/A2A external routing is
+   0.16.
 
 ### 6.1 Default backends by platform
 
@@ -300,12 +305,12 @@ because the operator explicitly chose it.
 
 | Backend | Platform | Capabilities | Enforcement | Status |
 |---|---|---|---|---|
-| `systemd-run --property=…` | Linux + systemd | all four + `DenyWithinGrant` | `enforcing` | planned, first Linux zero-install |
-| `bwrap` | Linux (unprivileged userns) | all four, via bind mounts | `enforcing` | planned, preferred when installed |
-| `podman` / `docker` | Linux, macOS | all four, via mounts | `enforcing`, different semantics (§8) | optional, per-caller only |
-| `sandbox-exec` (seatbelt) | macOS | all four, with canonical paths | `enforcing`, **deprecated** | candidate, first macOS local |
-| `nono` (Seatbelt) | macOS | all four, via private `sandbox_init` | `enforcing` after a probe | candidate |
-| `nono` (Landlock) | Linux | read/write + `WriteOnly`; **no `DenyWithinGrant`** | `enforcing` for expressible policies; refuses `no_access` under a grant | candidate, no-userns |
+| `systemd-run --property=…` | Linux + systemd | read/write/no-access + `DenyWithinGrant` (no `WriteOnly`) | `enforcing` | implemented, Linux zero-install |
+| `bwrap` | Linux (unprivileged userns) | read/write/no-access + `DenyWithinGrant` (no `WriteOnly`) | `enforcing` | implemented, preferred when installed |
+| `podman` / `docker` | Linux, macOS | read/write/no-access + `DenyWithinGrant` (no `WriteOnly`) | `enforcing`, different semantics (§8) | implemented, optional |
+| `sandbox-exec` (seatbelt) | macOS | all four + `DenyWithinGrant`, canonical paths | `enforcing`, **deprecated** | implemented, macOS local |
+| `nono` (Seatbelt) | macOS | all four + `DenyWithinGrant`, via private `sandbox_init` | `enforcing` after a probe | optional, later |
+| `nono` (Landlock) | Linux | read/write + `WriteOnly`; **no `DenyWithinGrant`** | `enforcing` for expressible policies; refuses `no_access` under a grant | optional, later |
 | `microsandbox` / Apple `container` | macOS | all four, via a Linux VM | `enforcing` | later |
 | — | macOS, no backend above | — | `advisory` | fallback only; `required` refuses |
 
@@ -387,6 +392,10 @@ in force when this ran" without correlating files.
 
 ### 8.1 Startup record (`event: "sandbox_probe"`)
 
+In 0.15.0 `apexe sandbox check` writes this record. A `serve`/`a2a` startup
+probe lands with the external routing in 0.16; each local execution still
+records the five fields below.
+
 ```json
 {
   "event": "sandbox_probe",
@@ -431,6 +440,12 @@ be answered without relitigating this document.
 ---
 
 ## 11. Testing
+
+In 0.15.0 `apexe sandbox check` is **static** (`probe: static`): it reports the
+selected backend, capabilities and Docker image, not that A/B/C passed. The A/B/C
+cases are the conformance acceptance; run them on the target host before
+accepting a backend. This is why `required`/`auto` refuse an unavailable backend
+but cannot prove a hostile command is contained.
 
 See `docs/sandbox-testing.md` for the five-layer plan, the two probes every
 backend must pass (a denied write must fail *and* a permitted write must

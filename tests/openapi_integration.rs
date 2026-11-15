@@ -87,6 +87,7 @@ fn options(dir: &TempDir) -> ExecutorOptions<'_> {
         acl_path: None,
         filter: ModuleFilter::default(),
         audit_path: None,
+        sandbox: None,
         enable_logging: false,
         log_arguments: false,
         enable_approval: false,

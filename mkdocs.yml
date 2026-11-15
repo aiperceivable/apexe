@@ -80,6 +80,7 @@ nav:
       - F6 - Error Migration: features/v2-f6-error-migration.md
       - F7 - Config Integration: features/v2-f7-config-integration.md
       - F8 - Local Execution: features/v2-f8-local-execution.md
+      - F9 - Sandbox: features/v2-f9-sandbox.md
   - Examples:
       - Overview: examples.md
       - Basic: examples/basic/README.md

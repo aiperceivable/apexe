@@ -59,6 +59,10 @@ pub(super) fn options<'a>(
         acl_path: acl,
         filter,
         audit_path: Some(&config.audit_log),
+        sandbox: {
+            let runtime = crate::governance::SandboxRuntime::from_config(config);
+            runtime.is_enabled().then(|| std::sync::Arc::new(runtime))
+        },
         enable_logging: true,
         log_arguments: false,
         enable_approval: true,

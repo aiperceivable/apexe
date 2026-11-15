@@ -544,6 +544,30 @@ impl PathGuard {
         &self.exempt
     }
 
+    /// The effective four-way policy for a sandbox backend.
+    ///
+    /// The path guard keeps the baseline system paths, credential paths and the
+    /// operator's entries split by provenance so it can explain a refusal. A
+    /// sandbox needs the same policy in the four access classes. The conversion
+    /// preserves the guard's precedence: `read_only` entries may be re-opened by
+    /// a deeper `read_write` carve-out, and `no_access` remains a deny even under
+    /// a broader grant (the `DenyWithinGrant` capability).
+    pub fn sandbox_policy(&self) -> crate::config::PathPolicy {
+        let mut read_only = self.system.clone();
+        read_only.extend(self.home_write_denied.iter().cloned());
+        read_only.extend(self.configured_write_denied.iter().cloned());
+
+        let mut read_write = self.allowed.clone();
+        read_write.extend(self.exempt.iter().cloned());
+
+        crate::config::PathPolicy {
+            read_only,
+            read_write,
+            no_access: self.credential.clone(),
+            write_only: self.configured_read_denied.clone(),
+        }
+    }
+
     /// Refuse `value` if it resolves into a location `mode` may not touch.
     ///
     /// `subject` names the offending input the way the caller sees it, e.g.
