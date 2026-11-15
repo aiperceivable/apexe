@@ -55,7 +55,7 @@ starting paths; `delegate` runs each match through the installed child shim
 with a scoped delegated approval, so the actual `{}` path, symlinks and
 `-execdir` are judged per match. Neither mode is OS confinement: a child that
 computes its own paths is refused, and the sandbox layer remains the only
-enforcement boundary. See the [user manual](user-manual.md#embedded-child-commands-find--exec)
+enforcement boundary. See the [user manual](user-manual.md#embedded-child-commands-find-exec)
 and [`docs/overlays.md`](overlays.md#a-trailing-mini-language-opaque_after-versus-tail_parsed).
 
 > The section headings below tagged "(v0.1.0 …)" record when each piece first

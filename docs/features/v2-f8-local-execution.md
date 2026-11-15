@@ -438,7 +438,7 @@ trace; delegate rows also carry the grant id. The shim also writes the parent's
 `refusal` row for an analysis it could not complete. No mode is OS confinement: programs that compute their own paths (`sh -c`,
 `sed 'w /etc/x'`, `python -c`) are refused and require a confinement backend;
 `trust_uncovered` is the explicit, audited exception for an unbound program.
-The corpus declares `exec_list` on `find`'s four flags; the [user manual](../user-manual.md#embedded-child-commands-find--exec)
+The corpus declares `exec_list` on `find`'s four flags; the [user manual](../user-manual.md#embedded-child-commands-find-exec)
 owns the operator contract.
 
 ## 9. Verification and examples

@@ -680,7 +680,7 @@ describes the shipped stdin and shim boundaries:
   backend. The module-JSON/MCP surface never executes an exec-list without the
   native analysis, and `trust_uncovered` is an explicit operator
   responsibility. See [`docs/features/v2-f8-local-execution.md`](features/v2-f8-local-execution.md)
-  §8.3 and the [user manual](user-manual.md#embedded-child-commands-find--exec).
+  §8.3 and the [user manual](user-manual.md#embedded-child-commands-find-exec).
 
 - **Shim coverage is partial, and the gap silent.** Shell builtins —
   `cd`, `echo`, `test`, and in most shells `kill` — are resolved without
