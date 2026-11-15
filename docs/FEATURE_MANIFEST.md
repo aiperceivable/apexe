@@ -8,7 +8,7 @@ locally, and serves CLI and imported OpenAPI operations through MCP and A2A.
 Configured access controls, approval checks and audit records accompany the
 execution path.
 
-**Version:** 0.14.0
+**Version:** 0.14.1
 
 **Status:** CLI discovery, initialization, binding/Skill generation, local
 module execution, reviewed native argv and PATH shims, MCP/A2A serving, OpenAPI
@@ -59,7 +59,7 @@ enforcement boundary. See the [user manual](user-manual.md#embedded-child-comman
 and [`docs/overlays.md`](overlays.md#a-trailing-mini-language-opaque_after-versus-tail_parsed).
 
 > The section headings below tagged "(v0.1.0 …)" record when each piece first
-> landed; the crate is now **0.14.0**. For the authoritative current state see
+> landed; the crate is now **0.14.1**. For the authoritative current state see
 > [`CHANGELOG.md`](../CHANGELOG.md) and [`docs/user-manual.md`](user-manual.md).
 
 ## Architecture

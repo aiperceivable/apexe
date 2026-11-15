@@ -6,6 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
+## [0.14.1] - 2026-11-15
+
+### Fixed
+- `apexe list --verbose | head` no longer panics with `failed printing to
+  stdout: Broken pipe`. Rust ignores `SIGPIPE`, so a reader that closed early
+  turned the next stdout write into `EPIPE`, which `println!` panics on. The
+  CLI now restores the default `SIGPIPE` disposition at startup, so a pipeline
+  terminates quietly like any other Unix filter. The behavior is covered by a
+  regression test that closes the reader before a large `list --verbose`
+  output completes.
+
 ## [0.14.0] - 2026-11-15
 
 ### Added

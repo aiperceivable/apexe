@@ -8,8 +8,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 0.14.0 |
-| **Date** | 2026-11-13 |
+| **Version** | 0.14.1 |
+| **Date** | 2026-11-15 |
 | **Platform** | macOS / Linux |
 
 ---
