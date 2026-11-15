@@ -958,6 +958,21 @@ The marker requires the last, variadic operand and `before_flags` on everything
 before it. Any other shape with two variadic operands keeps the old "ambiguous
 declared positional grammar" refusal.
 
+A parsed tail also contains tokens that are neither flags nor values: `find`'s
+`(`, `)`, `!` and `,`. Declare them once at the overlay's root:
+
+```json
+{ "tail_tokens": ["(", ")", "!", ","] }
+```
+
+They reach the contract as `x-apexe-tail-literal`, and the resolver treats one
+as the start of the tail exactly like a declared flag; inside the tail they are
+skipped while every flag is still resolved, and they are forwarded with the rest
+of the argv. `;`, `+` and `{}` are refused as declarations: they are `-exec`'s
+terminators, and skipping one would let `-exec utility ;` run a program, which is
+the ceiling this grammar exists to keep. The declaration is only legal when the
+last positional arg carries `tail_parsed`; a file without it is refused at load.
+
 ### `end_of_options` — passing a value that begins with `-`
 
 apexe refuses any caller-supplied value starting with `-`, because the wrapped

@@ -548,6 +548,7 @@ fn synthesize_root_command(tool: &ScannedCLITool) -> ScannedCommand {
         help_format: HelpFormat::Unknown,
         structured_output: tool.structured_output.clone(),
         end_of_options: tool.end_of_options,
+        tail_tokens: tool.tail_tokens.clone(),
         raw_help: String::new(),
     }
 }
@@ -868,6 +869,7 @@ mod tests {
             help_format: HelpFormat::Gnu,
             structured_output: StructuredOutputInfo::default(),
             end_of_options: false,
+            tail_tokens: Vec::new(),
             raw_help: String::new(),
         }
     }

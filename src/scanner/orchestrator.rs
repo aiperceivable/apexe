@@ -599,6 +599,7 @@ impl ScanOrchestrator {
                         help_format: crate::models::HelpFormat::Unknown,
                         structured_output: crate::models::StructuredOutputInfo::default(),
                         end_of_options: false,
+                        tail_tokens: Vec::new(),
                         raw_help: String::new(),
                     });
                     tool.warnings.push(format!(
@@ -704,6 +705,7 @@ mod tests {
             help_format,
             structured_output: Default::default(),
             end_of_options: false,
+            tail_tokens: Vec::new(),
             raw_help: String::new(),
         };
 

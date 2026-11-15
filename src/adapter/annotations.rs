@@ -429,6 +429,7 @@ mod tests {
             help_format: HelpFormat::Gnu,
             structured_output: StructuredOutputInfo::default(),
             end_of_options: false,
+            tail_tokens: Vec::new(),
             raw_help: String::new(),
         }
     }

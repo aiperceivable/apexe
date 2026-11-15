@@ -300,6 +300,7 @@ fn write_converted_subcommand_binding(dir: &Path, subcommand: &str) -> String {
             help_format: apexe::models::HelpFormat::Gnu,
             structured_output: apexe::models::StructuredOutputInfo::default(),
             end_of_options: false,
+            tail_tokens: Vec::new(),
             raw_help: String::new(),
         }],
         ..Default::default()
@@ -941,6 +942,7 @@ fn write_json_value_binding(dir: &Path, value: &serde_json::Value) {
             format: Some("json".into()),
         },
         end_of_options: false,
+        tail_tokens: Vec::new(),
         raw_help: String::new(),
     };
     let mut module = ScannedModule::new(

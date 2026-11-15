@@ -740,7 +740,7 @@ impl InputProperties {
     }
 
     /// Assemble the finished schema.
-    fn into_schema(self, end_of_options: bool) -> JsonValue {
+    fn into_schema(self, end_of_options: bool, tail_tokens: &[String]) -> JsonValue {
         let mut schema = json!({
             "type": "object",
             "properties": self.properties,
@@ -756,6 +756,12 @@ impl InputProperties {
         // separator goes.
         if end_of_options {
             schema["x-apexe-end-of-options"] = json!(true);
+        }
+        // The non-dash members of a parsed tail: `find`'s `(`, `)`, `!`, `,`.
+        // Root-level like the separator, because they punctuate the whole
+        // expression rather than any one property.
+        if !tail_tokens.is_empty() {
+            schema["x-apexe-tail-literal"] = json!(tail_tokens);
         }
         schema
     }
@@ -873,7 +879,7 @@ pub fn build_input_schema(
     add_global_flags(&mut acc, global_flags, &by_literal, position);
     add_positional_args(&mut acc, command);
 
-    acc.into_schema(command.end_of_options)
+    acc.into_schema(command.end_of_options, &command.tail_tokens)
 }
 
 /// Build a JSON Schema for command output, including structured output when supported.
@@ -1035,6 +1041,7 @@ mod tests {
             help_format: HelpFormat::Gnu,
             structured_output: StructuredOutputInfo::default(),
             end_of_options: false,
+            tail_tokens: Vec::new(),
             raw_help: String::new(),
         }
     }
@@ -1051,6 +1058,18 @@ mod tests {
 
         let schema = build_input_schema(&command, &[], CommandPosition::Root);
         assert_eq!(schema["x-apexe-end-of-options"], true);
+    }
+
+    #[test]
+    fn test_build_input_schema_emits_the_tail_literals() {
+        // `find`'s `(`, `)`, `!`, `,` are neither flags nor operand values, so
+        // the resolver needs the declared set at the schema root to know that
+        // they open and punctuate a parsed tail.
+        let mut command = make_command(vec![], vec![]);
+        command.tail_tokens = vec!["(".into(), ")".into(), "!".into(), ",".into()];
+
+        let schema = build_input_schema(&command, &[], CommandPosition::Root);
+        assert_eq!(schema["x-apexe-tail-literal"], json!(["(", ")", "!", ","]));
     }
 
     #[test]

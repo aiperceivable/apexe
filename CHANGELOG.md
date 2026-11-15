@@ -32,6 +32,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   args…` still forwards its tail unvalidated, and a grammar declaring both
   markers is refused rather than guessed at. No existing grammar changes: a
   module without the marker parses byte-for-byte as in 0.13.0.
+- The non-dash expression operators are part of the parsed tail, not a gap.
+  `find`'s `(`, `)`, `!` and `,` are neither flags nor operand values, so the
+  overlay declares them as `tail_tokens` (contract keyword
+  `x-apexe-tail-literal`). One opens the tail exactly like a declared flag;
+  inside it the operators are skipped while every flag is still resolved, so
+  `find . \( -name '*.txt' -o -name '*.log' \)` runs and its `-delete` would
+  still reach the gate. `;`, `+` and `{}` are refused as declarations because
+  they are `-exec`'s terminators: accepting them would let `-exec utility ;`
+  run a program. The corpus's two `find` entries declare the four operators.
 - Native shim eligibility now asks whether a route *re-emits* its argv, not
   whether the tool is order-independent in general. A `tail_parsed` grammar
   classified every token, so the shim replays the caller's argv verbatim;

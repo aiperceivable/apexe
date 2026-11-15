@@ -92,10 +92,13 @@ rather than silently ignored.
 | `find . -delete` | refused | runs; `-delete` is seen, so approval fires and the path check is at write strength |
 | `find . -exec rm {} \;` | refused | refused, naming `rm` (or `{}`), with "`-exec`'s argument list is a command line, not a flag; use `apexe exec cli.find --input …`" |
 | `find . -name` | refused | refused: `-name` declares one value and none was given |
+| `find . \( -name '*.txt' -o -name '*.log' \)` | refused | runs; `(`, `)`, `!`, `,` are declared tail tokens, so the operators are skipped while `-name`/`-o` are still resolved |
 
 The third row is the honest ceiling: the arguments of `-exec` are *another
 program's argv*, which no type system can validate. Fail-closed is the only safe
 answer, and the message must say so rather than reporting a grammar defect.
+Declaring `;`, `+` or `{}` as a tail token is refused for the same reason: one
+skipped terminator would be enough to run `-exec utility ;`.
 
 ## 4. Code touch points
 
@@ -106,6 +109,7 @@ answer, and the message must say so rather than reporting a grammar defect.
 | `src/adapter/argv.rs` `parse` | **Done.** The boundary flag ends the leading operand; the rest of argv is shadow-parsed into `input` and forwarded verbatim from the boundary token |
 | `src/adapter/schema.rs` | **Done.** Emits `x-apexe-tail-parsed`; `x-apexe-opaque-after` is untouched |
 | `src/cli/shim.rs` eligibility | **Done.** A route whose grammar classifies every token is replayed verbatim, so it no longer needs a `cross_flag_ordering` claim; routes that re-emit still do |
+| `tail_tokens` (overlay → `x-apexe-tail-literal`) | **Done.** Declares `(`, `)`, `!`, `,`; one opens the parsed tail, the rest are skipped inside it. `;`/`+`/`{}` are refused so the exec ceiling stays structural |
 | `src/module/registry.rs` | **Done.** The verbatim executor is shared by scanned routes and reviewed parsed-tail routes, keeping each tier's audit label and bundling answer |
 | `schemas/tool-overlay.schema.json` (corpus) | **Done:** accepts `tail_parsed` on a positional, alongside the existing `opaque_after` |
 | `docs/overlays.md` | **Done:** the rule above, and the difference between the two markers |

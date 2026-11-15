@@ -2182,6 +2182,7 @@ fn find_schema() -> Value {
     json!({
         "type": "object",
         "x-apexe-end-of-options": true,
+        "x-apexe-tail-literal": ["(", ")", "!", ","],
         "x-apexe-short-flag-bundling": false,
         "properties": {
             "path": {
@@ -2202,6 +2203,7 @@ fn find_schema() -> Value {
                 "x-apexe-flag-position": "before-operands"
             },
             "name": {"type": "string", "x-apexe-flag": "-name"},
+            "o": {"type": "boolean", "x-apexe-flag": "-o"},
             "print": {"type": "boolean", "x-apexe-flag": "-print"},
             "delete": {"type": "boolean", "x-apexe-flag": "-delete"},
             "exec": {"type": "string", "x-apexe-flag": "-exec"}
@@ -2353,6 +2355,20 @@ fn test_shim_find_exec_tail_is_refused_with_the_module_hint() {
         .failure()
         .stderr(predicates::str::contains("cannot be classified"))
         .stderr(predicates::str::contains("apexe exec cli.find --input"));
+}
+
+#[test]
+fn test_shim_find_grouping_runs_through_the_parsed_tail() {
+    let fixture = find_fixture();
+    std::fs::write(fixture.home.path().join("a.txt"), "a").unwrap();
+    std::fs::write(fixture.home.path().join("b.log"), "b").unwrap();
+    fixture
+        .shim("find")
+        .args([".", "(", "-name", "*.txt", "-o", "-name", "*.log", ")"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("a.txt"))
+        .stdout(predicates::str::contains("b.log"));
 }
 
 #[test]

@@ -489,6 +489,21 @@ pub struct ScannedCommand {
     /// existed still load.
     #[serde(default)]
     pub end_of_options: bool,
+    /// Non-dash tokens that belong to a parsed trailing mini-language.
+    ///
+    /// `find`'s expression has operators that are neither flags nor values:
+    /// `(`, `)`, `!` and `,`. A positional operand cannot carry them (they are
+    /// not values) and a flag cannot (they have no dash), so a parsed tail needs
+    /// a third category. Only meaningful when the last positional carries
+    /// [`ScannedArg::tail_parsed`]; the resolver refuses a schema that names
+    /// them without it.
+    ///
+    /// Deliberately never a value: `;`, `+` and `{}` are `-exec`'s terminators
+    /// and are refused as declarations, so the exec ceiling cannot be reopened
+    /// by adding a token here. `-` is refused too, because flag spellings are
+    /// resolved by the flag list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tail_tokens: Vec<String>,
     /// Original help text (preserved for debugging).
     pub raw_help: String,
 }
@@ -590,6 +605,10 @@ pub struct ScannedCLITool {
     /// See [`ScannedCommand::end_of_options`].
     #[serde(default)]
     pub end_of_options: bool,
+    /// Non-dash tokens of a parsed tail, for a flat overlay whose root command
+    /// is synthesized. See [`ScannedCommand::tail_tokens`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tail_tokens: Vec<String>,
     /// Highest tier used during scanning (1=help, 2=man, 3=completion).
     pub scan_tier: u32,
     /// Non-fatal issues encountered during scanning.
@@ -1026,6 +1045,7 @@ mod tests {
             help_format: HelpFormat::Cobra,
             structured_output: StructuredOutputInfo::default(),
             end_of_options: false,
+            tail_tokens: Vec::new(),
             raw_help: String::new(),
         };
         let mid = ScannedCommand {
@@ -1039,6 +1059,7 @@ mod tests {
             help_format: HelpFormat::Cobra,
             structured_output: StructuredOutputInfo::default(),
             end_of_options: false,
+            tail_tokens: Vec::new(),
             raw_help: String::new(),
         };
         let json = serde_json::to_string(&mid).unwrap();
@@ -1061,6 +1082,7 @@ mod tests {
             help_format: HelpFormat::Gnu,
             structured_output: StructuredOutputInfo::default(),
             end_of_options: false,
+            tail_tokens: Vec::new(),
             raw_help: String::new(),
         };
         let json = serde_json::to_string(&cmd).unwrap();
@@ -1098,6 +1120,7 @@ mod tests {
                 help_format: HelpFormat::Gnu,
                 structured_output: StructuredOutputInfo::default(),
                 end_of_options: false,
+                tail_tokens: Vec::new(),
                 raw_help: String::new(),
             }],
             global_flags: vec![ScannedFlag {

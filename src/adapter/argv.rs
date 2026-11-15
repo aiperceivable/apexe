@@ -52,6 +52,11 @@ struct Parser<'a> {
     /// Index (among operands) of the trailing mini-language that is parsed
     /// rather than forwarded. `None` when nothing declares it.
     tail_parsed_operand: Option<usize>,
+    /// Non-dash tokens that belong to that mini-language (`find`'s `(`, `)`,
+    /// `!`, `,`). They are neither flags nor values: the resolver treats one as
+    /// the start of the tail and skips it inside the tail, without writing
+    /// anything to the input.
+    tail_tokens: Vec<&'a str>,
 }
 
 /// Whether a property includes the operand in the *leading* group, which is
@@ -347,6 +352,7 @@ impl<'a> Parser<'a> {
             digit_value: None,
             opaque_operand: None,
             tail_parsed_operand: None,
+            tail_tokens: Vec::new(),
         };
         for (name, value) in properties {
             let property = Property {
@@ -386,6 +392,7 @@ impl<'a> Parser<'a> {
         parser.validate_operands()?;
         parser.opaque_operand = parser.locate_opaque_operand()?;
         parser.tail_parsed_operand = parser.locate_tail_parsed_operand()?;
+        parser.tail_tokens = parser.locate_tail_tokens()?;
         Ok(parser)
     }
 
@@ -415,6 +422,49 @@ impl<'a> Parser<'a> {
             )));
         }
         Ok(Some(index))
+    }
+
+    /// Read the non-dash tokens a parsed tail may contain.
+    ///
+    /// They exist because `find`'s expression mixes dash primaries with `(`,
+    /// `)`, `!` and `,`, which are neither flags nor operand values. Declaring
+    /// them is only meaningful next to a `tail_parsed` operand, and an
+    /// `-exec` terminator is refused outright: a tail token is skipped rather
+    /// than parsed, so `;` here would let `-exec utility ;` run a program.
+    #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    fn locate_tail_tokens(&self) -> Result<Vec<&'a str>, ModuleError> {
+        let Some(values) = self.schema["x-apexe-tail-literal"].as_array() else {
+            return Ok(Vec::new());
+        };
+        let mut tokens = Vec::with_capacity(values.len());
+        for value in values {
+            let token = value
+                .as_str()
+                .ok_or_else(|| invalid("'x-apexe-tail-literal' must be an array of strings"))?;
+            if token.is_empty() || token.starts_with('-') {
+                return Err(invalid(format!(
+                    "'x-apexe-tail-literal' entry '{token}' must be non-empty and must not \
+                     start with '-'; flag spellings are resolved by the flag list"
+                )));
+            }
+            if matches!(token, ";" | "+" | "{}") {
+                return Err(invalid(format!(
+                    "'x-apexe-tail-literal' entry '{token}' is an -exec terminator; declaring \
+                     it would reopen the execution path the parsed tail keeps closed"
+                )));
+            }
+            tokens.push(token);
+        }
+        if !tokens.is_empty() && self.tail_parsed_operand.is_none() {
+            return Err(invalid(
+                "'x-apexe-tail-literal' requires an operand marked 'x-apexe-tail-parsed'",
+            ));
+        }
+        Ok(tokens)
+    }
+
+    fn is_tail_token(&self, token: &str) -> bool {
+        self.tail_tokens.contains(&token)
     }
 
     #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
@@ -564,6 +614,12 @@ impl<'a> Parser<'a> {
                     flags: Vec::new(),
                     parsed: false,
                 });
+                break;
+            } else if self.is_tail_token(token) {
+                // `find . \( -name a -o -name b \)`: the operator opens the
+                // expression, so it ends the leading operands exactly as a
+                // declared flag would.
+                scan.parsed_tail = Some((start, scan.cursor, Vec::new()));
                 break;
             } else {
                 scan.operands.push(token.as_str());
@@ -741,6 +797,12 @@ impl<'a> Parser<'a> {
                 if self.schema["x-apexe-end-of-options"] != true {
                     return Err(invalid("This command does not declare -- at this position"));
                 }
+                continue;
+            }
+            if self.is_tail_token(token) {
+                // `(`, `)`, `!`, `,`: punctuation the tool itself interprets.
+                // Nothing is written to the input, and the token still reaches
+                // the forwarded argv because the whole tail is forwarded.
                 continue;
             }
             if !token.starts_with('-') || token == "-" {
@@ -1537,6 +1599,7 @@ mod tests {
         json!({
             "type": "object",
             "x-apexe-end-of-options": true,
+            "x-apexe-tail-literal": ["(", ")", "!", ","],
             "properties": {
                 "path": {
                     "type": "array",
@@ -1556,6 +1619,8 @@ mod tests {
                     "x-apexe-flag-position": "before-operands"
                 },
                 "name": {"type": "string", "x-apexe-flag": "-name"},
+                "o": {"type": "boolean", "x-apexe-flag": "-o"},
+                "not": {"type": "boolean", "x-apexe-flag": "-not"},
                 "delete": {"type": "boolean", "x-apexe-flag": "-delete"},
                 "print": {"type": "boolean", "x-apexe-flag": "-print"},
                 "exec": {"type": "string", "x-apexe-flag": "-exec"}
@@ -1694,5 +1759,103 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    /// A declared non-dash token opens the expression: `find . \( -name a \)
+    /// is paths then operators, not a path named `(`.
+    #[test]
+    fn test_tail_token_starts_the_parsed_tail() {
+        let resolved = find_argv(&[".", "(", "-name", "a", "-o", "-name", "b", ")"]);
+        assert_eq!(
+            resolved.input,
+            json!({"path": ["."], "name": "b", "o": true})
+        );
+        let tail = resolved.opaque_tail.expect("forwarded");
+        assert_eq!(
+            tail.argv,
+            args(&["(", "-name", "a", "-o", "-name", "b", ")"])
+        );
+        assert_eq!(Value::Object(tail.prefix), json!({"path": ["."]}));
+    }
+
+    #[test]
+    fn test_tail_tokens_are_skipped_inside_the_tail() {
+        // `!` opens the expression the same way `(` does, so `.` is the only
+        // path; the punctuation after it is skipped while the flags are parsed.
+        let resolved = find_argv(&[".", "!", "-name", "a", ",", "-print"]);
+        assert_eq!(
+            resolved.input,
+            json!({"path": ["."], "name": "a", "print": true})
+        );
+        assert_eq!(
+            resolved.opaque_tail.expect("forwarded").argv,
+            args(&["!", "-name", "a", ",", "-print"])
+        );
+
+        let grouped = find_argv(&[".", "(", "!", "-name", "a", ")", "-print"]);
+        assert_eq!(
+            grouped.input,
+            json!({"path": ["."], "name": "a", "print": true})
+        );
+    }
+
+    #[test]
+    fn test_tail_tokens_do_not_reopen_the_exec_ceiling() {
+        let error = resolve_command_argv(
+            &args(&[".", "-exec", "rm", "{}", ";"]),
+            &find_schema(),
+            &[],
+            Some("cli.find"),
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains("'{}'") && error.message.contains("cannot be classified"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn test_tail_tokens_require_a_parsed_tail() {
+        let schema = json!({
+            "type": "object",
+            "x-apexe-tail-literal": ["("],
+            "properties": {
+                "expression": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "x-apexe-positional": 0
+                }
+            }
+        });
+        let error = resolve_argv(&args(&[".", "(", "-name", "a", ")"]), &schema).unwrap_err();
+        assert!(
+            error.message.contains("x-apexe-tail-literal"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn test_tail_tokens_refuse_exec_terminators_and_flags() {
+        for bad in [";", "+", "{}", "-name"] {
+            let mut schema = find_schema();
+            schema["x-apexe-tail-literal"] = json!([bad]);
+            let error = resolve_argv(&args(&[".", "-name", "x"]), &schema).unwrap_err();
+            assert!(
+                error.message.contains("x-apexe-tail-literal"),
+                "{bad}: {}",
+                error.message
+            );
+        }
+    }
+
+    #[test]
+    fn test_grouping_survives_the_separator() {
+        let resolved = find_argv(&["--", ".", "(", "-name", "a", ")"]);
+        assert_eq!(resolved.input, json!({"path": ["."], "name": "a"}));
+        let tail = resolved.opaque_tail.expect("forwarded");
+        assert_eq!(tail.argv, args(&["(", "-name", "a", ")"]));
+        assert!(tail.separator);
     }
 }

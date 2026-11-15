@@ -380,6 +380,10 @@ pub struct OverlayCommand {
     pub flags: Vec<OverlayFlag>,
     #[serde(default)]
     pub positional_args: Vec<OverlayArg>,
+    /// Non-dash tokens of a parsed tail (`(`, `)`, `!`, `,`). See
+    /// [`crate::models::ScannedCommand::tail_tokens`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tail_tokens: Vec<String>,
     #[serde(default)]
     pub annotations: AnnotationOverrides,
     /// Replacement description; empty keeps the scanned one.
@@ -470,6 +474,10 @@ pub struct ToolOverlay {
     /// of refused. See [`ScannedCommand::end_of_options`](crate::models::ScannedCommand::end_of_options).
     #[serde(default)]
     pub end_of_options: bool,
+    /// Non-dash tokens of the trailing mini-language, in the flat spelling.
+    /// See [`crate::models::ScannedCommand::tail_tokens`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tail_tokens: Vec<String>,
 }
 
 impl Default for ToolOverlay {
@@ -494,6 +502,7 @@ impl Default for ToolOverlay {
             annotations: AnnotationOverrides::default(),
             commands: Vec::new(),
             end_of_options: false,
+            tail_tokens: Vec::new(),
         }
     }
 }
@@ -530,12 +539,14 @@ impl ToolOverlay {
         if !self.flags.is_empty()
             || !self.positional_args.is_empty()
             || !self.annotations.is_empty()
+            || !self.tail_tokens.is_empty()
         {
             Some(OverlayCommand {
                 path: Vec::new(),
                 mode: None,
                 flags: self.flags.clone(),
                 positional_args: self.positional_args.clone(),
+                tail_tokens: self.tail_tokens.clone(),
                 annotations: self.annotations.clone(),
                 description: String::new(),
             })
@@ -671,6 +682,21 @@ pub enum OverlayDefect {
 
     #[error("positional arg #{0} has an empty name")]
     UnnamedArg(usize),
+
+    #[error(
+        "tail_tokens is declared but the last positional arg is not 'tail_parsed'; \
+         only a parsed tail can interpret non-flag tokens"
+    )]
+    TailTokensWithoutParsedTail,
+
+    #[error("tail_tokens entry '{0}' must be a non-empty token that does not start with '-'")]
+    MalformedTailToken(String),
+
+    #[error(
+        "tail_tokens entry '{0}' is an -exec terminator; declaring it would reopen the \
+         execution path the parsed tail keeps closed"
+    )]
+    ExecTerminatorAsTailToken(String),
 }
 
 /// Check every invariant of `overlay` that needs no access to the real tool.
@@ -708,6 +734,9 @@ pub fn validate_overlay(overlay: &ToolOverlay) -> Vec<OverlayDefect> {
         // "the file says nothing".
         defects.push(OverlayDefect::NoDeclaredCommands);
     }
+    for scope in &declared {
+        validate_tail_tokens(scope, &mut defects);
+    }
     let mut seen_paths: Vec<&Vec<String>> = Vec::new();
     for scope in &overlay.commands {
         if seen_paths.contains(&&scope.path) {
@@ -725,6 +754,33 @@ pub fn validate_overlay(overlay: &ToolOverlay) -> Vec<OverlayDefect> {
         }
     }
     defects
+}
+
+/// Check the non-dash tokens a parsed tail may contain.
+///
+/// Two facts make them safe. They must sit on a route whose last positional is
+/// `tail_parsed`, otherwise nothing would parse them; and they can never be an
+/// `-exec` terminator (`;`, `+`, `{}`), because a tail token is skipped rather
+/// than parsed, and skipping `;` would let `-exec utility ;` run a program this
+/// grammar is supposed to refuse.
+fn validate_tail_tokens(scope: &OverlayCommand, defects: &mut Vec<OverlayDefect>) {
+    if scope.tail_tokens.is_empty() {
+        return;
+    }
+    let parsed_tail = scope
+        .positional_args
+        .last()
+        .is_some_and(|arg| arg.tail_parsed && arg.variadic);
+    if !parsed_tail {
+        defects.push(OverlayDefect::TailTokensWithoutParsedTail);
+    }
+    for token in &scope.tail_tokens {
+        if token.is_empty() || token.starts_with('-') {
+            defects.push(OverlayDefect::MalformedTailToken(token.clone()));
+        } else if matches!(token.as_str(), ";" | "+" | "{}") {
+            defects.push(OverlayDefect::ExecTerminatorAsTailToken(token.clone()));
+        }
+    }
 }
 
 /// Enforce the provenance contract: `verified` is a claim that must be backed.
@@ -1048,6 +1104,9 @@ pub fn apply_overlay(tool: &mut ScannedCLITool, overlay: &ToolOverlay) {
                     merge_positional_args(&mut tool.positional_args, &scope.positional_args);
                 }
             }
+            if !scope.tail_tokens.is_empty() {
+                tool.tail_tokens.clone_from(&scope.tail_tokens);
+            }
             if !scope.annotations.is_empty() {
                 tool.annotation_scopes
                     .insert(String::new(), scope.annotations.clone());
@@ -1088,6 +1147,9 @@ pub fn apply_overlay(tool: &mut ScannedCLITool, overlay: &ToolOverlay) {
         }
         if !scope.description.is_empty() {
             command.description.clone_from(&scope.description);
+        }
+        if !scope.tail_tokens.is_empty() {
+            command.tail_tokens.clone_from(&scope.tail_tokens);
         }
         if scope.path.is_empty() {
             root = Some(command);
@@ -1180,6 +1242,7 @@ fn synthesize_command(tool: &str, path: &[String]) -> crate::models::ScannedComm
         help_format: crate::models::HelpFormat::Unknown,
         structured_output: crate::models::StructuredOutputInfo::default(),
         end_of_options: false,
+        tail_tokens: Vec::new(),
         raw_help: String::new(),
     }
 }
@@ -1300,6 +1363,7 @@ mod tests {
                     conflicts_with: vec!["-1".to_string()],
                     ..Default::default()
                 }],
+                tail_tokens: Vec::new(),
                 positional_args: vec![OverlayArg {
                     name: "file".to_string(),
                     value_type: ValueType::Path,
@@ -1313,6 +1377,7 @@ mod tests {
                 description: String::new(),
             }],
             end_of_options: false,
+            tail_tokens: Vec::new(),
             // The fixture claims `Verified`, so it must carry provenance for the
             // same reason a real overlay must: a verified claim nobody can
             // re-check is indistinguishable from a guess.
@@ -1754,6 +1819,7 @@ mod tests {
                 help_format: crate::models::HelpFormat::Unknown,
                 structured_output: crate::models::StructuredOutputInfo::default(),
                 end_of_options: false,
+                tail_tokens: Vec::new(),
                 raw_help: String::new(),
             }],
             ..Default::default()
@@ -2142,6 +2208,7 @@ mod tests {
             help_format: crate::models::HelpFormat::Unknown,
             structured_output: crate::models::StructuredOutputInfo::default(),
             end_of_options: false,
+            tail_tokens: Vec::new(),
             raw_help: String::new(),
         }
     }
@@ -2601,6 +2668,84 @@ mod tests {
                     |defect| matches!(defect, OverlayDefect::MalformedShort(name) if name == bad)
                 ),
                 "'{bad}' must be reported as a malformed short form, got {defects:?}"
+            );
+        }
+    }
+
+    /// `find`'s expression operators are not flags and not values; the overlay
+    /// declares them once, and the resolver refuses the grammar if the route
+    /// has no parsed tail to interpret them.
+    #[test]
+    fn test_overlay_tail_tokens_reach_the_schema_and_require_a_parsed_tail() {
+        let mut overlay = overlay(OverlayMode::Authoritative);
+        overlay.command = "find".to_string();
+        overlay.commands[0].flags = Vec::new();
+        overlay.commands[0].positional_args = vec![
+            OverlayArg {
+                name: "path".to_string(),
+                value_type: ValueType::Path,
+                variadic: true,
+                before_flags: true,
+                ..Default::default()
+            },
+            OverlayArg {
+                name: "expression".to_string(),
+                value_type: ValueType::String,
+                variadic: true,
+                tail_parsed: true,
+                ..Default::default()
+            },
+        ];
+        overlay.commands[0].tail_tokens = vec!["(".into(), ")".into(), "!".into(), ",".into()];
+        assert!(
+            validate_overlay(&overlay).is_empty(),
+            "{:?}",
+            validate_overlay(&overlay)
+        );
+
+        let mut tool = ScannedCLITool {
+            name: "find".into(),
+            variant: ToolVariant::Unknown,
+            ..Default::default()
+        };
+        apply_overlay(&mut tool, &overlay);
+        let module = crate::adapter::CliToolConverter::new()
+            .convert(&tool)
+            .remove(0);
+        assert_eq!(
+            module.input_schema["x-apexe-tail-literal"],
+            serde_json::json!(["(", ")", "!", ","])
+        );
+
+        // Without the parsed tail nothing would interpret `(`, so the overlay
+        // is refused rather than shipped as a grammar the resolver cannot honour.
+        let mut no_tail = overlay.clone();
+        no_tail.commands[0].positional_args[1].tail_parsed = false;
+        assert!(validate_overlay(&no_tail)
+            .iter()
+            .any(|defect| matches!(defect, OverlayDefect::TailTokensWithoutParsedTail)));
+    }
+
+    #[test]
+    fn test_overlay_tail_tokens_refuse_exec_terminators_and_flags() {
+        for bad in [";", "+", "{}", "-name", ""] {
+            let mut overlay = overlay(OverlayMode::Authoritative);
+            overlay.commands[0].positional_args = vec![OverlayArg {
+                name: "expression".to_string(),
+                value_type: ValueType::String,
+                variadic: true,
+                tail_parsed: true,
+                ..Default::default()
+            }];
+            overlay.commands[0].tail_tokens = vec![bad.to_string()];
+            let defects = validate_overlay(&overlay);
+            assert!(
+                defects.iter().any(|defect| matches!(
+                    defect,
+                    OverlayDefect::ExecTerminatorAsTailToken(_)
+                        | OverlayDefect::MalformedTailToken(_)
+                )),
+                "'{bad}' must be refused, got {defects:?}"
             );
         }
     }

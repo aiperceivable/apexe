@@ -58,6 +58,7 @@ impl<'a> SubcommandDiscovery<'a> {
             help_format: parsed.help_format,
             structured_output: parsed.structured_output,
             end_of_options: false,
+            tail_tokens: Vec::new(),
             raw_help: help_text,
         })
     }
