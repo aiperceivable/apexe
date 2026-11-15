@@ -137,6 +137,24 @@ pub(super) async fn analyze(
                  commands are refused until the analysis is applied recursively"
             ));
         }
+        if child
+            .annotations
+            .as_ref()
+            .and_then(|annotations| {
+                annotations
+                    .extra
+                    .get(crate::adapter::annotations::COMPUTES_PATHS_KEY)
+            })
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            return Err(anyhow::anyhow!(
+                "Embedded command '{program}' ({}) computes its own paths; argument analysis cannot \
+                 see every write it may perform. Use a confinement backend, or remove it from \
+                 this call",
+                child.module_id
+            ));
+        }
         let child_input = child_argv.input;
         if let Some(values) = child_input.as_object() {
             crate::module::executor::reject_exec_parameters(values, Some(&child.input_schema))

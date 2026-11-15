@@ -321,6 +321,9 @@ pub const ESCALATING_PARAMS_KEY: &str = "x-apexe-escalating-params";
 /// call is checked at read strength. It can only narrow a module to `ReadOnly`,
 /// so a module that can write without them must never carry the key.
 pub const WRITES_WITH_KEY: &str = "x-apexe-writes-with";
+/// Records that a command computes filesystem paths inside its own logic, so
+/// argument-level path checks cannot see every write or read.
+pub const COMPUTES_PATHS_KEY: &str = "x-apexe-computes-paths";
 
 /// Whether a flag literal escalates the call that carries it.
 ///

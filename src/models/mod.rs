@@ -712,6 +712,15 @@ pub struct AnnotationOverrides {
     /// approval genuinely differ.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub writes_with: Vec<String>,
+    /// The command computes paths inside its own logic, so its argv is not the
+    /// whole story (`sed 'w /etc/x' file`, `awk system(...)`, `python -c`).
+    ///
+    /// A child-execution analysis can only check the paths that appear as
+    /// arguments. A module that writes somewhere else must not be admitted by
+    /// that analysis; it needs a confinement backend or an explicit trust
+    /// decision. Absent means "no such claim", not "verified not to".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computes_paths: Option<bool>,
 }
 
 impl AnnotationOverrides {

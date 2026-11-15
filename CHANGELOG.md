@@ -41,6 +41,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   still reach the gate. `;`, `+` and `{}` are refused as declarations because
   they are `-exec`'s terminators: accepting them would let `-exec utility ;`
   run a program. The corpus's two `find` entries declare the four operators.
+- A command that computes filesystem paths inside its own logic can declare
+  `computes_paths: true` (contract key `x-apexe-computes-paths`). The
+  child-execution analysis refuses such a module rather than treating its
+  argument paths as complete: `sed 'w /etc/x'`, `awk system(...)` and
+  `python -c` need a confinement backend or an explicit trust decision. The
+  corpus marks both `sed` variants after probing that `sed -n 'w /tmp/...'`
+  really writes the named file.
 - Embedded child commands (`find -exec`) are a policy decision now, not a hole.
   The corpus declares `-exec`/`-execdir`/`-ok`/`-okdir` as `exec_list`; the
   resolver collects the command list verbatim instead of refusing its tokens or

@@ -653,6 +653,7 @@ fn apply_annotation_overrides(
             serde_json::json!(writes_with),
         );
     }
+    apply_computes_paths(&mut annotations, overrides);
     annotations.cacheable = annotations.readonly && annotations.idempotent;
     annotations
 }
@@ -679,8 +680,26 @@ fn apply_booleans(
     if let Some(open_world) = overrides.open_world {
         annotations.open_world = open_world;
     }
+    apply_computes_paths(&mut annotations, overrides);
     annotations.cacheable = annotations.readonly && annotations.idempotent;
     annotations
+}
+
+fn apply_computes_paths(
+    annotations: &mut ModuleAnnotations,
+    overrides: &crate::models::AnnotationOverrides,
+) {
+    match overrides.computes_paths {
+        Some(true) => {
+            annotations
+                .extra
+                .insert(annotations::COMPUTES_PATHS_KEY.to_string(), json!(true));
+        }
+        Some(false) => {
+            annotations.extra.remove(annotations::COMPUTES_PATHS_KEY);
+        }
+        None => {}
+    }
 }
 
 /// Record which schema properties would escalate a call to `requires_approval`.

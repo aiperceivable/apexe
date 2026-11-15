@@ -174,6 +174,13 @@ rather than guessed: a long flag loses its dashes and gets underscores
 (`--in-place` → `in_place`), and a flag that exists only in short form keeps its
 letters (`-delete` → `delete`).
 
+A command that computes paths inside its own logic — `sed 'w /etc/x'`,
+`awk system(...)`, `python -c` — carries `"computes_paths": true` in its
+annotations (contract key `x-apexe-computes-paths`). A child-execution
+analysis can only see arguments, so it refuses such a child instead of
+pretending the path set is complete; the module stays callable through its own
+route, where its existing write-strength policy applies.
+
 A name the module does not declare is a defect, and apexe treats it as one: the
 whole flag list is dropped and an error naming the unknown property and the real
 ones is logged. Dropping keeps the module at **write** strength — the same state
