@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
-## [0.14.0] - 2026-11-14
+## [0.14.0] - 2026-11-15
 
 ### Added
 - `x-apexe-tail-parsed` lets an overlay declare a trailing mini-language that is
@@ -98,6 +98,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   label, which still matches `Commands:`, `Available Commands:`, `Management
   Commands:` and `Common Commands:` without matching prose. Verified by the
   real `rm@gnu` scan and `find -exec rm` on the Debian reference image.
+
 ---
 
 ## [0.13.0] - 2026-11-13
