@@ -42,7 +42,8 @@ a server feature.
 
 `apexe` is not a sandbox. Read the threat model and run exposed tools inside
 the OS, container, VM, account, and network boundary appropriate to your use
-case.
+case. The opt-in sandbox delegation specification is in
+[`sandbox.md`](sandbox.md); it is not implemented yet.
 
 ## I want to embed, extend, or maintain apexe
 

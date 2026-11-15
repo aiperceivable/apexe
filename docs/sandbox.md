@@ -64,8 +64,10 @@ Rules:
    A backend declares its capabilities (§5.1); if the requested policy exceeds
    them, the outcome is `refused`, not a quiet downgrade.
 3. With `sandbox.required`, a missing backend is a refusal to run, not a
-   warning. The default posture may be `advisory`, but that must be a visible
-   configuration choice, never a fallback nobody noticed.
+   warning. The execution modes are `off`, `required`, and `auto`; `auto` selects
+   only among enforcing, capable backends and refuses when none is available.
+   `advisory` is a diagnostic state reported by `sandbox check`, not a run mode;
+   no call is silently downgraded from `enforcing` to `advisory`.
 
 Where the level is surfaced: `apexe paths`, `apexe sandbox check`,
 `apexe exec --dry-run`, `apexe list --diagnostics`, and every audit record.
@@ -97,14 +99,54 @@ connotation), `guard` (already means the path guard, which is a different layer)
 ## 5. Backend contract
 
 A backend is a small, stateless adapter. It answers four questions and produces
-one argv.
+one launch spec, not necessarily one argv:
 
 ```text
 probe()      -> Probe
 capabilities() -> &'static [Capability]
-translate(policy: &PathPolicy, invocation: &Invocation) -> Result<ConfinedInvocation, Refusal>
-enforcement() -> Enforcement
+translate(policy: &PathPolicy, invocation: &Invocation) -> Result<LaunchSpec, Refusal>
+execute(launch: LaunchSpec) -> Result<SandboxChild, Refusal>
+wait() / kill() / cleanup() -> exit status, signal, teardown
+eforcement() -> Enforcement
 ```
+
+`LaunchSpec` keeps the shape of the execution surface explicit:
+
+```rust
+enum LaunchSpec {
+    Command(CommandSpec),      // systemd-run, bwrap, sandbox-exec, nono
+    Container(ContainerSpec),  // Docker, Apple container
+    MicroVm(MicroVmSpec),      // microsandbox, Firecracker
+    Remote(RemoteSpec),        // E2B, OpenSandbox, CubeSandbox later
+}
+```
+
+`SandboxChild` owns the running child or session: stdin, stdout, stderr, wait,
+kill and cleanup. The executor drives this through its one spawn point; a
+backend does not get a second execution surface.
+
+### 5.0 Adapter protocol
+
+The built-in backends implement the in-process contract above. Third-party
+adapters use a versioned out-of-process protocol, added only after the built-in
+pair has passed the conformance suite. The protocol is a driver contract, not a
+sandbox policy language:
+
+```text
+describe()   -> name / version / contract_version / platforms
+probe()      -> availability, enforcement, reason
+prepare()    -> effective PathPolicy + Invocation -> LaunchSpec | Refusal
+execute()    -> LaunchSpec -> SandboxChild
+execute/wait/kill/cleanup, stdout/stderr/stdin streaming, timeout, exit status
+```
+
+The adapter declares `capabilities`; if the effective policy needs a capability
+it does not have, it refuses rather than dropping an entry. The adapter is a
+**trusted** component: it can run commands, so installation is signed/allowlisted
+and the operator selects it. A probe is evidence, not proof; `sandbox check` and
+the audit record say which backend actually ran. Built-ins do not pay the
+out-of-process hop; the protocol exists for languages and distributions apexe
+does not compile in.
 
 ### 5.1 `probe`
 
@@ -147,25 +189,25 @@ exists to prevent.**
 ### 5.3 `translate`
 
 Inputs: the effective `PathPolicy`, and the invocation (argv, working directory,
-and the caller id). Output: the confined argv, or a `Refusal` carrying
-`{ capability | probe }` and a human reason.
-
-Translation must be a pure function of its inputs — same policy and invocation
-produce the same argv byte for byte. That is what makes it testable without a
-kernel (§ `docs/sandbox-testing.md`, layer 1).
+and the caller id). Output: a `LaunchSpec`, or a `Refusal` carrying
+`{ capability | probe }` and a human reason. Translation must be a pure function
+of its inputs — same policy and invocation produce the same launch spec byte for
+byte. That is what makes it testable without a kernel (§ `docs/sandbox-testing.md`,
+layer 1).
 
 ### 5.4 Fail-closed rules
 
 | Situation | `sandbox.off` | `sandbox.auto` | `sandbox.required` |
 |---|---|---|---|
 | Backend available, policy expressible | run confined | run confined | run confined |
-| Backend unavailable | run, level `advisory` | run, level `advisory`, warn | **refuse to run** |
-| Backend available, policy not expressible | run, `advisory` | **refuse to run** | **refuse to run** |
-| Translation error | run, `advisory` | **refuse to run** | **refuse to run** |
+| Backend unavailable | run unconfined; the operator chose `off` | **refuse to run** | **refuse to run** |
+| Backend available, policy not expressible | run unconfined; the operator chose `off` | **refuse to run** | **refuse to run** |
+| Translation error | run unconfined; the operator chose `off` | **refuse to run** | **refuse to run** |
 
 `auto` refuses a policy the backend cannot express because a policy the operator
 wrote and the backend silently ignores is worse than a refusal: it teaches the
-operator that the entry works.
+operator that the entry works. `off` is an explicit no-sandbox choice; it is not
+the automatic consequence of a missing backend.
 
 ---
 
@@ -186,7 +228,8 @@ assurance.
 
 ```yaml
 sandbox:
-  default: advisory                  # off | advisory | auto (per §5.4)
+  backend: auto                      # auto | systemd-run | bwrap | sandbox-exec | ...
+  default: off                       # off | required | auto (per §5.4)
   modules:                           # confine exactly these, by module id
     - cli.python3
     - cli.node
@@ -195,6 +238,9 @@ sandbox:
     - cli.awk
   external: container                # unauthenticated serve/a2a callers
 ```
+
+`backend: auto` is platform-aware. It prefers an OS-provided local sandbox over a
+container/VM, and never chooses an `advisory` path for a selected module.
 
 Rules:
 
@@ -214,35 +260,77 @@ Rules:
    unauthenticated client runs code we did not choose, so it is confined even
    when the module is not listed.
 
+### 6.1 Default backends by platform
+
+The default pair requires no third-party installation; optional backends are
+selected only when present and capable.
+
+| Platform | Default | Third-party install | Fallback |
+|---|---|---|---|
+| macOS | `sandbox-exec` (OS; deprecated; canonical-path probe) | none | `nono` (private `sandbox_init`), Docker, Apple `container`, microVM, Linux VM |
+| Linux + systemd | `systemd-run` (OS; needs a user manager/DBus) | none | `bwrap` (the `bubblewrap` package) when installed; Landlock/seccomp in-process; no backend → `required` refuses |
+| Linux without systemd | `bwrap` (if installed) | `bubblewrap` | Landlock/seccomp; no backend → `required` refuses |
+| external/untrusted | container or VM | Docker/Apple container/microVM | E2B/OpenSandbox/CubeSandbox later |
+
+`bwrap` is a third-party package, not part of the base OS. It is preferred when
+installed because its mount namespace expresses `read_only`, `read_write`,
+`no_access`, and `DenyWithinGrant` directly; `systemd-run` is the zero-install
+Linux default when its user manager is available. A missing backend is never a
+silent host fallback: `required` refuses, `auto` refuses, and `off` runs only
+because the operator explicitly chose it.
+
 ## 7. Backend matrix
 
 | Backend | Platform | Capabilities | Enforcement | Status |
 |---|---|---|---|---|
-| `systemd-run --property=…` | Linux + systemd | all four + `DenyWithinGrant` | `enforcing` | planned, first |
-| `bwrap` | Linux (unprivileged userns) | all four, via bind mounts | `enforcing` | planned |
+| `systemd-run --property=…` | Linux + systemd | all four + `DenyWithinGrant` | `enforcing` | planned, first Linux zero-install |
+| `bwrap` | Linux (unprivileged userns) | all four, via bind mounts | `enforcing` | planned, preferred when installed |
 | `podman` / `docker` | Linux, macOS | all four, via mounts | `enforcing`, different semantics (§8) | optional, per-caller only |
-| `sandbox-exec` (seatbelt) | macOS | all four *in principle* | **measured inert**, see below | **not planned** |
-| — | macOS, no container | — | `advisory` | default on macOS |
+| `sandbox-exec` (seatbelt) | macOS | all four, with canonical paths | `enforcing`, **deprecated** | candidate, first macOS local |
+| `nono` (Seatbelt) | macOS | all four, via private `sandbox_init` | `enforcing` after a probe | candidate |
+| `microsandbox` / Apple `container` | macOS | all four, via a Linux VM | `enforcing` | later |
+| — | macOS, no backend above | — | `advisory` | fallback only; `required` refuses |
 
-### macOS, measured
+### macOS: deprecated, but not inert
 
-On macOS 26.3 (arm64) `sandbox-exec` accepted a profile that denies writes
-beneath `/tmp/sbtest` and did not block the write:
+The original version of this section reported `sandbox-exec` as inert. That was a
+**false negative in the test**, not an inert sandbox. On macOS `/tmp` is a
+symlink to `/private/tmp`; Seatbelt matches literal paths, so a rule for
+`subpath "/tmp/sbtest"` does not cover a write whose resolved path is
+`/private/tmp/sbtest`. With `(allow default)` the write succeeds for that
+reason, not because the sandbox was bypassed.
 
+The corrected test on macOS 26.3 (arm64):
+
+```text
+$ sandbox-exec -p '(version 1)(allow default)(deny file-write* (subpath "/private/tmp/sbtest"))' \
+    /bin/sh -c 'echo x > /private/tmp/sbtest/f'
+/bin/sh: /private/tmp/sbtest/f: Operation not permitted   # exit 1
 ```
-$ sandbox-exec -p '(version 1)(allow default)(deny file-write* (subpath "/tmp/sbtest"))' \
-    /bin/sh -c 'echo x > /tmp/sbtest/f'
-exit=0
-$ ls -l /tmp/sbtest/f
--rw-r--r--@ 1 tercel wheel 2 … /tmp/sbtest/f
-```
 
-Apple has been neutering `sandbox-exec` for years and has deprecated it; a
-backend that reports `enforcing` while the write succeeds would be worse than no
-backend. macOS therefore ships `advisory` by default, and operators who need
-enforcement there have two honest options: a container backend for the callers
-that need it (§8), or running apexe itself inside a VM or devcontainer, which
-puts the boundary outside apexe and needs no code from us.
+A real home path and a deny-all write are blocked too; `(deny default)` blocks
+execution of the child. Details and the full transcript are in
+[`docs/sandbox-testing.md`](sandbox-testing.md) §4.
+
+The market tools work because they handle this correctly: Gemini's
+`resolveToRealPath` emits both the original and resolved paths, and `nono`
+explicitly resolves `/tmp` to `/private/tmp` and emits both. A backend that uses
+only the caller's spelling will produce false negatives exactly like our first
+test.
+
+`sandbox-exec` is **deprecated**, and that is the real risk. It is not inert on
+macOS 26.3. The practical macOS order is:
+
+1. `sandbox-exec` (or `nono`'s private `sandbox_init`) after a canonical-path
+   probe, with a plan to migrate;
+2. `microsandbox` or Apple `container` for a VM boundary;
+3. a Linux VM/devcontainer when the whole host must be contained;
+4. Docker Desktop as the already-installed container fallback.
+
+An operator who needs enforcement can therefore use `sandbox-exec` today, but
+should not build a long-term product on a deprecated API. `sandbox.required`
+refuses when no backend passes its probe; `advisory` is only the diagnostic
+level when none does, never a silent downgrade from an enforcing backend.
 
 ---
 
@@ -297,7 +385,7 @@ in force when this ran" without correlating files.
 
 | Field | Meaning |
 |---|---|
-| `sandbox_backend` | `systemd-run` \| `bwrap` \| `container` \| `none` |
+| `sandbox_backend` | `systemd-run` \| `bwrap` \| `sandbox-exec` \| `nono` \| `container` \| `microvm` \| `remote` \| `none` |
 | `sandbox_enforcement` | `enforcing` \| `advisory` |
 | `sandbox_outcome` | `applied` \| `unavailable` \| `refused` \| `degraded` |
 | `sandbox_policy_digest` | Hash of the translated invocation, so the policy in force is provable without logging the policy per call |
@@ -328,4 +416,8 @@ be answered without relitigating this document.
 
 See `docs/sandbox-testing.md` for the five-layer plan, the two probes every
 backend must pass (a denied write must fail *and* a permitted write must
-succeed), and which layers a given platform can verify.
+succeed), the canonical-path requirement (`/tmp` → `/private/tmp`), the
+adapter conformance suite, and which layers a given platform can verify. A
+third-party adapter is not accepted until it passes the same suite:
+`describe/probe/prepare/execute/wait/kill/cleanup`, `DenyWithinGrant`,
+`write_only` refusal, no silent drop, selection, audit, and fail-closed.

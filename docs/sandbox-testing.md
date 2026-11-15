@@ -38,7 +38,7 @@ the whole point of it.
 | 1. Translation | `paths:` + invocation → the backend's argv, byte for byte | any OS | `#[cfg(test)]` next to the translator |
 | 2. Selection | the right backend is chosen for a platform, and an unavailable one is reported, not assumed | any OS; probe injected as a value | unit test |
 | 3. Fail-closed | unavailable backend under `sandbox.required`, or an inexpressible policy, refuses *without spawning* a child | any OS | unit test asserting the spawn was not reached |
-| 4. Enforcement | a denied write fails at the kernel; a permitted write succeeds | Linux (`systemd-run`/`bwrap`); **not macOS**, see §4 | integration test, `#[ignore]` or platform-skipped |
+| 4. Enforcement | a denied write fails at the kernel; a permitted write succeeds | Linux (`systemd-run`/`bwrap`); macOS (`sandbox-exec`/`nono`) with canonical paths; VM/container for untrusted | integration test, `#[ignore]` or platform-skipped |
 | 5. Audit | `sandbox_probe` at startup and the five `sandbox_*` fields per execution | any OS | integration test reading `audit.jsonl` |
 
 Layer 4 is *the* acceptance criterion for a backend, and it has two halves.
@@ -93,31 +93,67 @@ already did.
 
 ---
 
-## 4. macOS: measured, and the reason it cannot be verified there
+## 4. macOS: enforcing, but only with canonical paths
 
-Measured in this repository on macOS 26.3 (arm64), 2026-11-14:
+The original note here reported `sandbox-exec` as inert. That was a **false
+negative in the test**, not an inert sandbox. On macOS, `/tmp` is a symlink to
+`/private/tmp`; Seatbelt matches literal paths, so a rule for `subpath
+"/tmp/sbtest"` does not cover a write whose resolved path is
+`/private/tmp/sbtest`. With `(allow default)` the write therefore succeeds.
 
-```
+The corrected tests on macOS 26.3 (arm64), 2026-11-15:
+
+```text
+# non-canonical: allowed (the false negative)
 $ sandbox-exec -p '(version 1)(allow default)(deny file-write* (subpath "/tmp/sbtest"))' \
     /bin/sh -c 'echo x > /tmp/sbtest/f'
 exit=0
-$ ls -l /tmp/sbtest/f
--rw-r--r--@ 1 tercel wheel 2 Nov 14 12:06 /tmp/sbtest/f
+
+# canonical: blocked by the kernel
+$ sandbox-exec -p '(version 1)(allow default)(deny file-write* (subpath "/private/tmp/sbtest"))' \
+    /bin/sh -c 'echo x > /private/tmp/sbtest/f2'
+/bin/sh: /private/tmp/sbtest/f2: Operation not permitted
+exit=1
+
+# a real home path: blocked
+$ sandbox-exec -p '(version 1)(allow default)(deny file-write* (subpath "/Users/tercel/sbtest"))' \
+    /bin/sh -c 'echo x > /Users/tercel/sbtest/f3'
+/bin/sh: /Users/tercel/sbtest/f3: Operation not permitted
+exit=1
+
+# deny every write: blocked
+$ sandbox-exec -p '(version 1)(allow default)(deny file-write*)' \
+    /bin/sh -c 'echo x > /tmp/sbtest/f4'
+/bin/sh: /tmp/sbtest/f4: Operation not permitted
+exit=1
+
+# deny default: execution itself is refused
+exit=71 (execvp: Operation not permitted)
+
+# read deny with canonical path: blocked
+$ sandbox-exec -p '(version 1)(allow default)(deny file-read* (subpath "/private/etc"))' \
+    /bin/cat /private/etc/hosts
+cat: /private/etc/hosts: Operation not permitted
+exit=1
 ```
 
-The profile was accepted and the write was not blocked. Reproduce with the two
-commands above; the only prerequisite is `/tmp/sbtest` existing.
+Consequences:
 
-Consequences, all of which are *conclusions from that measurement*, not
-assumptions:
-
-1. `sandbox-exec` is not a candidate backend (`docs/sandbox.md` §7).
-2. Layer 4 cannot be verified on macOS. A developer on macOS can verify layers
-   1, 2, 3 and 5 and nothing else; the documentation must say so, or the first
-   person to run layer 4 will read its skip as a bug.
-3. On macOS the honest level is `advisory`, and `apexe sandbox check` must print
-   that together with the reason (`sandbox-exec present but not enforcing`),
-   so no one concludes the policy is being enforced because the binary exists.
+1. `sandbox-exec` is **deprecated but enforcing**. It is a candidate for the
+   macOS local backend, with a deprecation risk and a mandatory canonical-path
+   probe. It is not inert.
+2. Layer 4 **can** be verified on macOS with `sandbox-exec` (Seatbelt) or the
+   `nono` private `sandbox_init` path. The probe must use `realpath` and must
+   test both the original and resolved spelling, exactly as the market tools
+   do: Gemini's `resolveToRealPath` emits both, and `nono` explicitly resolves
+   `/tmp` to `/private/tmp` and emits both.
+3. `apexe sandbox check` reports `sandbox-exec` as `enforcing` only after the
+   canonical probe passes. It reports `advisory` only when no backend passes or
+   the selected backend cannot express the policy. The reason must name the
+   failed probe.
+4. `sandbox-exec` is deprecated; the long-term macOS options remain
+   `nono`/Seatbelt via `sandbox_init`, `microsandbox`, Apple `container`, or a
+   Linux VM/devcontainer. Deprecation is the risk, not current inertness.
 
 Tooling present on this machine (checked, not assumed):
 
@@ -128,8 +164,6 @@ bwrap not found
 /usr/local/bin/docker
 ```
 
----
-
 ## 5. Backend acceptance checklist
 
 A new backend is accepted when every line below is demonstrated in the pull
@@ -139,18 +173,62 @@ transcript in a description.
 | # | Check | Where it is proved |
 |---|---|---|
 | 1 | `probe()` returns `available: false` with a factual `reason` when the program is absent from `PATH` | unit test, probe injected |
-| 2 | `probe()` reports `advisory` (never `enforcing`) on a platform where enforcement is not effective | unit test + the §4 measurement |
+| 2 | `probe()` reports `advisory` only when the backend cannot enforce; a macOS `sandbox-exec`/`nono` probe must canonicalize paths and pass before reporting `enforcing` | unit test + the §4 probe |
 | 3 | Declared `capabilities` match what the backend can express; a policy needing an absent capability yields `Refusal`, not a dropped entry | unit test with a policy containing `no_access` inside a granted root |
 | 4 | `translate()` is deterministic: identical inputs produce identical argv | unit test, run twice and compared |
 | 5 | `sandbox.required` + unavailable backend refuses **before** spawning | unit test asserting the spawn function was not called |
-| 6 | Probes A and B both hold through `apexe exec` | integration test, Linux only |
-| 7 | Probe C fails under the backend, and the failure is attributable to the kernel (`EACCES`), not to a wrapper script exiting early | integration test, Linux only |
+| 6 | Probes A and B both hold through `apexe exec` | integration test, Linux or macOS (`sandbox-exec`/`nono`) with canonical paths |
+| 7 | Probe C fails under the backend, and the failure is attributable to the kernel (`EACCES`), not to a wrapper script exiting early | integration test, Linux or macOS (`sandbox-exec`/`nono`) with canonical paths |
 | 8 | `audit.jsonl` carries `sandbox_probe` at startup and the five `sandbox_*` fields on every execution, with `sandbox_outcome` never silently `applied` when the backend was not used | integration test reading the file |
 | 9 | A call the operator did not select is **not** wrapped, and a call they did select is (selection rules: `docs/sandbox.md` §6) | integration test asserting the backend never runs for `cli.ls` |
 
 Items 1–5 and 8–9 are the ones that catch the realistic failures: a backend that
 reports success, a policy entry silently dropped, a selection that wraps
 everything, or an audit trail that cannot distinguish "confined" from "not".
+
+### 5.1 Built-in default pair
+
+The first implementation uses only OS-provided backends, so no third-party
+installation is required for the default path:
+
+| Platform | Default | Third-party install | Fallback |
+|---|---|---|---|
+| macOS | `sandbox-exec` (OS; deprecated; canonical-path probe) | none | `nono` (private `sandbox_init`), Docker, Apple `container`, microVM, Linux VM |
+| Linux + systemd | `systemd-run` (OS; needs a user manager/DBus) | none | `bwrap` (the `bubblewrap` package) when installed; Landlock/seccomp; no backend → `required` refuses |
+| Linux without systemd | `bwrap` (if installed) | `bubblewrap` | Landlock/seccomp; no backend → `required` refuses |
+| external/untrusted | container or VM | Docker/Apple container/microVM | E2B/OpenSandbox/CubeSandbox later |
+
+`bwrap` is a package, not part of the base OS. It is preferred when installed
+because its mount namespace expresses `read_only`, `read_write`, `no_access`, and
+`DenyWithinGrant` directly. `systemd-run` is the zero-install Linux default when
+its user manager is available. `sandbox-exec` is the zero-install macOS default,
+but it is deprecated and must use canonical paths.
+
+### 5.2 Adapter protocol conformance
+
+The built-in backends implement the in-process contract from
+[`docs/sandbox.md`](sandbox.md#5-backend-contract). A third-party adapter is not
+accepted until it passes the same suite over the versioned out-of-process
+protocol:
+
+- `describe` reports `contract_version`, platform and enforcement capability;
+- `probe` passes A/B/C and canonical paths (`/tmp` → `/private/tmp`);
+- `prepare` returns a `LaunchSpec` or a `Refusal`, never a silently narrowed
+  policy;
+- `execute/wait/kill/cleanup` preserve stdin/stdout/stderr, exit status, signal
+  and timeout;
+- `capabilities` include `DenyWithinGrant` and `write_only` when the effective
+  policy needs them, otherwise refuse;
+- selection wraps only the operator-selected modules and `external` callers;
+- audit carries backend, enforcement, outcome, policy digest and reason;
+- `sandbox.required`/`auto` refuse before spawn when no backend is available;
+- every surface still goes through the executor's one spawn point.
+
+An adapter is a trusted component because it can run commands: installation is
+signed/allowlisted and the operator selects it. A probe is evidence, not proof;
+`sandbox check` and the audit record say which backend actually ran. Built-ins do
+not pay the out-of-process hop; the protocol exists for other languages and
+distributions.
 
 ---
 
@@ -162,7 +240,8 @@ The rule:
 | Situation | Test behaviour |
 |---|---|
 | Backend not installed | skip, with the probe's `reason` in the skip message |
-| Platform cannot enforce (macOS) | skip layer 4; assert `apexe sandbox check` reports `advisory` **and** names the reason |
+| No macOS backend passes its probe | skip layer 4; assert `apexe sandbox check` reports `advisory` **and** names the reason; `sandbox-exec`/`nono` with canonical paths are candidates, not presumed inert |
+| Third-party adapter absent or fails conformance | not selected; `required`/`auto` refuse; record the probe reason; never fall back to the host |
 | CI image without a user systemd manager | skip layer 4 and record why; do not add a CI-only code path |
 
 A CI that turns "no sandbox available" into a red build invites turning the

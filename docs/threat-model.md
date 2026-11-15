@@ -17,6 +17,15 @@ filter syscalls. A wrapped tool that is permitted to run has the privileges of
 the `apexe` process. Explicit verification cases have separate OS isolation;
 that containment does not extend to ordinary tool calls.
 
+A separate specification, [`docs/sandbox.md`](sandbox.md), defines optional
+per-module delegation to an OS/backend sandbox. It is **not implemented** yet.
+When it lands it will not turn normal execution into a sandbox: only selected
+modules are confined, the backend must pass its probe, `required` refuses
+without a backend, and an adapter is a trusted component. The default pair is
+macOS `sandbox-exec` (OS, deprecated, canonical paths) and Linux `systemd-run`
+(OS) with `bwrap` (the `bubblewrap` package) preferred when installed. `advisory`
+is a diagnostic level, not an execution mode.
+
 `apexe` is an **execution boundary**: a place where a call must present a
 declared contract before the subprocess is spawned or an imported HTTP
 operation is sent, and where the decision to permit or refuse it is recorded.
@@ -706,7 +715,11 @@ describes the shipped stdin and shim boundaries:
 
 ## 6. Recommended deployment
 
-1. Run `apexe` inside a sandbox. It governs; the sandbox contains.
+1. Run `apexe` inside a sandbox. It governs; the sandbox contains. The
+   per-call delegation in [`docs/sandbox.md`](sandbox.md) is complementary, not
+a substitute: it confines only selected modules when an enforcing backend is
+available; it does not replace the outer sandbox, and `required` refuses when no
+backend is available. `advisory` is a diagnostic, not a run mode.
 2. Remove or restrict raw shell tools in the agent host (§5.1) — otherwise the
    governed path is optional, and optional controls are decorative.
 3. Review the generated ACL (§5.2) — especially every rule in the readonly allow

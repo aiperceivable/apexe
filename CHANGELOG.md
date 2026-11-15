@@ -17,6 +17,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   regression test that closes the reader before a large `list --verbose`
   output completes.
 
+### Documentation
+- Corrected the sandbox delegation specification. The earlier `sandbox-exec`
+  result was a false negative: the test used `/tmp/sbtest`, which resolves to
+  `/private/tmp/sbtest`, and Seatbelt matched only the literal spelling.
+  `sandbox-exec` is deprecated but enforcing with canonical paths. The default
+  pair is now macOS `sandbox-exec` (OS, no install) and Linux `systemd-run`
+  (OS, no install), with `bwrap` (the `bubblewrap` package) preferred when
+  installed. The specification defines the backend contract, the later
+  out-of-process adapter protocol, per-module selection, fail-closed
+  `off`/`required`/`auto` modes, and the audit fields. It is not implemented
+  yet.
+
 ## [0.14.0] - 2026-11-15
 
 ### Added

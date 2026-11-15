@@ -104,8 +104,13 @@ OpenAPI import is a server feature; local exec and shims execute CLI commands.
 > **`apexe` is not a sandbox.** Normal execution runs with the host process's
 > privileges. PATH shims cover eligible external commands and can be bypassed
 > by builtins, aliases or absolute paths. OS isolation for explicit verification
-> cases does not sandbox normal execution. See the [threat model](docs/threat-model.md)
-> for the boundary and deployment requirements.
+> cases does not sandbox normal execution. A separate specification,
+> [`docs/sandbox.md`](docs/sandbox.md), defines opt-in per-module delegation to an
+> OS/backend sandbox; it is not implemented yet. Its default pair is macOS
+> `sandbox-exec` (OS, deprecated, canonical paths) and Linux `systemd-run` (OS)
+> with `bwrap` (the `bubblewrap` package) preferred when installed. See the
+> [threat model](docs/threat-model.md) for the boundary and deployment
+> requirements.
 
 ### Built on the apcore ecosystem
 

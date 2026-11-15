@@ -45,8 +45,9 @@ gate. Servers require `--acl` to enforce access control; MCP interactive approva
 requires `--enable-approval`, while A2A approval stores are library-only. OpenAPI
 modules use shared schema validation, configured ACLs and auditing, but not CLI
 filesystem checks. HTTP import is unavailable to local exec/shims. Normal
-execution is not OS-sandboxed. The current native BSD pilot covers cat/head/ls;
-builtins and absolute paths can bypass PATH shims.
+execution is not OS-sandboxed today; the delegation specification is in
+[`docs/sandbox.md`](sandbox.md) and is not implemented. The current native BSD
+pilot covers cat/head/ls; builtins and absolute paths can bypass PATH shims.
 
 A command that embeds another program's argv (`find . -exec rm {} \;`) is
 refused by default. `child_exec.mode: analyze` resolves the child to its own
@@ -54,8 +55,9 @@ module and applies that module's ACL, path policy and approval at the parent's
 starting paths; `delegate` runs each match through the installed child shim
 with a scoped delegated approval, so the actual `{}` path, symlinks and
 `-execdir` are judged per match. Neither mode is OS confinement: a child that
-computes its own paths is refused, and the sandbox layer remains the only
-enforcement boundary. See the [user manual](user-manual.md#embedded-child-commands-find-exec)
+computes its own paths is refused, and the sandbox delegation specification
+([`docs/sandbox.md`](sandbox.md)) is the intended enforcement boundary; it is not
+implemented yet. See the [user manual](user-manual.md#embedded-child-commands-find-exec)
 and [`docs/overlays.md`](overlays.md#a-trailing-mini-language-opaque_after-versus-tail_parsed).
 
 > The section headings below tagged "(v0.1.0 …)" record when each piece first
@@ -281,10 +283,13 @@ existing policy and custom/edited bindings, and reports fallback coverage.
   command eligible for native argv or PATH shims.
 - **Session daemon** — Deferred F8 stage; current shims invoke the apexe process
   for each command. See [F8](features/v2-f8-local-execution.md) for measurements.
-- **Normal execution sandboxing** — OS filesystem, network and syscall
-  containment remain outside normal exec/serve. Explicit verification cases have
-  their own macOS/Linux isolation backends. See [verification](verification.md)
-  and the [threat model](threat-model.md).
+- **Normal execution sandboxing** — A specification exists in
+  [`docs/sandbox.md`](sandbox.md): contract + adapters, per-platform default
+  (macOS `sandbox-exec`, Linux `systemd-run` with `bwrap` preferred when
+  installed), fail-closed, and audit. It is not implemented yet; normal
+exec/serve remains unsandboxed. Explicit verification cases have their own
+macOS/Linux isolation backends. See [verification](verification.md) and the
+[threat model](threat-model.md).
 - **Additional HTTP proxy formats** — Multipart, per-input header/cookie
   parameters and non-JSON responses are outside the current OpenAPI surface.
   See [OpenAPI import](openapi.md) for supported method/parameter combinations.

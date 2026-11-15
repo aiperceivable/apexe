@@ -65,7 +65,8 @@ Local exec/shims load the default ACL when present. Servers need `--acl` to
 apply access control; MCP interactive approval is enabled separately with
 `--enable-approval`. Verification evidence covers explicit cases and does not
 certify all invocations. Normal execution uses the host process's privileges;
-apexe does not replace a sandbox.
+apexe does not replace a sandbox. The opt-in sandbox delegation specification
+is [`sandbox.md`](sandbox.md); it is not implemented yet.
 
 apexe is built on the [apcore](https://github.com/aiperceivable/apcore-rust)
 ecosystem: apcore supplies the shared executor, apcore-toolkit supplies binding
@@ -2102,7 +2103,9 @@ an output overflow — is **not** a refusal: it appears once, as
 Every `CliModule` call uses the process controls in `module::executor` and
 `module::io` unconditionally. These bound the subprocess; they do not provide
 OS filesystem or network containment. There is no normal-execution `--sandbox`
-toggle. Imported HTTP operations use a proxy instead of this subprocess path.
+toggle; the opt-in delegation specification is [`sandbox.md`](sandbox.md) and is
+not implemented yet. Imported HTTP operations use a proxy instead of this
+subprocess path.
 
 - **Environment policy**: captured subprocesses (MCP/A2A and module JSON) do **not** inherit apexe's full environment. The env is cleared and only a base allowlist is passed through (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TZ`, `TMPDIR`), so secrets in apexe's environment cannot leak to — or be surfaced by — a wrapped tool. Local native exec, PATH shims and `apexe sh` instead inherit the caller's environment so credential helpers (`GH_TOKEN`, `AWS_PROFILE`, `KUBECONFIG`, `SSH_AUTH_SOCK`) keep working; `LD_PRELOAD`, `LD_LIBRARY_PATH` and `DYLD_*` are removed. This is a trust decision, not a sandbox: a local wrapped tool can use the caller's credentials.
 - **No shell**: arguments are passed as direct argv and handed to `execve` — no shell is spawned anywhere on the execution path, so shell metacharacters are inert data and pass through unchanged. (`curl --data '{"a":1}'` and every `jq` filter depend on that.) A caller-supplied value is rejected only for NUL and the five line terminators, which would corrupt the audit trail's framing, and for a leading `-`, which the wrapped tool would parse as an option the caller was not granted — see `CONTROL_CHARS` and `validate_argument_value` in `src/module/executor.rs`. The shell-metacharacter blacklist that remains (`BINDING_INJECTION_CHARS`) applies only to `json_flag` and the command path read out of a *binding file*, which is a build-time artifact rather than caller input.
@@ -2110,9 +2113,12 @@ toggle. Imported HTTP operations use a proxy instead of this subprocess path.
 - **Timeout kills the process**: the child is spawned with `kill_on_drop(true)`; when the effective bound (`--timeout`, or `default_timeout` for captured calls and `local_timeout` for passthrough calls) elapses, the subprocess is actually terminated rather than left running as an orphan.
 - **stdin** is connected to `/dev/null` for module JSON, server CLI calls and unmanaged native calls. Reviewed native exec/shims inherit it only when their declared capabilities admit streaming stdin.
 
-Normal execution needs an external sandbox for OS containment. Explicit
-verification cases can use macOS `sandbox-exec` or Linux `bwrap`; those backends
-are scoped to case execution. See [verification](verification.md).
+Normal execution is not OS-sandboxed today. The opt-in delegation specification
+is [`sandbox.md`](sandbox.md): contract + adapters, per-platform default macOS
+`sandbox-exec` / Linux `systemd-run` (with `bwrap` preferred when installed),
+`required` refusing when no backend is available, and no `advisory` execution
+mode. Explicit verification cases can use macOS `sandbox-exec` or Linux `bwrap`;
+those backends are scoped to case execution. See [verification](verification.md).
 
 ### 9.4 Preview (Dry-Run Prediction)
 
