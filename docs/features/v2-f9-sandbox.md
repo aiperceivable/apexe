@@ -36,7 +36,7 @@ operator selects.
 | Area | 0.15.0 |
 |---|---|
 | Backends | `systemd-run`, `bwrap`, `sandbox-exec`, `docker` (`docker run` container, not Docker Sandboxes) |
-| Defaults | per platform: macOS `sandbox-exec`; Linux `systemd-run`; `bwrap` preferred when installed; Docker is an optional container fallback |
+| Defaults | per platform: macOS `sandbox-exec`; Linux `bwrap` (the `bubblewrap` package); `systemd-run` **system service (root)** optional; Docker is an optional container fallback |
 | Configuration | `sandbox.backend`, `sandbox.default`, `sandbox.modules`, `sandbox.external` (reserved), `sandbox.backends.docker` |
 | Selection | by **module ID**, never by command name; explicit list only |
 | Modes | `off`, `required`, `auto`; **no `advisory` execution mode** |
@@ -217,8 +217,8 @@ hashes the translated invocation, not the YAML.
 Platform tests:
 
 - macOS: `sandbox-exec` A/B/C (real).
-- Linux: `systemd-run`/`bwrap` A/B/C when available; skip with a reason when
-  the user manager/userns is unavailable.
+- Linux: `bwrap` A/B/C; `systemd-run` only in system/root mode. Skip with a
+  reason when bwrap/userns or the system manager is unavailable.
 - Docker: optional A/B/C; skip if no daemon/image.
 - No CI-only code path; skipped backend is reported, not failed.
 
@@ -249,8 +249,8 @@ Platform tests:
 - Not a sandbox runtime; no kernel sandbox implementation.
 - `sandbox-exec` is deprecated; the 0.15.0 implementation must keep the
   deprecation visible and use canonical paths.
-- `systemd-run` needs a user manager/DBus; it is not available in every
-  container/CI image.
+- `systemd-run --user` ignores `ReadOnlyPaths`/`InaccessiblePaths`; only a
+  system service (root) enforces them. It is optional, not the Linux default.
 - `bwrap` is a package, not part of the base OS.
 - Docker changes the filesystem/tool identity; it is an explicit fallback, not
   the local default.

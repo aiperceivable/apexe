@@ -287,28 +287,31 @@ Rules:
 
 ### 6.1 Default backends by platform
 
-The default pair requires no third-party installation; optional backends are
-selected only when present and capable.
+The macOS default requires no third-party install; Linux local uses `bwrap`
+(the `bubblewrap` package); `systemd-run` is system/root only. Optional backends
+are selected only when present and capable.
 
 | Platform | Default | Third-party install | Fallback |
 |---|---|---|---|
 | macOS | `sandbox-exec` (OS; deprecated; canonical-path probe) | none | `nono` (private `sandbox_init`), Docker, Apple `container`, microVM, Linux VM |
-| Linux + systemd | `systemd-run` (OS; needs a user manager/DBus) | none | `bwrap` (the `bubblewrap` package) when installed; Landlock/seccomp in-process; no backend → `required` refuses |
-| Linux without systemd | `bwrap` (if installed) | `bubblewrap` | Landlock/seccomp; no backend → `required` refuses |
+| Linux local | `bwrap` (the `bubblewrap` package) | `bubblewrap` | `systemd-run` in **system** mode (root) is optional; `systemd-run --user` ignores the path properties, so it is not a local path backend; Landlock/seccomp in-process is later; no backend → `required` refuses |
 | external/untrusted | container or VM | Docker/Apple container/microVM | E2B/OpenSandbox/CubeSandbox later |
 
-`bwrap` is a third-party package, not part of the base OS. It is preferred when
-installed because its mount namespace expresses `read_only`, `read_write`,
-`no_access`, and `DenyWithinGrant` directly; `systemd-run` is the zero-install
-Linux default when its user manager is available. A missing backend is never a
-silent host fallback: `required` refuses, `auto` refuses, and `off` runs only
-because the operator explicitly chose it.
+`bwrap` is a third-party package, not part of the base OS. It is the Linux
+local path backend because its mount namespace expresses `read_only`,
+`read_write`, `no_access`, and `DenyWithinGrant` directly. `systemd-run --user`
+accepts `ReadOnlyPaths`/`InaccessiblePaths` but **silently ignores them** on
+Debian 12 / systemd 252 (verified: a service wrote into a `ReadOnlyPaths`
+directory); it is not a path sandbox. Only a **system** `systemd-run` service
+(root) enforces those properties, so it is optional and not the local default.
+A missing backend is never a silent host fallback: `required` refuses, `auto`
+refuses, and `off` runs only because the operator explicitly chose it.
 
 ## 7. Backend matrix
 
 | Backend | Platform | Capabilities | Enforcement | Status |
 |---|---|---|---|---|
-| `systemd-run --property=…` | Linux + systemd | read/write/no-access + `DenyWithinGrant` (no `WriteOnly`) | `enforcing` | implemented, Linux zero-install |
+| `systemd-run --property=…` (system, root) | Linux + systemd | read/write/no-access + `DenyWithinGrant` (no `WriteOnly`) | `enforcing` only as a system service | implemented, root/system only; `--user` is **not** enforcing |
 | `bwrap` | Linux (unprivileged userns) | read/write/no-access + `DenyWithinGrant` (no `WriteOnly`) | `enforcing` | implemented, preferred when installed |
 | `podman` / `docker` | Linux, macOS | read/write/no-access + `DenyWithinGrant` (no `WriteOnly`) | `enforcing`, different semantics (§8) | implemented, optional |
 | `sandbox-exec` (seatbelt) | macOS | all four + `DenyWithinGrant`, canonical paths | `enforcing`, **deprecated** | implemented, macOS local |
@@ -380,7 +383,7 @@ rules in §6 apply unchanged. It is selected per caller:
 
 ```yaml
 sandbox:
-  default: auto            # systemd-run / bwrap where available
+  default: auto            # bwrap / docker; systemd-run system/root only
   external: container      # unauthenticated serve/a2a callers — the ones that run code we did not choose
   # local stays auto: shims must not pay container start-up
 ```

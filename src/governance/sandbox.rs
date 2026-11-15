@@ -327,10 +327,22 @@ impl SandboxRuntime {
             match candidate {
                 SandboxBackend::Auto => continue,
                 SandboxBackend::SystemdRun => {
-                    if which("systemd-run").is_some() {
+                    if which("systemd-run").is_none() {
+                        reasons.push("systemd-run not found in PATH".to_string());
+                    } else if effective_root() {
                         return Ok(ResolvedBackend::SystemdRun);
+                    } else {
+                        // The user manager accepts ReadOnlyPaths/InaccessiblePaths
+                        // but silently ignores them: a `systemd-run --user` service
+                        // wrote into a ReadOnlyPaths directory in the 0.15.0 probe
+                        // (Debian 12, systemd 252). Reporting that as enforcing
+                        // would be a false security claim.
+                        reasons.push(
+                            "systemd-run --user does not enforce ReadOnlyPaths/InaccessiblePaths; \
+                             use bwrap, or run apexe as a system service (root)"
+                                .to_string(),
+                        );
                     }
-                    reasons.push("systemd-run not found in PATH".to_string());
                 }
                 SandboxBackend::Bwrap => {
                     if which("bwrap").is_some() {
@@ -382,7 +394,7 @@ impl SandboxRuntime {
         let (program, args, profile) = match backend {
             ResolvedBackend::SystemdRun => (
                 "systemd-run".to_string(),
-                systemd_run_args(plan, binary, argv),
+                systemd_run_args(plan, binary, argv, effective_root()),
                 None,
             ),
             ResolvedBackend::Bwrap => ("bwrap".to_string(), bwrap_args(plan, binary, argv), None),
@@ -421,11 +433,7 @@ fn platform_candidates() -> Vec<SandboxBackend> {
     }
     #[cfg(target_os = "linux")]
     {
-        vec![
-            SandboxBackend::Bwrap,
-            SandboxBackend::SystemdRun,
-            SandboxBackend::Docker,
-        ]
+        vec![SandboxBackend::Bwrap, SandboxBackend::Docker]
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
@@ -467,9 +475,24 @@ fn policy_digest(backend: ResolvedBackend, program: &str, args: &[String]) -> St
     format!("sha256:{:x}", hasher.finalize())
 }
 
-fn systemd_run_args(plan: &MountPlan, binary: &str, argv: &[String]) -> Vec<String> {
-    let mut args = vec![
-        "--user".to_string(),
+fn effective_root() -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: geteuid has no preconditions and no memory effects.
+        unsafe { libc::geteuid() == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+fn systemd_run_args(plan: &MountPlan, binary: &str, argv: &[String], system: bool) -> Vec<String> {
+    let mut args = Vec::new();
+    if !system {
+        args.push("--user".to_string());
+    }
+    args.extend([
         "--quiet".to_string(),
         "--pipe".to_string(),
         "--wait".to_string(),
@@ -482,7 +505,7 @@ fn systemd_run_args(plan: &MountPlan, binary: &str, argv: &[String]) -> Vec<Stri
         "PrivateTmp=yes".to_string(),
         "-p".to_string(),
         format!("WorkingDirectory={}", plan.cwd.display()),
-    ];
+    ]);
     for spelling in &plan.read_only {
         args.push("-p".to_string());
         args.push(format!("ReadOnlyPaths={}", spelling.resolved.display()));
@@ -833,7 +856,7 @@ mod tests {
     #[test]
     fn test_systemd_args_use_path_properties_and_user_pipe() {
         let plan = MountPlan::from_policy(&policy(), Path::new("/workspace"));
-        let args = systemd_run_args(&plan, "/bin/true", &["--flag".to_string()]);
+        let args = systemd_run_args(&plan, "/bin/true", &["--flag".to_string()], false);
         assert!(args.contains(&"--user".to_string()));
         assert!(args.contains(&"--pipe".to_string()));
         assert!(args.contains(&"--wait".to_string()));
@@ -847,6 +870,8 @@ mod tests {
             .iter()
             .any(|arg| arg.contains("InaccessiblePaths=") && arg.ends_with("/workspace/.ssh")));
         assert_eq!(args.last().map(String::as_str), Some("--flag"));
+        let system = systemd_run_args(&plan, "/bin/true", &[], true);
+        assert!(!system.contains(&"--user".to_string()));
     }
 
     #[test]

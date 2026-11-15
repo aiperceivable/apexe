@@ -22,8 +22,9 @@ per-module delegation to an OS/backend sandbox (0.15.0). It does not turn
 normal execution into a sandbox: only selected modules are confined, the
 backend must be available, `required` refuses without one, and an adapter is a
 trusted component. The default pair is
-macOS `sandbox-exec` (OS, deprecated, canonical paths) and Linux `systemd-run`
-(OS) with `bwrap` (the `bubblewrap` package) preferred when installed. `advisory`
+macOS `sandbox-exec` (OS, deprecated, canonical paths) and Linux `bwrap` (the
+`bubblewrap` package); `systemd-run` is system/root only, because its user
+manager ignores path properties. `advisory`
 is a diagnostic level, not an execution mode.
 
 `apexe` is an **execution boundary**: a place where a call must present a

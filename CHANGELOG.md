@@ -23,6 +23,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   mode, selected modules and reason in table or JSON. `apexe exec --dry-run`
   reports the translated `sandbox` plan, enforcement, policy digest and launch
   argv without spawning.
+- `systemd-run --user` is **not** a path backend. On Debian 12 / systemd 252 it
+  accepts `ReadOnlyPaths`/`InaccessiblePaths` and silently ignores them (a
+  service wrote into a `ReadOnlyPaths` directory). Only a **system**
+  `systemd-run` service (root) enforces them. Linux local therefore uses
+  `bwrap` (the `bubblewrap` package); `systemd-run` is system/root only.
 - The Docker backend mounts only host data paths. Host system trees
   (`/usr`, `/etc`, `/lib`, `/bin`, `/dev`, `/proc`, `/sys`, …) stay the
   image's own read-only tree; mounting them over it would replace the image's

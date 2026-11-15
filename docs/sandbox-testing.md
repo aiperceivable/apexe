@@ -40,7 +40,7 @@ the whole point of it.
 | 1. Translation | `paths:` + invocation → the backend's argv, byte for byte | any OS | `#[cfg(test)]` next to the translator |
 | 2. Selection | the right backend is chosen for a platform, and an unavailable one is reported, not assumed | any OS; probe injected as a value | unit test |
 | 3. Fail-closed | unavailable backend under `sandbox.required`, or an inexpressible policy, refuses *without spawning* a child | any OS | unit test asserting the spawn was not reached |
-| 4. Enforcement | a denied write fails at the kernel; a permitted write succeeds | Linux (`systemd-run`/`bwrap`); macOS (`sandbox-exec`/`nono`) with canonical paths; VM/container for untrusted | integration test, `#[ignore]` or platform-skipped |
+| 4. Enforcement | a denied write fails at the kernel; a permitted write succeeds | Linux (`bwrap`; `systemd-run` system/root only); macOS (`sandbox-exec`/`nono`) with canonical paths; VM/container for untrusted | integration test, `#[ignore]` or platform-skipped |
 | 5. Audit | `sandbox_probe` at startup and the five `sandbox_*` fields per execution | any OS | integration test reading `audit.jsonl` |
 
 Layer 4 is *the* acceptance criterion for a backend, and it has two halves.
@@ -53,19 +53,32 @@ testing only the permitted write passes one that blocks nothing.
 
 Both are literal commands, so a reviewer can run them by hand on any machine.
 
+`bwrap` is the Linux local backend. `systemd-run --user` is **not** a path
+sandbox: on Debian 12 / systemd 252 it accepts `ReadOnlyPaths`/`InaccessiblePaths`
+and silently ignores them, so a service wrote into a `ReadOnlyPaths` directory.
+Only a **system** `systemd-run` service (root) enforces those properties.
+
 ```bash
 # Probe A — must fail. /etc is read_only in the shipped default policy.
-systemd-run --user --quiet --pipe --wait \
-  -p ReadOnlyPaths=/etc -p ReadOnlyPaths=/usr -p ReadOnlyPaths=/bin \
+bwrap --unshare-all --new-session --die-with-parent \
+  --bind / / --ro-bind /etc /etc --ro-bind /usr /usr --ro-bind /bin /bin \
   -- /bin/sh -c 'echo x > /etc/sandbox-probe'
 # expected: non-zero exit, EACCES / "Read-only file system"
 
 # Probe B — must succeed. A writable directory inside the same policy.
 dir="$(mktemp -d)"
-systemd-run --user --quiet --pipe --wait \
-  -p ReadOnlyPaths=/etc -p ReadWritePaths="$dir" \
+bwrap --unshare-all --new-session --die-with-parent \
+  --bind / / --ro-bind /etc /etc --bind "$dir" "$dir" \
   -- /bin/sh -c "echo x > '$dir/ok'"
 # expected: exit 0, file present
+```
+
+A system `systemd-run` probe (root) may be used instead of bwrap:
+
+```bash
+sudo systemd-run --quiet --pipe --wait --collect \
+  -p ReadOnlyPaths=/etc -p ReadOnlyPaths=/usr -p ReadOnlyPaths=/bin \
+  -- /bin/sh -c 'echo x > /etc/sandbox-probe'
 ```
 
 The probes must also be run **through apexe**, not only against the backend
@@ -73,7 +86,7 @@ directly, or the test proves the backend works and says nothing about apexe's
 translation:
 
 ```bash
-apexe exec --dry-run -- /bin/sh -c 'echo x > /etc/sandbox-probe'   # expect sandbox.backend = systemd-run
+apexe exec --dry-run -- /bin/sh -c 'echo x > /etc/sandbox-probe'   # expect sandbox.backend = bwrap
 apexe exec --dry-run -- /bin/sh -c 'echo x > /tmp/ok'             # expect sandbox.enforcement = enforcing
 ```
 
@@ -190,21 +203,23 @@ everything, or an audit trail that cannot distinguish "confined" from "not".
 
 ### 5.1 Built-in default pair
 
-The first implementation uses only OS-provided backends, so no third-party
-installation is required for the default path:
+The macOS default uses the OS-provided `sandbox-exec`; Linux local uses
+`bwrap` (the `bubblewrap` package). `systemd-run` is system/root only: its user
+manager ignores the path properties. Docker is optional.
 
 | Platform | Default | Third-party install | Fallback |
 |---|---|---|---|
 | macOS | `sandbox-exec` (OS; deprecated; canonical-path probe) | none | `nono` (private `sandbox_init`), Docker, Apple `container`, microVM, Linux VM |
-| Linux + systemd | `systemd-run` (OS; needs a user manager/DBus) | none | `bwrap` (the `bubblewrap` package) when installed; Landlock/seccomp; no backend → `required` refuses |
-| Linux without systemd | `bwrap` (if installed) | `bubblewrap` | Landlock/seccomp; no backend → `required` refuses |
+| Linux local | `bwrap` (the `bubblewrap` package) | `bubblewrap` | `systemd-run` system/root only; `--user` ignores path properties; no backend → `required` refuses |
+| Linux without `bwrap` | none | `bubblewrap` needed | `systemd-run` system/root only; no backend → `required` refuses |
 | external/untrusted | container or VM | Docker/Apple container/microVM | E2B/OpenSandbox/CubeSandbox later |
 
 `bwrap` is a package, not part of the base OS. It is preferred when installed
 because its mount namespace expresses `read_only`, `read_write`, `no_access`, and
-`DenyWithinGrant` directly. `systemd-run` is the zero-install Linux default when
-its user manager is available. `sandbox-exec` is the zero-install macOS default,
-but it is deprecated and must use canonical paths.
+`DenyWithinGrant` directly. `systemd-run --user` ignores the path properties;
+only a **system** `systemd-run` service (root) is a path backend. `sandbox-exec`
+is the zero-install macOS default, but it is deprecated and must use canonical
+paths.
 
 ### 5.2 Adapter protocol conformance
 
@@ -255,8 +270,8 @@ recorded in [`docs/ideas/sandbox-source-notes.md`](ideas/sandbox-source-notes.md
   `--args`; a missing deny path is refused or cleaned up.
 - **Seatbelt:** `(deny default)`, read/write rule order,
   `file-write-unlink`/`file-write-create`, profile size, both spellings.
-- **systemd-run:** `ReadOnlyPaths`/`ReadWritePaths`/`InaccessiblePaths`, user
-  manager/DBus, `--pipe --wait`.
+- **systemd-run:** `ReadOnlyPaths`/`ReadWritePaths`/`InaccessiblePaths` in a
+  **system** service (root), `--pipe --wait`; do not use `--user` for paths.
 - **selection:** `cli.ls` never wrapped; selected `cli.sed` wrapped; external
   caller gets the container backend.
 - **audit:** backend, enforcement, outcome, policy digest, reason, probe record.

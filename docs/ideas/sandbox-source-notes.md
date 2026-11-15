@@ -120,7 +120,16 @@ agent tool profiles, keychain/Mach exceptions, and credentials/proxy layers are
 its product, not apexe's. Do not depend on the private `sandbox_init` API as the
 only macOS path; keep the VM/container fallback and the deprecation risk visible.
 
-### 2.2 `no_access` is stricter than "allow discovery, deny content"
+### 2.2 `systemd-run --user` is not a path backend
+
+Actual probe on Debian 12 / systemd 252: a `systemd-run --user` service with
+`-p ReadOnlyPaths=$HOME/denied` wrote into `$HOME/denied`; `-p InaccessiblePaths`
+was likewise ignored. The same `systemd-run` **system** service (root) refused
+both writes with `Read-only file system`. The user manager accepts the
+properties but does not enforce them. Linux local path enforcement therefore
+uses `bwrap`; `systemd-run` is system/root only.
+
+### 2.3 `no_access` is stricter than "allow discovery, deny content"
 
 `nono`'s sensitive-path policy allows `file-read-metadata` (stat/readdir) and
 denies `file-read-data` (content). That is a reasonable UX policy, but it is
@@ -141,7 +150,7 @@ Landlock alone; `nono` handles credentials via its platform rules and profile
 layer, not by pretending Landlock has a deny-within-grant. The `sandbox.md`
 capability must be declared per backend:
 
-- `bwrap`, `systemd-run`, `sandbox-exec`: can express `DenyWithinGrant` via
+- `bwrap`, `systemd-run` (system/root), `sandbox-exec`: can express `DenyWithinGrant` via
   mounts/rules/Seatbelt.
 - Landlock-only backend: **cannot**; it must refuse a policy that needs
   `no_access` inside a granted root rather than silently dropping the entry.
@@ -245,7 +254,7 @@ implemented yet.
    refuses.
 4. **`DenyWithinGrant` is per backend.** Landlock-only backends cannot express a
    deny under a granted root; they must refuse, not silently drop. `bwrap`,
-   `systemd-run` and Seatbelt can express it.
+   `systemd-run` (system/root) and Seatbelt can express it.
 5. **`bwrap` translation.** Use `--unshare-all`, `--new-session`,
    `--die-with-parent`, `--ro-bind / /`, `--dev`, `--proc`, `--tmpfs /tmp`,
    `--cap-drop ALL`, `--args`; bind the workspace and policy paths; resolve
@@ -253,7 +262,9 @@ implemented yet.
    paths.
 6. **`systemd-run` translation.** Use `ReadOnlyPaths`, `ReadWritePaths`,
    `InaccessiblePaths`, `BindPaths`, `NoNewPrivileges`, `PrivateTmp`, and
-   `--pipe --wait`; probe the user manager/DBus; no backend if unavailable.
+   `--pipe --wait` **in a system service (root)**. The user manager accepted the
+   path properties and silently ignored them in the 0.15.0 probe (Debian 12 /
+   systemd 252); `systemd-run --user` is not a path backend.
 7. **Seatbelt translation.** Generate `(deny default)`; emit both spellings;
    add `file-write-unlink`/`file-write-create` for the move bypass; bound the
    profile; use `sandbox-exec` (deprecated) or the `nono` private
@@ -288,8 +299,8 @@ Add these to [`docs/sandbox-testing.md`](../sandbox-testing.md):
   `--args`; a missing deny path refuses or is cleaned.
 - **Seatbelt:** `(deny default)`; read order; write order; `file-write-unlink`/
   `file-write-create`; profile size; both spellings.
-- **systemd-run:** `ReadOnlyPaths`/`ReadWritePaths`/`InaccessiblePaths`; user
-  manager/DBus; `--pipe --wait`.
+- **systemd-run:** `ReadOnlyPaths`/`ReadWritePaths`/`InaccessiblePaths` in a
+  system service (root); `--pipe --wait`. `--user` ignores path properties.
 - **selection:** `cli.ls` never wrapped; selected `cli.sed` wrapped; external
   caller gets the container backend.
 - **audit:** backend, enforcement, outcome, policy digest, reason; probe record.
@@ -318,7 +329,7 @@ Add these to [`docs/sandbox-testing.md`](../sandbox-testing.md):
 3. Does the first macOS backend use `sandbox-exec` (deprecated, OS, no install)
    or `nono` (`sandbox_init`, private) or a VM/container? The source does not
    remove the deprecation risk.
-4. Does `bwrap` or `systemd-run` get the first Linux translator? `systemd-run` is
-   zero-install; `bwrap` is more precise and is a package.
+4. Does `bwrap` or `systemd-run` get the first Linux translator? `bwrap` is the
+   local path backend; `systemd-run` is system/root only.
 5. Does `NoAccess` deny metadata (recommended, strict) or allow discovery
    (reject as the default)?

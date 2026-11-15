@@ -286,8 +286,10 @@ existing policy and custom/edited bindings, and reports fallback coverage.
   for each command. See [F8](features/v2-f8-local-execution.md) for measurements.
 - **Normal execution sandboxing** — 0.15.0 implements opt-in delegation for
   modules listed in `sandbox.modules`: contract + four built-in backends
-  (`systemd-run`, `bwrap`, `sandbox-exec`, `docker`), per-platform defaults,
-  fail-closed `required`/`auto`, and audit. Unselected modules remain
+  (`systemd-run` system/root, `bwrap`, `sandbox-exec`, `docker`),
+  per-platform defaults (Linux local `bwrap`; macOS `sandbox-exec`),
+  fail-closed `required`/`auto`, and audit. `systemd-run --user` is not a
+  path backend: it ignores `ReadOnlyPaths`/`InaccessiblePaths`. Unselected modules remain
   unsandboxed. Optional `nono`/Apple container/microVM/remote adapters are
   later. See [`docs/sandbox.md`](sandbox.md), [F9](features/v2-f9-sandbox.md)
   and the [threat model](threat-model.md).

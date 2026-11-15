@@ -133,7 +133,7 @@ repository's declared SPDX identifier or `NOASSERTION`.
 | [firecracker-microvm/firecracker](https://github.com/firecracker-microvm/firecracker) | 38k | Rust | Apache-2.0 | microVM; used by E2B/CubeSandbox/shuru |
 | [kata-containers/kata-containers](https://github.com/kata-containers/kata-containers) | 9.1k | Rust | Apache-2.0 | VM-isolated containers |
 | [cloud-hypervisor/cloud-hypervisor](https://github.com/cloud-hypervisor/cloud-hypervisor) | 6.5k | Rust | — | VMM; used by Cocoon/Containerization |
-| systemd `systemd-run` | — | C | LGPL | Linux service sandbox; OS-provided, zero third-party install |
+| systemd `systemd-run` | — | C | LGPL | Linux system-service sandbox; `--user` accepts but ignores `ReadOnlyPaths`/`InaccessiblePaths` |
 
 ## 4. Deep dives
 
@@ -243,15 +243,16 @@ repository's declared SPDX identifier or `NOASSERTION`.
 
 - `bwrap` is the natural Linux local backend **when installed**: unprivileged
   namespaces, precise ro/rw/tmpfs mounts, no daemon, millisecond startup.
-- `systemd-run` is the **zero third-party install** option on systemd Linux; it
-  needs a user manager/DBus, which containers and some CI images lack.
+- `systemd-run` in **system** mode (root) can enforce the path properties; its
+  **user manager accepts but ignores** `ReadOnlyPaths`/`InaccessiblePaths`
+  (actual probe: Debian 12/systemd 252 wrote into a `ReadOnlyPaths` directory).
+  It is not a local path backend.
 - Landlock (Rust crate) is the natural no-userns, no-external-binary option;
   `nono` already wraps it with seccomp and audit.
 - `nsjail`/`minijail`/`firejail` are older/setuid or ChromeOS-specific; not the
   first choice.
-- **Verdict:** Linux default is `systemd-run` for zero-install, `bwrap` when the
-  package is present (preferred for path precision), `nono`/Landlock where user
-  namespaces are unavailable.
+- **Verdict:** Linux local default is `bwrap` (the package); `systemd-run` is
+  system/root only; `nono`/Landlock where user namespaces are unavailable.
 
 ### 4.9 E2B / OpenSandbox / CubeSandbox
 
@@ -305,7 +306,7 @@ repository's declared SPDX identifier or `NOASSERTION`.
 
 - `nono` for process sandbox + credentials/network/audit, especially with Pi;
 - `microsandbox` or Apple `container` for macOS VM isolation;
-- `systemd-run` / `bwrap` for Linux local;
+- `bwrap` for Linux local; `systemd-run` system/root only;
 - Docker for the already-installed fallback/container path;
 - E2B/OpenSandbox/CubeSandbox for remote untrusted execution later;
 - `sandbox-runtime`/Codex/Gemini as design references, not dependencies.
@@ -324,17 +325,17 @@ drops it. Adapters are trusted components (they run commands), so installation
 is signed/allowlisted and the operator selects them. All surfaces still use the
 executor's one spawn point; the adapter does not add a second execution surface.
 
-The default pair requires no third-party adapter or install: macOS
-`sandbox-exec` (OS, deprecated, canonical paths) and Linux `systemd-run` (OS),
-with `bwrap` (the `bubblewrap` package) preferred when installed. Docker, `nono`,
-`microsandbox`, Apple `container`, and E2B/OpenSandbox are optional adapters.
+The macOS default requires no third-party install: `sandbox-exec` (OS,
+deprecated, canonical paths). Linux local uses `bwrap` (the `bubblewrap`
+package); `systemd-run` is system/root only because `--user` ignores path
+properties. Docker, `nono`, `microsandbox`, Apple `container`, and
+E2B/OpenSandbox are optional adapters.
 
 ## 7. Recommended backend order
 
-1. **Linux local:** `systemd-run` (OS-provided, zero third-party install; requires
-   a systemd user manager/DBus) first; `bwrap` (the `bubblewrap` package;
-   preferred when installed because its mount namespace is more precise) second;
-   `nono`/Landlock as the no-userns option; another backend as fallback.
+1. **Linux local:** `bwrap` (the `bubblewrap` package) first; `systemd-run` in
+   system/root mode optional; `nono`/Landlock as the no-userns option; another
+   backend as fallback.
 2. **macOS local:** `sandbox-exec` (OS-provided, deprecated, but enforcing with canonical
    paths) or `nono` (private `sandbox_init`) after its probe; `microsandbox` or
    Apple `container` for a VM boundary; Docker Desktop as the installed
@@ -364,8 +365,8 @@ Candidates to test on this macOS 26.3 arm64 machine:
 - `microsandbox` (Apple Silicon; no Docker);
 - Apple `container` (macOS 26; per-container VM).
 
-On Linux, also test `systemd-run` (zero third-party install) and `bwrap`
-(`bubblewrap` package) with the same A/B/C and canonical paths.
+On Linux, test `bwrap` (`bubblewrap` package) with A/B/C; test `systemd-run`
+only in system/root mode. Do not accept `systemd-run --user` for path policy.
 
 Record: A/B/C exit status and stderr; startup time; whether the probe is
 distinguishable from a wrapper script failure; whether the path policy can be
@@ -380,8 +381,7 @@ Only after that spike should the first backend be chosen.
 2. macOS first enforcing backend: `sandbox-exec` (deprecated, canonical paths)
    or `nono` (if probe passes); `microsandbox` or Apple `container` for a VM
    boundary; Docker remains the installed fallback.
-3. Linux first backend: `systemd-run` (zero-install, OS) or `bwrap` (package;
-   preferred when installed)?
+3. Linux first backend: `bwrap` (package) vs `systemd-run` system/root only?
 4. Is `write_only` supported or explicitly refused per backend?
 5. Does the first release include `external: container`, or only local
    selected modules?

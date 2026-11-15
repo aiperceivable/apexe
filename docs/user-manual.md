@@ -1342,9 +1342,10 @@ sandbox:
 `default: off` is the safe default. Under `required`/`auto`, a missing backend,
 an inexpressible policy (`write_only` on `systemd-run`/`bwrap`/`docker`), a
 missing Docker image or a translation error refuses before spawn; there is no
-`advisory` execution mode. Linux uses `bwrap` when the `bubblewrap` package is
-installed, otherwise `systemd-run`; macOS uses `sandbox-exec`; Docker is an
-optional container backend. The `docker` backend is a `docker run` container;
+`advisory` execution mode. Linux local uses `bwrap` (the `bubblewrap`
+package); `systemd-run` is system/root only (its user manager ignores path
+properties); macOS uses `sandbox-exec`; Docker is an optional container
+backend. The `docker` backend is a `docker run` container;
 Docker Sandboxes (`sbx`, a microVM with its own kernel and private Docker
 Engine) is a separate agent sandbox, not this backend, and is not used by
 0.15.0. `sandbox check` is static; run the A/B/C probes in `sandbox-testing.md`
@@ -2161,7 +2162,8 @@ proxy instead of this subprocess path.
 Normal execution is not OS-sandboxed unless the module is selected in
 `sandbox.modules`. The opt-in implementation is described in
 [`sandbox.md`](sandbox.md): contract + backends, per-platform default macOS
-`sandbox-exec` / Linux `systemd-run` (with `bwrap` preferred when installed),
+`sandbox-exec` / Linux `bwrap` (the `bubblewrap` package; `systemd-run` is
+system/root only),
 `required` refusing when no backend is available, and no `advisory` execution
 mode. Explicit verification cases can use macOS `sandbox-exec` or Linux `bwrap`;
 those backends are scoped to case execution. See [verification](verification.md).
