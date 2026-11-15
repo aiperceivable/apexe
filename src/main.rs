@@ -106,6 +106,7 @@ fn report_error(error: anyhow::Error, format: ErrorFormat) {
 }
 
 fn main() {
+    restore_sigpipe();
     let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let format = if apexe::cli::is_shim_invocation(&raw) {
         ErrorFormat::Text
@@ -122,6 +123,25 @@ fn main() {
     // The logging worker guard has dropped inside run, flushing queued records.
     std::process::exit(code);
 }
+
+/// Restore the default SIGPIPE disposition for the CLI process.
+///
+/// Rust ignores SIGPIPE, which turns a closed reader such as `apexe list |
+/// head` into an `EPIPE` write error; `println!` then panics instead of the
+/// process ending quietly the way a normal Unix filter does. Children already
+/// get the default disposition through `CommandExt::pre_exec`; this covers
+/// apexe's own stdout.
+#[cfg(unix)]
+fn restore_sigpipe() {
+    // SAFETY: SIG_DFL is a valid disposition and this runs before any other
+    // thread exists, so no signal handler can race with the change.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_sigpipe() {}
 
 fn run(format: ErrorFormat) -> anyhow::Result<i32> {
     apcore_cli::set_docs_url(Some("https://github.com/aiperceivable/apexe".to_string()));

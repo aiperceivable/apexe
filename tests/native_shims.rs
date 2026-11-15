@@ -5,6 +5,7 @@ use assert_cmd::Command;
 use serde_json::{json, Value};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use tempfile::TempDir;
 
 struct Fixture {
@@ -36,8 +37,8 @@ impl Fixture {
     fn shims(&self) -> PathBuf {
         self.home.path().join(".apexe/bin")
     }
-    fn command(&self) -> Command {
-        let mut command = Command::cargo_bin("apexe").unwrap();
+    fn std_command(&self) -> std::process::Command {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_apexe"));
         command
             .env("APEXE_OFFLINE", "true")
             .env("HOME", self.home.path())
@@ -49,6 +50,9 @@ impl Fixture {
             .env("RUST_LOG", "info")
             .current_dir(self.home.path());
         command
+    }
+    fn command(&self) -> Command {
+        Command::from_std(self.std_command())
     }
     fn write(&self, id: &str, name: &str, binary: &str, schema: Value, streaming: bool) {
         let mut module = ScannedModule::new(
@@ -2288,6 +2292,44 @@ fn find_fixture() -> Fixture {
         .unwrap();
     fixture.enable();
     fixture
+}
+
+/// A reader that closes before the command finishes must terminate the CLI by
+/// SIGPIPE (the Unix filter contract), not by a `println!` panic.
+#[test]
+fn test_list_verbose_exits_by_sigpipe_when_stdout_closes() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "cli.big",
+        "big",
+        "/bin/true",
+        json!({
+            "type": "object",
+            "description": "x".repeat(80_000),
+            "properties": {
+                "argv": {"type": "array", "items": {"type": "string"}}
+            }
+        }),
+        false,
+    );
+    let mut command = fixture.std_command();
+    command
+        .args(["list", "--verbose"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("spawn apexe");
+    let mut stdout = child.stdout.take().expect("stdout");
+    let mut buf = [0u8; 64];
+    let _ = stdout.read(&mut buf);
+    drop(stdout);
+    let output = child.wait_with_output().expect("wait");
+    assert_eq!(
+        output.status.code(),
+        None,
+        "expected SIGPIPE, got {:?}",
+        output.status
+    );
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("panicked"));
 }
 
 /// A reviewed route that parsed every token runs exactly what the caller typed.
