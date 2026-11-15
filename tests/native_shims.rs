@@ -2953,12 +2953,31 @@ fn test_shim_local_timeout_bounds_the_run() {
 // Sandbox delegation
 // ---------------------------------------------------------------------------
 
-fn write_sandbox_config(fixture: &Fixture) {
+fn write_sandbox_config_with_backend(fixture: &Fixture, backend: &str) {
     std::fs::write(
         fixture.home.path().join(".apexe/config.yaml"),
-        "schema_version: 1\nsandbox:\n  backend: auto\n  default: required\n  modules: [cli.find]\n",
+        format!(
+            "schema_version: 1\nsandbox:\n  backend: {backend}\n  default: required\n  modules: [cli.find]\n"
+        ),
     )
     .unwrap();
+}
+
+fn write_sandbox_config(fixture: &Fixture) {
+    write_sandbox_config_with_backend(fixture, "auto");
+}
+
+fn sandbox_backend_for_test() -> Option<&'static str> {
+    if cfg!(target_os = "macos") {
+        return Some("sandbox-exec");
+    }
+    if which::which("bwrap").is_ok() {
+        return Some("bwrap");
+    }
+    if which::which("systemd-run").is_ok() {
+        return Some("systemd-run");
+    }
+    None
 }
 
 #[test]
@@ -2982,8 +3001,11 @@ fn test_sandbox_check_reports_required_module_selection() {
 
 #[test]
 fn test_exec_dry_run_reports_sandbox_plan_without_spawning() {
+    let Some(backend) = sandbox_backend_for_test() else {
+        return;
+    };
     let fixture = find_fixture();
-    write_sandbox_config(&fixture);
+    write_sandbox_config_with_backend(&fixture, backend);
     let output = fixture
         .command()
         .args(["exec", "--dry-run", "--", "find", ".", "-name", "*.txt"])
@@ -3079,6 +3101,15 @@ fn test_bwrap_denies_denied_write_when_available() {
     if which::which("bwrap").is_err() {
         return;
     }
+    // A bwrap that cannot create its namespaces on this host is an unavailable
+    // backend, not a policy result. Check the backend itself before judging the
+    // policy; otherwise every write would "fail" for the wrong reason.
+    let probe = StdCommand::new("bwrap")
+        .args(["--unshare-all", "--ro-bind", "/", "/", "/bin/true"])
+        .status();
+    if !probe.is_ok_and(|status| status.success()) {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let denied = temp.path().join("denied");
     let allowed = temp.path().join("allowed");
@@ -3099,18 +3130,24 @@ fn test_bwrap_denies_denied_write_when_available() {
         policy,
         temp.path().to_path_buf(),
     );
-    let plan = runtime
-        .plan(
-            "cli.sh",
-            "/bin/sh",
-            &["-c".to_string(), "echo x > denied/f".to_string()],
-        )
-        .expect("plan")
-        .expect("selected");
-    let status = StdCommand::new(&plan.program)
-        .args(&plan.args)
-        .status()
-        .expect("spawn bwrap");
-    assert!(!status.success(), "denied write must fail");
-    assert!(!denied.join("f").exists());
+    let run = |script: &str| {
+        let plan = runtime
+            .plan("cli.sh", "/bin/sh", &["-c".to_string(), script.to_string()])
+            .expect("plan")
+            .expect("selected");
+        let status = StdCommand::new(&plan.program)
+            .args(&plan.args)
+            .current_dir(temp.path())
+            .status()
+            .expect("spawn bwrap");
+        status.success()
+    };
+    assert!(!run("echo x > denied/f"), "denied write must fail");
+    assert!(!denied.join("f").exists(), "denied write must not land");
+    assert!(run("echo x > allowed/f"), "allowed write must succeed");
+    assert!(allowed.join("f").exists(), "allowed write must land");
+    assert!(
+        !run("p=denied/computed; echo x > \"$p\""),
+        "computed path must fail at the kernel"
+    );
 }

@@ -205,7 +205,10 @@ and the caller id). Output: a `LaunchSpec`, or a `Refusal` carrying
 `{ capability | probe }` and a human reason.
 
 Before translation, apexe normalizes each path to a
-`PathSpelling { original, resolved, is_file }`. A literal backend (Seatbelt)
+`PathSpelling { original, resolved, is_file }`; a path that does not exist is
+dropped, because it has no policy effect and would make `bwrap`/`systemd-run`/
+Docker fail on a baseline path the host lacks (e.g. `/lib32` on macOS). A
+literal backend (Seatbelt)
 emits a rule for both the original and the resolved spelling; a mount backend
 uses the resolved path for the mount and keeps the original spelling where the
 caller can still name it. The probe tests both. This is where `/tmp` →
@@ -359,7 +362,9 @@ level when none does, never a silent downgrade from an enforcing backend.
 
 ## 8. Container backends: different semantics, narrow scope
 
-A container is not a path sandbox with extra steps. Confining a call in a
+A container is not a path sandbox with extra steps. Docker Sandboxes (`sbx`)
+is a separate microVM product with its own kernel and private Docker Engine; it
+is not this `docker run` backend and is a later adapter. Confining a call in a
 container changes what the call *is*:
 
 | Difference | Consequence |

@@ -1344,8 +1344,11 @@ an inexpressible policy (`write_only` on `systemd-run`/`bwrap`/`docker`), a
 missing Docker image or a translation error refuses before spawn; there is no
 `advisory` execution mode. Linux uses `bwrap` when the `bubblewrap` package is
 installed, otherwise `systemd-run`; macOS uses `sandbox-exec`; Docker is an
-optional container backend. `sandbox check` is static; run the A/B/C probes in
-`sandbox-testing.md` when accepting a backend.
+optional container backend. The `docker` backend is a `docker run` container;
+Docker Sandboxes (`sbx`, a microVM with its own kernel and private Docker
+Engine) is a separate agent sandbox, not this backend, and is not used by
+0.15.0. `sandbox check` is static; run the A/B/C probes in `sandbox-testing.md`
+when accepting a backend.
 
 ## 5. Configuration
 

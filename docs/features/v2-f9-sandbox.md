@@ -35,7 +35,7 @@ operator selects.
 
 | Area | 0.15.0 |
 |---|---|
-| Backends | `systemd-run`, `bwrap`, `sandbox-exec`, `docker` |
+| Backends | `systemd-run`, `bwrap`, `sandbox-exec`, `docker` (`docker run` container, not Docker Sandboxes) |
 | Defaults | per platform: macOS `sandbox-exec`; Linux `systemd-run`; `bwrap` preferred when installed; Docker is an optional container fallback |
 | Configuration | `sandbox.backend`, `sandbox.default`, `sandbox.modules`, `sandbox.external` (reserved), `sandbox.backends.docker` |
 | Selection | by **module ID**, never by command name; explicit list only |
@@ -52,6 +52,9 @@ operator selects.
 
 - `nono`, Apple `container`, `microsandbox`, `shuru`, `pullrun`, Firecracker,
   gVisor, E2B, OpenSandbox, CubeSandbox;
+- Docker Sandboxes (`sbx`, microVM with its own kernel and private Docker
+  Engine); it is a separate agent sandbox, not the `docker run` container
+  backend implemented here;
 - third-party adapter protocol (0.16);
 - network policy, credentials, agent profiles, Windows sandbox;
 - `external` container routing (field reserved, not applied);

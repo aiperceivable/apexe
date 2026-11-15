@@ -23,6 +23,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   mode, selected modules and reason in table or JSON. `apexe exec --dry-run`
   reports the translated `sandbox` plan, enforcement, policy digest and launch
   argv without spawning.
+- The Docker backend mounts only host data paths. Host system trees
+  (`/usr`, `/etc`, `/lib`, `/bin`, `/dev`, `/proc`, `/sys`, …) stay the
+  image's own read-only tree; mounting them over it would replace the image's
+  tools with host binaries and fail on paths the container does not have.
+  Missing baseline paths are dropped, and duplicate mount points are
+  deduplicated. Docker Sandboxes (`sbx`, a microVM with its own kernel and
+  private Docker Engine) is a separate product, not this `docker run` backend.
 - The runtime normalizes `paths:` to `PathSpelling` (original + resolved), then
   to a `MountPlan`; `systemd-run`, `bwrap`, `sandbox-exec` and `docker`
   translators consume it. `NoAccess` denies content and metadata; `WriteOnly`

@@ -55,6 +55,7 @@ pub struct PathSpelling {
     pub original: PathBuf,
     pub resolved: PathBuf,
     pub is_file: bool,
+    pub exists: bool,
 }
 
 /// The effective path policy after normalization.
@@ -73,12 +74,18 @@ impl MountPlan {
             cwd: cwd.to_path_buf(),
             ..Self::default()
         };
-        plan.read_only = normalize_all(&policy.read_only, cwd);
-        plan.read_write = normalize_all(&policy.read_write, cwd);
-        plan.no_access = normalize_all(&policy.no_access, cwd);
-        plan.write_only = normalize_all(&policy.write_only, cwd);
+        plan.read_only = dedup(normalize_all(&policy.read_only, cwd));
+        plan.read_write = dedup(normalize_all(&policy.read_write, cwd));
+        plan.no_access = dedup(normalize_all(&policy.no_access, cwd));
+        plan.write_only = dedup(normalize_all(&policy.write_only, cwd));
         plan
     }
+}
+
+fn dedup(mut entries: Vec<PathSpelling>) -> Vec<PathSpelling> {
+    let mut seen = std::collections::HashSet::new();
+    entries.retain(|entry| seen.insert(entry.resolved.clone()));
+    entries
 }
 
 fn normalize_all(paths: &[PathBuf], cwd: &Path) -> Vec<PathSpelling> {
@@ -94,13 +101,13 @@ fn normalize_path(path: &Path, cwd: &Path) -> PathSpelling {
     };
     let original = lexical_normalize(&absolute);
     let resolved = std::fs::canonicalize(&original).unwrap_or_else(|_| original.clone());
-    let is_file = std::fs::metadata(&resolved)
-        .map(|metadata| metadata.is_file())
-        .unwrap_or(false);
+    let metadata = std::fs::metadata(&resolved).ok();
+    let is_file = metadata.as_ref().is_some_and(std::fs::Metadata::is_file);
     PathSpelling {
         original,
         resolved,
         is_file,
+        exists: metadata.is_some(),
     }
 }
 
@@ -615,6 +622,34 @@ fn write_profile(profile: &str) -> Result<NamedTempFile, SandboxError> {
     Ok(file)
 }
 
+fn is_system_mount(path: &Path) -> bool {
+    // Exact roots, not prefixes: a user path under `/private/tmp` or
+    // `/private/var` is still host data and must be mounted.
+    const SYSTEM_ROOTS: &[&str] = &[
+        "/bin",
+        "/boot",
+        "/dev",
+        "/etc",
+        "/lib",
+        "/lib32",
+        "/lib64",
+        "/proc",
+        "/run",
+        "/sbin",
+        "/sys",
+        "/usr",
+        "/var",
+        "/tmp",
+        "/System",
+        "/Library",
+        "/Applications",
+        "/private/etc",
+        "/private/var",
+        "/private/tmp",
+    ];
+    SYSTEM_ROOTS.iter().any(|root| path == Path::new(root))
+}
+
 fn docker_args(
     config: &DockerSandboxConfig,
     plan: &MountPlan,
@@ -675,6 +710,14 @@ fn docker_args(
         plan.cwd.display()
     ));
     for spelling in &plan.read_only {
+        // The container has its own read-only system tree from the image.
+        // Mounting the host `/usr`, `/etc`, `/lib` or `/bin` over it would
+        // replace the image's tools with host binaries (and fail for paths the
+        // image does not have), which is the "container is not a path sandbox
+        // with extra steps" trap. Only host data paths are mounted.
+        if is_system_mount(&spelling.resolved) {
+            continue;
+        }
         args.push("--mount".to_string());
         args.push(format!(
             "type=bind,src={},dst={},readonly",

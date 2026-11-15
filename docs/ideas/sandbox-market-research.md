@@ -104,6 +104,7 @@ repository's declared SPDX identifier or `NOASSERTION`.
 | [abiosoft/colima](https://github.com/abiosoft/colima) | 31.7k | Go | MIT | Container runtimes on macOS | Docker/containerd VM wrapper |
 | [podman-container-tools/podman](https://github.com/podman-container-tools/podman) | 33.3k | Go | Apache-2.0 | Rootless OCI containers; macOS VM | Docker alternative |
 | Docker Desktop / OrbStack | — | — | proprietary | Linux VM + containers on macOS | Already present; fallback |
+| [Docker Sandboxes (`sbx`)](https://docs.docker.com/ai/sandboxes/) | — | — | proprietary | microVM with its own kernel + private Docker Engine; agent-focused | Stronger than `docker run`; separate product; later adapter |
 
 ### 3.3 Remote / self-hosted sandbox platforms
 
