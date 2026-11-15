@@ -2336,6 +2336,18 @@ fn test_shim_find_parsed_tail_runs_a_read_only_search() {
 /// The security invariant, end to end: `-delete` is in the expression, and it
 /// has to be in the input the gate reads. If it were forwarded unparsed this
 /// call would be admitted at read strength and delete without a prompt.
+/// A protected system directory is readable for a readonly `find`; the write
+/// forms are the ones the path guard refuses.
+#[test]
+fn test_shim_find_reads_a_system_directory_at_read_strength() {
+    let fixture = find_fixture();
+    fixture
+        .shim("find")
+        .args(["/etc", "-name", "hosts"])
+        .assert()
+        .success();
+}
+
 #[test]
 fn test_shim_find_delete_reaches_the_approval_gate() {
     let fixture = find_fixture();
@@ -2375,6 +2387,9 @@ fn test_shim_refuses_exec_lists_by_default() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("child_exec.mode: refuse"));
+    let audit = audit_after(&fixture);
+    assert!(audit.contains("\"reason\":\"mode_refuse\""), "{audit}");
+    assert!(audit.contains("\"event\":\"refusal\""), "{audit}");
 }
 
 /// End-to-end: a parsed-tail `-exec` list is resolved to `cli.rm`, checked by
@@ -2429,6 +2444,98 @@ fn test_shim_analyzes_a_parsed_tail_exec_list() {
         std::fs::read_to_string(fixture.home.path().join(".apexe/audit.jsonl")).unwrap_or_default();
     assert!(audit.contains("\"event\":\"child_exec\""), "{audit}");
     assert!(audit.contains("\"decision\":\"analyzed\""), "{audit}");
+}
+
+/// A find fixture plus one reviewed child, with the child-exec mode set.
+fn analysis_fixture(
+    child_id: &str,
+    child_name: &str,
+    binary: &str,
+    schema: Value,
+    mode: &str,
+    computes_paths: bool,
+) -> Fixture {
+    let fixture = Fixture::new();
+    let mut find_schema = find_schema();
+    find_schema["properties"]["exec"]["x-apexe-exec-list"] = json!(true);
+    fixture.write("cli.find", "find", "/usr/bin/find", find_schema, false);
+    fixture.write(child_id, child_name, binary, schema, false);
+    if computes_paths {
+        let mut modules = apexe::output::load_modules_from_dir(&fixture.bindings(), None).unwrap();
+        let module = modules
+            .iter_mut()
+            .find(|module| module.module_id == child_id)
+            .unwrap();
+        module
+            .annotations
+            .as_mut()
+            .unwrap()
+            .extra
+            .insert("x-apexe-computes-paths".into(), json!(true));
+        apexe::output::YamlOutput::without_verification()
+            .write(&modules, &fixture.bindings(), false)
+            .unwrap();
+    }
+    std::fs::write(
+        fixture.home.path().join(".apexe/config.yaml"),
+        format!("child_exec:\n  mode: {mode}\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.home.path().join(".apexe/acl.yaml"),
+        "version: '1.0'\ndefault_effect: allow\nrules: []\n",
+    )
+    .unwrap();
+    fixture.enable();
+    fixture
+}
+
+fn rm_schema() -> Value {
+    json!({
+        "type": "object",
+        "x-apexe-end-of-options": true,
+        "x-apexe-short-flag-bundling": true,
+        "properties": {
+            "file": {
+                "type": "array",
+                "items": {"type": "string", "x-apexe-path": true},
+                "x-apexe-positional": 0
+            },
+            "r": {"type": "boolean", "x-apexe-flag": "-r"},
+            "f": {"type": "boolean", "x-apexe-flag": "-f"}
+        }
+    })
+}
+
+fn printf_schema() -> Value {
+    json!({
+        "type": "object",
+        "x-apexe-end-of-options": true,
+        "properties": {
+            "format": {"type": "string", "x-apexe-positional": 0},
+            "args": {
+                "type": "array",
+                "items": {"type": "string"},
+                "x-apexe-positional": 1
+            }
+        }
+    })
+}
+
+fn sed_schema() -> Value {
+    json!({
+        "type": "object",
+        "x-apexe-end-of-options": true,
+        "properties": {
+            "script": {"type": "string", "x-apexe-positional": 0},
+            "file": {
+                "type": "array",
+                "items": {"type": "string", "x-apexe-path": true},
+                "x-apexe-positional": 1
+            },
+            "n": {"type": "boolean", "x-apexe-flag": "-n"}
+        }
+    })
 }
 
 /// A fixture with find + rm installed and `child_exec.mode: delegate`.
@@ -2573,6 +2680,84 @@ fn test_shim_analyze_trust_uncovered_records_the_audit_row() {
         audit.contains("\"decision\":\"trusted_unanalyzed\""),
         "{audit}"
     );
+}
+
+/// `--` belongs before the child's first positional operand. `printf` has a
+/// format before the placeholder; inserting before `{}` would print `--`.
+#[test]
+fn test_shim_analyze_puts_end_of_options_before_the_first_operand() {
+    let fixture = analysis_fixture(
+        "cli.printf",
+        "printf",
+        "/usr/bin/printf",
+        printf_schema(),
+        "analyze",
+        false,
+    );
+    std::fs::write(fixture.home.path().join("victim.txt"), "x").unwrap();
+    fixture
+        .shim("find")
+        .args(["victim.txt", "-exec", "printf", "%s", "{}", ";"])
+        .assert()
+        .success()
+        .stdout("victim.txt");
+}
+
+#[test]
+fn test_shim_analyze_refuses_a_child_that_computes_paths() {
+    let fixture = analysis_fixture(
+        "cli.sed",
+        "sed",
+        "/usr/bin/sed",
+        sed_schema(),
+        "analyze",
+        true,
+    );
+    std::fs::write(fixture.home.path().join("victim.txt"), "x").unwrap();
+    fixture
+        .shim("find")
+        .args(["victim.txt", "-exec", "sed", "-n", "p", "{}", ";"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("computes its own paths"));
+    let audit = audit_after(&fixture);
+    assert!(audit.contains("\"event\":\"child_exec\""), "{audit}");
+    assert!(audit.contains("\"decision\":\"refused\""), "{audit}");
+    assert!(audit.contains("\"event\":\"refusal\""), "{audit}");
+}
+
+#[test]
+fn test_shim_analyze_refusal_is_audited() {
+    let fixture = analysis_fixture("cli.rm", "rm", "/bin/rm", rm_schema(), "analyze", false);
+    let ssh = fixture.home.path().join(".ssh");
+    std::fs::create_dir_all(&ssh).unwrap();
+    let key = ssh.join("id_rsa");
+    std::fs::write(&key, "secret").unwrap();
+    std::fs::write(fixture.home.path().join("victim.txt"), "x").unwrap();
+    fixture
+        .shim("find")
+        .args(["victim.txt", "-exec", "rm", key.to_str().unwrap(), ";"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("protected"));
+    assert!(key.exists(), "the refused child must not delete the key");
+    let audit = audit_after(&fixture);
+    assert!(audit.contains("\"event\":\"child_exec\""), "{audit}");
+    assert!(audit.contains("\"decision\":\"refused\""), "{audit}");
+    assert!(audit.contains("\"event\":\"refusal\""), "{audit}");
+}
+
+#[test]
+fn test_shim_delegate_runs_the_batched_terminator() {
+    let fixture = analysis_fixture("cli.rm", "rm", "/bin/rm", rm_schema(), "delegate", false);
+    let victim = fixture.home.path().join("victim.txt");
+    std::fs::write(&victim, "x").unwrap();
+    fixture
+        .shim("find")
+        .args(["victim.txt", "-exec", "rm", "{}", "+"])
+        .assert()
+        .success();
+    assert!(!victim.exists(), "the batched child did not run");
 }
 
 #[test]

@@ -91,8 +91,13 @@ pub(crate) fn create(
         expires_at: now() + TTL_SECONDS,
     };
     let path = directory.join(format!("{id}.json"));
-    std::fs::write(&path, serde_json::to_vec(&grant)?)?;
-    restrict(&path, 0o600)?;
+    let bytes = serde_json::to_vec(&grant)?;
+    let mut file = open_private(&path)?;
+    if let Err(error) = std::io::Write::write_all(&mut file, &bytes) {
+        let _ = std::fs::remove_file(&path);
+        return Err(error.into());
+    }
+    drop(file);
     std::env::set_var(DELEGATION_ENV, &id);
     Ok(DelegationHandle { path, id })
 }
@@ -120,6 +125,22 @@ pub(crate) fn path_within(grant: &Delegation, value: &str) -> bool {
         .any(|root| resolved.starts_with(Path::new(root)))
 }
 
+/// Create the grant file with owner-only permissions from the start.
+///
+/// `std::fs::write` would create it with the process umask and only afterwards
+/// be chmod-ed; a failure between the two would leave a readable grant with no
+/// handle to remove it.
+fn open_private(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
 fn canonical(value: &str) -> String {
     std::fs::canonicalize(value)
         .map(|path| path.to_string_lossy().into_owned())
@@ -135,4 +156,41 @@ fn restrict(path: &Path, mode: u32) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn restrict(_path: &Path, _mode: u32) -> std::io::Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn test_create_writes_a_private_grant_and_drop_removes_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let config = crate::config::ApexeConfig {
+            config_dir: temp.path().join("apexe"),
+            audit_log: temp.path().join("audit.jsonl"),
+            ..Default::default()
+        };
+        let handle = create(
+            &config,
+            "cli.find",
+            "trace",
+            &["cli.rm".to_string()],
+            &[temp.path().to_string_lossy().into_owned()],
+        )
+        .unwrap();
+        let id = handle.id().to_string();
+        let path = directory(&config).join(format!("{id}.json"));
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let grant = active_from_env(&config).unwrap();
+        assert_eq!(grant.parent_trace, "trace");
+        assert_eq!(grant.child_modules, vec!["cli.rm"]);
+        drop(handle);
+        assert!(!path.exists(), "the handle must remove the grant");
+    }
 }

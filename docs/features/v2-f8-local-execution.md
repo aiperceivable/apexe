@@ -428,13 +428,14 @@ run:
 | Mode | Behaviour |
 |---|---|
 | `refuse` (default) | Every list is refused on native argv and on the module-JSON surface |
-| `analyze` | The program is resolved to its own reviewed module; that module's schema, ACL, path policy and approval are applied at the parent's starting paths; `--` is inserted before `{}` when the child declares `end_of_options` |
+| `analyze` | The program is resolved to its own reviewed module; that module's schema, ACL, path policy and approval are applied at the parent's starting paths; `--` is inserted before the child's first positional operand when the child declares `end_of_options` (a `{}` in a flag value gets no separator) |
 | `delegate` | The same template check, then each match runs through the installed child shim with a scoped grant (child modules + starting paths + parent trace, 0600/0700, 30-minute expiry, removed on return). The child's ACL and path guard see the actual resolved path, so symlinks and `-execdir` are judged per match; the grant only stands the approval prompt down |
 
 Every child decision is a `child_exec` row in `audit.jsonl` — `analyzed`,
-`trusted_unanalyzed`, `delegate_grant`, `delegated_allow` or `delegated_refuse`
-— carrying the parent module, the child module and the parent trace; delegate
-rows also carry the grant id. No mode is OS confinement: programs that compute their own paths (`sh -c`,
+`trusted_unanalyzed`, `refused`, `delegate_grant`, `delegated_allow` or
+`delegated_refuse` — carrying the parent module, the child module and the parent
+trace; delegate rows also carry the grant id. The shim also writes the parent's
+`refusal` row for an analysis it could not complete. No mode is OS confinement: programs that compute their own paths (`sh -c`,
 `sed 'w /etc/x'`, `python -c`) are refused and require a confinement backend;
 `trust_uncovered` is the explicit, audited exception for an unbound program.
 The corpus declares `exec_list` on `find`'s four flags; the [user manual](../user-manual.md#embedded-child-commands-find--exec)

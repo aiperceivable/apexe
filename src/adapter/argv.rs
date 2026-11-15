@@ -106,6 +106,12 @@ pub fn resolve_argv(argv: &[String], schema: &Value) -> Result<Value, ModuleErro
 pub(crate) struct ResolvedArgv {
     pub(crate) input: Value,
     pub(crate) opaque_tail: Option<OpaqueTail>,
+    /// Token positions (in the parsed argv) of the leading operands, in order.
+    ///
+    /// The child-execution policy needs to know where the first positional
+    /// operand begins so a `--` separator is inserted before the operands, not
+    /// before an arbitrary `{}` that may be a flag value or a later operand.
+    pub(crate) operand_indices: Vec<usize>,
     /// Embedded child command lists (`find -exec rm {} ;`), in argv order.
     ///
     /// The list is not a value of this command's grammar: its tokens belong to
@@ -162,6 +168,8 @@ struct ParsedFlags<'a, 'b> {
 struct Scan<'a, 'b> {
     input: Map<String, Value>,
     operands: Vec<&'b str>,
+    /// Parallel to `operands`: the token index in the input argv.
+    operand_indices: Vec<usize>,
     cursor: usize,
     command_cursor: usize,
     ended: bool,
@@ -591,6 +599,7 @@ impl<'a> Parser<'a> {
         let mut scan = Scan {
             input: Map::new(),
             operands: Vec::new(),
+            operand_indices: Vec::new(),
             cursor: 0,
             command_cursor: 0,
             ended: false,
@@ -642,6 +651,7 @@ impl<'a> Parser<'a> {
                 break;
             } else {
                 scan.operands.push(token.as_str());
+                scan.operand_indices.push(start);
             }
         }
         if scan.command_cursor != command.len() {
@@ -721,6 +731,7 @@ impl<'a> Parser<'a> {
         let Scan {
             mut input,
             mut operands,
+            mut operand_indices,
             mut exec_lists,
             cursor,
             mut boundary,
@@ -745,6 +756,7 @@ impl<'a> Parser<'a> {
             });
         } else {
             operands.extend(argv[cursor..].iter().map(String::as_str));
+            operand_indices.extend(cursor..argv.len());
         }
         self.assign_operands(&operands, &mut input)?;
         let opaque_tail =
@@ -752,6 +764,7 @@ impl<'a> Parser<'a> {
         Ok(ResolvedArgv {
             input: Value::Object(input),
             opaque_tail,
+            operand_indices,
             exec_lists,
         })
     }

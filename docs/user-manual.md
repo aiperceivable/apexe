@@ -1418,11 +1418,15 @@ only) to have the child resolved and gated:
 3. the child call runs its real preflight — ACL, path policy, approval — for
    the same caller;
 4. `{}` is checked as the parent call's starting paths at the child's access
-   mode, and `--` is inserted before it when the child module declares
-   `end_of_options`, so a matched file named `-rf` is a path, not an option;
+   mode. When `{}` is a positional operand and the child module declares
+   `end_of_options`, `--` is inserted before the child's **first positional
+   operand** — not before `{}`, which may be a later operand or a flag value —
+   so a matched file named `-rf` is a path, not an option. A `{}` in a flag
+   value gets no separator;
 5. one approval covers the parent and the child. The parent execution is audited;
-   the child analysis is a `child_exec` audit record (with the parent trace), and
-   in `delegate` the child shim adds its own execution record and the grant id.
+   the child analysis is a `child_exec` audit record (with the parent trace),
+   **including a `refused` row for a refused analysis**, and in `delegate` the
+   child shim adds its own execution record and the grant id.
 
 `delegate` adds per-match governance on top of that: the parent sets `PATH` to
 the installed shim directory first, creates a short-lived grant naming the child
@@ -1459,6 +1463,10 @@ destructive child such as `rm` is left out of the default shim set, so install
 it explicitly with `apexe env --enable --also rm`. It is the
 mode for `-execdir`, symlinks and per-match paths; it is still not enforcement —
 a child that computes its own paths is refused in both modes.
+
+The module-JSON surface (`--input`/MCP/A2A) refuses an exec-list even when the
+mode is `analyze` or `delegate`: that surface has no analyzer, so it cannot make
+the promise the native surfaces make.
 
 `trust_uncovered` is the explicit exception: it admits a bare program name for
 which no binding exists, skipping analysis. It is empty by default, reported at

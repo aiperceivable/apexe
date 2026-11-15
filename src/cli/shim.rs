@@ -619,7 +619,7 @@ fn execute(
             &manifest.bindings_dir,
             manifest.bindings_pattern.as_deref(),
         )?;
-        delegation_handle = runtime.block_on(super::child_exec::analyze(
+        let analysis = runtime.block_on(super::child_exec::analyze(
             config,
             selected,
             &input.input,
@@ -628,7 +628,22 @@ fn execute(
             &analysis_modules,
             manifest,
             &context,
-        ))?;
+        ));
+        delegation_handle = match analysis {
+            Ok(handle) => handle,
+            Err(error) => {
+                runtime.block_on(audit_resolution_refusal(
+                    name,
+                    manifest,
+                    &modules,
+                    &context,
+                    config,
+                    &error,
+                    started.elapsed().as_millis() as u64,
+                ));
+                return Err(error);
+            }
+        };
         analyzed = true;
     }
     let audit = crate::governance::AuditManager::new(&config.audit_log);

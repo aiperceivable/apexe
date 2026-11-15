@@ -91,6 +91,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 
 ### Fixed
+- The child-execution analyzer inserts `--` before the child's **first
+  positional operand**, not before the `{}` token. For a child with an operand
+  before the placeholder (`find . -exec printf '%s' {} \;`) inserting before
+  `{}` produced `printf '%s' -- file`, which prints `--file`; a `{}` in a flag
+  value (`grep -e {} file`) became a `--` pattern. The child argv is now parsed
+  after the program token, so the program is no longer treated as an extra
+  operand by the child preflight. Tests cover `printf`'s format, `grep -e`, and
+  an existing `--`.
+- A refused child analysis is audited: the analyzer writes a `child_exec`
+  `refused` row, and the shim writes the parent's `refusal` row. Previously a
+  path/ACL/`computes_paths` refusal left `audit.jsonl` with no record at all.
+- The delegate grant file is created with mode 0600 by `OpenOptions` instead of
+  being written under the umask and chmod-ed afterwards; a failure in between
+  could leave a readable grant with no handle to remove it.
 - The Cobra help parser no longer treats GNU coreutils' "use one of these
   commands:" prose as a Cobra command section. `rm --help` on Debian was read as
   a Cobra command with a subcommand named `rm` (the first indented example,

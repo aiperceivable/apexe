@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use super::UnmanagedPolicy;
 use crate::adapter::argv::OpaqueTail;
 use crate::cli::shim::{Manifest, Replay, Route};
-use crate::config::{ApexeConfig, ChildExecMode};
+use crate::config::ApexeConfig;
 use crate::module::{CliModule, ExecutionIo, StdinMode};
 
 pub(super) struct NativeInvocation {
@@ -199,35 +199,30 @@ async fn resolve_invocation(
         let mut child_exec_analyzed = false;
         let mut delegation = None;
         if !input.exec_lists.is_empty() {
-            match config.child_exec.mode {
-                ChildExecMode::Refuse => return Err(super::super::child_exec::refusal()),
-                ChildExecMode::Analyze | ChildExecMode::Delegate => {
-                    let Some(replay) = replay.as_mut() else {
-                        return Err(anyhow::anyhow!(
-                            "This route embeds a command list but does not replay its argv; the list cannot be analyzed"
-                        ));
-                    };
-                    // The shim/exec module set is narrowed to the invoked
-                    // command's routes. The child is a different module, so
-                    // load the full binding set for its analysis.
-                    let analysis_modules = crate::output::load_modules_from_dir(
-                        &manifest.bindings_dir,
-                        config.bindings_pattern.as_deref(),
-                    )?;
-                    delegation = super::super::child_exec::analyze(
-                        config,
-                        module,
-                        &input.input,
-                        &input.exec_lists,
-                        replay.argv_mut(),
-                        &analysis_modules,
-                        manifest,
-                        context,
-                    )
-                    .await?;
-                    child_exec_analyzed = true;
-                }
-            }
+            let Some(replay) = replay.as_mut() else {
+                return Err(anyhow::anyhow!(
+                    "This route embeds a command list but does not replay its argv; the list cannot be analyzed"
+                ));
+            };
+            // The shim/exec module set is narrowed to the invoked command's
+            // routes. The child is a different module, so load the full binding
+            // set for its analysis.
+            let analysis_modules = crate::output::load_modules_from_dir(
+                &manifest.bindings_dir,
+                config.bindings_pattern.as_deref(),
+            )?;
+            delegation = super::super::child_exec::analyze(
+                config,
+                module,
+                &input.input,
+                &input.exec_lists,
+                replay.argv_mut(),
+                &analysis_modules,
+                manifest,
+                context,
+            )
+            .await?;
+            child_exec_analyzed = true;
         }
         return Ok(NativeInvocation {
             module: module.clone(),
