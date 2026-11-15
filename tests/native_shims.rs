@@ -2336,14 +2336,16 @@ fn test_shim_find_parsed_tail_runs_a_read_only_search() {
 /// The security invariant, end to end: `-delete` is in the expression, and it
 /// has to be in the input the gate reads. If it were forwarded unparsed this
 /// call would be admitted at read strength and delete without a prompt.
-/// A protected system directory is readable for a readonly `find`; the write
-/// forms are the ones the path guard refuses.
+/// A protected system path is readable for a readonly `find`; the write forms
+/// are the ones the path guard refuses. Use a file rather than traversing
+/// `/etc`, whose unreadable subdirectories make the wrapped `find` exit 1 for
+/// reasons that are not governance.
 #[test]
-fn test_shim_find_reads_a_system_directory_at_read_strength() {
+fn test_shim_find_reads_a_system_file_at_read_strength() {
     let fixture = find_fixture();
     fixture
         .shim("find")
-        .args(["/etc", "-name", "hosts"])
+        .args(["/etc/hosts", "-name", "hosts"])
         .assert()
         .success();
 }
