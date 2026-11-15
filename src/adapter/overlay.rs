@@ -244,6 +244,13 @@ pub struct OverlayFlag {
     /// value rather than at a positional.
     #[serde(default)]
     pub opaque_after: bool,
+    /// This flag introduces another program's argv, ended by `;` or `+`.
+    ///
+    /// See [`crate::models::ScannedFlag::exec_list`]. Requires a parsed tail on
+    /// the route and the flag's property in `approval_flags`, so the call can
+    /// never be admitted without the parent approval.
+    #[serde(default)]
+    pub exec_list: bool,
     /// Render this flag before the command's operands rather than after.
     ///
     /// The companion to [`OverlayArg::before_flags`]; see
@@ -697,6 +704,24 @@ pub enum OverlayDefect {
          execution path the parsed tail keeps closed"
     )]
     ExecTerminatorAsTailToken(String),
+
+    #[error(
+        "flag '{0}' declares exec_list but the route has no parsed tail; only a \
+         parsed tail can hold an embedded command list"
+    )]
+    ExecListWithoutParsedTail(String),
+
+    #[error(
+        "flag '{0}' declares exec_list but is not listed in approval_flags; an \
+         embedded command must never be admitted without the parent approval"
+    )]
+    ExecListWithoutApproval(String),
+
+    #[error("flag '{0}' declares exec_list but is rendered before the operands")]
+    ExecListBeforeOperands(String),
+
+    #[error("command path '{}' declares exec_list; embedded commands are only supported on the tool's own invocation", .0.join(" "))]
+    ExecListOnSubcommand(Vec<String>),
 }
 
 /// Check every invariant of `overlay` that needs no access to the real tool.
@@ -736,6 +761,7 @@ pub fn validate_overlay(overlay: &ToolOverlay) -> Vec<OverlayDefect> {
     }
     for scope in &declared {
         validate_tail_tokens(scope, &mut defects);
+        validate_exec_lists(scope, &mut defects);
     }
     let mut seen_paths: Vec<&Vec<String>> = Vec::new();
     for scope in &overlay.commands {
@@ -780,6 +806,48 @@ fn validate_tail_tokens(scope: &OverlayCommand, defects: &mut Vec<OverlayDefect>
         } else if matches!(token.as_str(), ";" | "+" | "{}") {
             defects.push(OverlayDefect::ExecTerminatorAsTailToken(token.clone()));
         }
+    }
+}
+
+/// Validate the flags that introduce another program's argv.
+///
+/// Three facts make an `exec_list` safe to load. It belongs to the tool's own
+/// invocation (the resolver only collects lists on a root route), its route has
+/// a parsed tail to hold the list, and its property is approval-gated — an
+/// embedded command must never be reachable without the parent prompt.
+fn validate_exec_lists(scope: &OverlayCommand, defects: &mut Vec<OverlayDefect>) {
+    let parsed_tail = scope
+        .positional_args
+        .last()
+        .is_some_and(|arg| arg.tail_parsed && arg.variadic);
+    for flag in &scope.flags {
+        if !flag.exec_list {
+            continue;
+        }
+        let name = overlay_flag_name(flag);
+        if !scope.path.is_empty() {
+            defects.push(OverlayDefect::ExecListOnSubcommand(scope.path.clone()));
+        }
+        if flag.before_operands {
+            defects.push(OverlayDefect::ExecListBeforeOperands(name.clone()));
+        }
+        if !parsed_tail {
+            defects.push(OverlayDefect::ExecListWithoutParsedTail(name.clone()));
+        }
+        if !scope.annotations.approval_flags.contains(&name) {
+            defects.push(OverlayDefect::ExecListWithoutApproval(name));
+        }
+    }
+}
+
+/// The schema property name a flag will become, without building a `ScannedFlag`.
+fn overlay_flag_name(flag: &OverlayFlag) -> String {
+    if let Some(long) = flag.long.as_deref() {
+        long.trim_start_matches('-').replace('-', "_")
+    } else if let Some(short) = flag.short.as_deref() {
+        short.trim_start_matches('-').to_string()
+    } else {
+        "unknown".to_string()
     }
 }
 
@@ -989,6 +1057,7 @@ impl OverlayFlag {
             value_optional: self.value_optional,
             digit_value: self.digit_value,
             opaque_after: self.opaque_after,
+            exec_list: self.exec_list,
             before_operands: self.before_operands,
             long_running: self.long_running,
             conflicts_with: self.conflicts_with.clone(),
@@ -2724,6 +2793,55 @@ mod tests {
         assert!(validate_overlay(&no_tail)
             .iter()
             .any(|defect| matches!(defect, OverlayDefect::TailTokensWithoutParsedTail)));
+    }
+
+    #[test]
+    fn test_overlay_exec_list_requires_approval_and_a_parsed_tail() {
+        let mut overlay = overlay(OverlayMode::Authoritative);
+        overlay.command = "find".to_string();
+        overlay.commands[0].flags = vec![OverlayFlag {
+            short: Some("-exec".to_string()),
+            value_type: ValueType::String,
+            exec_list: true,
+            ..Default::default()
+        }];
+        overlay.commands[0].positional_args = vec![
+            OverlayArg {
+                name: "path".to_string(),
+                value_type: ValueType::Path,
+                variadic: true,
+                before_flags: true,
+                ..Default::default()
+            },
+            OverlayArg {
+                name: "expression".to_string(),
+                value_type: ValueType::String,
+                variadic: true,
+                tail_parsed: true,
+                ..Default::default()
+            },
+        ];
+        overlay.commands[0].annotations.approval_flags = vec!["exec".to_string()];
+        assert!(
+            validate_overlay(&overlay).is_empty(),
+            "{:?}",
+            validate_overlay(&overlay)
+        );
+
+        let mut without_approval = overlay.clone();
+        without_approval.commands[0]
+            .annotations
+            .approval_flags
+            .clear();
+        assert!(validate_overlay(&without_approval)
+            .iter()
+            .any(|defect| matches!(defect, OverlayDefect::ExecListWithoutApproval(_))));
+
+        let mut without_tail = overlay.clone();
+        without_tail.commands[0].positional_args[1].tail_parsed = false;
+        assert!(validate_overlay(&without_tail)
+            .iter()
+            .any(|defect| matches!(defect, OverlayDefect::ExecListWithoutParsedTail(_))));
     }
 
     #[test]

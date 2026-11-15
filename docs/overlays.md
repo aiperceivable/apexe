@@ -958,6 +958,24 @@ The marker requires the last, variadic operand and `before_flags` on everything
 before it. Any other shape with two variadic operands keeps the old "ambiguous
 declared positional grammar" refusal.
 
+A flag that introduces **another program's argv** — `find -exec rm {} \;` — is
+declared with `exec_list: true`:
+
+```json
+{ "short": "-exec", "type": "string", "value_name": "utility [argument ...] ;",
+  "exec_list": true }
+```
+
+The resolver collects the tokens up to and including `;` or `+` instead of
+classifying them as this command's flags. It reaches the contract as
+`x-apexe-exec-list`. Two invariants are enforced when the overlay loads: the
+route must have a parsed tail (the list lives in it) and the flag's property
+must be in `approval_flags`, so an embedded command is never reachable without
+the parent prompt. What may run is decided by `child_exec.mode`: `refuse` (the
+default) rejects every list; `analyze` resolves the program to its own module
+and applies that module's ACL, path and approval gates. `;`, `+` and `{}` remain
+refused as ordinary `tail_tokens`; only an `exec_list` flag may consume them.
+
 A parsed tail also contains tokens that are neither flags nor values: `find`'s
 `(`, `)`, `!` and `,`. Declare them once at the overlay's root:
 

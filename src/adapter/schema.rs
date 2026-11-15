@@ -332,6 +332,12 @@ fn apply_flag_literal(schema: &mut JsonValue, flag: &ScannedFlag) {
         // belongs to what the flag named.
         schema["x-apexe-opaque-after"] = json!(true);
     }
+    if flag.exec_list {
+        // `find -exec rm {} \;`: the tokens up to `;`/`+` are another
+        // program's argv. The resolver collects them instead of classifying
+        // them, and the child-execution policy decides whether they may run.
+        schema["x-apexe-exec-list"] = json!(true);
+    }
     if flag.digit_value {
         // `head -20`: a digit run after the dash is this flag's value, not a
         // bundle of `-2` and `-0`. Only an overlay that probed the binary can

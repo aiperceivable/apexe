@@ -354,6 +354,10 @@ impl Replay {
         &self.argv
     }
 
+    pub(super) fn argv_mut(&mut self) -> &mut Vec<String> {
+        &mut self.argv
+    }
+
     pub(super) fn tier(&self) -> RouteTier {
         self.tier
     }
@@ -584,7 +588,7 @@ fn execute(
         .enable_all()
         .build()?;
     let modules = load_routable_modules(name, manifest)?;
-    let (selected, input, replay) = match resolve_route(name, args, manifest, &modules) {
+    let (selected, input, mut replay) = match resolve_route(name, args, manifest, &modules) {
         Ok(resolved) => resolved,
         Err(error) => {
             runtime.block_on(audit_resolution_refusal(
@@ -601,10 +605,39 @@ fn execute(
     };
     let module_id = selected.module_id.clone();
     let stdin = passthrough_stdin_mode();
+    let mut analyzed = false;
+    if !input.exec_lists.is_empty() {
+        let Some(replay) = replay.as_mut() else {
+            return Err(anyhow::anyhow!(
+                "This route embeds a command list but does not replay its argv; the list cannot \
+                 be analyzed"
+            ));
+        };
+        let analysis_modules = crate::output::load_modules_from_dir(
+            &manifest.bindings_dir,
+            manifest.bindings_pattern.as_deref(),
+        )?;
+        runtime.block_on(super::child_exec::analyze(
+            config,
+            selected,
+            &input.input,
+            &input.exec_lists,
+            replay.argv_mut(),
+            &analysis_modules,
+            &context,
+        ))?;
+        analyzed = true;
+    }
     let executor = match replay {
-        Some(replay) => {
-            build_executor_for_replay(manifest, config, selected, replay.argv, stdin, replay.tier)?
-        }
+        Some(replay) => build_executor_for_replay(
+            manifest,
+            config,
+            selected,
+            replay.argv,
+            stdin,
+            replay.tier,
+            analyzed,
+        )?,
         None => build_executor(
             manifest,
             config,
@@ -677,6 +710,7 @@ fn build_executor_for_replay(
     argv: Vec<String>,
     stdin: StdinMode,
     tier: RouteTier,
+    child_exec_analyzed: bool,
 ) -> anyhow::Result<std::sync::Arc<apcore::Executor>> {
     let acl = super::local::acl_path(manifest.acl.as_deref(), config)?;
     let options = super::local::options(
@@ -696,6 +730,7 @@ fn build_executor_for_replay(
         argv,
         ExecutionIo::Passthrough { stdin },
         replay_tier,
+        child_exec_analyzed,
     )?)
 }
 

@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use super::UnmanagedPolicy;
 use crate::adapter::argv::OpaqueTail;
 use crate::cli::shim::{Manifest, Replay, Route};
-use crate::config::ApexeConfig;
+use crate::config::{ApexeConfig, ChildExecMode};
 use crate::module::{CliModule, ExecutionIo, StdinMode};
 
 pub(super) struct NativeInvocation {
@@ -19,6 +19,8 @@ pub(super) struct NativeInvocation {
     /// Set when the grammar classified every token, so the call must run the
     /// caller's argv verbatim rather than a re-rendered form.
     pub replay: Option<Replay>,
+    /// Whether the child-exec policy analyzed the embedded command lists.
+    pub child_exec_analyzed: bool,
 }
 
 pub(super) async fn resolve(
@@ -35,7 +37,7 @@ pub(super) async fn resolve(
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| anyhow::anyhow!("Native command must have a UTF-8 file name"))?;
-    match resolve_invocation(name, args, policy, modules, &manifest, config) {
+    match resolve_invocation(name, args, policy, modules, &manifest, config, context).await {
         Ok(invocation) => Ok(invocation),
         Err(error) => {
             super::super::shim::audit_resolution_refusal(
@@ -171,18 +173,19 @@ fn extend_with_verified_routes(
     }
 }
 
-fn resolve_invocation(
+async fn resolve_invocation(
     name: &str,
     args: &[String],
     policy: UnmanagedPolicy,
     modules: &[ScannedModule],
     manifest: &Manifest,
     config: &ApexeConfig,
+    context: &Context<Value>,
 ) -> anyhow::Result<NativeInvocation> {
     let binary = resolve_binary(&args[0])?;
     let registered_name = manifest_route_name(name, &binary, modules, manifest);
     if let Some(name) = registered_name {
-        let (module, input, replay) =
+        let (module, input, mut replay) =
             super::super::shim::resolve_route(&name, &args[1..], manifest, modules)?;
         let target = crate::scanner::resolver::extract_binary_path(&module.target)
             .ok_or_else(|| anyhow::anyhow!("Invalid CLI target"))?;
@@ -191,12 +194,44 @@ fn resolve_invocation(
             "Resolved executable differs from the binding for {}; rescan with the intended PATH",
             module.module_id
         );
+        let mut child_exec_analyzed = false;
+        if !input.exec_lists.is_empty() {
+            match config.child_exec.mode {
+                ChildExecMode::Refuse => return Err(super::super::child_exec::refusal()),
+                ChildExecMode::Analyze => {
+                    let Some(replay) = replay.as_mut() else {
+                        return Err(anyhow::anyhow!(
+                            "This route embeds a command list but does not replay its argv; the                              list cannot be analyzed"
+                        ));
+                    };
+                    // The shim/exec module set is narrowed to the invoked
+                    // command's routes. The child is a different module, so
+                    // load the full binding set for its analysis.
+                    let analysis_modules = crate::output::load_modules_from_dir(
+                        &manifest.bindings_dir,
+                        config.bindings_pattern.as_deref(),
+                    )?;
+                    super::super::child_exec::analyze(
+                        config,
+                        module,
+                        &input.input,
+                        &input.exec_lists,
+                        replay.argv_mut(),
+                        &analysis_modules,
+                        context,
+                    )
+                    .await?;
+                    child_exec_analyzed = true;
+                }
+            }
+        }
         return Ok(NativeInvocation {
             module: module.clone(),
             input: input.input,
             unmanaged: None,
             opaque_tail: input.opaque_tail,
             replay,
+            child_exec_analyzed,
         });
     }
     // A binding without reviewed grammar is a coverage gap, not an unmanaged
@@ -386,6 +421,7 @@ fn unmanaged_invocation(
         unmanaged: Some(module),
         opaque_tail: None,
         replay: None,
+        child_exec_analyzed: false,
     })
 }
 

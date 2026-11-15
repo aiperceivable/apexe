@@ -2358,6 +2358,71 @@ fn test_shim_find_exec_tail_is_refused_with_the_module_hint() {
 }
 
 #[test]
+fn test_shim_refuses_exec_lists_by_default() {
+    let fixture = Fixture::new();
+    let mut find_schema = find_schema();
+    find_schema["properties"]["exec"]["x-apexe-exec-list"] = json!(true);
+    fixture.write("cli.find", "find", "/usr/bin/find", find_schema, false);
+    fixture.enable();
+    fixture
+        .shim("find")
+        .args([".", "-exec", "true", "{}", ";"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("child_exec.mode: refuse"));
+}
+
+/// End-to-end: a parsed-tail `-exec` list is resolved to `cli.rm`, checked by
+/// that module's path policy, given the standard `--`, and executed. The child
+/// is the real `/bin/rm`, not a second shim.
+#[test]
+fn test_shim_analyzes_a_parsed_tail_exec_list() {
+    let fixture = Fixture::new();
+    let mut find_schema = find_schema();
+    find_schema["properties"]["exec"]["x-apexe-exec-list"] = json!(true);
+    fixture.write("cli.find", "find", "/usr/bin/find", find_schema, false);
+    fixture.write(
+        "cli.rm",
+        "rm",
+        "/bin/rm",
+        json!({
+            "type": "object",
+            "x-apexe-end-of-options": true,
+            "x-apexe-short-flag-bundling": true,
+            "properties": {
+                "file": {
+                    "type": "array",
+                    "items": {"type": "string", "x-apexe-path": true},
+                    "x-apexe-positional": 0
+                },
+                "r": {"type": "boolean", "x-apexe-flag": "-r"},
+                "f": {"type": "boolean", "x-apexe-flag": "-f"}
+            }
+        }),
+        false,
+    );
+    std::fs::write(
+        fixture.home.path().join(".apexe/config.yaml"),
+        "child_exec:\n  mode: analyze\n",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.home.path().join(".apexe/acl.yaml"),
+        "version: '1.0'\ndefault_effect: allow\nrules: []\n",
+    )
+    .unwrap();
+    fixture.enable();
+    let victim = fixture.home.path().join("victim.txt");
+    std::fs::write(&victim, "remove me").unwrap();
+    fixture
+        .shim("find")
+        .args([".", "-exec", "rm", "{}", ";"])
+        .assert()
+        .success();
+    assert!(!victim.exists(), "the analyzed child command did not run");
+}
+
+#[test]
 fn test_shim_find_grouping_runs_through_the_parsed_tail() {
     let fixture = find_fixture();
     std::fs::write(fixture.home.path().join("a.txt"), "a").unwrap();

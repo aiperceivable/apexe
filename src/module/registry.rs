@@ -244,6 +244,7 @@ pub(crate) fn build_executor_for_replay(
     argv: Vec<String>,
     io: crate::module::ExecutionIo,
     tier: ReplayTier,
+    child_exec_analyzed: bool,
 ) -> Result<Arc<Executor>, ModuleError> {
     let audit = opts
         .audit_path
@@ -266,6 +267,9 @@ pub(crate) fn build_executor_for_replay(
         .with_fixed_argv(argv)?
         .with_execution_io(io)
         .with_audit(audit.clone());
+    if child_exec_analyzed {
+        module = module.with_child_exec_analyzed();
+    }
     if tier == ReplayTier::Scanned {
         module = module.with_audit_tier("scanned");
     }

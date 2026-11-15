@@ -336,6 +336,7 @@ impl ExecArgs {
             unmanaged,
             opaque_tail,
             replay,
+            child_exec_analyzed,
         } = invocation;
         let io = crate::module::ExecutionIo::Passthrough {
             stdin: super::shim::passthrough_stdin_mode(),
@@ -372,6 +373,7 @@ impl ExecArgs {
                         replay.argv().to_vec(),
                         io,
                         tier,
+                        child_exec_analyzed,
                     )?;
                     (executor, ExecutionMode::Native, Some(replay))
                 }

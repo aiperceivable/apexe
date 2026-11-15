@@ -20,6 +20,15 @@
 # specific (deepest) matching entry decides; a path may appear in only one list.
 # A path in no list is read_write.
 #
+# Embedded child commands (`find -exec`). `refuse` is the safe default;
+# `analyze` resolves the child program to its own reviewed module and applies
+# that module's ACL, path policy and approval. `trust_uncovered` names bare
+# programs the operator vouches for without a binding; empty by default and
+# every use is audited as unanalyzed.
+child_exec:
+  mode: refuse
+  trust_uncovered: []
+
 # `annotations:` describes how a command is labelled when nothing has reviewed
 # it. These are a floor, not a guarantee: a curated corpus entry or a local
 # overlay for the same tool wins, because those describe that tool while these

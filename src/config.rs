@@ -15,6 +15,40 @@ pub(crate) const DEFAULT_OVERLAY_REPOSITORY: &str =
 // whole file -- required for the field-level merge `load_config` documents
 // (a config.yaml that only sets e.g. `default_timeout` must not force every
 // other field, like `bindings_dir`, to also be spelled out).
+/// How a command's embedded child executions (`find -exec`, `-execdir`,
+/// `-ok`) are treated.
+///
+/// The default is deliberately the strictest posture: a child command is a
+/// separate program invocation, and admitting it on the strength of the parent
+/// call would hide it from the child's own ACL, path policy and approval gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildExecMode {
+    /// Refuse every embedded child command. The only safe default.
+    #[default]
+    Refuse,
+    /// Parse the child command, resolve it to its apexe module, and apply that
+    /// module's ACL, path and approval gates to the call. Unanalyzable child
+    /// commands are still refused; see `trust_uncovered` for the explicit
+    /// escape hatch.
+    Analyze,
+}
+
+/// Per-installation policy for embedded child commands.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ChildExecConfig {
+    pub mode: ChildExecMode,
+    /// Bare program names the operator vouches for even though apexe has no
+    /// binding for them.
+    ///
+    /// The one place this policy stops being an analysis: an entry here skips
+    /// coverage and child-argument parsing, leaving only the parent approval.
+    /// Empty by default; a non-empty list is reported at startup and every
+    /// delegated use is audited as unanalyzed.
+    pub trust_uncovered: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ApexeConfig {
@@ -127,6 +161,10 @@ pub struct ApexeConfig {
     /// `read_write`.
     #[serde(default)]
     pub paths: Option<PathPolicy>,
+
+    /// How embedded child commands (`find -exec`) are treated.
+    #[serde(default)]
+    pub child_exec: ChildExecConfig,
 
     /// Overlay directories to read *in addition to* `<config_dir>/overlays`.
     ///
@@ -318,6 +356,7 @@ impl Default for ApexeConfig {
             defaults_revision: 0,
             annotations: None,
             paths: None,
+            child_exec: ChildExecConfig::default(),
             overlay_dirs: Vec::new(),
             default_overlay_repository: DEFAULT_OVERLAY_REPOSITORY.to_string(),
             core_config: None,
@@ -693,6 +732,19 @@ fn load_core_config(config: &mut ApexeConfig) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn test_child_exec_defaults_to_refuse_and_parses_analyze() {
+        let default: ApexeConfig = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(default.child_exec.mode, ChildExecMode::Refuse);
+        assert!(default.child_exec.trust_uncovered.is_empty());
+
+        let configured: ApexeConfig =
+            serde_yaml::from_str("child_exec:\n  mode: analyze\n  trust_uncovered: [sh]\n")
+                .unwrap();
+        assert_eq!(configured.child_exec.mode, ChildExecMode::Analyze);
+        assert_eq!(configured.child_exec.trust_uncovered, vec!["sh"]);
+    }
 
     /// The recognised key set is the struct's own, so a field cannot be added
     /// to `ApexeConfig` and then be reported as unrecognised.

@@ -2,6 +2,7 @@ mod acl;
 mod activation;
 mod agent;
 mod census;
+mod child_exec;
 mod config_gen;
 mod config_set;
 mod env;

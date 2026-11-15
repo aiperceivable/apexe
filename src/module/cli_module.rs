@@ -51,6 +51,10 @@ pub struct CliModule {
     /// Optional execution-audit sink (F5 §4.3). `None` disables audit.
     audit: Option<Arc<AuditManager>>,
     audit_tier: Option<&'static str>,
+    /// Whether this call's embedded child command lists were analyzed by the
+    /// native-surface analyzer. False on every other surface, where an
+    /// exec-list input is refused rather than admitted half-checked.
+    child_exec_analyzed: bool,
 }
 
 impl CliModule {
@@ -71,6 +75,7 @@ impl CliModule {
             max_output_bytes: config.max_output_bytes,
             audit: None,
             audit_tier: None,
+            child_exec_analyzed: false,
         }
     }
 
@@ -85,6 +90,17 @@ impl CliModule {
     /// Record the route tier in the execution audit record.
     pub fn with_audit_tier(mut self, tier: &'static str) -> Self {
         self.audit_tier = Some(tier);
+        self
+    }
+
+    /// Mark this call's embedded child commands as analyzed.
+    ///
+    /// Only the native argv surface, after the child-exec policy has resolved
+    /// and gated every list, may set this. Module JSON/MCP never do, so an
+    /// exec-list input there is refused instead of executed on the strength of
+    /// the parent approval alone.
+    pub fn with_child_exec_analyzed(mut self) -> Self {
+        self.child_exec_analyzed = true;
         self
     }
 
@@ -187,6 +203,7 @@ impl CliModule {
         // guard that lived only inside `build_argv` was skipped for exactly the
         // routes that forward arbitrary operands: `rm <protected path>` through
         // a shim reached the binary, and the credential store was gone.
+        self.reject_unanalyzed_exec_lists(inputs)?;
         self.check_input_paths(inputs)?;
         if let Some(args) = &self.fixed_argv {
             return Ok(args.clone());
@@ -210,6 +227,45 @@ impl CliModule {
             self.access_mode(&Value::Object(kwargs.clone())),
         )?;
         Ok(self.assemble_arguments(rendered))
+    }
+
+    /// Refuse an embedded command list that no analyzer has gated.
+    ///
+    /// A `-exec` list is another program's argv. Admitting it on a surface
+    /// that never resolved it would leave the child's ACL and path policy
+    /// unseen, so the default is a refusal, not an approval prompt.
+    #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    fn reject_unanalyzed_exec_lists(&self, inputs: &Value) -> Result<(), ModuleError> {
+        if self.child_exec_analyzed {
+            return Ok(());
+        }
+        let (Some(properties), Some(values)) = (
+            self.input_schema["properties"].as_object(),
+            inputs.as_object(),
+        ) else {
+            return Ok(());
+        };
+        for (name, property) in properties {
+            if property["x-apexe-exec-list"] != true {
+                continue;
+            }
+            let Some(value) = values.get(name) else {
+                continue;
+            };
+            if value.is_null() || value == &Value::Bool(false) {
+                continue;
+            }
+            return Err(ModuleError::new(
+                ErrorCode::GeneralInvalidInput,
+                format!(
+                    "Parameter '{name}' introduces an embedded command list (`-exec`), which is                      refused on this surface because its child command was not analyzed"
+                ),
+            )
+            .with_ai_guidance(
+                "Use the native argv surface with `child_exec.mode: analyze` (the shim or                  `apexe exec --`), so the child program is resolved and checked against its own                  module. The module-JSON surface never executes an exec-list without that analysis.",
+            ));
+        }
+        Ok(())
     }
 
     #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
@@ -848,6 +904,27 @@ mod tests {
             timeout_ms: 5000,
             max_output_bytes: executor::DEFAULT_MAX_OUTPUT_BYTES,
         })
+    }
+
+    #[test]
+    fn test_exec_list_input_is_refused_until_analyzed() {
+        let mut module = make_echo_module(vec![], None);
+        module.input_schema = json!({
+            "type": "object",
+            "properties": {
+                "exec": {"type": "string", "x-apexe-exec-list": true}
+            }
+        });
+        let error = module.planned_argv(&json!({"exec": "rm"})).unwrap_err();
+        assert!(
+            error.message.contains("embedded command list"),
+            "{}",
+            error.message
+        );
+        assert!(module
+            .with_child_exec_analyzed()
+            .planned_argv(&json!({"exec": "rm"}))
+            .is_ok());
     }
 
     /// A module whose schema marks `C` as a tool-level global option, the way

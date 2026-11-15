@@ -41,6 +41,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   still reach the gate. `;`, `+` and `{}` are refused as declarations because
   they are `-exec`'s terminators: accepting them would let `-exec utility ;`
   run a program. The corpus's two `find` entries declare the four operators.
+- Embedded child commands (`find -exec`) are a policy decision now, not a hole.
+  The corpus declares `-exec`/`-execdir`/`-ok`/`-okdir` as `exec_list`; the
+  resolver collects the command list verbatim instead of refusing its tokens or
+  classing them as the parent's flags, and `child_exec.mode` decides what may
+  run. The default is `refuse`: the native surfaces reject the call and the
+  module-JSON surface rejects an exec-list input, so the old approval-only
+  `--input` path is closed. `analyze` resolves the program to its own reviewed
+  module and applies **that module's** schema, ACL, path policy and approval to
+  the same caller; the effective decision is the intersection with the parent's
+  gates. `{}` is checked as the parent's starting paths at the child's access
+  mode, and `--` is inserted before it when the child module declares
+  `end_of_options` (the `rm` overlays now do, so a matched file named `-rf` is
+  a path). Program identity is pinned by running the parent with a shim-free
+  `PATH`. Programs with no reviewed binding, a program that computes its own
+  paths, and nested exec lists are refused; `trust_uncovered` is the explicit,
+  audited exception. Module JSON/MCP never execute an exec-list without that
+  analysis.
 - Native shim eligibility now asks whether a route *re-emits* its argv, not
   whether the tool is order-independent in general. A `tail_parsed` grammar
   classified every token, so the shim replays the caller's argv verbatim;

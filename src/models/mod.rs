@@ -288,6 +288,17 @@ pub struct ScannedFlag {
     /// load.
     #[serde(default)]
     pub opaque_after: bool,
+    /// Whether this flag introduces an embedded command list: everything from
+    /// the next token up to and including a `;` or `+` terminator is another
+    /// program's argv (`find -exec rm {} \;`).
+    ///
+    /// The resolver collects that list instead of classifying its tokens as
+    /// this command's flags, and the child-execution policy decides whether the
+    /// list may run at all. Only an overlay can declare it: a usage line says
+    /// `-exec utility [argument ...] ;` and nothing machine-readable about where
+    /// the list ends or that it is another program.
+    #[serde(default)]
+    pub exec_list: bool,
     /// What sending this flag does beyond passing its value.
     ///
     /// Defaulted on deserialize so caches and bindings written before the field

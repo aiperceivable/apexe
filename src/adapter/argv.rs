@@ -106,6 +106,21 @@ pub fn resolve_argv(argv: &[String], schema: &Value) -> Result<Value, ModuleErro
 pub(crate) struct ResolvedArgv {
     pub(crate) input: Value,
     pub(crate) opaque_tail: Option<OpaqueTail>,
+    /// Embedded child command lists (`find -exec rm {} ;`), in argv order.
+    ///
+    /// The list is not a value of this command's grammar: its tokens belong to
+    /// another program, so they are collected here for the child-execution
+    /// policy and never classified as this command's flags.
+    pub(crate) exec_lists: Vec<ExecList>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ExecList {
+    /// Absolute index in the caller's argv of the program token (the first
+    /// token after the flag).
+    pub(crate) argv_index: usize,
+    /// Program, arguments and the `;`/`+` terminator, in argv order.
+    pub(crate) tokens: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -139,6 +154,8 @@ struct ParsedFlag<'a, 'b> {
 struct ParsedFlags<'a, 'b> {
     flags: Vec<ParsedFlag<'a, 'b>>,
     opaque: bool,
+    /// Set when the flag introduces an embedded command list.
+    exec_list: Option<ExecList>,
 }
 
 /// The state one left-to-right pass over argv accumulates.
@@ -153,6 +170,7 @@ struct Scan<'a, 'b> {
     /// parsed so far. The remaining tokens are parsed in [`Parser::finish`],
     /// where the complete `input` is in hand.
     parsed_tail: Option<(usize, usize, Vec<ParsedFlag<'a, 'b>>)>,
+    exec_lists: Vec<ExecList>,
 }
 
 #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
@@ -578,6 +596,7 @@ impl<'a> Parser<'a> {
             ended: false,
             boundary: None,
             parsed_tail: None,
+            exec_lists: Vec::new(),
         };
         while let Some(token) = argv.get(scan.cursor) {
             let start = scan.cursor;
@@ -646,6 +665,16 @@ impl<'a> Parser<'a> {
         scan: &mut Scan<'a, 'b>,
     ) -> Result<bool, ModuleError> {
         let parsed = self.parse_flag(token, argv, &mut scan.cursor, &mut scan.input, position)?;
+        if let Some(exec_list) = parsed.exec_list {
+            if before_subcommand {
+                return Err(invalid(
+                    "Embedded commands cannot start before a subcommand",
+                ));
+            }
+            scan.exec_lists.push(exec_list);
+            scan.parsed_tail = Some((start, scan.cursor, parsed.flags));
+            return Ok(false);
+        }
         if parsed.opaque {
             if before_subcommand {
                 return Err(invalid("Opaque arguments cannot start before a subcommand"));
@@ -692,6 +721,7 @@ impl<'a> Parser<'a> {
         let Scan {
             mut input,
             mut operands,
+            mut exec_lists,
             cursor,
             mut boundary,
             parsed_tail,
@@ -709,6 +739,7 @@ impl<'a> Parser<'a> {
                     flags,
                     &mut input,
                     command.is_empty(),
+                    &mut exec_lists,
                 )?,
                 parsed: true,
             });
@@ -721,6 +752,7 @@ impl<'a> Parser<'a> {
         Ok(ResolvedArgv {
             input: Value::Object(input),
             opaque_tail,
+            exec_lists,
         })
     }
 
@@ -781,6 +813,7 @@ impl<'a> Parser<'a> {
         mut flags: Vec<ParsedFlag<'a, 'b>>,
         input: &mut Map<String, Value>,
         root: bool,
+        exec_lists: &mut Vec<ExecList>,
     ) -> Result<Vec<ParsedFlag<'a, 'b>>, ModuleError> {
         let position = if root {
             FlagPosition::Root
@@ -809,6 +842,11 @@ impl<'a> Parser<'a> {
                 return Err(self.unclassified_tail_token(token, index));
             }
             let parsed = self.parse_flag(token, argv, &mut cursor, input, position)?;
+            if let Some(exec_list) = parsed.exec_list {
+                exec_lists.push(exec_list);
+                flags.extend(parsed.flags);
+                continue;
+            }
             if parsed.opaque {
                 return Err(invalid(format!(
                     "Flag '{token}' declares an opaque tail inside one that is parsed; the two \
@@ -939,6 +977,66 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Consume a flag that introduces another program's argv.
+    ///
+    /// The list runs from the token after the flag through `;` or `+`. Its
+    /// contents are not this command's grammar, so they are recorded verbatim
+    /// and only the program name lands in the input, where the approval gate
+    /// and the child-execution policy read it.
+    #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+    fn collect_exec_list<'b>(
+        &self,
+        property: Property<'a>,
+        attached: Option<&'b str>,
+        argv: &'b [String],
+        cursor: &mut usize,
+        input: &mut Map<String, Value>,
+    ) -> Result<ParsedFlags<'a, 'b>, ModuleError> {
+        if attached.is_some() {
+            return Err(invalid(format!(
+                "Flag '{}' introduces a command list and takes no attached value",
+                property.name
+            )));
+        }
+        let start = *cursor;
+        let mut tokens = Vec::new();
+        while let Some(token) = argv.get(*cursor) {
+            *cursor += 1;
+            tokens.push(token.clone());
+            if token == ";" || token == "+" {
+                break;
+            }
+        }
+        if tokens
+            .last()
+            .is_none_or(|token| token != ";" && token != "+")
+        {
+            return Err(invalid(format!(
+                "Flag '{}' introduces a command list that must end with ';' or '+'",
+                property.name
+            )));
+        }
+        let program = tokens.first().cloned().unwrap_or_default();
+        if program.is_empty() || program == ";" || program == "+" {
+            return Err(invalid(format!(
+                "Flag '{}' must name a program before its terminator",
+                property.name
+            )));
+        }
+        input.insert(property.name.into(), Value::String(program));
+        Ok(ParsedFlags {
+            flags: vec![ParsedFlag {
+                property,
+                raw_value: None,
+            }],
+            opaque: false,
+            exec_list: Some(ExecList {
+                argv_index: start,
+                tokens,
+            }),
+        })
+    }
+
     #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
     /// Consume one flag token, recording the values it carries.
     fn parse_flag<'b>(
@@ -957,6 +1055,9 @@ impl<'a> Parser<'a> {
             (token, None)
         };
         if let Some(property) = self.lookup(literal, position) {
+            if property.schema["x-apexe-exec-list"] == true {
+                return self.collect_exec_list(property, attached, argv, cursor, input);
+            }
             // `python3 -m json.tool --compact`: the module name is this flag's
             // value and everything after it belongs to the module, so the tail
             // is forwarded rather than validated against python3's grammar.
@@ -968,6 +1069,7 @@ impl<'a> Parser<'a> {
                     raw_value,
                 }],
                 opaque,
+                exec_list: None,
             });
         }
         // `head -20`: the digit run is the value of the flag the overlay marked,
@@ -983,6 +1085,7 @@ impl<'a> Parser<'a> {
                     raw_value,
                 }],
                 opaque: property.schema["x-apexe-opaque-after"] == true,
+                exec_list: None,
             });
         }
         if token.starts_with("--") || self.schema["x-apexe-short-flag-bundling"] != true {
@@ -1015,6 +1118,7 @@ impl<'a> Parser<'a> {
         Ok(ParsedFlags {
             flags: bundle,
             opaque,
+            exec_list: None,
         })
     }
 
@@ -1848,6 +1952,83 @@ mod tests {
                 error.message
             );
         }
+    }
+
+    /// `find -exec rm -rf {} ; -print`: the list is collected verbatim, its
+    /// tokens are not classified as find flags, and the flags after the
+    /// terminator are still parsed.
+    #[test]
+    fn test_exec_list_is_collected_and_not_parsed_as_flags() {
+        let mut schema = find_schema();
+        schema["properties"]["exec"]["x-apexe-exec-list"] = json!(true);
+        let resolved = resolve_command_argv(
+            &args(&[".", "-exec", "rm", "-rf", "{}", ";", "-print"]),
+            &schema,
+            &[],
+            Some("cli.find"),
+        )
+        .unwrap();
+        assert_eq!(resolved.input["exec"], json!("rm"));
+        assert_eq!(resolved.input["path"], json!(["."]));
+        assert_eq!(resolved.input["print"], json!(true));
+        assert_eq!(resolved.exec_lists.len(), 1);
+        assert_eq!(
+            resolved.exec_lists[0].tokens,
+            args(&["rm", "-rf", "{}", ";"])
+        );
+        let tail = resolved.opaque_tail.expect("forwarded");
+        assert_eq!(
+            tail.argv,
+            args(&["-exec", "rm", "-rf", "{}", ";", "-print"])
+        );
+    }
+
+    #[test]
+    fn test_exec_list_requires_a_terminator() {
+        let mut schema = find_schema();
+        schema["properties"]["exec"]["x-apexe-exec-list"] = json!(true);
+        let error = resolve_command_argv(
+            &args(&[".", "-exec", "rm", "{}"]),
+            &schema,
+            &[],
+            Some("cli.find"),
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains("must end with ';' or '+'"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn test_multiple_exec_lists_are_recorded_in_order() {
+        let mut schema = find_schema();
+        schema["properties"]["exec"]["x-apexe-exec-list"] = json!(true);
+        let resolved = resolve_command_argv(
+            &args(&[".", "-exec", "rm", "{}", ";", "-exec", "cat", "{}", "+"]),
+            &schema,
+            &[],
+            Some("cli.find"),
+        )
+        .unwrap();
+        assert_eq!(resolved.exec_lists.len(), 2);
+        assert_eq!(resolved.exec_lists[0].tokens[0], "rm");
+        assert_eq!(resolved.exec_lists[1].tokens[0], "cat");
+        assert_eq!(resolved.input["exec"], json!("cat"));
+    }
+
+    #[test]
+    fn test_exec_list_refuses_an_attached_value() {
+        let mut schema = find_schema();
+        schema["properties"]["exec"]["x-apexe-exec-list"] = json!(true);
+        schema["properties"]["exec"]["x-apexe-flag"] = json!("--exec");
+        let error = resolve_argv(&args(&["--exec=rm", ";"]), &schema).unwrap_err();
+        assert!(
+            error.message.contains("takes no attached value"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]
