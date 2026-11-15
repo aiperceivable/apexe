@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use apcore::Context;
 use serde_json::{json, Value};
 
+use crate::cli::shim::{Replay, RouteTier};
 use crate::config::ApexeConfig;
 use crate::module::{CliModule, ExecutorOptions, ModuleFilter};
 
@@ -115,6 +116,9 @@ struct PreparedCall {
     mode: ExecutionMode,
     unmanaged_binary: Option<String>,
     opaque_tail: Option<crate::adapter::argv::OpaqueTail>,
+    /// The caller's argv, when the route classified every token and must run it
+    /// verbatim. The dry-run plan reports this instead of a re-rendered form.
+    replay: Option<super::shim::Replay>,
 }
 
 fn parse_caller(value: &str) -> Result<String, String> {
@@ -312,6 +316,7 @@ impl ExecArgs {
             mode: ExecutionMode::Module,
             unmanaged_binary: None,
             opaque_tail: None,
+            replay: None,
         })
     }
 
@@ -325,48 +330,83 @@ impl ExecArgs {
     ) -> anyhow::Result<PreparedCall> {
         let invocation =
             native::resolve(&self.native, self.unmanaged, &modules, config, dir, context).await?;
+        let native::NativeInvocation {
+            module,
+            input,
+            unmanaged,
+            opaque_tail,
+            replay,
+        } = invocation;
         let io = crate::module::ExecutionIo::Passthrough {
             stdin: super::shim::passthrough_stdin_mode(),
         };
         let mut unmanaged_binary = None;
-        let (executor, mode) = match invocation.unmanaged {
-            Some(module) => {
-                unmanaged_binary = Some(module.binary_path().into());
+        let (executor, mode, replay) = match unmanaged {
+            Some(unmanaged_module) => {
+                unmanaged_binary = Some(unmanaged_module.binary_path().into());
                 (
                     crate::module::registry::build_executor_for_invocation(
                         options,
-                        &invocation.module,
-                        module,
+                        &module,
+                        unmanaged_module,
                     )?,
                     ExecutionMode::Unmanaged,
+                    None,
                 )
             }
-            None if invocation.opaque_tail.is_some() => {
-                let module = CliModule::from_scanned(&invocation.module, options.timeout_ms)?
-                    .with_execution_io(io)
-                    .with_opaque_tail(invocation.opaque_tail.clone());
-                (
-                    crate::module::registry::build_executor_for_invocation(
+            // A grammar that classified every token runs the caller's argv
+            // verbatim, exactly as the shim does. Rendering it here instead
+            // would make `apexe exec -- find . -L -name x` and the `find` shim
+            // disagree about the same call.
+            None => match replay {
+                Some(replay) => {
+                    let tier = match replay.tier() {
+                        RouteTier::Verified => crate::module::registry::ReplayTier::Reviewed,
+                        RouteTier::Scanned | RouteTier::Legacy => {
+                            crate::module::registry::ReplayTier::Scanned
+                        }
+                    };
+                    let executor = crate::module::registry::build_executor_for_replay(
                         options,
-                        &invocation.module,
-                        module,
+                        &module,
+                        replay.argv().to_vec(),
+                        io,
+                        tier,
+                    )?;
+                    (executor, ExecutionMode::Native, Some(replay))
+                }
+                None if opaque_tail.is_some() => {
+                    let module_exec = CliModule::from_scanned(&module, options.timeout_ms)?
+                        .with_execution_io(io)
+                        .with_opaque_tail(opaque_tail.clone());
+                    (
+                        crate::module::registry::build_executor_for_invocation(
+                            options,
+                            &module,
+                            module_exec,
+                        )?,
+                        ExecutionMode::Native,
+                        None,
+                    )
+                }
+                None => (
+                    crate::module::registry::build_executor_from_modules_with_io(
+                        options, modules, io,
                     )?,
                     ExecutionMode::Native,
-                )
-            }
-            None => (
-                crate::module::registry::build_executor_from_modules_with_io(options, modules, io)?,
-                ExecutionMode::Native,
-            ),
+                    None,
+                ),
+            },
         };
         Ok(PreparedCall {
-            module_id: invocation.module.module_id.clone(),
-            input: invocation.input,
-            scanned: Some(invocation.module),
+            module_id: module.module_id.clone(),
+            input,
+            scanned: Some(module),
             executor,
             mode,
             unmanaged_binary,
-            opaque_tail: invocation.opaque_tail,
+            opaque_tail,
+            replay,
         })
     }
 
@@ -449,6 +489,7 @@ impl ExecArgs {
                 &call.input,
                 io,
                 call.opaque_tail.clone(),
+                call.replay.as_ref(),
             )?;
         }
         Ok(result)
@@ -461,6 +502,7 @@ fn add_command_plan(
     input: &Value,
     io: crate::module::ExecutionIo,
     opaque_tail: Option<crate::adapter::argv::OpaqueTail>,
+    replay: Option<&Replay>,
 ) -> anyhow::Result<()> {
     let module = CliModule::from_scanned(scanned, 0)?
         .with_execution_io(io)
@@ -472,14 +514,20 @@ fn add_command_plan(
     // `argv` check refused the path — a summary that disagreed with the verdict
     // it was summarising.
     result["path_guard"] = inspect_paths(input, &scanned.input_schema, module.access_mode(input));
-    match module.planned_argv(input) {
-        Ok(argv) => result["argv"] = json!(argv),
-        Err(error) => {
-            result["valid"] = json!(false);
-            result["checks"]
-                .as_array_mut()
-                .ok_or_else(|| anyhow::anyhow!("Invalid preflight checks"))?
-                .push(json!({"check":"argv", "passed":false, "error":error.to_dict()}));
+    // A replayed call runs the tokens the caller typed; reporting a rendered
+    // form here would describe an argv the executor will not use.
+    if let Some(replay) = replay {
+        result["argv"] = json!(replay.argv());
+    } else {
+        match module.planned_argv(input) {
+            Ok(argv) => result["argv"] = json!(argv),
+            Err(error) => {
+                result["valid"] = json!(false);
+                result["checks"]
+                    .as_array_mut()
+                    .ok_or_else(|| anyhow::anyhow!("Invalid preflight checks"))?
+                    .push(json!({"check":"argv", "passed":false, "error":error.to_dict()}));
+            }
         }
     }
     Ok(())

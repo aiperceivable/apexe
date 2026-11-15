@@ -214,40 +214,61 @@ pub(crate) fn build_executor_for_invocation(
     finish_executor(opts, registry, audit, true)
 }
 
-/// Build a single-module executor for a scanned route.
+/// Which contract a replay runs under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReplayTier {
+    /// A scanned or legacy route: nothing reviewed its grammar, so the audit
+    /// records the tier and an absent bundling answer may be read as "bundles
+    /// are safe", because the caller's argv is never rebuilt.
+    Scanned,
+    /// A reviewed route whose grammar classified every token
+    /// (`x-apexe-tail-parsed`). The argv is replayed for fidelity, but the
+    /// route keeps its reviewed audit tier and the overlay's bundling answer:
+    /// an overlay that says nothing about bundling still must not be read as
+    /// permitting it.
+    Reviewed,
+}
+
+/// Build a single-module executor that runs the caller's argv verbatim.
 ///
-/// The caller's original argv is bound through `with_fixed_argv`, so schema
-/// parsing validates and classifies the call but never reorders or rewrites
-/// the command line. This is the execution guarantee behind the `scanned`
-/// tier.
+/// The original argv is bound through `with_fixed_argv`, so schema parsing
+/// validates and classifies the call but never reorders or rewrites the
+/// command line. Two tiers use it for the same reason: a `scanned` route has
+/// no reviewed grammar to render from, and a reviewed route with a parsed tail
+/// classified every token, so running exactly what the caller typed is both
+/// safe and more faithful than re-emitting it.
 #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
-pub(crate) fn build_executor_for_scanned(
+pub(crate) fn build_executor_for_replay(
     opts: &ExecutorOptions<'_>,
     scanned: &ScannedModule,
     argv: Vec<String>,
     io: crate::module::ExecutionIo,
+    tier: ReplayTier,
 ) -> Result<Arc<Executor>, ModuleError> {
     let audit = opts
         .audit_path
         .map(|path| Arc::new(crate::governance::AuditManager::new(path)));
-    // This route validates the caller's argv and then forwards it unchanged; it
-    // never rebuilds the command line. So a short-flag bundle is checked flag
-    // by flag and is always safe to admit, and an overlay that is silent about
-    // bundling must not be read as "this tool cannot bundle": `grep -rn`,
-    // `du -sh`, `cut -d:` are the spellings the tools themselves accept, and
-    // refusing them made ordinary invocations fail closed. Verified native
-    // routes are built by `build_executor` and keep the overlay's answer,
-    // because only they re-emit the arguments.
+    // A scanned route validates the caller's argv and then forwards it
+    // unchanged; it never rebuilds the command line. So a short-flag bundle is
+    // checked flag by flag and is always safe to admit, and an overlay that is
+    // silent about bundling must not be read as "this tool cannot bundle":
+    // `grep -rn`, `du -sh`, `cut -d:` are the spellings the tools themselves
+    // accept, and refusing them made ordinary invocations fail closed. A
+    // reviewed replay keeps the overlay's answer, because its grammar is the
+    // reviewed one; only the execution path is verbatim.
     let mut scanned = scanned.clone();
-    if scanned.input_schema["x-apexe-short-flag-bundling"].is_null() {
+    if tier == ReplayTier::Scanned && scanned.input_schema["x-apexe-short-flag-bundling"].is_null()
+    {
         scanned.input_schema["x-apexe-short-flag-bundling"] = serde_json::json!(true);
     }
     let scanned = &scanned;
-    let module = CliModule::from_scanned(scanned, opts.timeout_ms)?
+    let mut module = CliModule::from_scanned(scanned, opts.timeout_ms)?
         .with_fixed_argv(argv)?
         .with_execution_io(io)
-        .with_audit(audit.clone())
-        .with_audit_tier("scanned");
+        .with_audit(audit.clone());
+    if tier == ReplayTier::Scanned {
+        module = module.with_audit_tier("scanned");
+    }
     let mut descriptor = build_descriptor(scanned);
     descriptor.output_schema = apcore::Module::output_schema(&module);
     let registry = Arc::new(Registry::new());

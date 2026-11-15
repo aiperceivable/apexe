@@ -105,7 +105,9 @@ answer, and the message must say so rather than reporting a grammar defect.
 | `src/adapter/argv.rs` `locate_opaque_operand` | **Done** as `locate_tail_parsed_operand`: the marker must sit on the last, variadic operand, and declaring both markers is refused |
 | `src/adapter/argv.rs` `parse` | **Done.** The boundary flag ends the leading operand; the rest of argv is shadow-parsed into `input` and forwarded verbatim from the boundary token |
 | `src/adapter/schema.rs` | **Done.** Emits `x-apexe-tail-parsed`; `x-apexe-opaque-after` is untouched |
-| `schemas/tool-overlay.schema.json` (corpus) | pending: allow `tail_parsed` on a positional, alongside the existing `opaque_after` |
+| `src/cli/shim.rs` eligibility | **Done.** A route whose grammar classifies every token is replayed verbatim, so it no longer needs a `cross_flag_ordering` claim; routes that re-emit still do |
+| `src/module/registry.rs` | **Done.** The verbatim executor is shared by scanned routes and reviewed parsed-tail routes, keeping each tier's audit label and bundling answer |
+| `schemas/tool-overlay.schema.json` (corpus) | **Done:** accepts `tail_parsed` on a positional, alongside the existing `opaque_after` |
 | `docs/overlays.md` | **Done:** the rule above, and the difference between the two markers |
 | `CHANGELOG.md` | **Done:** marker added; nothing existing changes meaning |
 
@@ -134,11 +136,11 @@ compiled interface keeps being exercised.
 
 ## 7. Rollout
 
-1. This spec and the `overlay_after` semantic change reviewed together;
-2. Resolver change + unit tests, with `grep` as the "nothing moved" control;
-3. `find`/`tar` measured on macOS by the operator, and on Linux by the same
-   container route used for the GNU `find` verification
-   (`rust:slim` build + `debian:stable-slim` run);
-4. Only then does the corpus declare `tail_parsed` on `find`'s expression. It is
-   **not** there today on purpose: a marker a release does not honour is a file
+1. Resolver change + unit tests, with `grep` as the "nothing moved" control;
+2. the shim replays a fully parsed route instead of re-emitting it, so `find`
+   is eligible without an order-independence claim;
+3. `find` measured on macOS and in a Linux container against the variants'
+   reference builds;
+4. the corpus declares `tail_parsed` on `find`'s expression. It was **not**
+   there before 0.14.0 on purpose: a marker a release does not honour is a file
    claiming something nothing does.

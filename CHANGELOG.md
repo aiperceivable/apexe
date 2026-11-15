@@ -32,6 +32,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   args…` still forwards its tail unvalidated, and a grammar declaring both
   markers is refused rather than guessed at. No existing grammar changes: a
   module without the marker parses byte-for-byte as in 0.13.0.
+- Native shim eligibility now asks whether a route *re-emits* its argv, not
+  whether the tool is order-independent in general. A `tail_parsed` grammar
+  classified every token, so the shim replays the caller's argv verbatim;
+  `find` is therefore eligible without a `cross_flag_ordering` claim, which
+  would have asserted something about its order-sensitive expression that the
+  entry never checked. The audit tier stays `reviewed`, the overlay's bundling
+  answer is kept, and the spelling and order the caller typed are what run
+  (`find . -L -name x` is no longer silently rewritten to `find -L . -name x`).
+  Routes that re-emit — including an `opaque_after` tail's rendered prefix —
+  still need the claim.
 
 ---
 

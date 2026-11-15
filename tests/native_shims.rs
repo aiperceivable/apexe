@@ -2196,6 +2196,11 @@ fn find_schema() -> Value {
                 "x-apexe-positional": 1,
                 "x-apexe-tail-parsed": true
             },
+            "L": {
+                "type": "boolean",
+                "x-apexe-flag": "-L",
+                "x-apexe-flag-position": "before-operands"
+            },
             "name": {"type": "string", "x-apexe-flag": "-name"},
             "print": {"type": "boolean", "x-apexe-flag": "-print"},
             "delete": {"type": "boolean", "x-apexe-flag": "-delete"},
@@ -2205,29 +2210,105 @@ fn find_schema() -> Value {
     })
 }
 
+/// Remove the order-independence claim from a binding.
+///
+/// A reviewed route whose grammar parsed every token replays the caller's
+/// argv, so it must be eligible without this claim. The fixtures remove it
+/// deliberately: the test is that eligibility asks about re-emission, not that
+/// a corpus assertion made the route look safe.
+fn without_cross_flag_claim(fixture: &Fixture) {
+    let mut modules = apexe::output::load_modules_from_dir(&fixture.bindings(), None).unwrap();
+    for module in &mut modules {
+        module
+            .input_schema
+            .as_object_mut()
+            .expect("schema object")
+            .remove("x-apexe-cross-flag-ordering");
+        if let Some(contract) = module
+            .metadata
+            .get_mut("shim_contract")
+            .and_then(Value::as_object_mut)
+        {
+            contract.remove("cross_flag_ordering");
+        }
+    }
+    apexe::output::YamlOutput::without_verification()
+        .write(&modules, &fixture.bindings(), false)
+        .unwrap();
+}
+
 /// Install `find` as a readonly module gated only by its write/exec primaries,
 /// the shape the corpus entry has after the flag-scoped annotation change.
+/// The binding carries no `cross_flag_ordering` claim: find's grammar parses
+/// every token, so it is replayed instead of re-emitted.
 fn find_fixture() -> Fixture {
     let fixture = Fixture::new();
     fixture.write("cli.find", "find", "/usr/bin/find", find_schema(), false);
     let mut modules = apexe::output::load_modules_from_dir(&fixture.bindings(), None).unwrap();
-    let annotations = modules[0].annotations.as_mut().unwrap();
-    annotations.requires_approval = true;
-    annotations
-        .extra
-        .insert("x-apexe-approval-basis".into(), json!("flags"));
-    annotations.extra.insert(
-        "x-apexe-escalating-params".into(),
-        json!(["delete", "exec"]),
-    );
-    annotations
-        .extra
-        .insert("x-apexe-writes-with".into(), json!(["delete", "exec"]));
+    {
+        let module = &mut modules[0];
+        let annotations = module.annotations.as_mut().unwrap();
+        annotations.requires_approval = true;
+        annotations
+            .extra
+            .insert("x-apexe-approval-basis".into(), json!("flags"));
+        annotations.extra.insert(
+            "x-apexe-escalating-params".into(),
+            json!(["delete", "exec"]),
+        );
+        annotations
+            .extra
+            .insert("x-apexe-writes-with".into(), json!(["delete", "exec"]));
+        // find's single-dash options are not bundles; keep the overlay's answer
+        // rather than the generic fixture's.
+        module.input_schema["x-apexe-short-flag-bundling"] = json!(false);
+        if let Some(contract) = module
+            .metadata
+            .get_mut("shim_contract")
+            .and_then(Value::as_object_mut)
+        {
+            contract.insert("short_flag_bundling".into(), json!(false));
+            contract.remove("cross_flag_ordering");
+        }
+        module
+            .input_schema
+            .as_object_mut()
+            .expect("schema object")
+            .remove("x-apexe-cross-flag-ordering");
+    }
     apexe::output::YamlOutput::without_verification()
         .write(&modules, &fixture.bindings(), false)
         .unwrap();
     fixture.enable();
     fixture
+}
+
+/// A reviewed route that parsed every token runs exactly what the caller typed.
+/// Re-rendering would have hoisted `-L` ahead of the path; the replay must not.
+#[test]
+fn test_reviewed_parsed_tail_replays_the_argv_verbatim() {
+    let fixture = Fixture::new();
+    let script = fixture.script("echo-argv", "printf '<%s>' \"$@\"; printf '\\n'");
+    fixture.write(
+        "cli.echo",
+        "echo-argv",
+        script.to_str().unwrap(),
+        find_schema(),
+        false,
+    );
+    without_cross_flag_claim(&fixture);
+    fixture.enable();
+    fixture
+        .shim("echo-argv")
+        .args([".", "-L", "-name", "x"])
+        .assert()
+        .success()
+        .stdout("<.><-L><-name><x>\n");
+    let audit = std::fs::read_to_string(fixture.home.path().join(".apexe/audit.jsonl")).unwrap();
+    assert!(
+        !audit.contains("\"tier\":\"scanned\""),
+        "a reviewed replay must keep its reviewed tier: {audit}"
+    );
 }
 
 #[test]

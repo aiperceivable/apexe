@@ -138,14 +138,36 @@ pub(super) fn eligible(module: &ScannedModule) -> anyhow::Result<()> {
         "{} has no reviewed grammar for this route; rescan with an overlay that covers it, or install shims with --scanned",
         module.module_id
     );
+    // A route whose grammar classified every token replays the caller's argv
+    // verbatim: nothing is re-emitted, so nothing can be reordered and the
+    // order-independence claim has no question to answer. Routes that re-emit
+    // (including an opaque tail's rendered prefix) still need the explicit
+    // claim, because the renderer normalizes the part it rebuilds.
     anyhow::ensure!(
-        contract.cross_flag_ordering == Some(false)
-            && module.input_schema["x-apexe-cross-flag-ordering"] == false,
+        parses_every_token(&module.input_schema)
+            || contract.cross_flag_ordering == Some(false)
+                && module.input_schema["x-apexe-cross-flag-ordering"] == false,
         "{} requires cross-flag ordering",
         module.module_id
     );
     validate_capabilities(module, &contract)?;
     scannable(module)
+}
+
+/// Whether this schema's grammar classifies every token in the caller's argv.
+///
+/// `x-apexe-tail-parsed` is the only marker that guarantees it: the leading
+/// operands are type-checked, every tail token is resolved as a declared flag
+/// or refused, and the call is rejected otherwise. `x-apexe-opaque-after` does
+/// not qualify — its tail belongs to another program and is never classified,
+/// so only its rendered prefix could be re-emitted and the order claim still
+/// applies.
+fn parses_every_token(schema: &serde_json::Value) -> bool {
+    schema["properties"].as_object().is_some_and(|properties| {
+        properties
+            .values()
+            .any(|property| property["x-apexe-tail-parsed"] == true)
+    })
 }
 
 /// Structural checks shared by reviewed and scanned routes.
@@ -320,6 +342,23 @@ pub(super) fn coverage_refusal(message: String) -> apcore::ModuleError {
     )
 }
 
+/// The caller's argv to execute verbatim, and the tier it runs under.
+#[derive(Debug, Clone)]
+pub(super) struct Replay {
+    tier: RouteTier,
+    argv: Vec<String>,
+}
+
+impl Replay {
+    pub(super) fn argv(&self) -> &[String] {
+        &self.argv
+    }
+
+    pub(super) fn tier(&self) -> RouteTier {
+        self.tier
+    }
+}
+
 pub(super) fn resolve_route<'a>(
     name: &str,
     args: &[String],
@@ -328,7 +367,7 @@ pub(super) fn resolve_route<'a>(
 ) -> anyhow::Result<(
     &'a ScannedModule,
     crate::adapter::argv::ResolvedArgv,
-    Option<Vec<String>>,
+    Option<Replay>,
 )> {
     let routes = manifest.commands.get(name).ok_or_else(|| {
         coverage_refusal(format!(
@@ -379,8 +418,12 @@ pub(super) fn resolve_route<'a>(
                 module_id: module.module_id.clone(),
             })
         })?;
-        let replay =
-            matches!(route.tier, RouteTier::Scanned | RouteTier::Legacy).then(|| args.to_vec());
+        let replay = (matches!(route.tier, RouteTier::Scanned | RouteTier::Legacy)
+            || parses_every_token(schema.as_ref()))
+        .then(|| Replay {
+            tier: route.tier,
+            argv: args.to_vec(),
+        });
         reject_exec_parameters(module, &input.input)?;
         return Ok((module, input, replay));
     }
@@ -395,7 +438,9 @@ pub(super) fn resolve_route<'a>(
 /// cannot bundle": `grep -rn`, `du -sh`, `cut -d:` are the spellings the tools
 /// themselves accept, and refusing them made ordinary invocations fail closed
 /// while a raw shell accepted them. Verified routes keep the overlay's answer,
-/// because a native route re-emits the arguments it parsed.
+/// because a verified grammar is the reviewed one; that includes a verified
+/// parsed tail, whose execution is verbatim but whose flag spellings are still
+/// the overlay's claim.
 fn route_schema<'a>(
     module: &'a ScannedModule,
     route: &Route,
@@ -557,7 +602,9 @@ fn execute(
     let module_id = selected.module_id.clone();
     let stdin = passthrough_stdin_mode();
     let executor = match replay {
-        Some(argv) => build_executor_for_scanned(manifest, config, selected, argv, stdin)?,
+        Some(replay) => {
+            build_executor_for_replay(manifest, config, selected, replay.argv, stdin, replay.tier)?
+        }
         None => build_executor(
             manifest,
             config,
@@ -623,12 +670,13 @@ fn load_routable_modules(name: &str, manifest: &Manifest) -> anyhow::Result<Vec<
     )?)
 }
 
-fn build_executor_for_scanned(
+fn build_executor_for_replay(
     manifest: &Manifest,
     config: &ApexeConfig,
     selected: &ScannedModule,
     argv: Vec<String>,
     stdin: StdinMode,
+    tier: RouteTier,
 ) -> anyhow::Result<std::sync::Arc<apcore::Executor>> {
     let acl = super::local::acl_path(manifest.acl.as_deref(), config)?;
     let options = super::local::options(
@@ -638,11 +686,16 @@ fn build_executor_for_scanned(
         acl.as_deref(),
         manifest.filter.clone(),
     );
-    Ok(crate::module::registry::build_executor_for_scanned(
+    let replay_tier = match tier {
+        RouteTier::Verified => crate::module::registry::ReplayTier::Reviewed,
+        RouteTier::Scanned | RouteTier::Legacy => crate::module::registry::ReplayTier::Scanned,
+    };
+    Ok(crate::module::registry::build_executor_for_replay(
         &options,
         selected,
         argv,
         ExecutionIo::Passthrough { stdin },
+        replay_tier,
     )?)
 }
 
@@ -830,6 +883,52 @@ mod tests {
         assert_eq!(selected.module_id, "cli.git.status");
         assert_eq!(input.input["short"], json!(true));
         assert!(replay.is_none());
+    }
+
+    /// Eligibility asks whether the route re-emits argv, not whether the tool
+    /// happens to be order-independent. A grammar that classified every token
+    /// replays the caller's argv, so nothing can be reordered.
+    #[test]
+    fn test_eligible_replays_a_fully_parsed_tail_without_the_order_claim() {
+        let mut with_tail = module("cli.find", &["find"], true);
+        with_tail.input_schema["properties"]["path"] = json!({
+            "type": "array",
+            "items": {"type": "string"},
+            "x-apexe-positional": 0,
+            "x-apexe-operand-position": "before-flags"
+        });
+        with_tail.input_schema["properties"]["expression"] = json!({
+            "type": "array",
+            "items": {"type": "string"},
+            "x-apexe-positional": 1,
+            "x-apexe-tail-parsed": true
+        });
+        // The fixture declares `false`; remove it so only the tail remains.
+        with_tail
+            .input_schema
+            .as_object_mut()
+            .unwrap()
+            .remove("x-apexe-cross-flag-ordering");
+        with_tail
+            .metadata
+            .get_mut("shim_contract")
+            .and_then(|contract| contract.as_object_mut())
+            .unwrap()
+            .remove("cross_flag_ordering");
+        assert!(
+            eligible(&with_tail).is_ok(),
+            "a reviewed parsed tail must be eligible: {:?}",
+            eligible(&with_tail)
+        );
+
+        // Without the marker the route re-emits its prefix, so the claim is
+        // still required.
+        let mut without_tail = with_tail.clone();
+        without_tail.input_schema["properties"]["expression"]
+            .as_object_mut()
+            .unwrap()
+            .remove("x-apexe-tail-parsed");
+        assert!(eligible(&without_tail).is_err());
     }
 
     /// A parsed tail is resolved through the same route selection that `exec

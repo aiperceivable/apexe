@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use super::UnmanagedPolicy;
 use crate::adapter::argv::OpaqueTail;
-use crate::cli::shim::{Manifest, Route};
+use crate::cli::shim::{Manifest, Replay, Route};
 use crate::config::ApexeConfig;
 use crate::module::{CliModule, ExecutionIo, StdinMode};
 
@@ -16,6 +16,9 @@ pub(super) struct NativeInvocation {
     pub input: Value,
     pub unmanaged: Option<CliModule>,
     pub opaque_tail: Option<OpaqueTail>,
+    /// Set when the grammar classified every token, so the call must run the
+    /// caller's argv verbatim rather than a re-rendered form.
+    pub replay: Option<Replay>,
 }
 
 pub(super) async fn resolve(
@@ -179,7 +182,7 @@ fn resolve_invocation(
     let binary = resolve_binary(&args[0])?;
     let registered_name = manifest_route_name(name, &binary, modules, manifest);
     if let Some(name) = registered_name {
-        let (module, input, _) =
+        let (module, input, replay) =
             super::super::shim::resolve_route(&name, &args[1..], manifest, modules)?;
         let target = crate::scanner::resolver::extract_binary_path(&module.target)
             .ok_or_else(|| anyhow::anyhow!("Invalid CLI target"))?;
@@ -193,6 +196,7 @@ fn resolve_invocation(
             input: input.input,
             unmanaged: None,
             opaque_tail: input.opaque_tail,
+            replay,
         });
     }
     // A binding without reviewed grammar is a coverage gap, not an unmanaged
@@ -381,6 +385,7 @@ fn unmanaged_invocation(
         input: json!({"argv":args}),
         unmanaged: Some(module),
         opaque_tail: None,
+        replay: None,
     })
 }
 

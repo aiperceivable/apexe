@@ -205,6 +205,15 @@ invocations admitted by the declared conflict rules can be normalized across
 flag properties; absent or true excludes shim generation. A complete flag
 inventory alone establishes none of these facts.
 
+A route whose grammar classifies every token — today a `tail_parsed` operand —
+does not need that claim. The shim validates it and then replays the caller's
+argv verbatim instead of rebuilding the command line, so there is no normalized
+form for an order-dependent flag sequence to disagree with. Routes that re-emit
+their arguments (including an `opaque_after` tail's rendered prefix) keep the
+requirement. The corpus's `find` entries rely on this: their expressions are
+order-sensitive (`-name a -o -name b`) and are forwarded untouched, so the entry
+asserts nothing about them and stays at format 1.0.
+
 Read the real installation and probe the native forms before declaring them.
 In particular, compare both orders of interacting flags and record conflicts:
 BSD `ls` has order-dependent formatting combinations that a JSON object cannot
@@ -922,11 +931,14 @@ one ends. The end is declared on the trailing operand:
 It reaches `ScannedArg.tail_parsed` and then the contract, as
 `x-apexe-tail-parsed: true` on that property. The boundary is the first token
 that matches a declared trailing flag; an option marked `before_operands` does
-not close the leading operand, because the executor renders it ahead of the
-paths (`find -L path ... -name x`). Tokens before the boundary are the leading
-operand's values, type-checked as usual. Every token from the boundary on is
-parsed against the declared flags, and a token no flag explains refuses the
-whole call and names the token.
+not close the leading operand, because the module-JSON path renders it ahead of
+the paths and the resolver accepts that spelling (`find -L path ... -name x`).
+Tokens before the boundary are the leading operand's values, type-checked as
+usual. Every token from the boundary on is parsed against the declared flags,
+and a token no flag explains refuses the whole call and names the token. A shim
+does not re-render a parsed-tail call at all: it validates every token and then
+replays the caller's argv, so the spelling and order the caller typed are what
+run.
 
 Two rules for setting it:
 

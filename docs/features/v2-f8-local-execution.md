@@ -242,6 +242,12 @@ these capabilities plus literal flag aliases. Existing format 1.0 overlays still
 scan normally, but do not gain capabilities implicitly. Re-scan after updating
 an overlay. See [overlay verification](../overlays.md) for the evidence procedure.
 
+A route whose grammar declares `x-apexe-tail-parsed` is eligible without
+`cross_flag_ordering`: the shim validates every token and then replays the
+caller's argv, so nothing it admitted is reordered. The claim is still required
+for every route that re-emits arguments, including the rendered prefix of an
+`opaque_after` tail.
+
 Authoritative coverage alone does not prove order independence. Verification
 on the real BSD ls installation found 16 previously unrecorded conflicting flag
 pairs among 967 nonconflicting pair probes. Those conflicts are now symmetric
