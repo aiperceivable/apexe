@@ -9,7 +9,13 @@ use crate::scanner::protocol::{CliParser, ParsedHelp};
 // recompiling these on every call is wasteful. INVARIANT: every pattern is a
 // compile-time constant valid regex, so `Regex::new` never fails.
 static COMMAND_SECTION_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?mi)^(?:[a-z][\w /'-]*\s+)?commands(?: \([^)]*\))?:\s*$")
+    // Only a titled section header, not prose. The old prefix accepted any
+    // lowercase phrase before "commands:", so GNU coreutils' `rm --help`
+    // ("use one of these commands:") was read as a Cobra command list and the
+    // next indented example (`rm -- -foo`) became a subcommand named `rm`.
+    // A Cobra group label is title-cased (`Common Commands:`, `Management
+    // Commands:`); prose is not.
+    Regex::new(r"(?m)^(?:[A-Z][\w /'-]*\s+)?[Cc]ommands(?: \([^)]*\))?:\s*$")
         .expect("valid static regex")
 });
 static CMD_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -293,6 +299,32 @@ Global Flags:
         let parser = CobraHelpParser;
         let gnu = "Usage: tool [OPTIONS]\n\nOptions:\n  -v  Verbose\n";
         assert!(!parser.can_parse(gnu, "tool"));
+    }
+
+    #[test]
+    fn test_cobra_command_header_does_not_match_prose() {
+        // GNU coreutils `rm --help` says "use one of these commands:" followed
+        // by an example; the example is not a subcommand and the phrase is not
+        // a Cobra section header.
+        let help = "To remove a file whose name starts with a '-', for example '-foo',\n\
+                    use one of these commands:\n  rm -- -foo\n\n  rm ./-foo\n";
+        assert!(!super::COMMAND_SECTION_RE.is_match(help));
+        assert!(super::extract_available_commands(help).is_empty());
+    }
+
+    #[test]
+    fn test_cobra_command_header_is_titled() {
+        for header in [
+            "Commands:",
+            "Available Commands:",
+            "Management Commands:",
+            "Common Commands:",
+        ] {
+            assert!(
+                super::COMMAND_SECTION_RE.is_match(header),
+                "{header} must be a section header"
+            );
+        }
     }
 
     #[test]

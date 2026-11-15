@@ -88,6 +88,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   Routes that re-emit — including an `opaque_after` tail's rendered prefix —
   still need the claim.
 
+
+### Fixed
+- The Cobra help parser no longer treats GNU coreutils' "use one of these
+  commands:" prose as a Cobra command section. `rm --help` on Debian was read as
+  a Cobra command with a subcommand named `rm` (the first indented example,
+  `rm -- -foo`), so `rm@gnu` could not apply and a child `find -exec rm` was
+  refused as unreviewed. The section header now requires a title-cased group
+  label, which still matches `Commands:`, `Available Commands:`, `Management
+  Commands:` and `Common Commands:` without matching prose. Verified by the
+  real `rm@gnu` scan and `find -exec rm` on the Debian reference image.
 ---
 
 ## [0.13.0] - 2026-11-13
