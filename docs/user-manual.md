@@ -1444,13 +1444,17 @@ backend:
 
 - programs that compute their own paths (`sh -c`, `sed 'w /etc/x'`,
   `python -c`), or any child whose module is not reviewed;
-- per-match filesystem effects after the analysis (`{}` is checked as the
-  starting roots, not each expanded value; symlinks and TOCTOU are not
-  confined);
+- in `analyze`, per-match filesystem effects after the analysis: `{}` is
+  checked as the starting roots, not each expanded value, and a symlink is not
+  resolved. `delegate` checks the actual resolved path per match, including
+  symlinks and `-execdir`, but neither mode confines what the program does
+  after that check (TOCTOU);
 - child subprocesses and network behaviour.
 
 `delegate` requires the child program to be installed as a shim; without it the
-call is refused (use `analyze`, which runs the real binary directly). It is the
+call is refused (use `analyze`, which runs the real binary directly). A
+destructive child such as `rm` is left out of the default shim set, so install
+it explicitly with `apexe env --enable --also rm`. It is the
 mode for `-execdir`, symlinks and per-match paths; it is still not enforcement —
 a child that computes its own paths is refused in both modes.
 
@@ -1669,7 +1673,7 @@ Read this table if you are writing an MCP client against apexe, consuming
 | `x-apexe-opaque-after` | property | `true` | This token and every one after it are forwarded verbatim, because the tool stops interpreting there. On the **last, variadic operand** it covers `node <script> <argv for the script>`; on a **flag** it covers `python3 -m <module> <args for the module>` and `python3 -c <code> <argv for the code>`, where the tail starts at the flag's value rather than at a positional. Either way the parser stops validating, so a script's own flags are not measured against the interpreter's grammar. Execution still forwards the caller's original argv. The tail still lands in the declared operand, so a path-typed operand puts those tokens to the path guard like any other value |
 | `x-apexe-tail-parsed` | property | `true` | This operand starts a trailing mini-language that is **parsed**, not forwarded: `find path … [expression]`. The boundary is the first token matching a declared trailing flag (options marked `x-apexe-flag-position: "before-operands"` stay ahead of the leading operand); every token from there is resolved against the declared flags, so `-delete` reaches the approval gate and `x-apexe-writes-with` sees the write. A token no flag explains refuses the call and names the token — `find . -exec rm {} \;` is the standing ceiling. A shim validates the call and replays the caller's argv verbatim, so no token is reordered and the route needs no `cross_flag_ordering` claim; the module-JSON path still renders it. Valid only on the last, variadic operand, with every earlier operand marked `x-apexe-operand-position: "before-flags"`. Distinct from `x-apexe-opaque-after` on purpose; declaring both is refused |
 | `x-apexe-tail-literal` | **schema root** | array of strings | Non-dash tokens a parsed tail may contain — `find`'s `(`, `)`, `!`, `,`. They are neither flags nor operand values, so they are declared separately: one opens the tail like a flag, and inside it they are skipped while every flag is still resolved. `;`, `+` and `{}` are refused, because they are `-exec`'s terminators and skipping one would let `-exec utility ;` run a program. Root-level like `x-apexe-end-of-options`, because they punctuate the whole expression |
-| `x-apexe-exec-list` | property | `true` | This flag introduces **another program's argv**, ended by `;` or `+` (`find -exec rm {} \;`). The resolver collects the tokens instead of classifying them as this command's flags; the child-execution policy decides whether the list may run. With `child_exec.mode: refuse` (the default) every list is refused; with `analyze`, the program is resolved to its own module and that module's ACL, path policy and approval apply. A list that reaches the module-JSON surface without that analysis is refused. Requires a parsed tail and the flag in `approval_flags` |
+| `x-apexe-exec-list` | property | `true` | This flag introduces **another program's argv**, ended by `;` or `+` (`find -exec rm {} \;`). The resolver collects the tokens instead of classifying them as this command's flags; the child-execution policy decides whether the list may run. With `child_exec.mode: refuse` (the default) every list is refused; with `analyze` or `delegate`, the program is resolved to its own module and that module's ACL, path policy and approval apply (`delegate` re-enters the child shim per match so the actual path is checked). A list that reaches the module-JSON surface without that analysis is refused. Requires a parsed tail and the flag in `approval_flags` |
 | `x-apexe-digit-value` | property | `true` | A bare `-<digits>` token is this flag's value, as in `head -20` / `tail -20`. At most one property per command may carry it. Declared only by an overlay that probed the binary: neither man page documents the spelling, and `-N` is not one rule (`git log -5` counts commits, `ls -5` is invalid) |
 | `x-apexe-conflicts-with` | property | array of property names | Flags that must not be sent together — whether the binary diagnoses the pair or silently resolves it last-one-wins. A JSON object has no key order, so for a last-wins pair *which* flag wins would otherwise be unpredictable |
 | `x-apexe-long-running` | property | `true` | This flag may not terminate on its own (`tail -f`). Bound the timeout or refuse; it is not a reason to reject the input |

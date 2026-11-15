@@ -418,6 +418,26 @@ For a human this is an audit and mistake guard. Enforcement requires externally
 controlled PATH and filesystem access. The [threat model §5.11](../threat-model.md#511-local-execution-and-the-remaining-stage-2-boundaries)
 documents these permanent limits with the shipped feature.
 
+### 8.3 Embedded child commands
+
+`find path ... -exec <program> args... ;` puts another program's argv inside a
+reviewed command. The resolver collects that list without classifying it as
+`find`'s flags (`x-apexe-exec-list`), and `child_exec.mode` decides what may
+run:
+
+| Mode | Behaviour |
+|---|---|
+| `refuse` (default) | Every list is refused on native argv and on the module-JSON surface |
+| `analyze` | The program is resolved to its own reviewed module; that module's schema, ACL, path policy and approval are applied at the parent's starting paths; `--` is inserted before `{}` when the child declares `end_of_options` |
+| `delegate` | The same template check, then each match runs through the installed child shim with a scoped grant (child modules + starting paths + parent trace, 0600/0700, 30-minute expiry, removed on return). The child's ACL and path guard see the actual resolved path, so symlinks and `-execdir` are judged per match; the grant only stands the approval prompt down |
+
+The effective decision is the intersection of the parent's and child's gates.
+No mode is OS confinement: programs that compute their own paths (`sh -c`,
+`sed 'w /etc/x'`, `python -c`) are refused and require a confinement backend;
+`trust_uncovered` is the explicit, audited exception for an unbound program.
+The corpus declares `exec_list` on `find`'s four flags; the [user manual](../user-manual.md#embedded-child-commands-find--exec)
+owns the operator contract.
+
 ## 9. Verification and examples
 
 | Contract | Tests |

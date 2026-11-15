@@ -980,8 +980,11 @@ route must have a parsed tail (the list lives in it) and the flag's property
 must be in `approval_flags`, so an embedded command is never reachable without
 the parent prompt. What may run is decided by `child_exec.mode`: `refuse` (the
 default) rejects every list; `analyze` resolves the program to its own module
-and applies that module's ACL, path and approval gates. `;`, `+` and `{}` remain
-refused as ordinary `tail_tokens`; only an `exec_list` flag may consume them.
+and applies that module's ACL, path and approval gates; `delegate` applies the
+same gates and re-enters the installed child shim per match, so `{}`, a symlink
+and `-execdir` are checked at the actual resolved path. `;`, `+` and `{}`
+remain refused as ordinary `tail_tokens`; only an `exec_list` flag may consume
+them.
 
 A parsed tail also contains tokens that are neither flags nor values: `find`'s
 `(`, `)`, `!` and `,`. Declare them once at the overlay's root:

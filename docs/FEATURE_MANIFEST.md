@@ -27,7 +27,7 @@ git/docker scan tests and the macOS native example are opt-in.
 | Binding and agent guidance output | `output`; `scan --skills-dir` | YAML bindings and optional Claude Skills; Rust API tool-definition export |
 | Policy authorship | `governance::acl`; `acl` | `acl init` writes a starter policy once (`--profile developer\|strict`), `acl sync` refreshes only the destructive and open-world denials, `acl explain` names the rule that decided a module. `scan` writes bindings and never policy |
 | Discovery and policy inspection | `list --verbose`, `paths` | Module schemas, annotations, ACL context, validated evidence and filesystem boundary checks |
-| Local execution | `cli::exec`, `module`; `exec` | Module JSON and reviewed native argv; preflight dry-run, child status and native streams |
+| Local execution | `cli::exec`, `module`, `cli::child_exec`; `exec` | Module JSON and reviewed native argv; preflight dry-run, child status and native streams; embedded child commands (`find -exec`) default to refusal, with `analyze` and per-match `delegate` policies |
 | Shell integration | `cli::env`, `shim`, `shell_init`; `env` | Eligible external-command PATH shims, startup activation, refresh, removal and diagnostics; `--scanned` routes execute the original argv after schema validation |
 | Agent shell launcher | `cli::sh`; `sh` | Executes a real shell with the installed shim environment; readiness diagnostics and host config snippets. Not a full-governance boundary |
 | Host hook translation | `cli::hook`; `hook` | Rewrites simple Claude Code Bash calls to `apexe sh -c` through `updatedInput`; stateful and compound commands rely on PATH shims |
@@ -48,8 +48,18 @@ filesystem checks. HTTP import is unavailable to local exec/shims. Normal
 execution is not OS-sandboxed. The current native BSD pilot covers cat/head/ls;
 builtins and absolute paths can bypass PATH shims.
 
+A command that embeds another program's argv (`find . -exec rm {} \;`) is
+refused by default. `child_exec.mode: analyze` resolves the child to its own
+module and applies that module's ACL, path policy and approval at the parent's
+starting paths; `delegate` runs each match through the installed child shim
+with a scoped delegated approval, so the actual `{}` path, symlinks and
+`-execdir` are judged per match. Neither mode is OS confinement: a child that
+computes its own paths is refused, and the sandbox layer remains the only
+enforcement boundary. See the [user manual](user-manual.md#embedded-child-commands-find--exec)
+and [`docs/overlays.md`](overlays.md#a-trailing-mini-language-opaque_after-versus-tail_parsed).
+
 > The section headings below tagged "(v0.1.0 …)" record when each piece first
-> landed; the crate is now **0.10.0**. For the authoritative current state see
+> landed; the crate is now **0.14.0**. For the authoritative current state see
 > [`CHANGELOG.md`](../CHANGELOG.md) and [`docs/user-manual.md`](user-manual.md).
 
 ## Architecture
