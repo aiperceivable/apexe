@@ -171,11 +171,20 @@ PATH"`, `"user manager unavailable (no DBUS session)"`,
 enum Capability {
     ReadOnly,        // may read, may not write
     ReadWrite,       // may read and write
-    NoAccess,        // neither
+    NoAccess,        // neither content nor metadata
     WriteOnly,       // may write, may not read
     DenyWithinGrant, // can refuse a subtree that a broader grant covers
 }
 ```
+
+`NoAccess` denies metadata (`stat`, `readdir`) as well as content. "Allow
+discovery, deny content" is a different policy, not `NoAccess`; do not label it
+as `no_access` or a caller that can list the directory would appear confined.
+
+`DenyWithinGrant` is backend-specific. A mount-based or rule-based backend
+(`bwrap`, `systemd-run`, Seatbelt) can express a deny inside a broader grant;
+a Landlock-only backend cannot and must refuse the policy rather than silently
+drop the entry.
 
 `DenyWithinGrant` is the load-bearing one. An allow-list backend (Landlock) can
 grant rights but cannot refuse a subtree inside a granted root; a mount-based or
@@ -190,7 +199,15 @@ exists to prevent.**
 
 Inputs: the effective `PathPolicy`, and the invocation (argv, working directory,
 and the caller id). Output: a `LaunchSpec`, or a `Refusal` carrying
-`{ capability | probe }` and a human reason. Translation must be a pure function
+`{ capability | probe }` and a human reason.
+
+Before translation, apexe normalizes each path to a
+`PathSpelling { original, resolved, is_file }`. A literal backend (Seatbelt)
+emits a rule for both the original and the resolved spelling; a mount backend
+uses the resolved path for the mount and keeps the original spelling where the
+caller can still name it. The probe tests both. This is where `/tmp` →
+`/private/tmp` and `/etc` → `/private/etc` are handled; a backend that uses only
+the caller's spelling produces a false negative, not a confinement. Translation must be a pure function
 of its inputs — same policy and invocation produce the same launch spec byte for
 byte. That is what makes it testable without a kernel (§ `docs/sandbox-testing.md`,
 layer 1).
@@ -288,6 +305,7 @@ because the operator explicitly chose it.
 | `podman` / `docker` | Linux, macOS | all four, via mounts | `enforcing`, different semantics (§8) | optional, per-caller only |
 | `sandbox-exec` (seatbelt) | macOS | all four, with canonical paths | `enforcing`, **deprecated** | candidate, first macOS local |
 | `nono` (Seatbelt) | macOS | all four, via private `sandbox_init` | `enforcing` after a probe | candidate |
+| `nono` (Landlock) | Linux | read/write + `WriteOnly`; **no `DenyWithinGrant`** | `enforcing` for expressible policies; refuses `no_access` under a grant | candidate, no-userns |
 | `microsandbox` / Apple `container` | macOS | all four, via a Linux VM | `enforcing` | later |
 | — | macOS, no backend above | — | `advisory` | fallback only; `required` refuses |
 
@@ -421,3 +439,6 @@ adapter conformance suite, and which layers a given platform can verify. A
 third-party adapter is not accepted until it passes the same suite:
 `describe/probe/prepare/execute/wait/kill/cleanup`, `DenyWithinGrant`,
 `write_only` refusal, no silent drop, selection, audit, and fail-closed.
+
+The source-level review is recorded in
+[`docs/ideas/sandbox-source-notes.md`](ideas/sandbox-source-notes.md).

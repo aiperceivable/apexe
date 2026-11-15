@@ -230,6 +230,37 @@ signed/allowlisted and the operator selects it. A probe is evidence, not proof;
 not pay the out-of-process hop; the protocol exists for other languages and
 distributions.
 
+### 5.3 Cases derived from the reference implementations
+
+These are source-informed cases for the conformance suite; the source reading is
+recorded in [`docs/ideas/sandbox-source-notes.md`](ideas/sandbox-source-notes.md).
+
+- **Canonical paths:** `/tmp`/`/private/tmp`, `/etc`/`/private/etc`,
+  `/var`/`/private/var`, a symlink target, a dangling symlink, `..`, `~`, a
+  trailing slash, glob vs literal, file vs directory.
+- **Dual spelling:** a write through the original spelling is blocked by a deny
+  on the resolved spelling, and vice versa where the backend is literal.
+- **`NoAccess`:** content and metadata (`stat`, `readdir`, `cat`) are denied.
+  "Allow discovery, deny content" is not `NoAccess` and must not be accepted as
+  an equivalent.
+- **`WriteOnly`:** write succeeds, read fails, for a file and a directory.
+- **`DenyWithinGrant`:** `read_only /var` + `read_write /var/log` +
+  `no_access /var/log/secret`; a Landlock-only backend must refuse.
+- **A/B/C:** denied write fails; permitted write succeeds; a computed path
+  (`python3 -c 'open(...)'`) fails at the kernel.
+- **bwrap:** `--unshare-all`, `--new-session`, `--die-with-parent`,
+  `--ro-bind / /`, `--dev`, `--proc`, `--tmpfs /tmp`, `--cap-drop ALL`,
+  `--args`; a missing deny path is refused or cleaned up.
+- **Seatbelt:** `(deny default)`, read/write rule order,
+  `file-write-unlink`/`file-write-create`, profile size, both spellings.
+- **systemd-run:** `ReadOnlyPaths`/`ReadWritePaths`/`InaccessiblePaths`, user
+  manager/DBus, `--pipe --wait`.
+- **selection:** `cli.ls` never wrapped; selected `cli.sed` wrapped; external
+  caller gets the container backend.
+- **audit:** backend, enforcement, outcome, policy digest, reason, probe record.
+- **adapter:** `describe/probe/prepare/execute/wait/kill/cleanup`, signed/
+  allowlisted, no silent drop, one spawn.
+
 ---
 
 ## 6. Skipping, not failing
