@@ -2541,6 +2541,40 @@ fn test_shim_delegate_refuses_a_symlink_escape() {
     );
 }
 
+/// `trust_uncovered` is the explicit exception; its use must leave a
+/// `trusted_unanalyzed` audit row, not merely a tracing line.
+#[test]
+fn test_shim_analyze_trust_uncovered_records_the_audit_row() {
+    let fixture = Fixture::new();
+    let mut find_schema = find_schema();
+    find_schema["properties"]["exec"]["x-apexe-exec-list"] = json!(true);
+    fixture.write("cli.find", "find", "/usr/bin/find", find_schema, false);
+    std::fs::write(
+        fixture.home.path().join(".apexe/config.yaml"),
+        "child_exec:\n  mode: analyze\n  trust_uncovered: [sh]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.home.path().join(".apexe/acl.yaml"),
+        "version: '1.0'\ndefault_effect: allow\nrules: []\n",
+    )
+    .unwrap();
+    fixture.enable();
+    std::fs::write(fixture.home.path().join("victim.txt"), "x").unwrap();
+    fixture
+        .shim("find")
+        .args(["victim.txt", "-exec", "sh", "-c", "true", ";"])
+        .assert()
+        .success();
+    let audit =
+        std::fs::read_to_string(fixture.home.path().join(".apexe/audit.jsonl")).unwrap_or_default();
+    assert!(audit.contains("\"event\":\"child_exec\""), "{audit}");
+    assert!(
+        audit.contains("\"decision\":\"trusted_unanalyzed\""),
+        "{audit}"
+    );
+}
+
 #[test]
 fn test_shim_find_grouping_runs_through_the_parsed_tail() {
     let fixture = find_fixture();
