@@ -85,6 +85,7 @@ pub(super) async fn analyze(
     let parent_roots = path_values(parent_input, &parent.input_schema);
     let mut insertions: Vec<usize> = Vec::new();
     let mut child_modules: Vec<String> = Vec::new();
+    let audit = crate::governance::AuditManager::new(&config.audit_log);
 
     for list in exec_lists {
         let Some(program) = list.tokens.first() else {
@@ -114,6 +115,15 @@ pub(super) async fn analyze(
                     parent = %parent.module_id,
                     program,
                     "embedded command admitted by trust_uncovered; its arguments were not analyzed"
+                );
+                audit.log_governance_event(
+                    "child_exec",
+                    serde_json::json!({
+                        "parent_module": parent.module_id,
+                        "parent_trace": context.trace_id,
+                        "program": program,
+                        "decision": "trusted_unanalyzed",
+                    }),
                 );
                 continue;
             }
@@ -264,6 +274,17 @@ pub(super) async fn analyze(
             requires_approval = preflight.requires_approval,
             "embedded command analyzed"
         );
+        audit.log_governance_event(
+            "child_exec",
+            serde_json::json!({
+                "parent_module": parent.module_id,
+                "parent_trace": context.trace_id,
+                "program": program,
+                "child_module": child.module_id,
+                "decision": "analyzed",
+                "requires_approval": preflight.requires_approval,
+            }),
+        );
     }
 
     for index in insertions.into_iter().rev() {
@@ -284,6 +305,16 @@ pub(super) async fn analyze(
             children = ?child_modules,
             grant = handle.id(),
             "delegated approval created for embedded commands"
+        );
+        audit.log_governance_event(
+            "child_exec",
+            serde_json::json!({
+                "parent_module": parent.module_id,
+                "parent_trace": context.trace_id,
+                "children": child_modules,
+                "grant": handle.id(),
+                "decision": "delegate_grant",
+            }),
         );
         return Ok(Some(handle));
     }

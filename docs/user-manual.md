@@ -1401,7 +1401,7 @@ child_exec:
 | `additional_denied_paths` | list of paths | `[]` | Locations to deny **in addition to** the path-guard baselines (§9.7) |
 | `allowed_paths` | list of paths | `[]` | Carve-outs **out of** the path-guard baselines (§9.7). The only setting that relaxes the guard; you own the consequences |
 | `child_exec.mode` | `refuse` \| `analyze` \| `delegate` | `refuse` | Policy for a command that embeds another program's argv (`find -exec`). `refuse` rejects every list; `analyze` resolves the program to its own module and applies that module's ACL, path and approval gates; `delegate` does the same and runs each match through the installed child shim, with a scoped delegated approval and the actual path checked |
-| `child_exec.trust_uncovered` | list of names | `[]` | Bare program names the operator vouches for when no binding exists. Skips coverage and child-argument analysis; the parent approval is the only remaining gate. Every use is logged as unanalyzed |
+| `child_exec.trust_uncovered` | list of names | `[]` | Bare program names the operator vouches for when no binding exists. Skips coverage and child-argument analysis; the parent approval is the only remaining gate. Every use is recorded as a `child_exec` audit event (`trusted_unanalyzed`) and logged |
 
 ### Embedded child commands (`find -exec`)
 
@@ -1421,8 +1421,8 @@ only) to have the child resolved and gated:
    mode, and `--` is inserted before it when the child module declares
    `end_of_options`, so a matched file named `-rf` is a path, not an option;
 5. one approval covers the parent and the child. The parent execution is audited;
-   the child analysis is logged, and in `delegate` the child shim adds its own
-   execution record.
+   the child analysis is a `child_exec` audit record (with the parent trace), and
+   in `delegate` the child shim adds its own execution record and the grant id.
 
 `delegate` adds per-match governance on top of that: the parent sets `PATH` to
 the installed shim directory first, creates a short-lived grant naming the child
@@ -1462,7 +1462,7 @@ a child that computes its own paths is refused in both modes.
 
 `trust_uncovered` is the explicit exception: it admits a bare program name for
 which no binding exists, skipping analysis. It is empty by default, reported at
-startup when non-empty, and every use is logged as unanalyzed. It is
+startup when non-empty, and every use is recorded as `trusted_unanalyzed` and logged. It is
 not a safety claim.
 
 A list that arrives through `--input`/MCP/A2A is refused even with

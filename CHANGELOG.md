@@ -50,8 +50,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   expiry, removed when the call returns) that stands the **approval** prompt
   down for those matches only; ACL and the path guard still run every time. The
   child program must be installed as a shim, and unanalyzable child modules stay
-  refused. File writes/reads that live in a program's own logic still need a
-  confinement backend.
+  refused. Every child decision is a `child_exec` row in `audit.jsonl` with the
+  parent trace (and the grant id in delegate). File writes/reads that live in a
+  program's own logic still need a confinement backend.
 - A command that computes filesystem paths inside its own logic can declare
   `computes_paths: true` (contract key `x-apexe-computes-paths`). The
   child-execution analysis refuses such a module rather than treating its
@@ -74,7 +75,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   a path). Program identity is pinned by running the parent with a shim-free
   `PATH`. Programs with no reviewed binding, a program that computes its own
   paths, and nested exec lists are refused; `trust_uncovered` is the explicit,
-  logged exception. Module JSON/MCP never execute an exec-list without that
+  audited exception. Module JSON/MCP never execute an exec-list without that
   analysis.
 - Native shim eligibility now asks whether a route *re-emits* its argv, not
   whether the tool is order-independent in general. A `tail_parsed` grammar

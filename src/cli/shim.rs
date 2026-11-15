@@ -631,9 +631,20 @@ fn execute(
         ))?;
         analyzed = true;
     }
+    let audit = crate::governance::AuditManager::new(&config.audit_log);
     let delegated = match inherited_delegation.as_ref() {
         Some(grant) if grant.child_modules.contains(&selected.module_id) => {
             if !super::child_exec::inputs_within(grant, &input.input, &selected.input_schema) {
+                audit.log_governance_event(
+                    "child_exec",
+                    serde_json::json!({
+                        "parent_module": grant.parent_module,
+                        "parent_trace": grant.parent_trace,
+                        "child_module": selected.module_id,
+                        "grant": grant.id,
+                        "decision": "delegated_refuse",
+                    }),
+                );
                 return Err(anyhow::anyhow!(
                     "Delegated child '{}' names a path outside the parent's starting paths",
                     selected.module_id
@@ -643,6 +654,20 @@ fn execute(
         }
         _ => false,
     };
+    if delegated {
+        if let Some(grant) = inherited_delegation.as_ref() {
+            audit.log_governance_event(
+                "child_exec",
+                serde_json::json!({
+                    "parent_module": grant.parent_module,
+                    "parent_trace": grant.parent_trace,
+                    "child_module": selected.module_id,
+                    "grant": grant.id,
+                    "decision": "delegated_allow",
+                }),
+            );
+        }
+    }
     let executor = match replay {
         Some(replay) => build_executor_for_replay(
             manifest,

@@ -2206,7 +2206,12 @@ fn find_schema() -> Value {
             "o": {"type": "boolean", "x-apexe-flag": "-o"},
             "print": {"type": "boolean", "x-apexe-flag": "-print"},
             "delete": {"type": "boolean", "x-apexe-flag": "-delete"},
-            "exec": {"type": "string", "x-apexe-flag": "-exec"}
+            "exec": {"type": "string", "x-apexe-flag": "-exec"},
+            "execdir": {
+                "type": "string",
+                "x-apexe-flag": "-execdir",
+                "x-apexe-exec-list": true
+            }
         },
         "additionalProperties": false
     })
@@ -2416,17 +2421,18 @@ fn test_shim_analyzes_a_parsed_tail_exec_list() {
     std::fs::write(&victim, "remove me").unwrap();
     fixture
         .shim("find")
-        .args([".", "-exec", "rm", "{}", ";"])
+        .args(["victim.txt", "-exec", "rm", "{}", ";"])
         .assert()
         .success();
     assert!(!victim.exists(), "the analyzed child command did not run");
+    let audit =
+        std::fs::read_to_string(fixture.home.path().join(".apexe/audit.jsonl")).unwrap_or_default();
+    assert!(audit.contains("\"event\":\"child_exec\""), "{audit}");
+    assert!(audit.contains("\"decision\":\"analyzed\""), "{audit}");
 }
 
-/// Delegate mode: each match runs through the installed child shim, and the
-/// parent approval is delegated for that module and its starting paths. The
-/// file is removed by the child shim, not by a real binary resolved directly.
-#[test]
-fn test_shim_delegates_a_parsed_tail_exec_list_to_the_child_shim() {
+/// A fixture with find + rm installed and `child_exec.mode: delegate`.
+fn delegate_fixture() -> Fixture {
     let fixture = Fixture::new();
     let mut find_schema = find_schema();
     find_schema["properties"]["exec"]["x-apexe-exec-list"] = json!(true);
@@ -2462,6 +2468,16 @@ fn test_shim_delegates_a_parsed_tail_exec_list_to_the_child_shim() {
     )
     .unwrap();
     fixture.enable();
+    fixture
+}
+
+fn audit_after(fixture: &Fixture) -> String {
+    std::fs::read_to_string(fixture.home.path().join(".apexe/audit.jsonl")).unwrap_or_default()
+}
+
+#[test]
+fn test_shim_delegates_a_parsed_tail_exec_list_to_the_child_shim() {
+    let fixture = delegate_fixture();
     let victim = fixture.home.path().join("victim.txt");
     std::fs::write(&victim, "remove me").unwrap();
     fixture
@@ -2475,6 +2491,54 @@ fn test_shim_delegates_a_parsed_tail_exec_list_to_the_child_shim() {
         .map(|entries| entries.count())
         .unwrap_or(0);
     assert_eq!(leftovers, 0, "the parent must remove its grant");
+    let audit = audit_after(&fixture);
+    assert!(audit.contains("\"event\":\"child_exec\""), "{audit}");
+    assert!(audit.contains("\"decision\":\"delegate_grant\""), "{audit}");
+    assert!(
+        audit.contains("\"decision\":\"delegated_allow\""),
+        "{audit}"
+    );
+    assert!(audit.contains("\"grant\":"), "{audit}");
+}
+
+/// `-execdir` runs in the directory holding the match; delegate must judge the
+/// path there, not at the parent's working directory.
+#[test]
+fn test_shim_delegate_execdir_checks_the_per_match_directory() {
+    let fixture = delegate_fixture();
+    std::fs::create_dir_all(fixture.home.path().join("sub")).unwrap();
+    let victim = fixture.home.path().join("sub/victim.txt");
+    std::fs::write(&victim, "remove me").unwrap();
+    fixture
+        .shim("find")
+        .args(["sub", "-execdir", "rm", "{}", ";"])
+        .assert()
+        .success();
+    assert!(
+        !victim.exists(),
+        "the -execdir child did not run in its directory"
+    );
+}
+
+/// A symlink inside the tree that points outside the parent's starting paths
+/// is refused by the delegated child shim; the link and its target survive.
+#[test]
+fn test_shim_delegate_refuses_a_symlink_escape() {
+    let fixture = delegate_fixture();
+    std::fs::create_dir_all(fixture.home.path().join("work")).unwrap();
+    let escape = fixture.home.path().join("work/escape");
+    std::os::unix::fs::symlink("/etc/passwd", &escape).unwrap();
+    let _ = fixture
+        .shim("find")
+        .args(["work", "-exec", "rm", "{}", ";"])
+        .assert();
+    assert!(escape.exists(), "the symlink escape was removed");
+    assert!(std::path::Path::new("/etc/passwd").exists());
+    let audit = audit_after(&fixture);
+    assert!(
+        audit.contains("\"decision\":\"delegated_refuse\""),
+        "{audit}"
+    );
 }
 
 #[test]
