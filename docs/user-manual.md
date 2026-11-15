@@ -1400,7 +1400,7 @@ child_exec:
 | `default_overlay_repository` | string | `https://github.com/aiperceivable/cli-permissions` | Default initialization and automatic scan source; HTTPS mirror or local Git repository supported |
 | `additional_denied_paths` | list of paths | `[]` | Locations to deny **in addition to** the path-guard baselines (§9.7) |
 | `allowed_paths` | list of paths | `[]` | Carve-outs **out of** the path-guard baselines (§9.7). The only setting that relaxes the guard; you own the consequences |
-| `child_exec.mode` | `refuse` \| `analyze` | `refuse` | Policy for a command that embeds another program's argv (`find -exec`). `refuse` rejects every list; `analyze` resolves the program to its own module and applies that module's ACL, path and approval gates |
+| `child_exec.mode` | `refuse` \| `analyze` \| `delegate` | `refuse` | Policy for a command that embeds another program's argv (`find -exec`). `refuse` rejects every list; `analyze` resolves the program to its own module and applies that module's ACL, path and approval gates; `delegate` does the same and runs each match through the installed child shim, with a scoped delegated approval and the actual path checked |
 | `child_exec.trust_uncovered` | list of names | `[]` | Bare program names the operator vouches for when no binding exists. Skips coverage and child-argument analysis; the parent approval is the only remaining gate. Every use is audited as unanalyzed |
 
 ### Embedded child commands (`find -exec`)
@@ -1422,6 +1422,17 @@ only) to have the child resolved and gated:
    `end_of_options`, so a matched file named `-rf` is a path, not an option;
 5. one approval covers the parent and the child; the audit records both.
 
+`delegate` adds per-match governance on top of that: the parent sets `PATH` to
+the installed shim directory first, creates a short-lived grant naming the child
+module(s) and the parent's starting paths, and each match re-enters the child
+shim. The child shim still runs its ACL and path guard against the **actual**
+`{}` path (including symlink resolution and `-execdir`'s working directory);
+the grant only stands the approval prompt down, because the parent already put
+the same child module and tree to a human. The grant file is 0600 in a 0700
+directory, expires after 30 minutes, and is removed when the parent call
+returns. A path outside the parent's starting paths is refused even with a
+valid grant.
+
 The effective decision is the **intersection** of the parent's gates and the
 child's. `find /etc -exec rm {} \;` is refused at write strength even when
 `find` and `rm` are both allowed; `find . -exec rm {} \;` runs only when the
@@ -1437,6 +1448,11 @@ backend:
   starting roots, not each expanded value; symlinks and TOCTOU are not
   confined);
 - child subprocesses and network behaviour.
+
+`delegate` requires the child program to be installed as a shim; without it the
+call is refused (use `analyze`, which runs the real binary directly). It is the
+mode for `-execdir`, symlinks and per-match paths; it is still not enforcement —
+a child that computes its own paths is refused in both modes.
 
 `trust_uncovered` is the explicit exception: it admits a bare program name for
 which no binding exists, skipping analysis. It is empty by default, reported at

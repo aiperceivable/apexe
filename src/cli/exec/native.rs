@@ -21,6 +21,8 @@ pub(super) struct NativeInvocation {
     pub replay: Option<Replay>,
     /// Whether the child-exec policy analyzed the embedded command lists.
     pub child_exec_analyzed: bool,
+    /// Grant created for delegate mode; held until the parent call returns.
+    pub delegation: Option<crate::governance::delegation::DelegationHandle>,
 }
 
 pub(super) async fn resolve(
@@ -195,13 +197,14 @@ async fn resolve_invocation(
             module.module_id
         );
         let mut child_exec_analyzed = false;
+        let mut delegation = None;
         if !input.exec_lists.is_empty() {
             match config.child_exec.mode {
                 ChildExecMode::Refuse => return Err(super::super::child_exec::refusal()),
-                ChildExecMode::Analyze => {
+                ChildExecMode::Analyze | ChildExecMode::Delegate => {
                     let Some(replay) = replay.as_mut() else {
                         return Err(anyhow::anyhow!(
-                            "This route embeds a command list but does not replay its argv; the                              list cannot be analyzed"
+                            "This route embeds a command list but does not replay its argv; the list cannot be analyzed"
                         ));
                     };
                     // The shim/exec module set is narrowed to the invoked
@@ -211,13 +214,14 @@ async fn resolve_invocation(
                         &manifest.bindings_dir,
                         config.bindings_pattern.as_deref(),
                     )?;
-                    super::super::child_exec::analyze(
+                    delegation = super::super::child_exec::analyze(
                         config,
                         module,
                         &input.input,
                         &input.exec_lists,
                         replay.argv_mut(),
                         &analysis_modules,
+                        manifest,
                         context,
                     )
                     .await?;
@@ -232,6 +236,7 @@ async fn resolve_invocation(
             opaque_tail: input.opaque_tail,
             replay,
             child_exec_analyzed,
+            delegation,
         });
     }
     // A binding without reviewed grammar is a coverage gap, not an unmanaged
@@ -422,6 +427,7 @@ fn unmanaged_invocation(
         opaque_tail: None,
         replay: None,
         child_exec_analyzed: false,
+        delegation: None,
     })
 }
 

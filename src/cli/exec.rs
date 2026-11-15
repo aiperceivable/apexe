@@ -119,6 +119,12 @@ struct PreparedCall {
     /// The caller's argv, when the route classified every token and must run it
     /// verbatim. The dry-run plan reports this instead of a re-rendered form.
     replay: Option<super::shim::Replay>,
+    /// Delegated child-command grant; held until the parent call returns.
+    ///
+    /// Never read: the value exists for its `Drop`, which removes the grant so
+    /// a later call cannot reuse it.
+    #[allow(dead_code)]
+    delegation: Option<crate::governance::delegation::DelegationHandle>,
 }
 
 fn parse_caller(value: &str) -> Result<String, String> {
@@ -317,6 +323,7 @@ impl ExecArgs {
             unmanaged_binary: None,
             opaque_tail: None,
             replay: None,
+            delegation: None,
         })
     }
 
@@ -337,6 +344,7 @@ impl ExecArgs {
             opaque_tail,
             replay,
             child_exec_analyzed,
+            delegation,
         } = invocation;
         let io = crate::module::ExecutionIo::Passthrough {
             stdin: super::shim::passthrough_stdin_mode(),
@@ -409,6 +417,7 @@ impl ExecArgs {
             unmanaged_binary,
             opaque_tail,
             replay,
+            delegation,
         })
     }
 

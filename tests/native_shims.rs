@@ -2422,6 +2422,61 @@ fn test_shim_analyzes_a_parsed_tail_exec_list() {
     assert!(!victim.exists(), "the analyzed child command did not run");
 }
 
+/// Delegate mode: each match runs through the installed child shim, and the
+/// parent approval is delegated for that module and its starting paths. The
+/// file is removed by the child shim, not by a real binary resolved directly.
+#[test]
+fn test_shim_delegates_a_parsed_tail_exec_list_to_the_child_shim() {
+    let fixture = Fixture::new();
+    let mut find_schema = find_schema();
+    find_schema["properties"]["exec"]["x-apexe-exec-list"] = json!(true);
+    fixture.write("cli.find", "find", "/usr/bin/find", find_schema, false);
+    fixture.write(
+        "cli.rm",
+        "rm",
+        "/bin/rm",
+        json!({
+            "type": "object",
+            "x-apexe-end-of-options": true,
+            "x-apexe-short-flag-bundling": true,
+            "properties": {
+                "file": {
+                    "type": "array",
+                    "items": {"type": "string", "x-apexe-path": true},
+                    "x-apexe-positional": 0
+                },
+                "r": {"type": "boolean", "x-apexe-flag": "-r"},
+                "f": {"type": "boolean", "x-apexe-flag": "-f"}
+            }
+        }),
+        false,
+    );
+    std::fs::write(
+        fixture.home.path().join(".apexe/config.yaml"),
+        "child_exec:\n  mode: delegate\n",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.home.path().join(".apexe/acl.yaml"),
+        "version: '1.0'\ndefault_effect: allow\nrules: []\n",
+    )
+    .unwrap();
+    fixture.enable();
+    let victim = fixture.home.path().join("victim.txt");
+    std::fs::write(&victim, "remove me").unwrap();
+    fixture
+        .shim("find")
+        .args(["victim.txt", "-exec", "rm", "{}", ";"])
+        .assert()
+        .success();
+    assert!(!victim.exists(), "the delegated child shim did not run");
+    let delegation = fixture.home.path().join(".apexe/delegation");
+    let leftovers = std::fs::read_dir(&delegation)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(leftovers, 0, "the parent must remove its grant");
+}
+
 #[test]
 fn test_shim_find_grouping_runs_through_the_parsed_tail() {
     let fixture = find_fixture();

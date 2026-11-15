@@ -584,6 +584,7 @@ fn execute(
 ) -> anyhow::Result<i32> {
     let started = std::time::Instant::now();
     let context = super::local::context(super::local::LOCAL_CALLER, false);
+    let inherited_delegation = crate::governance::delegation::active_from_env(config);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -606,6 +607,7 @@ fn execute(
     let module_id = selected.module_id.clone();
     let stdin = passthrough_stdin_mode();
     let mut analyzed = false;
+    let mut delegation_handle = None;
     if !input.exec_lists.is_empty() {
         let Some(replay) = replay.as_mut() else {
             return Err(anyhow::anyhow!(
@@ -617,17 +619,30 @@ fn execute(
             &manifest.bindings_dir,
             manifest.bindings_pattern.as_deref(),
         )?;
-        runtime.block_on(super::child_exec::analyze(
+        delegation_handle = runtime.block_on(super::child_exec::analyze(
             config,
             selected,
             &input.input,
             &input.exec_lists,
             replay.argv_mut(),
             &analysis_modules,
+            manifest,
             &context,
         ))?;
         analyzed = true;
     }
+    let delegated = match inherited_delegation.as_ref() {
+        Some(grant) if grant.child_modules.contains(&selected.module_id) => {
+            if !super::child_exec::inputs_within(grant, &input.input, &selected.input_schema) {
+                return Err(anyhow::anyhow!(
+                    "Delegated child '{}' names a path outside the parent's starting paths",
+                    selected.module_id
+                ));
+            }
+            true
+        }
+        _ => false,
+    };
     let executor = match replay {
         Some(replay) => build_executor_for_replay(
             manifest,
@@ -637,6 +652,7 @@ fn execute(
             stdin,
             replay.tier,
             analyzed,
+            delegated,
         )?,
         None => build_executor(
             manifest,
@@ -645,9 +661,11 @@ fn execute(
             &module_id,
             input.opaque_tail,
             stdin,
+            delegated,
         )?,
     };
     let output = runtime.block_on(executor.call(&module_id, input.input, Some(&context), None))?;
+    drop(delegation_handle);
     output["exit_code"]
         .as_i64()
         .and_then(|code| i32::try_from(code).ok())
@@ -703,6 +721,7 @@ fn load_routable_modules(name: &str, manifest: &Manifest) -> anyhow::Result<Vec<
     )?)
 }
 
+#[allow(clippy::too_many_arguments)] // The call sites own each fact; bundling them would hide the policy inputs.
 fn build_executor_for_replay(
     manifest: &Manifest,
     config: &ApexeConfig,
@@ -711,15 +730,20 @@ fn build_executor_for_replay(
     stdin: StdinMode,
     tier: RouteTier,
     child_exec_analyzed: bool,
+    delegated: bool,
 ) -> anyhow::Result<std::sync::Arc<apcore::Executor>> {
     let acl = super::local::acl_path(manifest.acl.as_deref(), config)?;
-    let options = super::local::options(
+    let mut options = super::local::options(
         config,
         &manifest.bindings_dir,
         manifest.bindings_pattern.as_deref(),
         acl.as_deref(),
         manifest.filter.clone(),
     );
+    if delegated {
+        options.enable_approval = false;
+        options.local_approval = false;
+    }
     let replay_tier = match tier {
         RouteTier::Verified => crate::module::registry::ReplayTier::Reviewed,
         RouteTier::Scanned | RouteTier::Legacy => crate::module::registry::ReplayTier::Scanned,
@@ -741,15 +765,20 @@ fn build_executor(
     module_id: &str,
     tail: Option<crate::adapter::argv::OpaqueTail>,
     stdin: StdinMode,
+    delegated: bool,
 ) -> anyhow::Result<std::sync::Arc<apcore::Executor>> {
     let acl = super::local::acl_path(manifest.acl.as_deref(), config)?;
-    let options = super::local::options(
+    let mut options = super::local::options(
         config,
         &manifest.bindings_dir,
         manifest.bindings_pattern.as_deref(),
         acl.as_deref(),
         manifest.filter.clone(),
     );
+    if delegated {
+        options.enable_approval = false;
+        options.local_approval = false;
+    }
     let io = ExecutionIo::Passthrough { stdin };
     if let Some(tail) = tail {
         let selected = modules

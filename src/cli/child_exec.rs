@@ -16,7 +16,9 @@ use apcore_toolkit::ScannedModule;
 use serde_json::Value;
 
 use crate::adapter::argv::ExecList;
+use crate::cli::shim::Manifest;
 use crate::config::{ApexeConfig, ChildExecMode};
+use crate::governance::delegation::DelegationHandle;
 use crate::module::registry;
 use crate::module::{CliModule, ExecutionIo};
 
@@ -48,17 +50,30 @@ pub(super) async fn analyze(
     exec_lists: &[ExecList],
     replay: &mut Vec<String>,
     modules: &[ScannedModule],
+    manifest: &Manifest,
     context: &Context<Value>,
-) -> anyhow::Result<()> {
-    if config.child_exec.mode == ChildExecMode::Refuse {
-        return Err(refusal());
-    }
-    // `find` resolves a bare program through PATH at execution time. Strip the
-    // shim directories so that name resolves to the real binary this analysis
-    // resolved, not to a second shim invocation per match.
-    if let Some(path) = std::env::var_os("PATH") {
-        std::env::set_var("PATH", crate::runtime_path::clean_path(&path));
-    }
+) -> anyhow::Result<Option<DelegationHandle>> {
+    let delegate = match config.child_exec.mode {
+        ChildExecMode::Refuse => return Err(refusal()),
+        ChildExecMode::Analyze => false,
+        ChildExecMode::Delegate => true,
+    };
+    // `find` resolves a bare program through PATH at execution time. In
+    // analyze mode the shim directories are stripped, so the name resolves to
+    // the real binary that was checked. In delegate mode the shim directory is
+    // first, so each match re-enters the installed child shim and its approval
+    // is delegated by the grant below. The identity check below always uses the
+    // stripped path, because the binding names the real binary.
+    let clean_path = crate::runtime_path::clean_path(&std::env::var_os("PATH").unwrap_or_default());
+    let execution_path = if delegate {
+        let shims = crate::runtime_path::default_shim_dir();
+        let mut directories = vec![shims];
+        directories.extend(std::env::split_paths(&clean_path));
+        std::env::join_paths(directories).unwrap_or_else(|_| clean_path.clone())
+    } else {
+        clean_path.clone()
+    };
+    std::env::set_var("PATH", execution_path);
     let acl = crate::cli::local::acl_path(None, config)?;
     let options = crate::cli::local::options(
         config,
@@ -69,6 +84,7 @@ pub(super) async fn analyze(
     );
     let parent_roots = path_values(parent_input, &parent.input_schema);
     let mut insertions: Vec<usize> = Vec::new();
+    let mut child_modules: Vec<String> = Vec::new();
 
     for list in exec_lists {
         let Some(program) = list.tokens.first() else {
@@ -106,9 +122,11 @@ pub(super) async fn analyze(
             ));
         };
         // The binary the analysis checks must be the binary `find` will run.
-        let resolved = which::which(program).map_err(|error| {
-            anyhow::anyhow!("Embedded command '{program}' cannot be resolved on PATH: {error}")
-        })?;
+        let cwd = std::env::current_dir()?;
+        let resolved =
+            which::which_in(program, Some(clean_path.clone()), &cwd).map_err(|error| {
+                anyhow::anyhow!("Embedded command '{program}' cannot be resolved on PATH: {error}")
+            })?;
         let target = crate::scanner::resolver::extract_binary_path(&child.target)
             .ok_or_else(|| anyhow::anyhow!("Invalid CLI target for '{}'", child.module_id))?;
         anyhow::ensure!(
@@ -118,6 +136,17 @@ pub(super) async fn analyze(
             resolved.display(),
             target
         );
+        if delegate {
+            let shim = crate::runtime_path::default_shim_dir().join(program);
+            anyhow::ensure!(
+                shim.is_file() && manifest.commands.contains_key(program),
+                "Embedded command '{program}' is not installed as a shim; delegate mode runs \
+                 each match through the installed shim, so install it with `apexe env --enable` \
+                 (add `--also {program}` for a command the default policy leaves out) or use \
+                 `child_exec.mode: analyze`"
+            );
+        }
+        child_modules.push(child.module_id.clone());
         let child_argv = crate::adapter::argv::resolve_command_argv(
             child_args,
             &child.input_schema,
@@ -240,7 +269,25 @@ pub(super) async fn analyze(
     for index in insertions.into_iter().rev() {
         replay.insert(index, "--".to_string());
     }
-    Ok(())
+    if delegate {
+        child_modules.sort();
+        child_modules.dedup();
+        let handle = crate::governance::delegation::create(
+            config,
+            &parent.module_id,
+            &context.trace_id,
+            &child_modules,
+            &parent_roots,
+        )?;
+        tracing::info!(
+            parent = %parent.module_id,
+            children = ?child_modules,
+            grant = handle.id(),
+            "delegated approval created for embedded commands"
+        );
+        return Ok(Some(handle));
+    }
+    Ok(None)
 }
 
 /// The reviewed root module for a bare program name, if one is loaded.
@@ -261,6 +308,42 @@ fn root_module<'a>(program: &str, modules: &'a [ScannedModule]) -> Option<&'a Sc
             .unwrap_or_default();
         path.len() == 1 && path[0] == program
     })
+}
+
+/// Whether every path this child call names is under one of the grant's roots.
+///
+/// The grant is a scope, not an allow-list: the child shim still runs the path
+/// guard, and this check only answers "is this still the tree the parent was
+/// approved for?".
+pub(super) fn inputs_within(
+    grant: &crate::governance::delegation::Delegation,
+    input: &Value,
+    schema: &Value,
+) -> bool {
+    let (Some(properties), Some(values)) = (schema["properties"].as_object(), input.as_object())
+    else {
+        return true;
+    };
+    for (name, property) in properties {
+        if property["x-apexe-path"] != true && property["items"]["x-apexe-path"] != true {
+            continue;
+        }
+        let Some(value) = values.get(name) else {
+            continue;
+        };
+        let paths: Vec<&str> = match value {
+            Value::String(path) => vec![path.as_str()],
+            Value::Array(items) => items.iter().filter_map(Value::as_str).collect(),
+            _ => continue,
+        };
+        if paths
+            .iter()
+            .any(|path| !crate::governance::delegation::path_within(grant, path))
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// The parent call's path values, which are what `{}` can stand for.

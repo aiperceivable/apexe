@@ -26,7 +26,7 @@
 # programs the operator vouches for without a binding; empty by default and
 # every use is audited as unanalyzed.
 child_exec:
-  mode: refuse
+  mode: refuse          # refuse | analyze | delegate
   trust_uncovered: []
 
 # `annotations:` describes how a command is labelled when nothing has reviewed

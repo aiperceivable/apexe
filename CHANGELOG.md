@@ -41,6 +41,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   still reach the gate. `;`, `+` and `{}` are refused as declarations because
   they are `-exec`'s terminators: accepting them would let `-exec utility ;`
   run a program. The corpus's two `find` entries declare the four operators.
+- `child_exec.mode: delegate` runs each embedded command through the installed
+  child shim instead of the real binary, so the child's ACL and path guard see
+  the **actual** `{}` value per match: symlinks are resolved, `-execdir`'s
+  working directory is the one `find` sets, and a path outside the parent's
+  starting paths is refused. The parent creates a short-lived grant (child
+  modules + starting paths + parent trace, 0600 in a 0700 directory, 30-minute
+  expiry, removed when the call returns) that stands the **approval** prompt
+  down for those matches only; ACL and the path guard still run every time. The
+  child program must be installed as a shim, and unanalyzable child modules stay
+  refused. File writes/reads that live in a program's own logic still need a
+  confinement backend.
 - A command that computes filesystem paths inside its own logic can declare
   `computes_paths: true` (contract key `x-apexe-computes-paths`). The
   child-execution analysis refuses such a module rather than treating its

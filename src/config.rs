@@ -32,6 +32,14 @@ pub enum ChildExecMode {
     /// commands are still refused; see `trust_uncovered` for the explicit
     /// escape hatch.
     Analyze,
+    /// Like `analyze`, but each match runs through the installed child shim.
+    ///
+    /// The parent approval is delegated for the child module and the parent's
+    /// starting paths, so the child's ACL and path policy run again against
+    /// the **actual** path (including symlinks and `-execdir`'s working
+    /// directory) without one prompt per file. The grant is narrow and
+    /// short-lived; it never bypasses ACL or the path guard.
+    Delegate,
 }
 
 /// Per-installation policy for embedded child commands.

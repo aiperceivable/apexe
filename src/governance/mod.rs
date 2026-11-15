@@ -1,5 +1,6 @@
 pub mod acl;
 pub mod audit;
+pub(crate) mod delegation;
 pub mod path_guard;
 
 pub use acl::{
