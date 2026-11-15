@@ -2954,10 +2954,15 @@ fn test_shim_local_timeout_bounds_the_run() {
 // ---------------------------------------------------------------------------
 
 fn write_sandbox_config_with_backend(fixture: &Fixture, backend: &str) {
+    write_sandbox_config_for(fixture, backend, "cli.find");
+}
+
+fn write_sandbox_config_for(fixture: &Fixture, backend: &str, module: &str) {
+    std::fs::create_dir_all(fixture.home.path().join(".apexe")).unwrap();
     std::fs::write(
         fixture.home.path().join(".apexe/config.yaml"),
         format!(
-            "schema_version: 1\nsandbox:\n  backend: {backend}\n  default: required\n  modules: [cli.find]\n"
+            "schema_version: 1\nsandbox:\n  backend: {backend}\n  default: required\n  modules: [{module}]\n"
         ),
     )
     .unwrap();
@@ -2974,9 +2979,8 @@ fn sandbox_backend_for_test() -> Option<&'static str> {
     if which::which("bwrap").is_ok() {
         return Some("bwrap");
     }
-    if which::which("systemd-run").is_ok() {
-        return Some("systemd-run");
-    }
+    // `systemd-run` needs a system service (root); an unprivileged CI host
+    // would otherwise select it and fail the dry-run test with a refusal.
     None
 }
 
@@ -3042,6 +3046,82 @@ fn test_exec_runs_selected_module_through_sandbox_exec() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn test_exec_runs_selected_unmanaged_module_through_bwrap() {
+    if which::which("bwrap").is_err() {
+        return;
+    }
+    let fixture = Fixture::new();
+    write_sandbox_config_for(&fixture, "bwrap", "unmanaged.find");
+    std::fs::write(fixture.home.path().join("request.txt"), b"x").unwrap();
+    let output = fixture
+        .command()
+        .args([
+            "exec",
+            "--unmanaged",
+            "allow",
+            "--",
+            "find",
+            ".",
+            "-name",
+            "*.txt",
+        ])
+        .output()
+        .expect("sandboxed find");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("request.txt"), "{stdout}");
+    let audit =
+        std::fs::read_to_string(fixture.home.path().join(".apexe/audit.jsonl")).expect("audit log");
+    assert!(audit.contains("\"sandbox_backend\":\"bwrap\""), "{audit}");
+    assert!(audit.contains("\"sandbox_outcome\":\"applied\""), "{audit}");
+}
+
+#[test]
+fn test_exec_runs_docker_no_access_when_available() {
+    if which::which("docker").is_err()
+        || !std::process::Command::new("docker")
+            .args(["image", "inspect", "--format", "{{.Id}}", "alpine:3.20"])
+            .status()
+            .is_ok_and(|status| status.success())
+    {
+        return;
+    }
+    let fixture = Fixture::new();
+    let apexe_dir = fixture.home.path().join(".apexe");
+    std::fs::create_dir_all(&apexe_dir).unwrap();
+    let secret = fixture.home.path().join("secret");
+    std::fs::write(&secret, b"secret-content").unwrap();
+    std::fs::write(
+        apexe_dir.join("config.yaml"),
+        format!(
+            "schema_version: 1\nsandbox:\n  backend: docker\n  default: required\n  modules: [unmanaged.sh]\n  backends:\n    docker:\n      image: alpine:3.20\npaths:\n  no_access:\n    - {}\n",
+            secret.display()
+        ),
+    )
+    .unwrap();
+    let output = fixture
+        .command()
+        .args([
+            "exec",
+            "--unmanaged",
+            "allow",
+            "--",
+            "sh",
+            "-c",
+            "cat secret",
+        ])
+        .output()
+        .expect("docker sandbox");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("secret-content"), "{stdout}");
+    let audit =
+        std::fs::read_to_string(fixture.home.path().join(".apexe/audit.jsonl")).expect("audit log");
+    assert!(audit.contains("\"sandbox_backend\":\"docker\""), "{audit}");
+    assert!(audit.contains("\"sandbox_outcome\":\"applied\""), "{audit}");
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn test_sandbox_exec_denies_denied_write_and_computed_path() {
@@ -3052,12 +3132,18 @@ fn test_sandbox_exec_denies_denied_write_and_computed_path() {
     let temp = tempfile::tempdir().unwrap();
     let denied = temp.path().join("denied");
     let allowed = temp.path().join("allowed");
+    let secret = allowed.join("secret");
+    let write_only = temp.path().join("write-only");
     std::fs::create_dir(&denied).unwrap();
     std::fs::create_dir(&allowed).unwrap();
+    std::fs::create_dir(&secret).unwrap();
+    std::fs::create_dir(&write_only).unwrap();
+    std::fs::write(secret.join("file"), b"secret").unwrap();
     let policy = PathPolicy {
         read_only: vec![denied.clone()],
         read_write: vec![allowed.clone()],
-        ..PathPolicy::default()
+        no_access: vec![secret.clone()],
+        write_only: vec![write_only.clone()],
     };
     let runtime = SandboxRuntime::new(
         SandboxConfig {
@@ -3083,11 +3169,79 @@ fn test_sandbox_exec_denies_denied_write_and_computed_path() {
     };
     assert!(!run("echo x > denied/f"), "denied write must fail");
     assert!(!denied.join("f").exists(), "denied write must not land");
+    assert!(
+        !run("cat allowed/secret/file"),
+        "NoAccess content must not be readable"
+    );
+    assert!(
+        !run("stat allowed/secret"),
+        "NoAccess metadata must be denied by Seatbelt"
+    );
     assert!(run("echo x > allowed/f"), "allowed write must succeed");
     assert!(allowed.join("f").exists(), "allowed write must land");
     assert!(
+        run("echo x > write-only/f"),
+        "WriteOnly must permit a write"
+    );
+    assert!(!run("cat write-only/f"), "WriteOnly must deny a read");
+    assert!(
         !run("p=denied/computed; echo x > \"$p\""),
         "computed path must fail at the kernel"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_bwrap_deny_within_grant_when_available() {
+    use apexe::config::{PathPolicy, SandboxBackend, SandboxConfig, SandboxMode};
+    use apexe::governance::SandboxRuntime;
+    use std::process::Command as StdCommand;
+
+    if which::which("bwrap").is_err() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    let log = root.join("log");
+    let secret = log.join("secret");
+    std::fs::create_dir_all(&secret).unwrap();
+    std::fs::write(secret.join("file"), b"secret").unwrap();
+    let policy = PathPolicy {
+        read_only: vec![root.clone()],
+        read_write: vec![log.clone()],
+        no_access: vec![secret.clone()],
+        write_only: Vec::new(),
+    };
+    let runtime = SandboxRuntime::new(
+        SandboxConfig {
+            backend: SandboxBackend::Bwrap,
+            default: SandboxMode::Required,
+            modules: vec!["cli.sh".to_string()],
+            ..SandboxConfig::default()
+        },
+        policy,
+        temp.path().to_path_buf(),
+    );
+    let plan = runtime
+        .plan(
+            "cli.sh",
+            "/bin/sh",
+            &["-c".to_string(), "cat root/log/secret/file".to_string()],
+        )
+        .expect("plan")
+        .expect("selected");
+    let status = StdCommand::new(&plan.program)
+        .args(&plan.args)
+        .current_dir(temp.path())
+        .status()
+        .expect("spawn bwrap");
+    assert!(
+        !status.success(),
+        "no_access must win over a read_write parent"
+    );
+    assert!(
+        !secret.join("new").exists(),
+        "the denied file must not be writable"
     );
 }
 

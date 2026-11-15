@@ -226,7 +226,9 @@ impl Middleware for FailureLogMiddleware {
             );
         }
         if let Some(ref audit) = self.audit {
-            if module_records_its_own_outcome(error.code) {
+            if module_records_its_own_outcome(error.code)
+                || error.details.contains_key("sandbox_outcome")
+            {
                 // `CliModule` already wrote an `execution`/`error` row for this
                 // very trace; a `refusal` row on top would claim the binary
                 // never ran. See `module_records_its_own_outcome`.
@@ -407,6 +409,29 @@ mod tests {
             .await
             .expect("on_error never fails without a matching before");
         assert!(outcome.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_sandbox_refusal_is_not_duplicated_as_a_refusal_row() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("audit.jsonl");
+        let middleware = FailureLogMiddleware::with_audit(
+            Some(Arc::new(crate::governance::AuditManager::new(&path))),
+            false,
+        );
+        let mut error = ModuleError::new(ErrorCode::ACLDenied, "sandbox refused".to_string());
+        error.details.insert(
+            "sandbox_outcome".to_string(),
+            serde_json::json!("unavailable"),
+        );
+        middleware
+            .on_error("cli.sh", json!({}), &error, &context())
+            .await
+            .expect("on_error never fails");
+        assert!(
+            !path.exists() || std::fs::metadata(&path).unwrap().len() == 0,
+            "the module's execution row already carries the sandbox fields"
+        );
     }
 
     #[tokio::test]

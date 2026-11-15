@@ -93,12 +93,12 @@ handled.
 
 ### 3.1 Backend capabilities
 
-| Backend | ReadOnly | ReadWrite | NoAccess | WriteOnly | DenyWithinGrant |
-|---|---|---|---|---|---|
-| `systemd-run` | yes | yes | yes | **no** | yes |
-| `bwrap` | yes | yes | yes | **no** | yes |
-| `sandbox-exec` | yes | yes | yes | yes | yes |
-| `docker` | yes | yes | yes | **no** | yes |
+| Backend | ReadOnly | ReadWrite | NoAccess (content/entries) | NoAccess metadata | WriteOnly | DenyWithinGrant |
+|---|---|---|---|---|---|---|
+| `systemd-run` | yes | yes | yes | **no** | **no** | yes |
+| `bwrap` | yes | yes | yes | **no** | **no** | yes |
+| `sandbox-exec` | yes | yes | yes | yes | yes | yes |
+| `docker` | yes | yes | yes | **no** | **no** | yes |
 
 A policy that needs a capability the selected backend lacks is a **refusal**,
 not a silent drop. In 0.15.0 the shipped `paths.write_only` default is empty;
@@ -205,8 +205,9 @@ hashes the translated invocation, not the YAML.
    fails at the kernel.
 7. Canonical paths: `/tmp`/`/private/tmp`, `/etc`/`/private/etc`, symlink and
    dangling cases.
-8. `NoAccess` denies content and metadata; `WriteOnly` writes but cannot read
-   on `sandbox-exec`; unsupported backends refuse.
+8. `NoAccess` denies content and entries; `sandbox-exec` also denies metadata
+   and declares `no_access_metadata`; `WriteOnly` writes but cannot read on
+   `sandbox-exec`; unsupported backends refuse.
 9. `DenyWithinGrant`: `read_only /var`, `read_write /var/log`,
    `no_access /var/log/secret`.
 10. Selection wraps only listed modules; `cli.ls` is not wrapped when unlisted.

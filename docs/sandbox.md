@@ -174,15 +174,20 @@ PATH"`, `"user manager unavailable (no DBUS session)"`,
 enum Capability {
     ReadOnly,        // may read, may not write
     ReadWrite,       // may read and write
-    NoAccess,        // neither content nor metadata
+    NoAccess,        // protected content and directory entries
+    NoAccessMetadata,// the stricter form: `stat` also fails
     WriteOnly,       // may write, may not read
     DenyWithinGrant, // can refuse a subtree that a broader grant covers
 }
 ```
 
-`NoAccess` denies metadata (`stat`, `readdir`) as well as content. "Allow
-discovery, deny content" is a different policy, not `NoAccess`; do not label it
-as `no_access` or a caller that can list the directory would appear confined.
+`NoAccess` denies content and directory entries. Mount-based backends
+(`bwrap`, `systemd-run`, `docker`) necessarily leave an empty placeholder at
+the protected path, so `stat` of the mountpoint itself still succeeds; they
+declare `no_access` but not `no_access_metadata`. Seatbelt additionally denies
+metadata and declares `no_access_metadata`. "Allow discovery, deny content" is
+not either capability: a caller that can list the protected directory's real
+entries would appear confined.
 
 `DenyWithinGrant` is backend-specific. A mount-based or rule-based backend
 (`bwrap`, `systemd-run`, Seatbelt) can express a deny inside a broader grant;
@@ -213,10 +218,11 @@ emits a rule for both the original and the resolved spelling; a mount backend
 uses the resolved path for the mount and keeps the original spelling where the
 caller can still name it. The probe tests both. This is where `/tmp` →
 `/private/tmp` and `/etc` → `/private/etc` are handled; a backend that uses only
-the caller's spelling produces a false negative, not a confinement. Translation must be a pure function
-of its inputs — same policy and invocation produce the same launch spec byte for
-byte. That is what makes it testable without a kernel (§ `docs/sandbox-testing.md`,
-layer 1).
+the caller's spelling produces a false negative, not a confinement. Translation must be a pure function of its inputs: the same policy and
+invocation produce the same policy digest. Backend temporary resources (a
+Seatbelt profile path, a container instance name) are not policy and may differ
+between identical calls. That distinction is what makes the translation testable
+without a kernel (§ `docs/sandbox-testing.md`, layer 1).
 
 ### 5.4 Fail-closed rules
 
@@ -311,10 +317,10 @@ refuses, and `off` runs only because the operator explicitly chose it.
 
 | Backend | Platform | Capabilities | Enforcement | Status |
 |---|---|---|---|---|
-| `systemd-run --property=…` (system, root) | Linux + systemd | read/write/no-access + `DenyWithinGrant` (no `WriteOnly`) | `enforcing` only as a system service | implemented, root/system only; `--user` is **not** enforcing |
-| `bwrap` | Linux (unprivileged userns) | read/write/no-access + `DenyWithinGrant` (no `WriteOnly`) | `enforcing` | implemented, preferred when installed |
-| `podman` / `docker` | Linux, macOS | read/write/no-access + `DenyWithinGrant` (no `WriteOnly`) | `enforcing`, different semantics (§8) | implemented, optional |
-| `sandbox-exec` (seatbelt) | macOS | all four + `DenyWithinGrant`, canonical paths | `enforcing`, **deprecated** | implemented, macOS local |
+| `systemd-run --property=…` (system, root) | Linux + systemd | read/write/no-access + `DenyWithinGrant` (no `WriteOnly`, no `no_access_metadata`) | `enforcing` only as a system service | implemented, root/system only; `--user` is **not** enforcing |
+| `bwrap` | Linux (unprivileged userns) | read/write/no-access + `DenyWithinGrant` (no `WriteOnly`, no `no_access_metadata`) | `enforcing` | implemented, preferred when installed |
+| `podman` / `docker` | Linux, macOS | read/write/no-access + `DenyWithinGrant` (no `WriteOnly`, no `no_access_metadata`) | `enforcing`, different semantics (§8) | implemented, optional |
+| `sandbox-exec` (seatbelt) | macOS | all four + `no_access_metadata` + `DenyWithinGrant`, canonical paths | `enforcing`, **deprecated** | implemented, macOS local |
 | `nono` (Seatbelt) | macOS | all four + `DenyWithinGrant`, via private `sandbox_init` | `enforcing` after a probe | optional, later |
 | `nono` (Landlock) | Linux | read/write + `WriteOnly`; **no `DenyWithinGrant`** | `enforcing` for expressible policies; refuses `no_access` under a grant | optional, later |
 | `microsandbox` / Apple `container` | macOS | all four, via a Linux VM | `enforcing` | later |
@@ -406,13 +412,16 @@ records the five fields below.
 
 ```json
 {
+  "timestamp": "2026-11-15T12:00:00Z",
   "event": "sandbox_probe",
-  "backend": "systemd-run",
-  "available": true,
-  "enforcement": "enforcing",
-  "capabilities": ["read_only", "read_write", "no_access", "write_only", "deny_within_grant"],
-  "policy_digest": "sha256:9f2c…",
-  "reason": null
+  "details": {
+    "backend": "systemd-run",
+    "available": true,
+    "enforcement": "enforcing",
+    "capabilities": ["read_only", "read_write", "no_access", "deny_within_grant"],
+    "reason": null,
+    "probe": "static"
+  }
 }
 ```
 

@@ -142,6 +142,13 @@ keep the two distinct:
 - "Allow discovery, deny content": a separate policy, not expressible as
   `NoAccess`; only add it if operators ask for it, under its own name.
 
+**0.15.0 amendment.** The strict version above is only expressible by Seatbelt.
+`bwrap --tmpfs`, systemd `InaccessiblePaths`, and Docker's empty mount hide the
+protected content and entries but leave a stat-able placeholder at the path.
+Those backends therefore declare `no_access` (content/entries) but not
+`no_access_metadata`; the contract and tests must not claim otherwise. A true
+metadata-denying mount backend remains future work.
+
 ### 2.3 `DenyWithinGrant` is backend-specific
 
 `nono`'s Linux backend is Landlock (an allow-list). It can grant rights, but a
@@ -288,7 +295,9 @@ Add these to [`docs/sandbox-testing.md`](../sandbox-testing.md):
   glob vs literal, file vs directory.
 - **Dual spelling:** a write through the original spelling is blocked by a deny
   on the resolved spelling, and vice versa where the backend is literal.
-- **`NoAccess`:** content and metadata (`stat`, `readdir`, `cat`) are denied.
+- **`NoAccess`:** content and directory entries are denied. Metadata (`stat`)
+  is denied by Seatbelt; mount backends expose an empty placeholder (see the
+  0.15.0 amendment above).
 - **`WriteOnly`:** write succeeds; read fails; a directory and a file.
 - **`DenyWithinGrant`:** `read_only /var` + `read_write /var/log` +
   `no_access /var/log/secret`; a backend without the capability refuses.

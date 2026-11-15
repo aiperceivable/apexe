@@ -37,7 +37,7 @@ the whole point of it.
 
 | Layer | Asserts | Runs on | Entry point |
 |---|---|---|---|
-| 1. Translation | `paths:` + invocation → the backend's argv, byte for byte | any OS | `#[cfg(test)]` next to the translator |
+| 1. Translation | `paths:` + invocation → the backend's argv; identical policy produces the same digest | any OS | `#[cfg(test)]` next to the translator |
 | 2. Selection | the right backend is chosen for a platform, and an unavailable one is reported, not assumed | any OS; probe injected as a value | unit test |
 | 3. Fail-closed | unavailable backend under `sandbox.required`, or an inexpressible policy, refuses *without spawning* a child | any OS | unit test asserting the spawn was not reached |
 | 4. Enforcement | a denied write fails at the kernel; a permitted write succeeds | Linux (`bwrap`; `systemd-run` system/root only); macOS (`sandbox-exec`/`nono`) with canonical paths; VM/container for untrusted | integration test, `#[ignore]` or platform-skipped |
@@ -190,7 +190,7 @@ transcript in a description.
 | 1 | `probe()` returns `available: false` with a factual `reason` when the program is absent from `PATH` | unit test, probe injected |
 | 2 | `probe()` reports `advisory` only when the backend cannot enforce; a macOS `sandbox-exec`/`nono` probe must canonicalize paths and pass before reporting `enforcing` | unit test + the §4 probe |
 | 3 | Declared `capabilities` match what the backend can express; a policy needing an absent capability yields `Refusal`, not a dropped entry | unit test with a policy containing `no_access` inside a granted root |
-| 4 | `translate()` is deterministic: identical inputs produce identical argv | unit test, run twice and compared |
+| 4 | `translate()` is deterministic: identical inputs produce the same policy digest and non-volatile argv | unit test, run twice and compared |
 | 5 | `sandbox.required` + unavailable backend refuses **before** spawning | unit test asserting the spawn function was not called |
 | 6 | Probes A and B both hold through `apexe exec` | integration test, Linux or macOS (`sandbox-exec`/`nono`) with canonical paths |
 | 7 | Probe C fails under the backend, and the failure is attributable to the kernel (`EACCES`), not to a wrapper script exiting early | integration test, Linux or macOS (`sandbox-exec`/`nono`) with canonical paths |
@@ -234,8 +234,9 @@ protocol:
   policy;
 - `execute/wait/kill/cleanup` preserve stdin/stdout/stderr, exit status, signal
   and timeout;
-- `capabilities` include `DenyWithinGrant` and `write_only` when the effective
-  policy needs them, otherwise refuse;
+- `capabilities` include `DenyWithinGrant`, `write_only` and
+  `no_access_metadata` only where the backend actually provides them; a policy
+  needing an absent capability is refused;
 - selection wraps only the operator-selected modules and `external` callers;
 - audit carries backend, enforcement, outcome, policy digest and reason;
 - `sandbox.required`/`auto` refuse before spawn when no backend is available;
@@ -257,17 +258,19 @@ recorded in [`docs/ideas/sandbox-source-notes.md`](ideas/sandbox-source-notes.md
   trailing slash, glob vs literal, file vs directory.
 - **Dual spelling:** a write through the original spelling is blocked by a deny
   on the resolved spelling, and vice versa where the backend is literal.
-- **`NoAccess`:** content and metadata (`stat`, `readdir`, `cat`) are denied.
-  "Allow discovery, deny content" is not `NoAccess` and must not be accepted as
-  an equivalent.
+- **`NoAccess`:** content and directory entries are denied. `sandbox-exec`
+  also denies metadata (`stat`), and may declare `no_access_metadata`; mount
+  backends expose an empty mountpoint, so their postcondition is content/entries
+  only. "Allow discovery, deny content" is neither capability.
 - **`WriteOnly`:** write succeeds, read fails, for a file and a directory.
 - **`DenyWithinGrant`:** `read_only /var` + `read_write /var/log` +
   `no_access /var/log/secret`; a Landlock-only backend must refuse.
 - **A/B/C:** denied write fails; permitted write succeeds; a computed path
   (`python3 -c 'open(...)'`) fails at the kernel.
 - **bwrap:** `--unshare-all`, `--new-session`, `--die-with-parent`,
-  `--ro-bind / /`, `--dev`, `--proc`, `--tmpfs /tmp`, `--cap-drop ALL`,
-  `--args`; a missing deny path is refused or cleaned up.
+  `--bind / /`, `--dev`, `--proc`, `--tmpfs /tmp`, `--cap-drop ALL`; a
+  missing path is dropped before translation, and the working directory is
+  bound after the private `/tmp`.
 - **Seatbelt:** `(deny default)`, read/write rule order,
   `file-write-unlink`/`file-write-create`, profile size, both spellings.
 - **systemd-run:** `ReadOnlyPaths`/`ReadWritePaths`/`InaccessiblePaths` in a

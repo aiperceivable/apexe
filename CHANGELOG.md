@@ -37,9 +37,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   private Docker Engine) is a separate product, not this `docker run` backend.
 - The runtime normalizes `paths:` to `PathSpelling` (original + resolved), then
   to a `MountPlan`; `systemd-run`, `bwrap`, `sandbox-exec` and `docker`
-  translators consume it. `NoAccess` denies content and metadata; `WriteOnly`
-  is supported by `sandbox-exec` and refused by backends that cannot express it;
-  `DenyWithinGrant` is declared per backend.
+  translators consume it. `NoAccess` denies content and entries, with extra
+  metadata denial on `sandbox-exec`; `WriteOnly` is supported by `sandbox-exec`
+  and refused by backends that cannot express it; `DenyWithinGrant` is declared
+  per backend.
 - Execution audits carry `sandbox_backend`, `sandbox_enforcement`,
   `sandbox_outcome`, `sandbox_policy_digest` and `sandbox_reason`; `sandbox
   check` writes a `sandbox_probe` governance event.

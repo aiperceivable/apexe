@@ -31,8 +31,8 @@ child_exec:
 
 # Sandbox delegation. Opt-in per module; `off` is the safe default. The default
 # backend pair is macOS `sandbox-exec` (OS, deprecated, canonical paths) and
-# Linux `systemd-run` (OS), with `bwrap` (the `bubblewrap` package) preferred
-# when installed. Docker is an optional container fallback and needs an image.
+# Linux `bwrap` (the `bubblewrap` package), with `systemd-run` system/root only.
+# Docker is an optional container fallback and needs an image.
 # `required` and `auto` refuse before spawn when no enforcing backend is
 # available; there is no silent host fallback.
 sandbox:

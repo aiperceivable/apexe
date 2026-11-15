@@ -200,7 +200,9 @@ impl AuditManager {
             sandbox_backend: sandbox.map(|value| value.backend.as_str()),
             sandbox_enforcement: sandbox.map(|value| value.enforcement.as_str()),
             sandbox_outcome: sandbox.map(|value| value.outcome.as_str()),
-            sandbox_policy_digest: sandbox.map(|value| value.policy_digest.as_str()),
+            sandbox_policy_digest: sandbox
+                .map(|value| value.policy_digest.as_str())
+                .filter(|digest| !digest.is_empty()),
             sandbox_reason: sandbox.and_then(|value| value.reason.as_deref()),
         })
         .await;

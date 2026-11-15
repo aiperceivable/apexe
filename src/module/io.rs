@@ -57,6 +57,7 @@ pub(crate) async fn execute(
     io: ExecutionIo,
     sandbox: Option<&crate::governance::SandboxRuntime>,
     module_id: &str,
+    sandbox_outcome: &mut Option<crate::governance::SandboxOutcome>,
 ) -> Result<ExecutionOutput, ModuleError> {
     // The sandbox plan sees the exact child argv. The JSON flag is appended by
     // `execute_subprocess` for captured calls, so include it before translating;
@@ -67,11 +68,17 @@ pub(crate) async fn execute(
             child_args.extend(shell_words::split(flag).unwrap_or_default());
         }
     }
-    let plan = sandbox
+    let plan = match sandbox
         .map(|runtime| runtime.plan(module_id, binary, &child_args))
         .transpose()
-        .map_err(crate::governance::SandboxError::into_module_error)?
-        .flatten();
+    {
+        Ok(plan) => plan.flatten(),
+        Err(error) => {
+            *sandbox_outcome = Some(error.outcome());
+            return Err(error.into_module_error());
+        }
+    };
+    *sandbox_outcome = plan.as_ref().map(|plan| plan.outcome());
 
     if io == ExecutionIo::Captured {
         let (program, program_args, json_flag) = match &plan {
@@ -151,6 +158,7 @@ mod tests {
             passthrough(),
             None,
             "cli.test",
+            &mut None,
         )
         .await
         .expect("a zero local timeout must not arm a timer");
@@ -172,6 +180,7 @@ mod tests {
             passthrough(),
             None,
             "cli.test",
+            &mut None,
         )
         .await
         .expect_err("a bounded passthrough call must time out");

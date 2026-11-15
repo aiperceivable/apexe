@@ -827,7 +827,19 @@ fn apply_file_config(config: &mut ApexeConfig, file_path: &Path) -> anyhow::Resu
         }
     }
     match serde_yaml::from_str::<ApexeConfig>(&contents) {
-        Ok(file_config) => *config = file_config,
+        Ok(file_config) => {
+            if let Some(policy) = file_config.paths.as_ref() {
+                if let Some(entry) = policy.conflict() {
+                    anyhow::bail!(
+                        "{}: path {} appears in more than one of paths.read_only, \
+                         paths.read_write, paths.no_access and paths.write_only",
+                        file_path.display(),
+                        entry.display()
+                    );
+                }
+            }
+            *config = file_config;
+        }
         Err(e) => warn!(
             path = %file_path.display(),
             "Malformed config file, using defaults: {e}"
@@ -1661,6 +1673,19 @@ mod paths_policy_tests {
             ..Default::default()
         };
         assert_eq!(policy.conflict(), Some(&PathBuf::from("/etc")));
+    }
+
+    #[test]
+    fn test_load_config_refuses_a_path_in_two_permission_lists() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.yaml");
+        std::fs::write(
+            &path,
+            "schema_version: 1\npaths:\n  read_only: [/etc]\n  read_write: [/etc]\n",
+        )
+        .unwrap();
+        let error = load_config(Some(&path)).expect_err("conflicting policy must be refused");
+        assert!(error.to_string().contains("/etc"), "{error}");
     }
 
     #[test]

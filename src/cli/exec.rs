@@ -490,6 +490,14 @@ impl ExecArgs {
             result["argv"] = call.input["argv"].clone();
             result["path_guard_available"] = json!(false);
             result["stdin"] = json!(crate::module::StdinMode::Null);
+            add_sandbox_plan(
+                &mut result,
+                call,
+                scanned,
+                crate::module::ExecutionIo::Passthrough {
+                    stdin: crate::module::StdinMode::Null,
+                },
+            )?;
         } else {
             let io = if call.mode == ExecutionMode::Native {
                 let stdin = super::shim::passthrough_stdin_mode();

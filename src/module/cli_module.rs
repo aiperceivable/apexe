@@ -429,13 +429,14 @@ impl CliModule {
         error: ModuleError,
         ctx: &Context<Value>,
         elapsed_ms: u64,
+        sandbox: Option<&crate::governance::SandboxOutcome>,
     ) -> ModuleError {
         // Timeouts are recorded by `FailureLogMiddleware` so an apcore-level
         // deadline (which drops this future before `abandon_run` runs) still
         // leaves exactly one refusal row. Other execution errors keep their
         // execution row here and suppress the middleware duplicate.
         if error.code != ErrorCode::ModuleTimeout {
-            self.audit_execution(ctx, "error", -1, elapsed_ms, None)
+            self.audit_execution(ctx, "error", -1, elapsed_ms, sandbox)
                 .await;
         }
         if error.code == ErrorCode::ModuleTimeout {
@@ -722,6 +723,7 @@ impl Module for CliModule {
 
         let start = std::time::Instant::now();
         let args = self.execution_argv(&inputs)?;
+        let mut sandbox_outcome = None;
 
         let output = match super::io::execute(
             &self.binary_path,
@@ -732,13 +734,16 @@ impl Module for CliModule {
             self.execution_io,
             self.sandbox.as_deref(),
             &self.module_id,
+            &mut sandbox_outcome,
         )
         .await
         {
             Ok(output) => output,
             Err(e) => {
                 let elapsed_ms = start.elapsed().as_millis() as u64;
-                return Err(self.abandon_run(e, ctx, elapsed_ms).await);
+                return Err(self
+                    .abandon_run(e, ctx, elapsed_ms, sandbox_outcome.as_ref())
+                    .await);
             }
         };
 
