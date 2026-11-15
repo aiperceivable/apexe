@@ -975,10 +975,11 @@ declared with `exec_list: true`:
 
 The resolver collects the tokens up to and including `;` or `+` instead of
 classifying them as this command's flags. It reaches the contract as
-`x-apexe-exec-list`. Two invariants are enforced when the overlay loads: the
-route must have a parsed tail (the list lives in it) and the flag's property
-must be in `approval_flags`, so an embedded command is never reachable without
-the parent prompt. What may run is decided by `child_exec.mode`: `refuse` (the
+`x-apexe-exec-list`. Three invariants are enforced when the overlay loads: the route must be the
+tool's own invocation (a subcommand route cannot carry an `exec_list` yet), it
+must have a parsed tail (the list lives in it), and the flag's property must be
+in `approval_flags`, so an embedded command is never reachable without the
+parent prompt. What may run is decided by `child_exec.mode`: `refuse` (the
 default) rejects every list; `analyze` resolves the program to its own module
 and applies that module's ACL, path and approval gates; `delegate` applies the
 same gates and re-enters the installed child shim per match, so `{}`, a symlink

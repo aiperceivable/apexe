@@ -434,7 +434,7 @@ run:
 The effective decision is the intersection of the parent's and child's gates.
 No mode is OS confinement: programs that compute their own paths (`sh -c`,
 `sed 'w /etc/x'`, `python -c`) are refused and require a confinement backend;
-`trust_uncovered` is the explicit, audited exception for an unbound program.
+`trust_uncovered` is the explicit, logged exception for an unbound program.
 The corpus declares `exec_list` on `find`'s four flags; the [user manual](../user-manual.md#embedded-child-commands-find--exec)
 owns the operator contract.
 

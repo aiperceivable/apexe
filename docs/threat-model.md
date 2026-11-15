@@ -668,6 +668,20 @@ describes the shipped stdin and shim boundaries:
   `awk`, `sh -s`, `sed -f -`) that is a complete bypass by a different route
   than §5.9's. F8 requires an allowlist (`streaming_stdin_safe`, a human
   assertion per module), never a denylist.
+- **Embedded child commands are argv-gated, not confined.** A command that
+  embeds another program's argv (`find . -exec rm {} \;`) is refused by
+  default. `child_exec.mode: analyze` resolves the child to its own reviewed
+  module and applies that module's schema, ACL, path policy and approval at the
+  parent's starting paths; `delegate` re-enters the installed child shim per
+  match, so the actual `{}` path, symlinks and `-execdir`'s working directory
+  are checked and the parent approval is delegated by a scoped, short-lived
+  grant. Neither mode confines the child's own logic: `sh -c`,
+  `sed 'w /etc/x'`, `python -c` and TOCTOU still need an external confinement
+  backend. The module-JSON/MCP surface never executes an exec-list without the
+  native analysis, and `trust_uncovered` is an explicit operator
+  responsibility. See [`docs/features/v2-f8-local-execution.md`](features/v2-f8-local-execution.md)
+  §8.3 and the [user manual](user-manual.md#embedded-child-commands-find--exec).
+
 - **Shim coverage is partial, and the gap silent.** Shell builtins —
   `cd`, `echo`, `test`, and in most shells `kill` — are resolved without
   consulting `PATH`, so no shim can sit in front of them and nothing at the

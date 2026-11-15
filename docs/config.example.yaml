@@ -24,7 +24,7 @@
 # `analyze` resolves the child program to its own reviewed module and applies
 # that module's ACL, path policy and approval. `trust_uncovered` names bare
 # programs the operator vouches for without a binding; empty by default and
-# every use is audited as unanalyzed.
+# every use is logged as unanalyzed.
 child_exec:
   mode: refuse          # refuse | analyze | delegate
   trust_uncovered: []

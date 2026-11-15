@@ -1401,7 +1401,7 @@ child_exec:
 | `additional_denied_paths` | list of paths | `[]` | Locations to deny **in addition to** the path-guard baselines (§9.7) |
 | `allowed_paths` | list of paths | `[]` | Carve-outs **out of** the path-guard baselines (§9.7). The only setting that relaxes the guard; you own the consequences |
 | `child_exec.mode` | `refuse` \| `analyze` \| `delegate` | `refuse` | Policy for a command that embeds another program's argv (`find -exec`). `refuse` rejects every list; `analyze` resolves the program to its own module and applies that module's ACL, path and approval gates; `delegate` does the same and runs each match through the installed child shim, with a scoped delegated approval and the actual path checked |
-| `child_exec.trust_uncovered` | list of names | `[]` | Bare program names the operator vouches for when no binding exists. Skips coverage and child-argument analysis; the parent approval is the only remaining gate. Every use is audited as unanalyzed |
+| `child_exec.trust_uncovered` | list of names | `[]` | Bare program names the operator vouches for when no binding exists. Skips coverage and child-argument analysis; the parent approval is the only remaining gate. Every use is logged as unanalyzed |
 
 ### Embedded child commands (`find -exec`)
 
@@ -1420,7 +1420,9 @@ only) to have the child resolved and gated:
 4. `{}` is checked as the parent call's starting paths at the child's access
    mode, and `--` is inserted before it when the child module declares
    `end_of_options`, so a matched file named `-rf` is a path, not an option;
-5. one approval covers the parent and the child; the audit records both.
+5. one approval covers the parent and the child. The parent execution is audited;
+   the child analysis is logged, and in `delegate` the child shim adds its own
+   execution record.
 
 `delegate` adds per-match governance on top of that: the parent sets `PATH` to
 the installed shim directory first, creates a short-lived grant naming the child
@@ -1460,7 +1462,7 @@ a child that computes its own paths is refused in both modes.
 
 `trust_uncovered` is the explicit exception: it admits a bare program name for
 which no binding exists, skipping analysis. It is empty by default, reported at
-startup when non-empty, and every delegated use is audited as unanalyzed. It is
+startup when non-empty, and every use is logged as unanalyzed. It is
 not a safety claim.
 
 A list that arrives through `--input`/MCP/A2A is refused even with
@@ -1673,7 +1675,7 @@ Read this table if you are writing an MCP client against apexe, consuming
 | `x-apexe-opaque-after` | property | `true` | This token and every one after it are forwarded verbatim, because the tool stops interpreting there. On the **last, variadic operand** it covers `node <script> <argv for the script>`; on a **flag** it covers `python3 -m <module> <args for the module>` and `python3 -c <code> <argv for the code>`, where the tail starts at the flag's value rather than at a positional. Either way the parser stops validating, so a script's own flags are not measured against the interpreter's grammar. Execution still forwards the caller's original argv. The tail still lands in the declared operand, so a path-typed operand puts those tokens to the path guard like any other value |
 | `x-apexe-tail-parsed` | property | `true` | This operand starts a trailing mini-language that is **parsed**, not forwarded: `find path … [expression]`. The boundary is the first token matching a declared trailing flag (options marked `x-apexe-flag-position: "before-operands"` stay ahead of the leading operand); every token from there is resolved against the declared flags, so `-delete` reaches the approval gate and `x-apexe-writes-with` sees the write. A token no flag explains refuses the call and names the token — `find . -exec rm {} \;` is the standing ceiling. A shim validates the call and replays the caller's argv verbatim, so no token is reordered and the route needs no `cross_flag_ordering` claim; the module-JSON path still renders it. Valid only on the last, variadic operand, with every earlier operand marked `x-apexe-operand-position: "before-flags"`. Distinct from `x-apexe-opaque-after` on purpose; declaring both is refused |
 | `x-apexe-tail-literal` | **schema root** | array of strings | Non-dash tokens a parsed tail may contain — `find`'s `(`, `)`, `!`, `,`. They are neither flags nor operand values, so they are declared separately: one opens the tail like a flag, and inside it they are skipped while every flag is still resolved. `;`, `+` and `{}` are refused, because they are `-exec`'s terminators and skipping one would let `-exec utility ;` run a program. Root-level like `x-apexe-end-of-options`, because they punctuate the whole expression |
-| `x-apexe-exec-list` | property | `true` | This flag introduces **another program's argv**, ended by `;` or `+` (`find -exec rm {} \;`). The resolver collects the tokens instead of classifying them as this command's flags; the child-execution policy decides whether the list may run. With `child_exec.mode: refuse` (the default) every list is refused; with `analyze` or `delegate`, the program is resolved to its own module and that module's ACL, path policy and approval apply (`delegate` re-enters the child shim per match so the actual path is checked). A list that reaches the module-JSON surface without that analysis is refused. Requires a parsed tail and the flag in `approval_flags` |
+| `x-apexe-exec-list` | property | `true` | This flag introduces **another program's argv**, ended by `;` or `+` (`find -exec rm {} \;`). The resolver collects the tokens instead of classifying them as this command's flags; the child-execution policy decides whether the list may run. With `child_exec.mode: refuse` (the default) every list is refused; with `analyze` or `delegate`, the program is resolved to its own module and that module's ACL, path policy and approval apply (`delegate` re-enters the child shim per match so the actual path is checked). A list that reaches the module-JSON surface without that analysis is refused. Requires the tool's own invocation, a parsed tail and the flag in `approval_flags` |
 | `x-apexe-digit-value` | property | `true` | A bare `-<digits>` token is this flag's value, as in `head -20` / `tail -20`. At most one property per command may carry it. Declared only by an overlay that probed the binary: neither man page documents the spelling, and `-N` is not one rule (`git log -5` counts commits, `ls -5` is invalid) |
 | `x-apexe-conflicts-with` | property | array of property names | Flags that must not be sent together — whether the binary diagnoses the pair or silently resolves it last-one-wins. A JSON object has no key order, so for a last-wins pair *which* flag wins would otherwise be unpredictable |
 | `x-apexe-long-running` | property | `true` | This flag may not terminate on its own (`tail -f`). Bound the timeout or refuse; it is not a reason to reject the input |

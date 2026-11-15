@@ -41,7 +41,7 @@ pub(super) fn refusal() -> anyhow::Error {
 /// The caller's argv is mutated only for that standard separator insertion; the
 /// program token is left as typed, because the pinned `PATH` makes the executed
 /// binary the one the analysis resolved. Nothing here rewrites the command for
-/// auditing — the audit records the original and the inserted `--`.
+/// auditing; the caller's argv carries the insertion and the dry-run reports it.
 #[allow(clippy::too_many_arguments)] // The call sites all own these facts; bundling them would hide them.
 pub(super) async fn analyze(
     config: &ApexeConfig,

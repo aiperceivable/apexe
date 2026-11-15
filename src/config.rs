@@ -463,6 +463,13 @@ pub fn load_config(config_path: Option<&Path>) -> anyhow::Result<ApexeConfig> {
     apply_core_bindings(&mut config);
     apply_env_overrides(&mut config);
 
+    if !config.child_exec.trust_uncovered.is_empty() {
+        warn!(
+            programs = ?config.child_exec.trust_uncovered,
+            "child_exec.trust_uncovered admits embedded commands without analysis;              their use is logged and is the operator's responsibility"
+        );
+    }
+
     parse_log_level(&config.log_level).map_err(anyhow::Error::msg)?;
 
     Ok(config)

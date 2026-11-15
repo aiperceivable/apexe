@@ -74,7 +74,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
   a path). Program identity is pinned by running the parent with a shim-free
   `PATH`. Programs with no reviewed binding, a program that computes its own
   paths, and nested exec lists are refused; `trust_uncovered` is the explicit,
-  audited exception. Module JSON/MCP never execute an exec-list without that
+  logged exception. Module JSON/MCP never execute an exec-list without that
   analysis.
 - Native shim eligibility now asks whether a route *re-emits* its argv, not
   whether the tool is order-independent in general. A `tail_parsed` grammar
