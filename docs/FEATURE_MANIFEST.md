@@ -81,9 +81,11 @@ CLI Tool Binary
 [Adapter Layer] ──→ ScannedModule (apcore-toolkit)
       |
       ├──→ [YamlOutput]  ──→ .binding.yaml files (one per module)
-      ├──→ [AclManager]  ──→ acl.yaml (apcore ACL, default_effect: deny)
       └──→ [SkillOutput] ──→ .claude/skills/<id>/SKILL.md  (with --skills-dir)
 ```
+
+Policy is a separate document: `apexe acl init`/`sync` (and `apexe init`) write
+`acl.yaml`; the scan path never touches it.
 
 Call path — MCP, A2A, local execution and the library use shared executor
 construction. Servers enable ACL and approval explicitly; local execution
@@ -201,15 +203,16 @@ src/
 ## v0.1.0 Features
 
 ### Scanner Engine (preserved from v0.1.x)
-Three-tier deterministic scanner with plugin system, plus a fourth tier that
-applies a human-reviewed overlay on top of what the first three observed:
+Three-tier deterministic scanner with programmatic parser registration, plus a
+fourth tier that applies a human-reviewed overlay on top of what the first three
+observed:
 
 1. **Tier 1 -- `--help` parser** (6 built-in parsers: Man, BSD Usage, GNU, Click, Cobra, Clap)
 2. **Tier 2 -- Man page parser** (DESCRIPTION / OPTIONS / EXAMPLES extraction)
 3. **Tier 3 -- Shell completion parser** (zsh/bash subcommand discovery)
 4. **Tier 4 -- Curated overlay** (applied only when one matches the detected variant; see below)
 
-Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin system.
+Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, programmatic parser registration.
 
 ### Adapter Layer (v0.1.0 new)
 - `CliToolConverter`: flattens subcommand trees → `Vec<ScannedModule>`
@@ -229,7 +232,7 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 ### MCP Server (v0.1.0 new, replaces v0.1.x self-built server)
 - `McpServerBuilder`: bindings_dir → Registry → Executor → APCoreMCP
 - Transports: stdio, streamable-http (was "http"), SSE
-- MCP tool discovery and invocation via the published apcore-mcp 0.23.0 SDK.
+- MCP tool discovery and invocation via the published apcore-mcp 0.23.2 SDK.
   It negotiates `2025-06-18` and retains `2025-03-26` and `2024-11-05`. Compatible clients
   receive object `outputSchema` and redacted `structuredContent`, with JSON text
   retained for compatibility. HTTP selects the format per protocol-version header.
@@ -241,7 +244,7 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, plugin
 - `AuditManager`: apexe's own append-only JSONL trail (log `0o600`); records executions, refusals (`event`, `trace_id`, `caller_id`, `error_code`) and ACL allow/deny decisions. No input values, hashed or otherwise — see user-manual §9.2
 - `PathGuard` (v0.7.0): resolves every argument the schema types `x-apexe-path` and checks it against two compiled-in baselines — system paths bind writers, credential paths bind readers and writers alike. **Always-on, no flag.** `config.yaml` extends it with `additional_denied_paths` and relaxes it with `allowed_paths`; `apexe paths` reports the installed boundary
 - `ApprovalGate`: weighs actual escalating inputs and audits refusals. Local execution installs it automatically. MCP interactive approval is opt-in via `--enable-approval`; approval stores can be supplied through the MCP/A2A library builders
-- CLI process controls: always-on in `module/executor.rs` and `module/io.rs` — env scrubbing, direct argv, captured output cap, timeout + `kill_on_drop`, plus option-injection, control-character and `x-apexe-exec` guards. Captured execution is bounded by `default_timeout`; local passthrough is unbounded by default (`local_timeout: 0`) because the caller owns a terminal. Native streams are inherited; there is no normal-execution SandboxManager
+- CLI process controls: always-on in `module/executor.rs` and `module/io.rs` — env scrubbing, direct argv, captured output cap, timeout + `kill_on_drop`, plus option-injection, control-character and `x-apexe-exec` guards. Captured execution is bounded by `default_timeout`; local passthrough is unbounded by default (`local_timeout: 0`) because the caller owns a terminal. Native streams are inherited. Normal execution is unsandboxed by default; `governance::sandbox` adds opt-in per-module confinement in 0.15.0 (see below and [`sandbox.md`](sandbox.md)).
 
 ## Tool Overlays & Variant Detection (v0.4.0, extended in v0.5.0)
 

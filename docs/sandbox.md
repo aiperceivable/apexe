@@ -72,8 +72,10 @@ Rules:
    `advisory` is a diagnostic state reported by `sandbox check`, not a run mode;
    no call is silently downgraded from `enforcing` to `advisory`.
 
-Where the level is surfaced: `apexe paths`, `apexe sandbox check`,
-`apexe exec --dry-run`, `apexe list --diagnostics`, and every audit record.
+Where the level is surfaced: `apexe sandbox check`, `apexe exec --dry-run`, and
+every audit record. `apexe paths` reports the argument-level boundary and
+`apexe list --diagnostics` reports scan/policy coverage; neither reports the
+sandbox enforcement level.
 
 ---
 

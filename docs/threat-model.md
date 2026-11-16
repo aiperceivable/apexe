@@ -143,10 +143,13 @@ deliberately *not* rejected — they are already neutralised on output by `traci
 
 ### 4.4 Fail-closed ACL — when one is loaded
 
-`apexe scan` writes `~/.apexe/acl.yaml` with `default_effect: "deny"`. Modules
-annotated `readonly` get an explicit allow rule; modules annotated `destructive`
-get an explicit deny rule. Everything else — including everything the scanner
-could not classify — falls through to deny.
+`apexe acl init` writes `~/.apexe/acl.yaml` with `default_effect: "deny"`.
+Modules annotated `readonly` get an explicit allow rule; modules annotated
+`destructive` get an explicit deny rule. Everything else — including everything
+the scanner could not classify — falls through to deny for callers the starter
+policy does not name. (The default `developer` profile also allows the `local`
+caller to run `cli.*` above those denials; use `--profile strict` for a policy
+that grants nothing implicitly.)
 
 The direction of that failure mode matters: an unclassified command is
 **refused**, not permitted. See §5.2 for the case where it does not hold.
@@ -477,9 +480,9 @@ gives you the contract (schema validation), CLI process controls (§4.1, §4.2,
 policy**: every registered module is
 callable by every caller.
 
-This is the gap most likely to produce a false sense of safety, because the scan
-*does* generate a deny-by-default ACL and then does not apply it for you. Wire
-both flags in explicitly:
+This is the gap most likely to produce a false sense of safety, because the
+starter policy *is* deny-by-default and apexe then does not apply it for you.
+Wire both flags in explicitly:
 
 ```bash
 apexe serve --acl ~/.apexe/acl.yaml --enable-approval

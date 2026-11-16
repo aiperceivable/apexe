@@ -251,10 +251,11 @@ apexe scan my-tool --overlay ./my-tool.json
 APEXE_OVERLAY_DIRS=/path/to/cli-permissions/overlays apexe scan ls --no-cache
 ```
 
-Scans merge generated ACL rules and preserve unrelated bindings. A custom scan
-is an explicit request to regenerate that tool's bindings, including ones init
-would otherwise preserve. The first online scan can also acquire the default
-corpus automatically; `scan --offline` prevents that download. Refresh enabled
+Scans write bindings and preserve unrelated bindings; they never rewrite the
+access policy. A custom scan is an explicit request to regenerate that tool's
+bindings, including ones init would otherwise preserve. The first online scan
+can also acquire the default corpus automatically; `scan --offline` prevents
+that download. Refresh enabled
 shims after binding changes. `config --init` only writes a configuration template;
 it does not initialize command coverage.
 

@@ -154,8 +154,8 @@ Requiring an explicit `--acl` was rejected: shims are generated, so the path
 would be baked into them, which is implicit loading with extra steps. Better to
 make the implicit path explicit in documentation and loud when it is missing.
 
-`apexe scan` already writes that ACL, so the default path is the file the user
-was told to review.
+`apexe init` / `apexe acl init` write that ACL, so the default path is the file
+the user was told to review.
 
 ### 3.3 `--as` is a simulation aid
 

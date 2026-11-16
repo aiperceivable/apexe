@@ -252,7 +252,7 @@ pub struct Cli {
 |---|---|---|
 | `~/.apexe/config.yaml` | apexe-specific settings | `apexe config --init` |
 | `~/.apexe/apcore.yaml` | apcore ecosystem settings (optional) | Manual or `apcore config` |
-| `~/.apexe/acl.yaml` | ACL rules | `apexe scan` (auto-generated) |
+| `~/.apexe/acl.yaml` | ACL rules | `apexe init` / `apexe acl init` |
 | `~/.apexe/audit.jsonl` | Audit log | `apexe serve` (auto-appended) |
 | `~/.apexe/bindings/*.binding.yaml` | Binding files | `apexe scan` |
 | `~/.apexe/cache/` | Scanner cache files | `apexe scan` |

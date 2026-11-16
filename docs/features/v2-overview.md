@@ -37,7 +37,8 @@ beyond the original F1–F7 integration plan. See the
 | F5 | Governance | Implemented | P1 (Security) | 5.5 |
 | F6 | Error Migration | Implemented | P0 (Foundation) | 5.7 |
 | F7 | Config Integration | Implemented | P2 (Polish) | 5.8 |
-| F8 | Local Execution | Stages 1 and 2 implemented; reviewed-overlay pilot | P1 (Surface) | — (post-dates the tech design) |
+| F8 | Local Execution | Implemented (module JSON, native argv, PATH shims) | P1 (Surface) | — (post-dates the tech design) |
+| F9 | Sandbox Delegation | Implemented in 0.15.0 (contract, four backends, config, `sandbox check`, dry-run, audit) | P2 (Confinement) | — (post-dates the tech design) |
 
 Three features shipped materially differently from their spec, and each spec
 says so inline: F3 never built `RegistryOutput` (registration is
@@ -63,7 +64,8 @@ graph TD
     F4["F4: MCP Server<br/>(depends: F2, F3)"]
     F5["F5: Governance<br/>(depends: F2)"]
     F7["F7: Config Integration<br/>(depends: F4, F5)"]
-    F8["F8: Local Execution<br/>(depends: F2, F5)<br/>Stages 1 and 2 implemented"]
+    F8["F8: Local Execution<br/>(depends: F2, F5)"]
+    F9["F9: Sandbox Delegation<br/>(depends: F5, F8)"]
 
     F6 --> F1
     F1 --> F2
@@ -75,15 +77,14 @@ graph TD
     F5 --> F7
     F2 --> F8
     F5 --> F8
-
-    style F8 fill:#e6a817,color:#000
+    F8 --> F9
 ```
 
 ---
 
 ## Execution Order
 
-F1–F7 are complete; the phases below record the order they were built in.
+F1–F9 are complete; the phases below record the order they were built in.
 
 ### Phase 1: Foundation (F6, F1)
 No external dependencies. Error migration and scanner adapter developed in parallel after F6 landed.
@@ -106,6 +107,14 @@ shims) is implemented with explicit native grammar and stdin capabilities, PATH 
 propagation. The current verified BSD pilot covers cat/head/ls; other overlays
 need an order-independence review before admission.
 
+### Phase 6: Sandbox delegation (F9)
+Opt-in per-module confinement for the modules named in `sandbox.modules`.
+`docs/sandbox.md` owns the contract; `apexe sandbox check` reports the selected
+backend and `apexe exec --dry-run` reports the translated plan. Four built-in
+backends: `systemd-run` (system/root only), `bwrap`, `sandbox-exec` and
+`docker`. `required` and `auto` refuse before spawn when no enforcing backend is
+available. Normal execution stays unsandboxed unless a module is selected.
+
 ---
 
 ## Feature Spec Files
@@ -120,6 +129,7 @@ need an order-independence review before admission.
 | F6: Error Migration | `docs/features/v2-f6-error-migration.md` |
 | F7: Config Integration | `docs/features/v2-f7-config-integration.md` |
 | F8: Local Execution | `docs/features/v2-f8-local-execution.md` |
+| F9: Sandbox Delegation | `docs/features/v2-f9-sandbox.md` |
 
 ---
 

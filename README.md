@@ -42,7 +42,9 @@ the same executor for schema validation, configured ACLs and auditing.
 | Route CLI commands when the host cannot be configured | [Agent Skill](docs/agent-skill.md) + `apexe exec -- ...` | Fallback native execution routing for Claude Code, Codex, pi and OpenCode |
 | Connect a protocol client or import an HTTP API | `apexe serve`, `apexe a2a` | CLI modules and optional imported OpenAPI operations over MCP or A2A |
 | Check a CLI contract after changes | `apexe verify` | Source drift reports and optional digest-bound evidence from explicit behavioral cases |
-| Cover a custom CLI | `apexe scan` | Deterministic discovery, YAML bindings, generated ACL rules and optional Claude Skills |
+| Write or explain the access policy | `apexe acl` | Starter policy, refreshed denials, and the rule that decided one module |
+| Inspect sandbox delegation | `apexe sandbox check` | Selected backend, enforcement level, capabilities and selected modules |
+| Cover a custom CLI | `apexe scan` | Deterministic discovery, YAML bindings and optional Claude Skills; policy authorship stays with `apexe acl` |
 
 Initialize CLI coverage, inspect the generated policy, then use native exec
 for commands with matching reviewed grammar:
@@ -238,10 +240,14 @@ commands, fallback coverage, preserved bindings and resolved Git commits.
 `config --show` displays configured values; a repository URL there does not
 mean initialization has completed.
 
-For a new ACL, unknown, destructive and network-reaching modules default to
-deny. Existing manual rules and policy defaults are preserved. Local exec/env
-load the default ACL when present; `serve` and `a2a` still need an explicit
-`--acl`. The current native pilot covers BSD cat/head/ls; GNU scanning support
+`init` writes its starter policy with the `developer` profile: readonly modules
+are allowed to every caller, destructive and network-reaching modules are
+denied to every caller, and the `local` caller may additionally run `cli.*`
+above those denials. Anything else falls through to `default_effect: deny`.
+Run `apexe acl init --profile strict` when nothing should be granted
+implicitly. Existing manual rules and policy defaults are preserved. Local
+exec/env load the default ACL when present; `serve` and `a2a` still need an
+explicit `--acl`. The current native pilot covers BSD cat/head/ls; GNU scanning support
 does not imply native eligibility. When matching native grammar is unavailable,
 use module JSON if its checks permit; a server is not required for local use.
 See the [Quick Start guide](docs/quickstart.md) for the full workflow.
@@ -414,7 +420,7 @@ apexe agent claude --mcp-only --write
 
 `--write` merges into the host's JSON atomically and refuses invalid files;
 OpenCode and pi also refuse when `apexe-sh` is not installed. See the
-[agent reference](docs/user-manual.md#413-apexe-agent).
+[agent reference](docs/user-manual.md#414-apexe-agent).
 
 ### `apexe serve`
 
@@ -509,11 +515,44 @@ apexe paths --path ~/.ssh/id_rsa --mode read  # Refused: credentials bind reader
 goes through — so its verdict cannot drift from a real invocation's. See
 [user manual §4.6](docs/user-manual.md) and §9.7.
 
+### `apexe acl`
+
+Write, refresh or explain the caller-permission policy. `apexe scan` produces an
+inventory of what a command does; this is the only command that turns it into
+a permission decision.
+
+```bash
+apexe acl init                     # Starter policy; refuses to overwrite
+apexe acl init --profile strict    # Nothing granted implicitly
+apexe acl sync --dry-run           # Drift check for CI
+apexe acl explain cli.git.status --caller @external
+```
+
+`init` writes a starter policy once, `sync` refreshes only the destructive and
+open-world denials, and `explain` names the rule that decided a module. See the
+[acl reference](docs/user-manual.md#413-apexe-acl).
+
+### `apexe sandbox`
+
+Report the sandbox backend selected for this installation. Delegation is opt-in
+per module through `sandbox.modules`; normal execution is unchanged.
+
+```bash
+apexe sandbox check
+apexe sandbox check --format json
+apexe exec --dry-run -- find . -name '*.txt'   # Includes the translated plan
+```
+
+`check` is static: it reports the backend, enforcement level, capabilities,
+mode, selected modules and reason without running the A/B/C probes. See
+[`docs/sandbox.md`](docs/sandbox.md).
+
 ---
 
 ### `apexe scan <TOOLS>...`
 
-Scan CLI tools and generate binding files + ACL rules.
+Scan CLI tools and generate binding files. Scanning is an inventory step: it
+does not write the ACL policy.
 
 ```bash
 apexe scan ls jq curl                   # Scan multiple tools
@@ -759,6 +798,9 @@ apexe config --init    # Creates ~/.apexe/config.yaml
 | `APEXE_TIMEOUT` | `30` | Captured-execution timeout (seconds) |
 | `APEXE_LOCAL_TIMEOUT` | `0` | Local passthrough timeout (seconds); `0` means no bound |
 | `APEXE_SCAN_DEPTH` | `2` | Subcommand recursion depth |
+| `APEXE_OVERLAY_DIRS` | unset | `:`-separated extra overlay directories, read before `~/.apexe/overlays` |
+| `APEXE_DEFAULT_OVERLAY_REPOSITORY` | cli-permissions GitHub URL | Rules source for `init` and automatic scan acquisition |
+| `APEXE_OFFLINE` | unset | Disable corpus downloads, as `--offline` |
 
 ---
 
@@ -770,6 +812,7 @@ apexe config --init    # Creates ~/.apexe/config.yaml
 | `~/.apexe/bindings/*.binding.yaml` | Generated tool bindings |
 | `~/.apexe/cache/` | Scan result cache |
 | `~/.apexe/acl.yaml` | Access control rules |
+| `~/.apexe/corpora/` | Validated rules snapshots and ownership catalog |
 | `~/.apexe/audit.jsonl` | Audit trail |
 | `~/.apexe/log/apexe.log.YYYY-MM-DD` | Daily diagnostic logs (UTC; latest 14 files retained) |
 
@@ -820,9 +863,9 @@ Implement the `CliParser` trait in `src/scanner/protocol.rs`:
 ```rust
 pub trait CliParser: Send + Sync {
     fn name(&self) -> &str;
-    fn can_parse(&self, help_text: &str) -> bool;
-    fn parse(&self, help_text: &str, tool_name: &str) -> anyhow::Result<ParsedHelp>;
     fn priority(&self) -> u32; // lower = tried first
+    fn can_parse(&self, help_text: &str, tool_name: &str) -> bool;
+    fn parse(&self, help_text: &str, tool_name: &str) -> anyhow::Result<ParsedHelp>;
 }
 ```
 
@@ -994,7 +1037,7 @@ JSON requests, ACL denial and separate specification/API credentials. See the
 | [Authoring Tool Overlays](docs/overlays.md) | Write and verify a curated overlay |
 | [Technical Design](docs/apcore-integration/tech-design.md) | v0.1.0 architecture with apcore ecosystem integration |
 | [Feature Manifest](docs/FEATURE_MANIFEST.md) | Module map, crate dependencies, project status |
-| [Feature Specs](docs/features/v2-overview.md) | Detailed specifications for features F1-F7 |
+| [Feature Specs](docs/features/v2-overview.md) | Detailed specifications for features F1-F9 |
 
 #### Feature specs
 
@@ -1007,6 +1050,8 @@ JSON requests, ACL denial and separate specification/API credentials. See the
 | [F5: Governance](docs/features/v2-f5-governance.md) | apcore ACL wrapper + apexe's own audit trail |
 | [F6: Error Migration](docs/features/v2-f6-error-migration.md) | ApexeError → ModuleError conversion |
 | [F7: Config Integration](docs/features/v2-f7-config-integration.md) | apcore Config integration |
+| [F8: Local Execution](docs/features/v2-f8-local-execution.md) | Local module JSON, native argv and PATH shims |
+| [F9: Sandbox Delegation](docs/features/v2-f9-sandbox.md) | Opt-in per-module OS/backend confinement in 0.15.0 |
 
 ---
 
