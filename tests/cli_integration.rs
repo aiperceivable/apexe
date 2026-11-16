@@ -7,7 +7,7 @@ use predicates::prelude::*;
 /// (where `acl.yaml` and `apcore.yaml` live) and `audit_log` -- from
 /// `dirs::home_dir()`, and neither has a CLI flag or an `APEXE_*` env
 /// override. Without this, every test that spawns the real binary reads and
-/// writes the developer's own `~/.apexe`: `apexe scan` merges into
+/// writes the developer's own `~/.apexe`: `apexe init`/`apexe acl init` write
 /// `~/.apexe/acl.yaml`, and `apexe serve` appends to `~/.apexe/audit.jsonl`.
 /// `--output-dir` / `--bindings-dir` only redirect bindings, never those two.
 ///

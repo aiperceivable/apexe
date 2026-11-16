@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
-## [0.15.0] - 2026-11-15
+## [0.15.0] - 2026-11-16
 
 ### Added
 - Opt-in sandbox delegation for selected modules. `sandbox.modules` names module

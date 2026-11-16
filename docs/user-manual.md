@@ -114,7 +114,9 @@ apexe serve --acl ~/.apexe/acl.yaml # optionally serve with the reviewed ACL
 
 ### 4.1 `apexe scan`
 
-Scans one or more CLI tools and generates `.binding.yaml` files + ACL rules.
+Scans one or more CLI tools and generates `.binding.yaml` files. A scan is an
+inventory step: it never writes the access policy, which belongs to
+`apexe acl` (§4.13).
 
 ```
 apexe scan <TOOLS>... [OPTIONS]
@@ -130,9 +132,10 @@ apexe scan <TOOLS>... [OPTIONS]
 | `--format <FMT>` | `table` | Output format: `json`, `yaml`, or `table` |
 | `--skills-dir <DIR>` | - | Also write a Claude Skill (`SKILL.md`) per module under `<DIR>/.claude/skills/<module_id>/` |
 | `--overlay <PATH>` | - | Load one explicit curated overlay file (JSON/YAML). See [§6.5 Tool Overlays](#65-tool-overlays) |
+| `--prune` | off | Delete scan-generated bindings for the scanned tools that this run did not write. Only files whose `metadata.generated_by` names apexe are considered |
 | `--write-acl` | off | Deprecated. Refresh the policy's destructive and open-world denials after scanning, writing a starter policy only when none exists. `scan` writes bindings, not policy: use `apexe acl init` and `apexe acl sync` |
 | `--verify` | off | Fail the command when a written binding does not verify. The YAML verifier runs either way; without this a failure is a warning and the scan still exits 0 |
-| `--dry-run` | off | Report what would be written — bindings, ACL and skills — without creating or overwriting anything |
+| `--dry-run` | off | Report what would be written — bindings and skills, plus the policy only with the deprecated `--write-acl` — without creating or overwriting anything |
 
 The first online scan automatically installs a validated snapshot of
 [cli-permissions](https://github.com/aiperceivable/cli-permissions) under
@@ -161,14 +164,15 @@ apexe scan git --skills-dir ./out      # also write .claude/skills/cli.git.*/SKI
 apexe scan ls --overlay ~/.apexe/overlays/ls-gnu.json  # apply a curated overlay
 ```
 
-ACL rules are merged into `<config_dir>/acl.yaml`, never rewritten wholesale:
-modules from earlier scans keep their membership and hand-authored rules are
-preserved. For the tools named on this command line, however, a grant whose
-route the fresh scan no longer produces is retired. That is what keeps the
-policy in step with a curated overlay that narrows its declared surface —
-without it the old `allow` outlives its module and reactivates silently if the
-route is reopened. `apexe list --diagnostics` reports any grant left without a
-module.
+Scanning writes bindings only. The access policy is a separate document:
+`apexe acl init` (§4.13) writes a starter policy once and `apexe acl sync`
+refreshes the destructive and open-world denials without touching allow rules.
+`apexe init` (and the deprecated `scan --write-acl`) merges a fresh scan into an
+existing policy: modules and hand-authored rules from earlier scans are
+preserved, while a grant whose route the rescanned tool no longer produces is
+retired. That retirement is what keeps the policy in step with a curated
+overlay that narrows its declared surface; a plain `scan` never touches
+`acl.yaml`. `apexe list --diagnostics` reports any grant left without a module.
 
 ### 4.2 `apexe serve`
 
@@ -339,9 +343,9 @@ apexe config [OPTIONS]
 
 ### 4.6 `apexe paths`
 
-Prints the path policy every wrapped tool is checked against, or checks one
-path against it. This is the only way to inspect the third gate (§9.7) without
-standing up a server and driving it with a client.
+Prints the filesystem access boundary every wrapped tool is checked against, or
+checks one path against it. This is the only way to inspect the path guard
+(§9.7) without standing up a server and driving it with a client.
 
 The policy itself lives in `~/.apexe/config.yaml` under `paths:`. That file is
 the reference — read it (or the template below), not this page, for the field
@@ -357,12 +361,6 @@ invented: `read_only` / `read_write` / `no_access` are systemd's
 `ReadOnlyPaths=` / `ReadWritePaths=` / `InaccessiblePaths=`, and `write_only` is
 AppArmor's `w` right. The deepest matching entry decides; a path in no list is
 `read_write`.
-
-### 4.6 `apexe paths`
-
-Prints the filesystem access boundary every wrapped tool is checked against, or
-checks one path against it. This is the only way to inspect the path guard
-(§9.7) without standing up a server and driving it with a client.
 
 ```
 apexe paths [OPTIONS]
@@ -507,6 +505,8 @@ Use the installed apexe binary in bash or zsh; no repository checkout is require
 
 ```bash
 apexe scan cat head ls --no-cache
+# Write a starter policy once (skip this if ~/.apexe/acl.yaml already exists).
+apexe acl init
 # Review ~/.apexe/acl.yaml, then install the shell helpers once.
 apexe env --enable
 source ~/.apexe/bin/apexe-activate.sh
@@ -1233,7 +1233,7 @@ The hook uses `updatedInput`; the tested Claude Code 2.1.318 release
 version before relying on enforcement; without `updatedInput` support the hook
 can only deny or ask.
 
-### 4.14 `apexe acl`
+### 4.13 `apexe acl`
 
 Writes and explains the caller-permission policy. `apexe scan` produces an
 inventory; this is the only command group that turns it into permissions.
@@ -1261,7 +1261,7 @@ apexe acl explain cli.git.status --caller @external
 is never generated after `init`, so a scan can never hand out a permission
 nobody reviewed, and a newly scanned readonly module does not become a grant.
 
-### 4.13 `apexe agent`
+### 4.14 `apexe agent`
 
 Print the supported host configuration, or check the launcher and host
 configuration without changing any files. This is the quickest way to copy the
@@ -1429,7 +1429,7 @@ allowed_paths:
 
 # Embedded child commands (`find -exec`). `refuse` is the safe default.
 child_exec:
-  mode: refuse          # refuse | analyze
+  mode: refuse          # refuse | analyze | delegate
   trust_uncovered: []   # bare program names the operator vouches for
 ```
 
@@ -1935,13 +1935,15 @@ bindings, lets you review the policy against the modules actually generated,
 and then enables the reviewed policy on either transport:
 
 ```bash
-# Scan commands on PATH and write bindings plus ~/.apexe/acl.yaml.
+# Scan commands on PATH. This writes bindings, not policy.
 apexe scan git
+# Write a starter policy once; refuses to overwrite an existing file.
+apexe acl init
 
 # Show modules and the decision the ACL makes for the served anonymous caller.
 apexe list --verbose --acl ~/.apexe/acl.yaml
 
-# Review and edit the generated YAML before relying on it.
+# Review and edit the policy before relying on it.
 ${EDITOR:-vi} ~/.apexe/acl.yaml
 
 # Serve the same bindings through MCP or A2A with ACL enforcement enabled.
@@ -2000,9 +2002,9 @@ be emulated with `sh -c`.
 > WARN apcore::acl: Unknown ACL condition 'require_approval' — treated as unsatisfied
 > ```
 >
-> The `~/.apexe/acl.yaml` that `apexe scan` generates has always been correct;
-> only the manual was wrong. There is **no ACL condition that means "ask a
-> human first"** — approval is a separate layer (§9.6), not an ACL condition.
+> The `~/.apexe/acl.yaml` that apexe generates has always been correct; only the
+> manual was wrong. There is **no ACL condition that means "ask a human
+> first"** — approval is a separate layer (§9.6), not an ACL condition.
 
 Rule ordering is **first match wins**, not most-specific-wins: an
 `allow` rule for `cli.*` placed before a `deny` rule for `cli.rm` lets `cli.rm`
@@ -2448,8 +2450,9 @@ operator can change without a release. Reach for code last.
 
 Two consequences worth knowing before choosing:
 
-- **Comments do not survive.** `apexe scan` re-serializes `acl.yaml` when the
-  policy changes, so a decision recorded only in a comment is lost. Record it as
+- **Comments do not survive.** A policy write (`apexe acl init`/`sync`,
+  `apexe init`) re-serializes `acl.yaml`, so a decision recorded only in a
+  comment is lost. Record it as
   a rule with a `description` instead: the description is what the audit trail
   reports as `matched_rule`, so the *reason* is visible in every record.
 - **The local surface has one caller id: `local`.** Rules cannot distinguish the
@@ -3035,7 +3038,7 @@ the payload in `structuredContent`, with serialized JSON also retained in
 }
 ```
 
-The published `apcore-mcp 0.23.0` dependency negotiates **`2025-06-18`**,
+The published `apcore-mcp 0.23.2` dependency negotiates **`2025-06-18`**,
 retaining `2025-03-26` and `2024-11-05` for legacy clients. On stdio and SSE this
 decision belongs to the live connection.
 Streamable HTTP remains stateless: after initialization, send
@@ -3053,7 +3056,7 @@ clients receive neither new structured field. Authentication, approval and
 execution governance use the existing pipeline on every transport.
 
 Sensitive fields referenced through local JSON Schema pointers or scoped anchors
-are redacted by apcore 0.32.1 before MCP validates and publishes the result.
+are redacted by apcore 0.32.3 before MCP validates and publishes the result.
 Output validation supports a single declared Draft 7, 2019-09 or 2020-12 dialect;
 unresolved references, mixed dialects and precision-losing JSON numbers are
 rejected without exposing the payload. External schema resources are never fetched.
@@ -3124,7 +3127,7 @@ the command run", not "did it succeed".
 | `~/.apexe/config.yaml` | Configuration | `apexe config --init` or `config set` |
 | `~/.apexe/bindings/*.binding.yaml` | Tool binding files | `apexe init` or `scan` |
 | `~/.apexe/cache/` | Scan result cache | `apexe init` or `scan` |
-| `~/.apexe/acl.yaml` | Access control rules | `apexe init` or `scan` |
+| `~/.apexe/acl.yaml` | Access control rules | `apexe init` or `apexe acl init` |
 | `~/.apexe/corpora/` | Validated rules snapshots and ownership catalog | `apexe init` or automatic scan acquisition |
 | `~/.apexe/log/apexe.log.YYYY-MM-DD` | Rotating diagnostic logs | Commands and governed shims |
 | `~/.apexe/bin/.apexe-shims.json` | Owned shim routes | `apexe env --enable` |
@@ -3147,7 +3150,7 @@ read-only for installation state; it may create or append diagnostic logs in
 
 ## 15. Global Flags, Logging and Debugging
 
-Three flags are global — they parse before or after the subcommand, whichever is
+Four flags are global — they parse before or after the subcommand, whichever is
 more natural to type:
 
 | Flag | Default | Description |
@@ -3228,6 +3231,8 @@ bindings with reviewed overlays rather than copying stale files:
 
 ```bash
 apexe scan cat head ls --no-cache
+# Write a starter policy once; skip if ~/.apexe/acl.yaml already exists.
+apexe acl init
 # Review ~/.apexe/acl.yaml, then install and activate.
 apexe env --enable
 source ~/.apexe/bin/apexe-activate.sh
@@ -3330,7 +3335,9 @@ Stdio mode reads JSON-RPC from stdin and writes to stdout. It is launched by AI 
 
 ### Tool invocation fails with ACL denied
 
-The default ACL denies destructive and unknown commands. Edit `~/.apexe/acl.yaml`:
+The starter ACL denies destructive and network-reaching commands to every
+caller. Its `developer` profile also lets the local shell run `cli.*` above
+those denials; `strict` grants nothing implicitly. Edit `~/.apexe/acl.yaml`:
 
 ```yaml
 rules:

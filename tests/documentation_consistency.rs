@@ -1042,3 +1042,83 @@ fn test_every_document_accounts_for_the_top_scan_tier() {
         );
     }
 }
+
+/// Policy authorship belongs to `apexe acl`, not `scan`.
+///
+/// 0.15.0 split the two: `scan` reports what a command does (bindings), and
+/// `acl init`/`acl sync` decide who may run it. Five documents kept the old
+/// sentence after the split, including the threat model, and a reader who
+/// believes `scan` writes `acl.yaml` never runs `acl init` at all — so the
+/// policy they review does not exist.
+///
+/// The runtime side is asserted first: `scan` must leave the policy alone and
+/// say so. The prose is then held to the mechanism the code actually has,
+/// rather than to a wording this test invented.
+#[test]
+fn test_every_document_keeps_policy_authorship_with_acl() {
+    let scan_source = include_str!("../src/cli/mod.rs");
+    assert!(
+        scan_source.contains("ACL policy not written"),
+        "scan without --write-acl must report that it left the policy alone"
+    );
+    assert!(
+        !scan_source.contains("where `apexe scan` writes one"),
+        "CLI help still attributes the policy file to `scan`"
+    );
+
+    let documents = [
+        ("README.md", include_str!("../README.md")),
+        ("docs/quickstart.md", include_str!("../docs/quickstart.md")),
+        (
+            "docs/user-manual.md",
+            include_str!("../docs/user-manual.md"),
+        ),
+        (
+            "docs/threat-model.md",
+            include_str!("../docs/threat-model.md"),
+        ),
+        (
+            "docs/FEATURE_MANIFEST.md",
+            include_str!("../docs/FEATURE_MANIFEST.md"),
+        ),
+    ];
+
+    // Exact fragments of the retired claim. A scan is an inventory step; if one
+    // of these returns, some reader will look for a file `scan` never writes.
+    let retired = [
+        "generate binding files + ACL rules",
+        "generates `.binding.yaml` files + ACL rules",
+        "Scans merge generated ACL rules",
+        "`apexe scan` writes `~/.apexe/acl.yaml`",
+        "*does* generate a deny-by-default ACL",
+    ];
+    for (path, contents) in documents {
+        for claim in retired {
+            assert!(
+                !contents.contains(claim),
+                "{path} still says `scan` authors the policy: {claim}"
+            );
+        }
+    }
+
+    for (path, statement) in [
+        ("README.md", "policy authorship stays with `apexe acl`"),
+        ("docs/quickstart.md", "never rewrite the"),
+        ("docs/user-manual.md", "Scanning writes bindings only."),
+        (
+            "docs/threat-model.md",
+            "`apexe acl init` writes `~/.apexe/acl.yaml`",
+        ),
+        ("docs/FEATURE_MANIFEST.md", "Policy is a separate document"),
+    ] {
+        let contents = documents
+            .iter()
+            .find(|(candidate, _)| *candidate == path)
+            .map(|(_, contents)| *contents)
+            .expect("the document list above contains this path");
+        assert!(
+            contents.contains(statement),
+            "{path} must state who writes the policy: {statement}"
+        );
+    }
+}

@@ -1240,9 +1240,10 @@ pub struct ListArgs {
     /// ACL policy file to evaluate against in `--verbose` output, and to
     /// check for targets that match no loaded module in `--diagnostics`.
     ///
-    /// Defaults to `<config_dir>/acl.yaml` -- where `apexe scan` writes one --
-    /// when that file exists. This is a read-only report: unlike `--acl` on
-    /// `serve`/`a2a`, naming a file here does not enable enforcement anywhere.
+    /// Defaults to `<config_dir>/acl.yaml` -- the policy `apexe acl init`
+    /// writes -- when that file exists. This is a read-only report: unlike
+    /// `--acl` on `serve`/`a2a`, naming a file here does not enable enforcement
+    /// anywhere.
     #[arg(long)]
     pub acl: Option<PathBuf>,
 
@@ -1592,9 +1593,9 @@ impl ListArgs {
 
         let acl_header = match &acl_path {
             Some(path) => format!("ACL policy: {}", path.display()),
-            None => {
-                "ACL policy: none (pass --acl, or run `apexe scan` to generate one)".to_string()
-            }
+            None => "ACL policy: none (pass --acl, or run `apexe acl init` to write a \
+                 starter policy)"
+                .to_string(),
         };
 
         let mut sorted: Vec<&apcore_toolkit::ScannedModule> = modules.iter().collect();

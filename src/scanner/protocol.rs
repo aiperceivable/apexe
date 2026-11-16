@@ -24,8 +24,9 @@ pub struct ParsedHelp {
 
 /// Trait for CLI help format parser plugins.
 ///
-/// Implementations are discovered via shared library loading
-/// from `~/.apexe/plugins/` or registered programmatically.
+/// The built-in parsers are compiled in. Additional implementations can be
+/// registered programmatically through `ParserPipeline::new(Some(...))`;
+/// shared-library discovery from `~/.apexe/plugins/` is not implemented yet.
 pub trait CliParser: Send + Sync {
     /// Human-readable parser name.
     fn name(&self) -> &str;
