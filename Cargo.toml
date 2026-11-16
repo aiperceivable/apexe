@@ -36,6 +36,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
+# Corpus release archives are gzip-compressed tar files. Extraction writes
+# files itself instead of using `unpack`, so `tar` only needs its reader.
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
+# Blocking HTTP for corpus release downloads; `init` is a synchronous CLI path
+# and reusing the async executor here would buy nothing. rustls keeps the
+# download independent of the platform TLS stack.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 tempfile = "3"
 # Detect terminal dimensions and wrap descriptions without dropping text.
 terminal_size = "0.4"

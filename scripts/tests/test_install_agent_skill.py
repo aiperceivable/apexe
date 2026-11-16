@@ -31,6 +31,16 @@ class InstallationTests(unittest.TestCase):
             text=True, timeout=10, check=False,
         )
 
+    def assert_no_user_scope_install(self) -> None:
+        """Assert the installer wrote nothing under the user scope.
+
+        macOS framework Pythons create `~/Library` at interpreter startup, so
+        "HOME is empty" is an assertion about the interpreter, not about the
+        installer. These are the only directories a user-scope install writes.
+        """
+        for name in (".claude", ".agents"):
+            self.assertFalse((self.home / name).exists(), name)
+
     def test_all_agents_receive_identical_self_contained_skill(self) -> None:
         result = self.run_installer()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -40,7 +50,7 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual({file.read_bytes() for file in files}, {expected})
         self.assertTrue((self.project / ".claude/skills/apexe/SKILL.md").is_file())
         self.assertTrue((self.project / ".agents/skills/apexe/SKILL.md").is_file())
-        self.assertEqual(list(self.home.iterdir()), [])
+        self.assert_no_user_scope_install()
 
     def test_individual_agent_installation_does_not_install_other_hosts(self) -> None:
         for agent, directory in [("claude", ".claude"), ("codex", ".agents"),
@@ -117,7 +127,7 @@ class InstallationTests(unittest.TestCase):
     def test_user_scope_rejects_an_ambiguous_project_destination(self) -> None:
         result = self.run_installer("--scope", "user", "--project-dir", str(self.project))
         self.assertEqual(result.returncode, 2)
-        self.assertEqual(list(self.home.iterdir()), [])
+        self.assert_no_user_scope_install()
         self.assertEqual(list(self.project.iterdir()), [])
 
 

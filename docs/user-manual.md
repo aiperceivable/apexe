@@ -102,11 +102,20 @@ apexe --version
 See [Quick Start Guide](quickstart.md) for the fastest path to a working setup.
 
 ```bash
-apexe init                         # prepare matching installed CLI tools
+curl -fsSL https://raw.githubusercontent.com/aiperceivable/apexe/main/scripts/install.sh | sh
+# Installs the binary, prepares rules, installs shims without editing shell
+# startup, and offers to configure the agent hosts it finds on PATH.
+
+apexe setup                        # the same preparation without reinstalling
 apexe list --verbose               # inspect modules and generated policy
 apexe exec cli.ls                  # execute the module with JSON input defaults
 apexe serve --acl ~/.apexe/acl.yaml # optionally serve with the reviewed ACL
 ```
+
+`apexe setup` is a convenience, not a second configuration path: it calls
+`init`, then `env --enable --no-rc`, then `agent <host> --write` for detected
+hosts. Each of those remains the command that owns its decision, and running it
+afterwards is how you change just one part.
 
 ---
 
@@ -146,7 +155,7 @@ to local overlays and built-in classification. With `--offline`, no automatic
 installation is attempted; available snapshots are still used. `--dry-run` never
 installs a corpus. Automatic Git operations use the shorter of 10 seconds and
 the global timeout; use `apexe init` for normal setup under the configured timeout.
-Use `apexe init --format json` to inspect sources and commits, and
+Use `apexe init --format json` to inspect sources and identities, and
 `apexe init --refresh` to update rules and bindings owned by initialization.
 Rescan custom tools explicitly to adopt those new facts.
 `--no-cache` refreshes tool discovery rather than updating the corpus.
@@ -1021,10 +1030,11 @@ apexe serve --acl ~/.apexe/acl.yaml
 
 | Option | Default | Behavior |
 |---|---|---|
-| `--overlays <SOURCE>` | `default_overlay_repository` | HTTPS/GitHub `OWNER/REPO` source or local Git repository for this invocation |
-| `--ref <REF>` | stored reference, initially `HEAD` | Select a branch, tag or commit; a changed explicit reference fetches that revision |
+| `--overlays <SOURCE>` | `default_overlay_repository` | HTTPS/GitHub `OWNER/REPO` source, local Git repository or corpus archive for this invocation |
+| `--ref <REF>` | stored reference, initially the newest release | Select a Git branch, tag or commit; a changed explicit reference fetches that revision. A release archive is selected with `--overlays <url>` |
 | `--refresh` | off | Update the selected rules snapshot and regenerate unchanged init-owned bindings |
 | `--offline` | off | Disable network downloads; cached snapshots and local Git sources remain available. Also accepts `APEXE_OFFLINE=true` |
+| `--force` | off | Replace an installed corpus that uses the same name from a different source; otherwise `init` asks on a terminal and refuses in a non-interactive shell |
 | `--format <table\|json>` | `table` | Print initialization results; JSON includes `corpora`, `degraded`, `warnings`, `tools`, `written`, `preserved`, `native_ready`, binding directory and ACL path |
 
 Table output shows progress while preparing rules, scanning each candidate
@@ -1039,15 +1049,21 @@ variants are skipped. It does not scan the entire PATH or install programs.
 Native exec and env still require reviewed native capabilities; a binding alone
 does not imply native support.
 
-Git snapshots are validated and stored under `<config_dir>/corpora/`. Reports
-include repository, recorded commit and corpus metadata. An optional root
-`manifest.json` defines the name, SemVer release and overlay directory; legacy
-repositories use their basename and `overlays/`. Repository scripts, Git hooks
-and submodules are not run by the data installer. Tool help/version/probe calls
-remain part of scanning.
+Git snapshots and release archives are validated and stored under
+`<config_dir>/corpora/`. Reports include repository, recorded identity and
+corpus metadata; the identity is the resolved commit for a Git source and the
+sha256 of the archive bytes for a release, so "which rules are installed" has
+one answer either way. An optional root `manifest.json` defines the name, SemVer
+release and overlay directory; legacy repositories use their basename and
+`overlays/`. Repository scripts, Git hooks and submodules are not run by the
+data installer. Tool help/version/probe calls remain part of scanning.
 
 Normal initialization reuses the recorded snapshot, discovers newly installed
-covered tools and preserves existing bindings. Refresh only replaces bindings
+covered tools and preserves existing bindings. When the newest release of a
+GitHub source has no `<repo>.tar.gz` asset, the first installation falls back to
+the repository's Git history once and records `HEAD`; later refreshes keep using
+Git. If Git also fails, initialization fails and names both attempts. Pass
+`--ref` to state the source explicitly. Refresh only replaces bindings
 that still match the fingerprint recorded by init; custom scans and edited
 bindings are preserved. No bindings are deleted when a tool or rule disappears.
 Manual ACL rules, existing defaults and config files are preserved. An invalid
@@ -1056,6 +1072,7 @@ available initialized bindings. A new policy defaults to deny. Initialization
 also leaves shell startup and server enforcement unchanged.
 
 ```bash
+apexe init --overlays https://github.com/acme/team-corpus
 apexe init --overlays ../cli-permissions --ref <COMMIT>
 apexe init --overlays ../cli-permissions --refresh
 apexe init --offline --format json
@@ -1351,6 +1368,94 @@ Engine) is a separate agent sandbox, not this backend, and is not used by
 0.15.0. `sandbox check` is static; run the A/B/C probes in `sandbox-testing.md`
 when accepting a backend.
 
+### 4.16 `apexe setup`
+
+Prepare this machine in one step. It orchestrates the commands that own each
+decision rather than reimplementing them, so `setup` cannot drift from `init`,
+`env` or `agent`.
+
+| Argument / option | Default | Behavior |
+|---|---|---|
+| `--yes` | off | Configure detected agent hosts without asking |
+| `--dry-run` | off | Print the plan — rules, shims, detected hosts — and change nothing |
+| `--no-hosts` | off | Prepare rules and shims only |
+| `--offline` | off | Use cached rules instead of downloading a release |
+| `--force` | off | Replace an installed corpus that uses the same name from a different source |
+| `--overlays <SOURCE>` | configured source | Rules repository, local checkout or corpus archive for this run |
+| `--ref <REF>` | none | Git branch, tag or commit; a release archive is selected by its URL |
+
+```bash
+apexe setup
+apexe setup --dry-run
+apexe setup --yes --offline
+```
+
+The steps, in order:
+
+1. `init` — resolve the configured rules source, write bindings and a starter
+   ACL.
+2. `env --enable --no-rc` — install `apexe-sh` and the command shims **without**
+   editing shell startup files. A managed `PATH` block reshapes every new
+   terminal, where login-time tooling resolves its own `rm`/`ln`/`sort` through
+   the shims; that is the right trade for a host that reads its own shell, not
+   the right default for the whole machine.
+3. `agent <host> --write --scope user` for each detected host that accepts a
+   configuration file. With a terminal, `setup` asks per host; without one it
+   prints the command instead. `--yes` writes unprompted.
+4. Codex is reported, not changed: it reads its login shell, so the remedy is
+   `apexe agent codex --write`, which is the operator's decision.
+
+The summary states what is governed: with shell startup untouched, only the
+configured hosts and `apexe sh` are governed until someone runs
+`apexe env --enable`.
+
+`scripts/install.sh` downloads a release, verifies its checksum, installs into
+`~/.local/bin` (never with `sudo`), and then executes `apexe setup`.
+
+| Installer option | Default | Behavior |
+|---|---|---|
+| `--version <tag>` | newest release | Install one specific release |
+| `--prefix <dir>` | `~/.local/bin` | Install directory; an unwritable target is an error, never an escalation |
+| `--no-setup` | off | Install the binary and stop |
+| `--dry-run` | off | Print the resolved download, checksum URL and install path |
+| `--yes`, `--no-hosts`, `--offline`, `--force` | off | Forwarded to `apexe setup` |
+| `--overlays <SOURCE>`, `--ref <REF>` | configured source | Forwarded to `apexe setup`, so a custom corpus is prepared in the same run |
+
+When the script is piped into a shell it reattaches the terminal before
+`apexe setup` prompts; without a terminal, `setup` writes no host
+configuration.
+
+### 4.17 `apexe corpus`
+
+Inspect or remove managed rule corpora. `init` adds a corpus and a scan never
+changes the set, so this is the deliberate way to narrow a machine to one
+source.
+
+| Subcommand | Behavior |
+|---|---|
+| `list` | Name, release version, source (`commit` or `sha256`), identity and repository for each installed corpus; `--format json` for scripts |
+| `remove <NAME>` | Delete the corpus and its snapshots; asks on a terminal and requires `--yes` otherwise |
+
+```bash
+apexe corpus list
+apexe corpus list --format json
+apexe corpus remove cli-permissions --yes
+```
+
+Removing a corpus does not delete the bindings it informed: those stay until a
+later `apexe init` or scan replaces them, because a binding is a written
+contract, not a pointer into the snapshot. Re-adding a removed corpus is
+`apexe init --overlays <SOURCE>`.
+
+Two installations cannot share a name. A name belongs to the corpus's
+`manifest.json`, not to its repository, so a fork that keeps
+`"name": "cli-permissions"` collides with the official corpus. The collision is
+never silent: on a terminal `init` asks before replacing the installed corpus,
+and a non-interactive shell requires `--force`. Leaving it out keeps the
+existing rules and reports both ways out — `apexe corpus remove <name>`, or a
+different `name` in the new corpus. `--refresh` only reproduces the source an
+installation recorded; it cannot replace one corpus with another.
+
 ## 5. Configuration
 
 Configuration resolves in 4 tiers (highest priority wins):
@@ -1444,7 +1549,7 @@ child_exec:
 | `scan_depth` | integer | `2` | Default depth for init, scan and verify; explicit scan/verify `--depth` overrides it |
 | `json_output_preference` | boolean | `true` | Prefer a detected, schema-declared JSON switch in newly generated captured-execution bindings |
 | `overlay_dirs` | list of paths | `[]` | Explicit local corpus directories; skip automatic downloads and load before personal overlays |
-| `default_overlay_repository` | string | `https://github.com/aiperceivable/cli-permissions` | Default initialization and automatic scan source; HTTPS mirror or local Git repository supported |
+| `default_overlay_repository` | string | `https://github.com/aiperceivable/cli-permissions` | Default initialization and automatic scan source. A GitHub repository uses its newest release archive; other HTTPS mirrors and local Git repositories are fetched with Git |
 | `additional_denied_paths` | list of paths | `[]` | Locations to deny **in addition to** the path-guard baselines (§9.7) |
 | `allowed_paths` | list of paths | `[]` | Carve-outs **out of** the path-guard baselines (§9.7). The only setting that relaxes the guard; you own the consequences |
 | `child_exec.mode` | `refuse` \| `analyze` \| `delegate` | `refuse` | Policy for a command that embeds another program's argv (`find -exec`). `refuse` rejects every list; `analyze` resolves the program to its own module and applies that module's ACL, path and approval gates; `delegate` does the same and runs each match through the installed child shim, with a scoped delegated approval and the actual path checked |
@@ -1650,7 +1755,10 @@ An overlay is a curated, human-reviewed description of one tool variant, keyed b
 - Overlays are the only source that can express `conflicts_with` (mutually exclusive flags) and `long_running` (a flag that may block indefinitely, e.g. `tail -f`) — no `--help`/man format expresses either machine-readably.
 - Overlays can also override behavioral annotations (`readonly`/`destructive`/`idempotent`/`requires_approval`/`open_world`) for a specific command. `open_world` is the one inference reads off a *name list* rather than the command's own surface, so it is the one an overlay most often has to correct: GNU sed runs `s///e` as a shell command while BSD sed rejects the flag, and the name `sed` cannot tell them apart.
 
-The default corpus needs no separate install step. Install another managed corpus
+The default corpus needs no separate install step, but automatic acquisition never
+changes the set of installed corpora: if any managed corpus is installed, a scan
+uses it and does not also fetch the configured default. Adopting a new default
+is an explicit `apexe init`. Install another managed corpus
 with `apexe init --overlays <REPOSITORY>`, load one explicit overlay with `apexe scan <tool> --overlay <PATH>` (JSON or YAML), add a corpus directory through `overlay_dirs` or `APEXE_OVERLAY_DIRS`, or place a local correction under `~/.apexe/overlays/`. The format is defined by [`tool-overlay.schema.json`](https://github.com/aiperceivable/cli-permissions/blob/main/schemas/tool-overlay.schema.json), which ships with
 the corpus rather than with apexe. That schema still pins `1.0`/`1.1`; the
 `commands[]`/`global_flags` 2.0 surface is a preview accepted by this build
@@ -3234,7 +3342,9 @@ source ~/.apexe/bin/apexe-activate.sh
 apexe env --check
 ```
 
-The scan obtains the default corpus automatically when needed. Loaded modules
+The scan obtains the default corpus automatically when no managed corpus is
+installed: an installation that already holds one keeps exactly that set until
+an explicit `apexe init` changes it. Loaded modules
 still need matching authoritative native contracts to become shims; check the
 exclusion diagnostics and the [eligibility requirements](#48-apexe-env).
 Other platforms and variants need their own reviewed overlays.

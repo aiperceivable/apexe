@@ -680,6 +680,17 @@ pub(crate) fn report_unconfigured_hosts(shim_dir: &Path) {
     }
 }
 
+/// Detected hosts and whether each already selects apexe, for `setup`.
+///
+/// Detection lives here so that `env --enable`'s hint list and the one-step
+/// installer cannot disagree about which hosts exist on this machine.
+pub(crate) fn detected_host_status(shim_dir: &Path) -> Vec<(AgentHost, PathBuf, bool)> {
+    detected_hosts(shim_dir)
+        .into_iter()
+        .map(|detected| (detected.host, detected.binary, detected.configured))
+        .collect()
+}
+
 fn detected_hosts(shim_dir: &Path) -> Vec<DetectedHost> {
     const HOSTS: [AgentHost; 4] = [
         AgentHost::Opencode,
@@ -819,7 +830,7 @@ fn print_text(report: &DoctorReport) {
     println!("[INFO] {}", report.host.note);
 }
 
-fn host_name(host: AgentHost) -> &'static str {
+pub(crate) fn host_name(host: AgentHost) -> &'static str {
     match host {
         AgentHost::Opencode => "opencode",
         AgentHost::Pi => "pi",

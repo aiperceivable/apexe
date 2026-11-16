@@ -208,7 +208,7 @@ def run_basic_example(session):
             [script], executable=bash, environment=environment
         ) as process:
             session.ready(url, process, timeout=90)
-            equal(http(url + "/explorer/")[0], 200)
+            equal(http(url + "/explorer")[0], 200)
             equal(http(url + "/explorer/tools")[0], 200)
             listing_arguments = basic_calls(url)
             entry["documented_calls"] = {

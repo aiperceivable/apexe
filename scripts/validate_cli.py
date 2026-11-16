@@ -851,9 +851,37 @@ def validate_initialization(session, fixture):
                 "--offline",
                 "--format",
                 fmt,
+                "--force",
             ],
             timeout=60,
         )
+    # Corpus management: the parent needs a case of its own because coverage
+    # keys on the resolved subcommand path.
+    session.run("corpus requires a subcommand", ["corpus"], code=2)
+    for fmt in ["table", "json"]:
+        session.run("corpus list " + fmt, ["corpus", "list", "--format", fmt])
+    session.run(
+        "corpus remove rejects an unknown name",
+        ["corpus", "remove", "not-installed", "--yes"],
+        code=1,
+    )
+    # `setup` orchestrates the steps above; the dry run exercises every flag
+    # without writing rules, shims or host configuration.
+    session.run(
+        "setup plan covers every flag",
+        [
+            "setup",
+            "--dry-run",
+            "--yes",
+            "--no-hosts",
+            "--offline",
+            "--overlays",
+            fixture.rules,
+            "--ref",
+            "main",
+            "--force",
+        ],
+    )
 
 
 def validate_client_configuration(session, fixture):
@@ -1069,7 +1097,12 @@ def validate_authentication(session, fixture):
                         )
                         equal(http(url + "/metrics", token=credential)[0], 200)
                         equal(http(url + "/usage", token=credential)[0], 200)
-                        equal(http(url + "/explorer/")[0], 200)
+                        equal(http(url + "/explorer")[0], 200)
+                        # The Explorer canonicalises to the path without a
+                        # trailing slash. A browser follows the 308; demanding
+                        # 200 from the slashed form asserted a contract the
+                        # server never had.
+                        equal(http(url + "/explorer/")[0], 308)
                     else:
                         card = json.loads(http(url + "/.well-known/agent-card.json")[1])
                         equal(card["name"], "validation-network")

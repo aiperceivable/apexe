@@ -13,13 +13,14 @@ const OWNER_KEY: &str = "apexe_init_source";
 /// Prepare reviewed command bindings and a starter ACL for this machine.
 #[derive(Debug, clap::Args, Serialize, Deserialize)]
 #[command(
-    after_help = "Examples:\n  apexe init                                Prepare this machine\n  apexe init --offline --format json         Use cached or local rules\n  apexe init --refresh                       Refresh unchanged init-owned bindings\n\nNext: inspect 'apexe list --verbose', review the ACL, then use 'apexe exec',\n'apexe env --enable' or 'apexe serve --acl ~/.apexe/acl.yaml'."
+    after_help = "Examples:\n  apexe init                                Prepare this machine\n  apexe init --overlays https://github.com/acme/team-corpus\n                                            Use another corpus repository\n  apexe init --overlays <corpus.tar.gz>      Install one release archive\n  apexe init --ref main --overlays <repo>    Pin a Git branch, tag or commit\n  apexe init --offline --format json         Use cached or local rules\n  apexe init --refresh                       Refresh unchanged init-owned bindings\n\nNext: inspect 'apexe list --verbose', review the ACL, then use 'apexe exec',\n'apexe env --enable' or 'apexe serve --acl ~/.apexe/acl.yaml'."
 )]
 pub struct InitArgs {
-    /// Rules Git repository; defaults to default_overlay_repository.
+    /// Rules source for this invocation: an HTTPS/GitHub repository, a local
+    /// Git checkout, or a corpus archive URL or path.
     #[arg(long, value_name = "SOURCE", value_parser = parse_source)]
     pub overlays: Option<String>,
-    /// Pin a branch, tag or commit for the selected rules repository.
+    /// Select a Git branch, tag or commit. Releases are selected by archive URL.
     #[arg(long = "ref")]
     pub reference: Option<String>,
     /// Update the rules snapshot and regenerate bindings owned by init.
@@ -28,6 +29,9 @@ pub struct InitArgs {
     /// Disable network downloads; cached and local Git sources still work.
     #[arg(long, env = "APEXE_OFFLINE")]
     pub offline: bool,
+    /// Replace an installed corpus that uses the same name from another source.
+    #[arg(long)]
+    pub force: bool,
     /// Initialization report format.
     #[arg(long, value_enum, default_value = "table")]
     pub format: ReportFormat,
@@ -82,13 +86,53 @@ impl InitArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
         self.validate(config)?;
         write_progress(self.format, format_args!("[1/3] Preparing CLI rules..."))?;
-        let source = crate::corpus::bootstrap::prepare(
+        let source = match crate::corpus::bootstrap::prepare(
             config,
             self.overlays.as_deref(),
             self.reference.as_deref(),
             self.refresh,
             self.offline,
-        )?;
+            false,
+        ) {
+            Ok(source) => source,
+            Err(crate::corpus::CorpusError::NameConflict {
+                name,
+                installed,
+                requested,
+            }) => {
+                if !self.force {
+                    match confirm_replace(&name, &installed, &requested)? {
+                        ReplaceDecision::Accepted => {}
+                        ReplaceDecision::Declined => {
+                            anyhow::bail!("kept the installed corpus '{name}'; nothing changed")
+                        }
+                        // No terminal means no consent: report the flag that
+                        // would grant it instead of guessing.
+                        ReplaceDecision::NotInteractive => {
+                            return Err(crate::corpus::CorpusError::NameConflict {
+                                name,
+                                installed,
+                                requested,
+                            }
+                            .into())
+                        }
+                    }
+                }
+                write_progress(
+                    self.format,
+                    format_args!("Replacing corpus '{name}' from {requested}..."),
+                )?;
+                crate::corpus::bootstrap::prepare(
+                    config,
+                    self.overlays.as_deref(),
+                    self.reference.as_deref(),
+                    self.refresh,
+                    self.offline,
+                    true,
+                )?
+            }
+            Err(error) => return Err(error.into()),
+        };
         let orchestrator = ScanOrchestrator::new(config.clone());
         let mut candidates = orchestrator.covered_commands();
         let fallback = candidates.is_empty();
@@ -535,13 +579,41 @@ fn write_rules_summary(
         report.preserved.len()
     )?;
     for corpus in &report.corpora {
+        let version = corpus
+            .manifest
+            .as_ref()
+            .map(|manifest| manifest.version.as_str());
         writeln!(
             output,
-            "Rules: {} @ {} ({})",
-            corpus.name, corpus.commit, corpus.repository
+            "{}",
+            rules_line(
+                &corpus.name,
+                version,
+                &corpus.commit,
+                corpus.source,
+                &corpus.repository
+            )
         )?;
     }
     Ok(())
+}
+
+/// One line per loaded corpus. The release version answers "which rules", the
+/// identity answers "which bytes", and the source kind says whether that
+/// identity is a commit or the digest of a downloaded release.
+fn rules_line(
+    name: &str,
+    version: Option<&str>,
+    identity: &str,
+    source: crate::corpus::SourceKind,
+    repository: &str,
+) -> String {
+    let version = version.unwrap_or("unversioned");
+    let kind = match source {
+        crate::corpus::SourceKind::Git => "commit",
+        crate::corpus::SourceKind::Archive => "sha256",
+    };
+    format!("Rules: {name} {version} from {repository} ({kind}: {identity})")
 }
 
 #[cfg(test)]
@@ -606,5 +678,92 @@ mod tests {
             serde_json::to_string(&module).unwrap(),
             serde_json::to_string(&loaded[0]).unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod rules_line_tests {
+    use super::rules_line;
+    use crate::corpus::SourceKind;
+
+    #[test]
+    fn test_rules_line_names_a_corpus_release_and_its_digest() {
+        let digest = "a".repeat(64);
+        assert_eq!(
+            rules_line(
+                "cli-permissions",
+                Some("0.2.0"),
+                &digest,
+                SourceKind::Archive,
+                "https://github.com/o/cli-permissions"
+            ),
+            format!(
+                "Rules: cli-permissions 0.2.0 from https://github.com/o/cli-permissions (sha256: {digest})"
+            )
+        );
+    }
+
+    #[test]
+    fn test_rules_line_names_a_git_identity() {
+        let commit = "b".repeat(40);
+        let line = rules_line(
+            "team-corpus",
+            None,
+            &commit,
+            SourceKind::Git,
+            "/checkouts/team-corpus",
+        );
+        assert!(line.contains("team-corpus unversioned"), "{line}");
+        assert!(line.contains(&format!("(commit: {commit})")), "{line}");
+    }
+}
+
+enum ReplaceDecision {
+    Accepted,
+    Declined,
+    NotInteractive,
+}
+
+/// Ask before replacing an installed corpus that shares the new one's name.
+///
+/// The default is No: the installed rules are the ones this machine already
+/// trusts, and a fork that kept `name: cli-permissions` is exactly the case
+/// where a silent swap would be hard to notice.
+fn confirm_replace(
+    name: &str,
+    installed: &str,
+    requested: &str,
+) -> anyhow::Result<ReplaceDecision> {
+    use std::io::{IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        return Ok(ReplaceDecision::NotInteractive);
+    }
+    println!("Corpus '{name}' is installed from {installed}.");
+    print!("Replace it with {requested}? [y/N] ");
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    Ok(
+        if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            ReplaceDecision::Accepted
+        } else {
+            ReplaceDecision::Declined
+        },
+    )
+}
+
+#[cfg(test)]
+mod replace_confirmation_tests {
+    use super::confirm_replace;
+
+    #[test]
+    fn test_a_non_interactive_replace_is_refused() {
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal() {
+            assert!(matches!(
+                confirm_replace("cli-permissions", "old", "new").unwrap(),
+                super::ReplaceDecision::NotInteractive
+            ));
+        }
     }
 }

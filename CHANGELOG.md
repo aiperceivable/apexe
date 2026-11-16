@@ -6,7 +6,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
-## [0.15.0] - 2026-11-15
+## [Unreleased]
+
+## [0.15.0] - 2026-11-16
 
 ### Added
 - Opt-in sandbox delegation for selected modules. `sandbox.modules` names module
@@ -47,6 +49,61 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 - `docs/features/v2-f9-sandbox.md`, the contract/defaults/implementation notes
   in `docs/sandbox.md`, the conformance cases in `docs/sandbox-testing.md`, and
   the source review in `docs/ideas/sandbox-source-notes.md`.
+
+- `apexe setup` prepares a machine in one step by orchestrating `init`,
+  `env --enable --no-rc` and `agent <host> --write` for detected hosts. It is
+  the same code path each command owns, not a second configuration surface.
+  Shims are installed without editing shell startup files, so login-time
+  tooling keeps resolving its own commands; the summary says what is and is not
+  governed, and Codex is reported rather than changed.
+- `scripts/install.sh` downloads the release for the platform, verifies its
+  checksum, installs into `~/.local/bin` without `sudo`, and hands off to
+  `apexe setup`. `curl … | sh` reattaches the terminal before prompting, and a
+  run without one writes no host configuration.
+- `apexe init` reads the default corpus from a GitHub release archive instead of
+  requiring Git. The recorded identity is the sha256 of the archive bytes, which
+  names the exact rules that were admitted. `--ref` remains a Git reference, so
+  repositories that tag without publishing assets keep working, and a release is
+  pinned by its archive URL. `--refresh` reproduces whichever source was
+  recorded.
+- Archive extraction treats every byte as untrusted: one top-level directory
+  with a `manifest.json` is required, and links, devices, duplicate entries and
+  `..` components are rejected before anything is validated.
+- Corpus manifests declare a release version that `apexe` now checks against a
+  supported range (`>=0.1.0, <1.0.0`). An out-of-range corpus is refused with
+  the range named, instead of being loaded silently and failing later.
+- A GitHub source with no `<repo>.tar.gz` release asset falls back to the
+  repository's Git history once, records `HEAD`, and keeps using Git on later
+  refreshes. If Git also fails, initialization reports both attempts instead of
+  only the last one.
+- Scan-time acquisition is isolated: when any managed corpus is installed, a
+  scan uses it and does not also fetch the configured default. Installed rule
+  sets therefore change only through an explicit `apexe init`, never as a side
+  effect of scanning a tool.
+- `apexe corpus list` reports each installed corpus with its release version,
+  source and identity; `apexe corpus remove <name>` deletes one without
+  touching the others. Removing the default corpus by hand is no longer the
+  only way to narrow a machine to a custom source.
+- A same-named corpus from a different source can replace the installed one
+  with consent: `init`/`setup` ask on a terminal and require `--force`
+  otherwise. A fork that keeps `name: cli-permissions` therefore does not need
+  to learn the manifest naming rule, and the replacement is still never
+  silent.
+- `apexe setup` and `scripts/install.sh` accept `--overlays <SOURCE>` and
+  `--ref <REF>`, so installing the binary and preparing a custom corpus is a
+  single command rather than an install followed by an additive `init`.
+
+### Fixed
+- A flag-scoped approval ceiling stands down again for calls that send none of
+  its escalating arguments. `init` writes an ACL by default, and the executor
+  treated "an ACL exists" as "the ACL demands approval", forcing every
+  `requires_approval` module to prompt on every call: `sort file` failed even
+  though only `sort -o` was the gated argument. The gate now uses the precise
+  answer from the loaded policy — a rule with `approval: required` still forces
+  a prompt, and an ordinary allow/deny ACL no longer does.
+- A corpus whose overlay directory is missing reports that directory by path.
+  The managed-path symlink check treated absence as an I/O error, so the message
+  was a bare "No such file or directory".
 
 ### Documentation
 - Corrected the earlier `sandbox-exec` false negative: `/tmp` resolves to

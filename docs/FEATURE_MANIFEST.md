@@ -22,7 +22,9 @@ git/docker scan tests and the macOS native example are opt-in.
 | Capability | Implementation / entry point | Scope |
 |---|---|---|
 | CLI discovery and schemas | `scanner`, `adapter`; `scan` | Help, man pages, completions, variant-aware overlays, JSON Schema and annotations |
-| Reviewed source initialization | `corpus`, `cli::init`; `init` | Cached Git rules, revision pinning, offline use, refresh and binding/policy preservation |
+| Reviewed source initialization | `corpus`, `cli::init`; `init` | Cached rules from release archives or Git, revision pinning, version-range checks, offline use, refresh and binding/policy preservation |
+| One-step machine preparation | `cli::setup`, `scripts/install.sh`; `setup` | Composes `init`, shim installation without shell-startup edits, and host configuration for detected agents; the installer verifies the release checksum and never uses `sudo` |
+| Installed corpus management | `cli::corpus`; `corpus` | Lists installed corpora with source and identity, and removes one without touching the rest |
 | Terminal-agent execution routing | `skills/apexe/SKILL.md`, `scripts/install_agent_skill.py` | Fallback Claude Code/Codex/pi/OpenCode Skill for hosts without shell/hook integration; host integration uses `apexe agent` and `apexe sh`, and the Skill routes exec only when no host integration is active |
 | Binding and agent guidance output | `output`; `scan --skills-dir` | YAML bindings and optional Claude Skills; Rust API tool-definition export |
 | Policy authorship | `governance::acl`; `acl` | `acl init` writes a starter policy once (`--profile developer\|strict`), `acl sync` refreshes only the destructive and open-world denials, `acl explain` names the rule that decided a module. `scan` writes bindings and never policy |
@@ -134,7 +136,7 @@ src/
 │   └── overlay      ToolOverlay: curated flag/arg descriptions, apply_overlay
 ├── auth             Transport authentication for the HTTP-family MCP/A2A
 │                    transports (token/JWT, loopback-bind detection)
-├── cli/             clap CLI entry point (scan/serve/a2a/exec/sh/hook/agent/env/verify/init/list/acl/sandbox/config/paths)
+├── cli/             clap CLI entry point (setup/scan/serve/a2a/exec/sh/hook/agent/env/verify/init/list/corpus/acl/sandbox/config/paths)
 │   ├── init         Reviewed source bootstrap, binding ownership and starter ACL
 │   ├── exec         Module JSON and native argv through shared governance
 │   ├── config_set   Persistent log-level updates preserving other settings

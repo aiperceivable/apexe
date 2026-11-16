@@ -13,6 +13,7 @@ pub(crate) fn prepare(
     reference: Option<&str>,
     refresh: bool,
     offline: bool,
+    replace: bool,
 ) -> Result<BootstrapSource, CorpusError> {
     if let Some(reference) = reference {
         source::validate_reference(reference)?;
@@ -28,12 +29,15 @@ pub(crate) fn prepare(
         return Ok(BootstrapSource::default());
     }
     let result = ensure_online(offline, &parsed.location)
-        .and_then(|()| store.install(repository, None, reference, None));
+        .and_then(|()| store.install(repository, None, reference, None, replace));
     match result {
-        Ok(corpus) => Ok(BootstrapSource {
-            corpus: Some(corpus),
-            warnings: vec![],
-        }),
+        Ok(corpus) => {
+            let warnings = fallback_warnings(&corpus, reference);
+            Ok(BootstrapSource {
+                corpus: Some(corpus),
+                warnings,
+            })
+        }
         Err(error) if explicit.is_none() && reference.is_none() && !refresh => {
             tracing::warn!(%error, "Default rules unavailable; initialization will report fallback coverage");
             Ok(fallback(error))
@@ -82,6 +86,25 @@ fn normalize_local_path(path: &std::path::Path) -> Result<std::path::PathBuf, Co
         }
     }
     Ok(path)
+}
+
+/// Explain a source that was discovered rather than requested.
+///
+/// A GitHub repository with no release archive is fetched with Git, and the
+/// recorded reference becomes `HEAD`. That is a real change of source, so the
+/// report says it instead of letting the identity column change unexplained.
+fn fallback_warnings(corpus: &InstalledCorpus, reference: Option<&str>) -> Vec<String> {
+    if reference.is_none()
+        && source::derives_release(&corpus.repository)
+        && corpus.reference == source::git_head_reference()
+    {
+        return vec![format!(
+            "{} publishes no release archive; installed its Git history ({}). \
+             Publish a release, or pass --ref to state the source explicitly.",
+            corpus.name, corpus.commit
+        )];
+    }
+    Vec::new()
 }
 
 fn ensure_online(offline: bool, repository: &str) -> Result<(), CorpusError> {

@@ -32,6 +32,13 @@ pub(super) fn read(checkout: &Path) -> Result<Option<CorpusManifest>, CorpusErro
     Ok(Some(manifest))
 }
 
+/// Corpus releases this apexe was built to read. The corpus release version is
+/// independent of the manifest and overlay format versions; this range is the
+/// one statement of which corpus content this binary understands. Schema
+/// changes are rejected separately by the `schema_version` check above, because
+/// they break parsing rather than compatibility.
+const SUPPORTED_CORPUS_VERSIONS: &str = ">=0.1.0, <1.0.0";
+
 pub(super) fn validate(manifest: &CorpusManifest) -> Result<(), CorpusError> {
     source::validate_name(&manifest.name)?;
     source::validate_subdirectory(&manifest.overlay_directory)?;
@@ -39,11 +46,24 @@ pub(super) fn validate(manifest: &CorpusManifest) -> Result<(), CorpusError> {
         || manifest.description.trim().is_empty()
         || manifest.description.len() > 4096
         || manifest.version.len() > 256
-        || semver::Version::parse(&manifest.version).is_err()
     {
         return Err(CorpusError::InvalidCorpus(
             "Invalid corpus manifest schema, description or SemVer version".into(),
         ));
+    }
+    let version = semver::Version::parse(&manifest.version).map_err(|_| {
+        CorpusError::InvalidCorpus(
+            "Invalid corpus manifest schema, description or SemVer version".into(),
+        )
+    })?;
+    let supported = semver::VersionReq::parse(SUPPORTED_CORPUS_VERSIONS).map_err(|error| {
+        CorpusError::InvalidCorpus(format!("Invalid supported corpus range: {error}"))
+    })?;
+    if !supported.matches(&version) {
+        return Err(CorpusError::UnsupportedCorpus(format!(
+            "Corpus version {} is outside the supported range {}; upgrade apexe or install an older corpus release",
+            manifest.version, SUPPORTED_CORPUS_VERSIONS
+        )));
     }
     if let Some(homepage) = &manifest.homepage {
         let url = url::Url::parse(homepage)
@@ -66,4 +86,49 @@ pub(super) fn validate(manifest: &CorpusManifest) -> Result<(), CorpusError> {
         return Err(CorpusError::InvalidCorpus("Invalid corpus license".into()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest(version: &str) -> CorpusManifest {
+        CorpusManifest {
+            schema_version: "1.0".into(),
+            name: "cli-permissions".into(),
+            description: "Reviewed CLI command facts.".into(),
+            version: version.into(),
+            overlay_directory: PathBuf::from("overlays"),
+            homepage: None,
+            license: None,
+        }
+    }
+
+    #[test]
+    fn test_supported_corpus_versions_are_accepted() {
+        for version in ["0.1.0", "0.2.0", "0.99.99"] {
+            assert!(validate(&manifest(version)).is_ok(), "version {version}");
+        }
+    }
+
+    #[test]
+    fn test_corpus_versions_outside_the_range_are_unsupported() {
+        for version in ["0.0.9", "1.0.0", "2.0.0"] {
+            assert!(
+                matches!(
+                    validate(&manifest(version)),
+                    Err(CorpusError::UnsupportedCorpus(_))
+                ),
+                "version {version}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_malformed_versions_are_invalid_rather_than_unsupported() {
+        assert!(matches!(
+            validate(&manifest("latest")),
+            Err(CorpusError::InvalidCorpus(_))
+        ));
+    }
 }

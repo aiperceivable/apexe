@@ -62,7 +62,7 @@ fn test_help_leads_with_setup_discovery_and_execution() {
         .take_while(|line| !line.is_empty())
         .filter_map(|line| line.split_whitespace().next())
         .collect();
-    assert_eq!(&commands[..3], &["init", "list", "exec"]);
+    assert_eq!(&commands[..3], &["setup", "init", "list"]);
     assert!(help.contains("apexe exec --dry-run -- ls -la"));
 }
 
@@ -1018,4 +1018,212 @@ fn test_openapi_show_config_preserves_source_and_omits_credentials() {
     assert!(rendered.contains("api.inventory"));
     assert!(!rendered.contains("spec-secret"));
     assert!(!rendered.contains("api-secret"));
+}
+
+/// An explicit source is a contract: if it cannot be read, `init` fails and
+/// writes nothing. It must not substitute the configured default corpus or
+/// built-in classification, because a reviewer who named a source needs the
+/// failure, not a different set of rules.
+#[test]
+fn test_failed_explicit_source_writes_no_policy_or_bindings() {
+    let home = tempfile::tempdir().unwrap();
+    let mut command = Command::cargo_bin("apexe").unwrap();
+    command
+        .env("HOME", home.path())
+        .env("APEXE_OFFLINE", "true")
+        .env_remove("APEXE_DEFAULT_OVERLAY_REPOSITORY")
+        .env_remove("APEXE_BINDINGS_DIR")
+        .args(["init", "--overlays", "file:///nonexistent/corpus.tar.gz"]);
+    command.assert().failure();
+    let config = home.path().join(".apexe");
+    assert!(
+        !config.join("acl.yaml").exists(),
+        "a failed explicit source must not write a policy"
+    );
+    // The process creates empty working directories before it resolves the
+    // source; what matters is that neither bindings nor a corpus were written.
+    let bindings = std::fs::read_dir(config.join("bindings"))
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(
+        bindings, 0,
+        "a failed explicit source must not write bindings"
+    );
+    let catalog = std::fs::read_to_string(config.join("corpora/index.json")).unwrap_or_default();
+    assert!(
+        !catalog.contains("\"name\""),
+        "a failed explicit source must not install a corpus: {catalog}"
+    );
+}
+
+/// `setup` end to end: rules, bindings, launcher and a reviewed shim.
+///
+/// The corpus is synthetic but authoritative: `setup` installs shims only for
+/// routes with reviewed grammar, so the fixture must exercise that gate rather
+/// than the fallback classification (which is refused by design).
+#[cfg(unix)]
+fn write_fixture_corpus(home: &std::path::Path, annotations: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = home.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let tool = bin.join("fixture");
+    std::fs::write(
+        &tool,
+        "#!/bin/sh\ncase \"$1\" in --version) echo 'fixture 1.0';; *) printf 'Usage: fixture [OPTIONS]\\nOptions:\\n  --ready  Test operation\\n';; esac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let corpus = home.join("corpus");
+    std::fs::create_dir_all(corpus.join("overlays")).unwrap();
+    std::fs::write(
+        corpus.join("manifest.json"),
+        r#"{"schema_version":"1.0","name":"fixture-corpus","description":"Fixture corpus",
+            "version":"0.1.0","overlay_directory":"overlays","license":"Apache-2.0"}"#,
+    )
+    .unwrap();
+    let overlay = format!(
+        r#"{{"schema_version":"2.0","command":"fixture","variant":"unknown",
+            "mode":"authoritative","confidence":"low","cross_flag_ordering":false,
+            "short_flag_bundling":false,"streaming_stdin_safe":false,
+            "commands":[{{"path":[],"flags":[{{"long":"--ready","type":"boolean",
+              "description":"Test operation"}}],
+              "annotations":{annotations}}}]}}"#
+    );
+    std::fs::write(corpus.join("overlays/fixture.json"), overlay).unwrap();
+    for arguments in [
+        vec!["init", "--quiet"],
+        vec!["add", "."],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "Fixture corpus",
+        ],
+    ] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&corpus)
+            .args(&arguments)
+            .env("HOME", home)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {arguments:?} failed");
+    }
+    corpus
+}
+
+#[cfg(unix)]
+fn fixture_command(home: &std::path::Path) -> Command {
+    let path = format!(
+        "{}:{}",
+        home.join("bin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut command = Command::cargo_bin("apexe").unwrap();
+    command
+        .env("HOME", home)
+        .env("PATH", path)
+        .env("SHELL", "/bin/sh")
+        .env("APEXE_OFFLINE", "false")
+        .env_remove("APEXE_BINDINGS_DIR")
+        .env("APEXE_DEFAULT_OVERLAY_REPOSITORY", home.join("corpus"));
+    command
+}
+
+#[cfg(unix)]
+#[test]
+fn test_setup_prepares_rules_and_shims_from_a_reviewed_corpus() {
+    let home = tempfile::tempdir().unwrap();
+    write_fixture_corpus(
+        home.path(),
+        r#"{"readonly":true,"destructive":false,"idempotent":true,
+            "requires_approval":false,"open_world":false}"#,
+    );
+    let output = fixture_command(home.path())
+        .args(["setup", "--yes", "--no-hosts"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "setup failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let config = home.path().join(".apexe");
+    assert!(
+        config.join("acl.yaml").is_file(),
+        "setup must write a policy"
+    );
+    assert!(
+        config.join("bin/apexe-sh").exists(),
+        "setup must install the launcher"
+    );
+    assert!(
+        config.join("bin/fixture").exists(),
+        "setup must install a shim for the reviewed route"
+    );
+}
+
+/// A flag-scoped approval ceiling stands down for a call that sends no
+/// escalating argument, but an ACL rule that demands a human keeps it up.
+///
+/// The control case is the one that regressed: `init` always writes an ACL, and
+/// treating "an ACL exists" as "the ACL demands approval" made every
+/// `requires_approval` module prompt on every call.
+#[cfg(unix)]
+#[test]
+fn test_exec_stands_down_for_a_flag_scoped_ceiling_unless_the_acl_demands_it() {
+    let home = tempfile::tempdir().unwrap();
+    write_fixture_corpus(
+        home.path(),
+        r#"{"readonly":true,"destructive":false,"idempotent":true,
+            "requires_approval":true,"open_world":false,
+            "approval_flags":["ready"]}"#,
+    );
+    fixture_command(home.path())
+        .args(["setup", "--yes", "--no-hosts"])
+        .assert()
+        .success();
+
+    // No escalating argument: the gate stands down and the call runs.
+    fixture_command(home.path())
+        .args(["exec", "cli.fixture", "--input", r#"{"ready":false}"#])
+        .assert()
+        .success();
+
+    // The escalating argument needs a prompt, and a non-interactive caller has
+    // nobody to ask.
+    fixture_command(home.path())
+        .args(["exec", "cli.fixture", "--input", r#"{"ready":true}"#])
+        .assert()
+        .failure();
+
+    // An operator rule that requires approval keeps the gate up even when the
+    // call itself sends nothing escalating.
+    let acl = home.path().join("approval.yaml");
+    std::fs::write(
+        &acl,
+        "rules:\n- callers:\n  - '*'\n  targets:\n  - cli.fixture\n  effect: allow\n  approval: required\ndefault_effect: deny\n",
+    )
+    .unwrap();
+    fixture_command(home.path())
+        .args([
+            "exec",
+            "cli.fixture",
+            "--acl",
+            acl.to_str().unwrap(),
+            "--input",
+            r#"{"ready":false}"#,
+        ])
+        .assert()
+        .failure();
 }

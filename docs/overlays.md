@@ -105,15 +105,63 @@ apexe init
 apexe init --format json
 # Update rules and refresh unchanged bindings originally created by init.
 apexe init --refresh
-# Use a specific local Git source or reviewed revision.
+# Use another corpus repository, including a fork or a private mirror.
+apexe init --overlays https://github.com/acme/team-corpus
+# Install one published release archive.
+apexe init --overlays https://github.com/acme/team-corpus/releases/download/v0.2.0/team-corpus.tar.gz
+apexe init --overlays ./team-corpus-v0.2.0.tar.gz
+# Use a specific local Git source or exact commit.
 apexe init --overlays ../cli-permissions --ref <COMMIT>
 ```
 
-`--ref <REF>` selects a branch, tag or commit. The resolved commit is recorded;
-a pinned installation stays pinned until its reference is explicitly changed.
-The JSON initialization report includes installed source metadata and commits.
+The default source is the newest GitHub release archive of the configured
+repository (`…/releases/latest/download/<repo>.tar.gz`), so `init` does not need
+Git to read rules that are published as a release. Which source a call uses is
+decided by the reference it records:
+
+| Source | Selected by | Recorded identity |
+|---|---|---|
+| Release archive | no `--ref`; an archive URL or path | sha256 of the archive bytes |
+| Git checkout | `--ref` with a branch, tag or commit; a non-GitHub host; a local Git directory | resolved commit |
+| Local archive | `--overlays ./corpus.tar.gz` or a `file://` URL | sha256 of the file |
+
+`--ref` is always a Git reference. A repository that tags without attaching a
+release asset therefore keeps working, and one reference never means two
+different things depending on what some repository happens to publish. To pin a
+release without installing Git, pass its archive URL.
+
+A release archive is named after its repository: `<repo>.tar.gz`, under both
+`releases/latest/download/` and `releases/download/<tag>/`. That is the contract
+apexe resolves, so a fork publishes under its own name without any
+configuration.
+
+`--refresh` reproduces the recorded source: a corpus installed from `latest`
+picks up a newer release, and one installed from a branch or commit stays on
+it.
+
+If a repository has no release asset, the first installation falls back to its
+Git history once and records `HEAD`, so later refreshes keep using Git rather
+than asking the remote again. If Git also fails, initialization fails and names
+both attempts. Pass `--ref` to state the source explicitly instead of relying on
+discovery.
+
+An archive must contain one top-level directory with a `manifest.json`, and its
+corpus version must fall inside the range this apexe supports. Both are checked
+before any overlay is registered. Entries are limited to regular files and
+directories under that one directory; links, devices and `..` components are
+rejected, so an archive cannot write outside the snapshot directory.
+
+`--ref` is always a Git reference, so a repository that tags without attaching a
+release asset keeps working. The recorded identity is the sha256 of the archive
+bytes for a release and the resolved commit for Git; an installation stays on
+its recorded source until its reference or URL is explicitly changed. The JSON
+initialization report includes installed source metadata and that identity.
 Managed corpora are loaded after packaged sources and before configured
 `overlay_dirs`, personal overlays and a scan's explicit `--overlay`.
+Automatic acquisition never changes which corpora are installed: when any
+managed corpus exists, a scan uses it and does not also fetch the configured
+default, even if the configuration names a different repository. Adding or
+replacing a corpus is an explicit `apexe init`.
 `init --refresh` regenerates unchanged init-owned bindings; custom or edited
 bindings need an explicit targeted rescan. Enabled shims then need
 `apexe env --reload`. The old `apexe overlays` command is removed. See the
@@ -152,7 +200,8 @@ manifest they default to the repository basename and `overlays`. The directory
 must stay within the checkout and outside `.git`; symlinked directories or
 overlay files are rejected. The installer validates every overlay before
 registering the snapshot, preserves an active installation on update failure,
-and runs no repository scripts, hooks or submodules. Git must be installed.
+and runs no repository scripts, hooks or submodules. Git is needed only for Git
+sources; the default release archive needs no external tool.
 Installing metadata does not install command binaries, grant ACL permissions,
 or establish the truth of a `verified` assertion: the procedure below still
 applies to every human claim.

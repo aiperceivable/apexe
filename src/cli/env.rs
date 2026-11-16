@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 mod check;
 
 /// Enable, reload, disable or check governed shims, or print shell activation.
-#[derive(Debug, clap::Args, Serialize, Deserialize)]
+#[derive(Debug, Default, clap::Args, Serialize, Deserialize)]
 #[command(
     after_help = "Examples (default paths, bash/zsh):\n  apexe env --enable                         Install reviewed command shims\n  source ~/.apexe/bin/apexe-activate.sh        Activate in this terminal\n  apexe env --check                           Check installation and activation\n  source ~/.apexe/bin/apexe-deactivate.sh      Remove shims and restore this terminal\n\nEnabling cannot change the parent shell; source the activation helper.\nPATH shims cover eligible external commands; builtins and absolute paths can bypass them."
 )]

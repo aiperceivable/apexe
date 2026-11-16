@@ -14,6 +14,7 @@ boundaries you must review.
 
 | Goal | Guide |
 | --- | --- |
+| Install, prepare rules, shims and a detected agent in one step | [Quick Start](quickstart.md#1-install) |
 | Connect Claude Code, Codex, pi or OpenCode in four steps (Skill fallback) | [Agent quick integration](agent-skill.md#quick-integration) |
 | Use `apexe sh` as the host shell, PATH shims or a Claude Code hook | [Shell Integration](agent-shell.md) |
 | Resolve Skill discovery, routing, native coverage or ACL problems | [Agent troubleshooting](agent-skill.md#troubleshooting) |
@@ -31,7 +32,7 @@ boundaries you must review.
 The normal user path is:
 
 ```text
-CLI agent: init → review bindings/ACL → install Skill → declare route → native exec
+CLI agent: setup → review bindings/ACL → install Skill → declare route → native exec
 Optional CLI integration: env shims or MCP/A2A protocol serving
 API: review OpenAPI source and ACL → serve or a2a with --openapi --acl
 ```

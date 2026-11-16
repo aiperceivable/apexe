@@ -11,6 +11,10 @@ enum DefaultCorpus {
     Cached(InstalledCorpus),
     Downloaded(InstalledCorpus),
     Configured,
+    /// Another managed corpus is already installed. Automatic acquisition
+    /// never adds a second rule set: the operator chose a source, and a scan
+    /// must not silently mix the configured default into it.
+    Isolated,
     Offline,
 }
 
@@ -21,16 +25,19 @@ pub(crate) fn prepare_default(config: &ApexeConfig, download: bool) {
             Some(DEFAULT_NAME),
             None,
             None,
+            false,
         )
     });
     match result {
         Ok(DefaultCorpus::Cached(corpus)) => tracing::info!(name = %corpus.name,
-            commit = %corpus.commit, "Using cached default overlay corpus"),
+            identity = %corpus.commit, "Using cached default overlay corpus"),
         Ok(DefaultCorpus::Downloaded(corpus)) => tracing::info!(name = %corpus.name,
-            commit = %corpus.commit, count = corpus.overlay_count,
+            identity = %corpus.commit, count = corpus.overlay_count,
             "Installed default overlay corpus; future scans use this cached snapshot"),
         Ok(DefaultCorpus::Configured) => tracing::info!(
             "Using explicitly configured overlay directories without automatic downloads"),
+        Ok(DefaultCorpus::Isolated) => tracing::info!(
+            "Using the installed corpus without acquiring the configured default"),
         Ok(DefaultCorpus::Offline) => tracing::warn!(
             "Default corpus is not cached and downloads are disabled; using local overlays or built-in classification"),
         Err(error) => tracing::warn!(%error,
@@ -50,6 +57,12 @@ fn resolve_default(
     }
     if !config.overlay_dirs.is_empty() {
         return Ok(DefaultCorpus::Configured);
+    }
+    // Isolation is checked before `download`: an installation that already
+    // holds a corpus is prepared, even offline, and the message should say so
+    // rather than report that downloads are disabled.
+    if !store.list()?.is_empty() {
+        return Ok(DefaultCorpus::Isolated);
     }
     if !download {
         return Ok(DefaultCorpus::Offline);
@@ -86,6 +99,7 @@ mod tests {
     use super::super::SnapshotId;
     use super::*;
     use crate::config::DEFAULT_OVERLAY_REPOSITORY as DEFAULT_REPOSITORY;
+    use crate::corpus::SourceKind;
     use std::path::PathBuf;
 
     fn config(root: &std::path::Path) -> ApexeConfig {
@@ -101,6 +115,7 @@ mod tests {
             repository: format!("{DEFAULT_REPOSITORY}.git"),
             reference: "HEAD".into(),
             commit: "a".repeat(40),
+            source: SourceKind::Git,
             subdirectory: PathBuf::from("overlays"),
             snapshot: SnapshotId::new(),
             overlay_count: 1,
@@ -188,15 +203,19 @@ mod tests {
     }
 
     #[test]
-    fn test_changed_repository_does_not_reuse_a_named_default_cache() {
+    fn test_changed_repository_is_applied_by_init_not_by_scan() {
         let root = tempfile::tempdir().unwrap();
         let mut config = config(root.path());
         cache(&config, DEFAULT_NAME);
         config.default_overlay_repository = "https://example.invalid/new-rules".into();
+        // Isolation: a scan never changes which corpora are installed. Adopting
+        // a reconfigured default is an explicit `init`, so a changed repository
+        // does not turn a scan into a download.
         let result = resolve_default(&config, true, |_| {
-            Err(CorpusError::Git("new source".into()))
-        });
-        assert!(matches!(result, Err(CorpusError::Git(message)) if message == "new source"));
+            panic!("a scan with an installed corpus must not fetch")
+        })
+        .unwrap();
+        assert!(matches!(result, DefaultCorpus::Isolated));
     }
 
     #[test]

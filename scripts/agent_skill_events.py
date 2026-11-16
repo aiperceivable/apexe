@@ -1,5 +1,9 @@
 """Normalize native Agent events without executing recorded shell or JavaScript."""
 
+# The documentation promises Python 3.9+, and these annotations use `X | None`.
+# Deferring their evaluation keeps the module importable on 3.9.
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 import ast
 import json

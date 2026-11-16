@@ -34,6 +34,7 @@ the same executor for schema validation, configured ACLs and auditing.
 
 | Goal | Entry point | What you get |
 |---|---|---|
+| Install and prepare this machine in one step | `scripts/install.sh`, `apexe setup` | Release binary, verified checksum, rules, shims, and configured agent hosts |
 | Prepare installed CLI coverage | `apexe init`, `apexe list --verbose` | Matching reviewed rules, typed bindings and a starter ACL to inspect |
 | Run a CLI command locally | `apexe exec` | Module JSON with captured output, or reviewed native argv with passthrough streams |
 | Keep native command names in your shell | `apexe env` | PATH shims for eligible external commands, activation helpers and installation checks |
@@ -126,6 +127,17 @@ OpenAPI import is a server feature; local exec and shims execute CLI commands.
 ---
 
 ## Installation
+
+### One command
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aiperceivable/apexe/main/scripts/install.sh | sh
+```
+
+Downloads the release for this platform, verifies its checksum, installs into
+`~/.local/bin` without `sudo`, then runs `apexe setup` to prepare rules, shims
+and any agent host it detects. `--dry-run` prints the plan and `--no-setup`
+stops after the binary.
 
 ### Prebuilt binary
 

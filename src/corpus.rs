@@ -1,3 +1,4 @@
+mod archive;
 mod automatic;
 pub(crate) mod bootstrap;
 mod catalog;
@@ -27,6 +28,20 @@ pub(crate) enum CorpusError {
     Git(String),
     #[error("Invalid overlay corpus: {0}")]
     InvalidCorpus(String),
+    #[error("Corpus archive failed: {0}")]
+    Archive(String),
+    #[error("Corpus archive not found: {0}")]
+    ArchiveMissing(String),
+    #[error("Corpus name '{name}' is already used by an installation from {installed}; rerun with --force to replace it, or remove it with 'apexe corpus remove {name}'")]
+    NameConflict {
+        name: String,
+        installed: String,
+        requested: String,
+    },
+    #[error("No corpus source available: {0}")]
+    NoSource(String),
+    #[error("Unsupported corpus: {0}")]
+    UnsupportedCorpus(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,7 +63,12 @@ pub(crate) struct InstalledCorpus {
     pub name: String,
     pub repository: String,
     pub reference: String,
+    /// Git commit for a Git source, sha256 of the archive bytes for a release.
     pub commit: String,
+    /// How the corpus was obtained. Catalogs written before archive sources
+    /// existed omit this; those installations were all Git.
+    #[serde(default)]
+    pub source: SourceKind,
     pub subdirectory: PathBuf,
     pub snapshot: SnapshotId,
     pub overlay_count: usize,
@@ -56,6 +76,17 @@ pub(crate) struct InstalledCorpus {
     pub manifest: Option<manifest::CorpusManifest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subdirectory_override: Option<PathBuf>,
+}
+
+/// Which identity a corpus records. A Git source resolves a commit; a release
+/// archive records the digest of its bytes. Naming the kind keeps consumers
+/// from inferring it from the shape of the value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SourceKind {
+    #[default]
+    Git,
+    Archive,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,30 +130,38 @@ impl CorpusStore {
         Ok(catalog::read(&self.root)?.corpora)
     }
 
+    /// Install or replace one corpus.
+    ///
+    /// `replace` is the operator's consent to overwrite an installation that
+    /// uses the same name from a different source. Without it a name collision
+    /// is refused, so a fork that keeps `name: cli-permissions` cannot silently
+    /// displace the rules a machine already trusts.
     pub(crate) fn install(
         &self,
         repository: &str,
         name: Option<&str>,
         reference: Option<&str>,
         subdirectory: Option<&Path>,
+        replace: bool,
     ) -> Result<InstalledCorpus, CorpusError> {
-        let repository = source::parse_repository(repository)?;
+        let resolved = source::resolve(repository, reference)?;
         let use_manifest_name = name.is_none();
         if let Some(name) = name {
             source::validate_name(name)?;
         }
-        let name = name.unwrap_or(&repository.name);
-        source::validate_reference(reference.unwrap_or("HEAD"))?;
+        let name = name.unwrap_or(&resolved.repository.name).to_string();
+        source::validate_reference(&resolved.reference)?;
         if let Some(subdirectory) = subdirectory {
             source::validate_subdirectory(subdirectory)?;
         }
         let _lock = catalog::Lock::acquire(&self.root)?;
-        let catalog = catalog::read(&self.root)?;
+        let mut catalog = catalog::read(&self.root)?;
         let mut corpus = InstalledCorpus {
-            name: name.into(),
-            repository: repository.location,
-            reference: reference.unwrap_or("HEAD").into(),
+            name,
+            repository: resolved.repository.location,
+            reference: resolved.reference,
             commit: String::new(),
+            source: SourceKind::Git,
             subdirectory: subdirectory.unwrap_or(Path::new("overlays")).into(),
             snapshot: SnapshotId::new(),
             overlay_count: 0,
@@ -131,17 +170,44 @@ impl CorpusStore {
         };
         let staging = self.fetch(&mut corpus)?;
         resolve_installation_name(&mut corpus, use_manifest_name)?;
-        if catalog
+        let name = corpus.name.clone();
+        let mut set_aside = None;
+        if let Some(index) = catalog
             .corpora
             .iter()
-            .any(|installed| installed.name == corpus.name)
+            .position(|installed| installed.name == corpus.name)
         {
-            return Err(CorpusError::State(format!(
-                "Corpus '{}' is installed; use apexe init --overlays {} --refresh",
-                corpus.name, corpus.repository
-            )));
+            if !replace {
+                return Err(name_conflict(
+                    &corpus.name,
+                    &corpus.repository,
+                    &catalog.corpora[index].repository,
+                ));
+            }
+            // Move the old package aside before the new one claims the name,
+            // and keep it until the catalog records the replacement.
+            let package = catalog::package_path(&self.root, &name);
+            if package.try_exists()? {
+                let trash = self.root.join(format!(".replace-{}", uuid::Uuid::new_v4()));
+                std::fs::rename(&package, &trash)?;
+                set_aside = Some(trash);
+            }
+            catalog.corpora.remove(index);
         }
-        self.register_installation(catalog, corpus, staging)
+        match self.register_installation(catalog, corpus, staging) {
+            Ok(installed) => {
+                if let Some(trash) = set_aside {
+                    let _ = std::fs::remove_dir_all(trash);
+                }
+                Ok(installed)
+            }
+            Err(error) => {
+                if let Some(trash) = set_aside {
+                    let _ = std::fs::rename(trash, catalog::package_path(&self.root, &name));
+                }
+                Err(error)
+            }
+        }
     }
 
     fn register_installation(
@@ -179,6 +245,11 @@ impl CorpusStore {
             .ok_or_else(|| CorpusError::State(format!("Corpus '{name}' is not installed")))?;
         let mut corpus = catalog.corpora[index].clone();
         if let Some(reference) = reference {
+            if source::is_archive_location(&corpus.repository) {
+                return Err(CorpusError::InvalidSource(
+                    "This corpus was installed from an archive URL; reinstall with the URL of the release you want".into(),
+                ));
+            }
             source::validate_reference(reference)?;
             corpus.reference = reference.into();
         }
@@ -192,7 +263,6 @@ impl CorpusStore {
         Ok(corpus)
     }
 
-    #[cfg(test)]
     pub(crate) fn remove(&self, name: &str) -> Result<(), CorpusError> {
         source::validate_name(name)?;
         let _lock = catalog::Lock::acquire(&self.root)?;
@@ -217,12 +287,51 @@ impl CorpusStore {
     fn fetch(&self, corpus: &mut InstalledCorpus) -> Result<tempfile::TempDir, CorpusError> {
         let staging = tempfile::tempdir_in(&self.root)?;
         let checkout = staging.path().join("checkout");
-        corpus.commit = git::checkout(
-            &corpus.repository,
-            &corpus.reference,
-            &checkout,
-            self.timeout,
-        )?;
+        let source = source::from_installed(&corpus.repository, &corpus.reference)?;
+        corpus.source = match &source {
+            source::InstallSource::Git { .. } => SourceKind::Git,
+            source::InstallSource::Archive { .. } => SourceKind::Archive,
+        };
+        corpus.commit = match source {
+            source::InstallSource::Git {
+                repository,
+                reference,
+            } => git::checkout(&repository, &reference, &checkout, self.timeout)?,
+            source::InstallSource::Archive { url } => {
+                match archive::fetch(&url, &checkout, self.timeout) {
+                    Ok(digest) => digest,
+                    // Discovery happens once: a repository that publishes no
+                    // release is fetched with Git, and the recorded reference
+                    // becomes HEAD so a later refresh reproduces that choice
+                    // instead of asking the remote again.
+                    Err(CorpusError::ArchiveMissing(detail))
+                        if source::may_fall_back_to_git(&corpus.repository, &corpus.reference) =>
+                    {
+                        tracing::warn!(
+                            repository = %corpus.repository,
+                            %detail,
+                            "No release archive; using the repository's Git history"
+                        );
+                        corpus.reference = source::git_head_reference().into();
+                        corpus.source = SourceKind::Git;
+                        match git::checkout(
+                            &corpus.repository,
+                            source::git_head_reference(),
+                            &checkout,
+                            self.timeout,
+                        ) {
+                            Ok(commit) => commit,
+                            Err(error) => {
+                                return Err(CorpusError::NoSource(format!(
+                                    "{detail}; the Git fallback also failed: {error}"
+                                )))
+                            }
+                        }
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        };
         corpus.manifest = manifest::read(&checkout)?;
         if corpus.subdirectory_override.is_none() {
             if let Some(manifest) = &corpus.manifest {
@@ -245,6 +354,26 @@ impl CorpusStore {
             path,
             published: false,
         })
+    }
+}
+
+/// Explain a corpus name collision.
+///
+/// `--refresh` only reproduces the installation that is already recorded. When
+/// the request names a different source, following that advice repeats this
+/// same error forever, so the remedy is to remove it or rename the corpus in
+/// its manifest.
+fn name_conflict(name: &str, requested: &str, installed: &str) -> CorpusError {
+    if bootstrap::same_repository(requested, installed) {
+        CorpusError::State(format!(
+            "Corpus '{name}' is installed; use apexe init --overlays {requested} --refresh"
+        ))
+    } else {
+        CorpusError::NameConflict {
+            name: name.into(),
+            installed: installed.into(),
+            requested: requested.into(),
+        }
     }
 }
 

@@ -177,6 +177,7 @@ impl Fixture {
                     value("--name"),
                     value("--ref"),
                     value("--subdir").map(Path::new),
+                    false,
                 )
                 .unwrap(),
         )
@@ -190,6 +191,31 @@ impl Fixture {
     }
     fn root(&self) -> PathBuf {
         self.home.join(".apexe/corpora")
+    }
+
+    /// Package the fixture corpus the way a release is published: one tar.gz
+    /// whose entries share a single top-level directory.
+    fn write_archive(&self) -> PathBuf {
+        let path = self.directory.path().join("fixture-corpus.tar.gz");
+        let file = std::fs::File::create(&path).unwrap();
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        let manifest = self.repository.join("manifest.json");
+        if manifest.is_file() {
+            builder
+                .append_path_with_name(manifest, "fixture-corpus-0.1.0/manifest.json")
+                .unwrap();
+        }
+        for entry in std::fs::read_dir(self.repository.join("overlays")).unwrap() {
+            let entry = entry.unwrap();
+            let name = format!(
+                "fixture-corpus-0.1.0/overlays/{}",
+                entry.file_name().to_string_lossy()
+            );
+            builder.append_path_with_name(entry.path(), name).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap();
+        path
     }
 
     #[cfg(unix)]
@@ -309,7 +335,13 @@ fn test_invalid_manifest_is_rejected_without_registering_installation() {
         fixture.commit();
         assert!(fixture
             .store()
-            .install(fixture.repository.to_str().unwrap(), None, None, None)
+            .install(
+                fixture.repository.to_str().unwrap(),
+                None,
+                None,
+                None,
+                false
+            )
             .is_err());
         assert_eq!(fixture.list(), json!([]));
     }
@@ -328,7 +360,13 @@ fn test_install_rejects_unsupported_overlay_version_and_unbacked_verified_claim(
         fixture.commit();
         assert!(fixture
             .store()
-            .install(fixture.repository.to_str().unwrap(), None, None, None)
+            .install(
+                fixture.repository.to_str().unwrap(),
+                None,
+                None,
+                None,
+                false
+            )
             .is_err());
         assert_eq!(fixture.list(), json!([]));
     }
@@ -363,7 +401,13 @@ fn test_install_rejects_duplicate_names_and_preserves_original_record() {
     let previous = fixture.install(&[]);
     assert!(fixture
         .store()
-        .install(fixture.repository.to_str().unwrap(), None, None, None)
+        .install(
+            fixture.repository.to_str().unwrap(),
+            None,
+            None,
+            None,
+            false
+        )
         .is_err());
     assert_eq!(fixture.list()[0], previous);
 }
@@ -373,15 +417,15 @@ fn test_install_rejects_path_traversal_and_unsafe_repository_schemes() {
     let repository = fixture.repository.to_str().unwrap();
     assert!(fixture
         .store()
-        .install(repository, Some("../outside"), None, None)
+        .install(repository, Some("../outside"), None, None, false)
         .is_err());
     assert!(fixture
         .store()
-        .install(repository, None, None, Some(Path::new("../outside")))
+        .install(repository, None, None, Some(Path::new("../outside")), false)
         .is_err());
     assert!(fixture
         .store()
-        .install(repository, None, Some("--upload-pack=bad"), None)
+        .install(repository, None, Some("--upload-pack=bad"), None, false)
         .is_err());
     for repository in [
         "ext::sh -c anything",
@@ -390,7 +434,7 @@ fn test_install_rejects_path_traversal_and_unsafe_repository_schemes() {
     ] {
         assert!(fixture
             .store()
-            .install(repository, None, None, None)
+            .install(repository, None, None, None, false)
             .is_err());
     }
     assert_eq!(fixture.list(), json!([]));
@@ -406,14 +450,26 @@ fn test_install_rejects_overlay_and_directory_symlinks() {
     fixture.commit();
     assert!(fixture
         .store()
-        .install(fixture.repository.to_str().unwrap(), None, None, None)
+        .install(
+            fixture.repository.to_str().unwrap(),
+            None,
+            None,
+            None,
+            false
+        )
         .is_err());
     std::fs::remove_dir_all(fixture.repository.join("overlays")).unwrap();
     symlink("../outside", fixture.repository.join("overlays")).unwrap();
     fixture.commit();
     assert!(fixture
         .store()
-        .install(fixture.repository.to_str().unwrap(), None, None, None)
+        .install(
+            fixture.repository.to_str().unwrap(),
+            None,
+            None,
+            None,
+            false
+        )
         .is_err());
 }
 #[cfg(unix)]
@@ -499,7 +555,8 @@ fn test_install_invalid_reference_preserves_empty_catalog_and_releases_lock() {
             fixture.repository.to_str().unwrap(),
             None,
             Some("missing-reference"),
-            None
+            None,
+            false,
         )
         .is_err());
     assert_eq!(fixture.list(), json!([]));
@@ -699,7 +756,7 @@ fn test_scan_automatic_corpus_does_not_overwrite_named_user_installation() {
 
 #[cfg(unix)]
 #[test]
-fn test_scan_default_corpus_does_not_override_installed_team_corpus() {
+fn test_scan_does_not_acquire_the_default_when_a_corpus_is_installed() {
     let fixture = Fixture::new();
     let path = fixture.repository.join("overlays/fixture.json");
     let mut overlay: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -717,7 +774,16 @@ fn test_scan_default_corpus_does_not_override_installed_team_corpus() {
     let policy =
         apexe::governance::AclManager::from_config(&fixture.home.join(".apexe/acl.yaml")).unwrap();
     assert_eq!(policy.explain_external("cli.fixture").effect, "deny");
-    assert_eq!(fixture.list().as_array().unwrap().len(), 2);
+    // Isolation: the operator chose this source, so a scan must not add the
+    // configured default behind their back. Adding it is an explicit `init`.
+    let installed = fixture.list();
+    let names: Vec<&str> = installed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|corpus| corpus["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["team-policy"], "{installed}");
 }
 
 #[cfg(unix)]
@@ -758,4 +824,131 @@ fn test_finds_the_binary_from_the_build_dir_layout() {
     std::fs::write(&binary, b"").unwrap();
 
     assert_eq!(find_binary_upwards(&out), Some(binary));
+}
+
+#[test]
+fn test_install_identifies_an_archive_by_digest() {
+    let fixture = Fixture::new();
+    let archive = fixture.write_archive();
+    let url = url::Url::from_file_path(&archive).unwrap();
+    let installed = serde_json::to_value(
+        fixture
+            .store()
+            .install(url.as_str(), None, None, None, false)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(installed["name"], "fixture-corpus");
+    assert_eq!(installed["reference"], "latest");
+    assert_eq!(installed["source"], "archive");
+    assert_eq!(installed["overlay_count"], 1);
+    let identity = installed["commit"].as_str().unwrap();
+    assert_eq!(
+        identity.len(),
+        64,
+        "an archive records a sha256, not a commit"
+    );
+    assert!(identity.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert_eq!(fixture.list()[0], installed);
+
+    // Refreshing re-reads the same bytes, so the identity must not move.
+    let updated = fixture.update(None);
+    assert_eq!(updated["commit"], installed["commit"]);
+}
+
+#[test]
+fn test_install_rejects_an_archive_outside_the_supported_version_range() {
+    let fixture = Fixture::new();
+    fixture.write_manifest("fixture-corpus", "2.0.0", "overlays");
+    let archive = fixture.write_archive();
+    let url = url::Url::from_file_path(&archive).unwrap();
+    let error = fixture
+        .store()
+        .install(url.as_str(), None, None, None, false)
+        .unwrap_err();
+    assert!(
+        matches!(error, super::CorpusError::UnsupportedCorpus(_)),
+        "{error}"
+    );
+    assert!(error.to_string().contains("outside the supported range"));
+}
+
+#[test]
+fn test_install_rejects_an_archive_without_a_manifest() {
+    let fixture = Fixture::new();
+    std::fs::remove_file(fixture.repository.join("manifest.json")).unwrap();
+    let archive = fixture.write_archive();
+    let url = url::Url::from_file_path(&archive).unwrap();
+    let error = fixture
+        .store()
+        .install(url.as_str(), None, None, None, false)
+        .unwrap_err();
+    assert!(matches!(error, super::CorpusError::Archive(_)), "{error}");
+}
+
+#[test]
+fn test_remove_deletes_the_corpus_and_its_snapshots() {
+    let fixture = Fixture::new();
+    fixture.install(&[]);
+    fixture.store().remove("fixture-corpus").unwrap();
+    assert!(fixture.list().as_array().unwrap().is_empty());
+    assert!(!fixture.root().join("packages/fixture-corpus").exists());
+}
+
+#[test]
+fn test_name_from_a_different_source_is_a_conflict_not_a_refresh() {
+    let fixture = Fixture::new();
+    fixture.install(&[]);
+    let other = Fixture::new();
+    let error = fixture
+        .store()
+        .install(other.repository.to_str().unwrap(), None, None, None, false)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("apexe corpus remove"), "{error}");
+    assert!(error.contains("--force"), "{error}");
+    assert!(
+        !error.contains("--refresh"),
+        "a different source cannot be refreshed into place: {error}"
+    );
+}
+
+#[test]
+fn test_name_from_the_same_source_reports_refresh() {
+    let fixture = Fixture::new();
+    fixture.install(&[]);
+    let error = fixture
+        .store()
+        .install(
+            fixture.repository.to_str().unwrap(),
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("--refresh"), "{error}");
+}
+
+#[test]
+fn test_replace_swaps_the_corpus_and_discards_the_old_snapshot() {
+    let fixture = Fixture::new();
+    fixture.install(&[]);
+    let other = Fixture::new();
+    let replaced = fixture
+        .store()
+        .install(other.repository.to_str().unwrap(), None, None, None, true)
+        .unwrap();
+    let installed = fixture.list();
+    assert_eq!(installed.as_array().unwrap().len(), 1);
+    assert_eq!(installed[0]["name"], "fixture-corpus");
+    assert_eq!(installed[0]["repository"], replaced.repository);
+    let package = fixture.root().join("packages/fixture-corpus");
+    let snapshots = std::fs::read_dir(&package)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .count();
+    assert_eq!(snapshots, 1, "the replaced snapshot must not linger");
 }

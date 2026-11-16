@@ -546,9 +546,13 @@ fn install_acl(
 /// Attach the approval gate `--enable-approval` asks for, or do nothing.
 fn require_human_with_acl(
     gate: crate::module::approval::ApprovalGate,
-    opts: &ExecutorOptions<'_>,
+    acl_requires_approval: bool,
 ) -> crate::module::approval::ApprovalGate {
-    if opts.acl_path.is_some() {
+    // Only a rule that *can* demand a human disables the flag-derived
+    // stand-down. An ordinary allow/deny ACL says nothing about approval, and
+    // treating its existence as a demand made every `requires_approval` module
+    // prompt on every call — `init` writes an ACL, so that was the default.
+    if acl_requires_approval {
         gate.always_prompt()
     } else {
         gate
@@ -574,7 +578,7 @@ fn install_approval_handler(
                 Box::new(StorageBackedApprovalHandler::new(store.clone())),
                 audit.clone(),
             ),
-            opts,
+            acl_requires_approval,
         )));
         tracing::info!(
             store_backed = true,
@@ -605,7 +609,7 @@ fn install_approval_handler(
     // elicitation, and refused with a reason naming the remedy when it does not.
     executor.set_approval_handler(Box::new(require_human_with_acl(
         ApprovalGate::with_audit(audit.clone()),
-        opts,
+        acl_requires_approval,
     )));
     tracing::info!(
         "Approval gate enabled: a call to a module marked `requires_approval` prompts the \

@@ -9,7 +9,20 @@ follow the [OpenAPI import guide](openapi.md); HTTP import is a server feature.
 
 ## 1. Install
 
-Use a [prebuilt release](https://github.com/aiperceivable/apexe/releases), or build
+One command downloads the release for this platform, verifies its checksum,
+installs into `~/.local/bin` (no `sudo`), and runs `apexe setup`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aiperceivable/apexe/main/scripts/install.sh | sh
+```
+
+`sh scripts/install.sh --dry-run` prints the resolved download and install plan
+without changing anything, and `--no-setup` stops after the binary. The script
+only places the binary; preparation belongs to `apexe setup`, so it does not
+freeze at the version of the script you happened to download.
+
+Prefer a manual install? Use a
+[prebuilt release](https://github.com/aiperceivable/apexe/releases), or build
 from source with Rust and Cargo:
 
 ```bash
@@ -19,14 +32,20 @@ cargo install --path .
 apexe --version
 ```
 
-Git is required to acquire rules snapshots. Command binaries must already be
-installed on this machine.
+`apexe init` reads the default rules from a release archive, so Git is only
+needed when you point at a Git source (`--overlays <repository>`, or
+`--ref <branch|commit>`). Command binaries must already be installed on this
+machine.
 
 ## 2. Initialize
 
 ```bash
 apexe init
 ```
+
+If you installed with `scripts/install.sh`, `apexe setup` already ran this step
+and configured any agent host it detected. Run `init` directly when you want to
+redo the rules and bindings without reinstalling the binary.
 
 This obtains the configured rules source, normally
 [cli-permissions](https://github.com/aiperceivable/cli-permissions), and discovers

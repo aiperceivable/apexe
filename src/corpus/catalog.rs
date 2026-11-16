@@ -101,13 +101,18 @@ pub(super) fn verify_owner(root: &Path, corpus: &InstalledCorpus) -> Result<(), 
 }
 
 pub(super) fn reject_symlink(path: &Path) -> Result<(), CorpusError> {
-    if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
-        return Err(CorpusError::State(format!(
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(CorpusError::State(format!(
             "Refusing managed symlink {}",
             path.display()
-        )));
+        ))),
+        Ok(_) => Ok(()),
+        // This function rejects symlinks; it does not decide whether a missing
+        // path is an error. A caller that needs one reports it with its own
+        // message instead of surfacing a bare ENOENT.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
     }
-    Ok(())
 }
 
 pub(super) struct Lock {

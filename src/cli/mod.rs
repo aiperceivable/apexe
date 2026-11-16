@@ -5,6 +5,7 @@ mod census;
 mod child_exec;
 mod config_gen;
 mod config_set;
+mod corpus;
 mod env;
 mod exec;
 mod hook;
@@ -12,6 +13,7 @@ mod init;
 mod list_output;
 mod local;
 mod sandbox;
+mod setup;
 mod sh;
 mod shell;
 mod shell_init;
@@ -21,11 +23,13 @@ mod verify;
 pub use acl::{AclArgs, AclCommand, AclExplainArgs, AclInitArgs, AclProfile, AclSyncArgs};
 pub use agent::AgentArgs;
 pub use config_set::ConfigAction;
+pub use corpus::CorpusArgs;
 pub use env::EnvArgs;
 pub use exec::{ExecArgs, UnmanagedPolicy};
 pub use hook::HookArgs;
 pub use init::{InitArgs, ReportFormat};
 pub use sandbox::SandboxArgs;
+pub use setup::SetupArgs;
 pub use sh::{is_entry_invocation, run_entry, ShArgs};
 pub use verify::VerifyArgs;
 
@@ -133,12 +137,18 @@ pub enum Commands {
     /// Check command drift and optionally run reviewed cases under isolation.
     #[command(display_order = 80)]
     Verify(VerifyArgs),
+    /// Prepare this machine in one step: rules, shims and detected agent hosts.
+    #[command(display_order = 5)]
+    Setup(SetupArgs),
     /// Initialize this machine with reviewed CLI rules, bindings and ACL.
     #[command(display_order = 10)]
     Init(InitArgs),
     /// Discover command modules, schemas and access rules.
     #[command(display_order = 20)]
     List(ListArgs),
+    /// List or remove installed rule corpora.
+    #[command(display_order = 25)]
+    Corpus(CorpusArgs),
     /// Show, initialize or update apexe configuration.
     #[command(display_order = 100)]
     Config(ConfigArgs),
@@ -193,7 +203,9 @@ impl Cli {
             Commands::Agent(args) => Ok(args.execute(&config)?),
             Commands::Env(args) => args.execute(&config),
             Commands::Verify(args) => args.execute(&config),
+            Commands::Setup(args) => args.execute(&config),
             Commands::Init(args) => args.execute(&config),
+            Commands::Corpus(args) => args.execute(&config),
             Commands::List(args) => args.execute(&config),
             Commands::Config(args) => args.execute(&config),
             Commands::Sandbox(args) => args.execute(&config),
