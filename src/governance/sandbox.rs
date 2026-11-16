@@ -1167,26 +1167,45 @@ mod tests {
 
     #[test]
     fn test_sandbox_exec_digest_is_deterministic() {
+        // Translation is driven directly rather than through `plan()`: the
+        // property under test is digest stability, and `plan()` first resolves
+        // a backend from PATH, so it would fail on a host without seatbelt
+        // instead of answering the question this test asks.
         let temp = tempfile::tempdir().unwrap();
-        let runtime = SandboxRuntime::new(
-            SandboxConfig {
-                backend: SandboxBackend::SandboxExec,
-                default: SandboxMode::Required,
-                modules: vec!["cli.sh".to_string()],
-                ..SandboxConfig::default()
-            },
-            PathPolicy::default(),
-            temp.path().to_path_buf(),
-        );
+        let runtime = runtime(SandboxBackend::SandboxExec, vec!["cli.sh"]);
+        let plan = MountPlan::from_policy(&runtime.policy, temp.path());
+        let argv = ["-c".to_string(), "true".to_string()];
         let first = runtime
-            .plan("cli.sh", "/bin/sh", &["-c".to_string(), "true".to_string()])
-            .unwrap()
+            .translate(ResolvedBackend::SandboxExec, &plan, "/bin/sh", &argv)
             .unwrap();
         let second = runtime
-            .plan("cli.sh", "/bin/sh", &["-c".to_string(), "true".to_string()])
-            .unwrap()
+            .translate(ResolvedBackend::SandboxExec, &plan, "/bin/sh", &argv)
             .unwrap();
+        // Each translation writes its own profile file, so the arguments do
+        // differ by the temporary path; that path must not reach the digest.
+        assert_ne!(first.args, second.args);
         assert_eq!(first.policy_digest, second.policy_digest);
+    }
+
+    #[test]
+    fn test_sandbox_exec_digest_follows_the_profile_contents() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = runtime(SandboxBackend::SandboxExec, vec!["cli.sh"]);
+        let narrow = MountPlan::from_policy(&PathPolicy::default(), temp.path());
+        let wider = MountPlan::from_policy(
+            &PathPolicy {
+                read_only: vec![PathBuf::from("/etc")],
+                ..PathPolicy::default()
+            },
+            temp.path(),
+        );
+        let first = runtime
+            .translate(ResolvedBackend::SandboxExec, &narrow, "/bin/sh", &[])
+            .unwrap();
+        let second = runtime
+            .translate(ResolvedBackend::SandboxExec, &wider, "/bin/sh", &[])
+            .unwrap();
+        assert_ne!(first.policy_digest, second.policy_digest);
     }
 
     #[test]
