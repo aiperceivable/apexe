@@ -1,6 +1,7 @@
 """Regression tests for runtime validation failures, coverage, and cleanup."""
 
 import contextlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
 import os
@@ -8,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 from urllib.request import getproxies_environment, proxy_bypass_environment
@@ -16,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runtime_validation import (
     RuntimeValidation,
     coverage_gaps,
+    http,
     interface_usage,
     require,
     stop_process_group,
@@ -288,6 +291,40 @@ class CoverageTests(unittest.TestCase):
         cases[0]["passed"] = False
         with self.assertRaises(RuntimeError):
             check_example_coverage(cases)
+
+
+class HttpRedirectTests(unittest.TestCase):
+    def test_redirect_status_is_visible_when_following_is_disabled(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/moved":
+                    self.send_response(308)
+                    self.send_header("Location", "/target")
+                    self.end_headers()
+                    return
+                body = b"ok"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/moved"
+            # urllib follows 308 from Python 3.11 on; the default must keep
+            # that behaviour for every scenario that wants the followed page.
+            if sys.version_info >= (3, 11):
+                self.assertEqual(http(url)[0], 200)
+            self.assertEqual(http(url, follow=False)[0], 308)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
 
 
 @unittest.skipUnless(os.name == "posix", "Process groups require Unix")

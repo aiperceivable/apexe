@@ -1099,10 +1099,11 @@ def validate_authentication(session, fixture):
                         equal(http(url + "/usage", token=credential)[0], 200)
                         equal(http(url + "/explorer")[0], 200)
                         # The Explorer canonicalises to the path without a
-                        # trailing slash. A browser follows the 308; demanding
-                        # 200 from the slashed form asserted a contract the
-                        # server never had.
-                        equal(http(url + "/explorer/")[0], 308)
+                        # trailing slash. Clients that follow redirects (a
+                        # browser, and urllib from Python 3.11 on) land on the
+                        # same page, so assert the redirect itself rather than
+                        # the followed 200.
+                        equal(http(url + "/explorer/", follow=False)[0], 308)
                     else:
                         card = json.loads(http(url + "/.well-known/agent-card.json")[1])
                         equal(card["name"], "validation-network")

@@ -15,7 +15,12 @@ import time
 import traceback
 from contextlib import contextmanager
 from urllib.error import HTTPError
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.request import (
+    HTTPRedirectHandler,
+    ProxyHandler,
+    Request,
+    build_opener,
+)
 
 
 class ValidationError(RuntimeError):
@@ -48,10 +53,18 @@ def free_port():
         return listener.getsockname()[1]
 
 
+class NoRedirectHandler(HTTPRedirectHandler):
+    """Leave a redirect visible so a scenario can assert its raw status."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 HTTP_OPENER = build_opener(ProxyHandler({}))
+HTTP_NO_REDIRECT_OPENER = build_opener(ProxyHandler({}), NoRedirectHandler())
 
 
-def http(url, method="GET", payload=None, token=None, headers=None):
+def http(url, method="GET", payload=None, token=None, headers=None, follow=True):
     fields = dict(headers or {})
     if token:
         fields["Authorization"] = f"Bearer {token}"
@@ -63,8 +76,9 @@ def http(url, method="GET", payload=None, token=None, headers=None):
         headers=fields,
         method=method,
     )
+    opener = HTTP_OPENER if follow else HTTP_NO_REDIRECT_OPENER
     try:
-        with HTTP_OPENER.open(request, timeout=6) as response:
+        with opener.open(request, timeout=6) as response:
             return response.status, response.read().decode(), dict(response.headers)
     except HTTPError as error:
         return error.code, error.read().decode(), dict(error.headers)
