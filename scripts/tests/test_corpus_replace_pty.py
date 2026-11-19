@@ -20,13 +20,14 @@ from pathlib import Path
 REPOSITORY = Path(__file__).resolve().parents[2]
 APEXE = REPOSITORY / "target/debug/apexe"
 NAME = "cli-permissions"
+COMMAND = "corpus-replace-fixture"
 
 
-def overlay(flag, variant):
+def overlay(flag):
     return {
         "schema_version": "2.0",
-        "command": "cat",
-        "variant": variant,
+        "command": COMMAND,
+        "variant": "unknown",
         "mode": "merge",
         "confidence": "low",
         "cross_flag_ordering": False,
@@ -67,19 +68,35 @@ def manifest(label):
 
 class CorpusReplacePtyTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        self.home = Path(self.temporary.name)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name)
+        # Give both archives a command with the same probe result on every host.
+        binary_dir = self.home / "bin"
+        binary_dir.mkdir()
+        binary = binary_dir / COMMAND
+        binary.write_text(
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            f"  --version) echo '{COMMAND} 1.0' ;;\n"
+            f"  --help) echo 'Usage: {COMMAND} [--fixture-a | --fixture-b]' ;;\n"
+            "  --fixture-a|--fixture-b) exit 0 ;;\n"
+            "  *) exit 1 ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        binary.chmod(0o755)
         self.first = self.archive("a", "--fixture-a")
         self.second = self.archive("b", "--fixture-b")
-        path = ":".join(
+        path = [
             entry
-            for entry in os.environ.get("PATH", "").split(":")
+            for entry in os.environ.get("PATH", "").split(os.pathsep)
             if entry and not entry.endswith("/.apexe/bin")
-        )
+        ]
         self.environment = {
             **os.environ,
             "HOME": str(self.home),
-            "PATH": path,
+            "PATH": os.pathsep.join([str(binary_dir), *path]),
             "SHELL": "/bin/sh",
             "APEXE_OFFLINE": "true",
             "RUST_LOG": "error",
@@ -94,17 +111,13 @@ class CorpusReplacePtyTests(unittest.TestCase):
             self.environment.pop(name, None)
         self.install(self.first)
 
-    def tearDown(self):
-        self.temporary.cleanup()
-
     def archive(self, label, flag):
         path = self.home / f"corpus-{label}.tar.gz"
         top = f"corpus-{label}"
         with tarfile.open(path, "w:gz") as tar:
             for name, document in [
                 ("manifest.json", manifest(label)),
-                ("overlays/cat@bsd.json", overlay(flag, "bsd")),
-                ("overlays/cat@gnu.json", overlay(flag, "gnu")),
+                (f"overlays/{COMMAND}.json", overlay(flag)),
             ]:
                 payload = json.dumps(document).encode()
                 info = tarfile.TarInfo(f"{top}/{name}")
@@ -120,7 +133,7 @@ class CorpusReplacePtyTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def installed_source(self):
         result = subprocess.run(
