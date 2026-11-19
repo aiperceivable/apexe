@@ -8,7 +8,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ## [Unreleased]
 
-## [0.15.1] - 2026-11-18
+## [0.15.1] - 2026-11-19
 
 ### Changed
 

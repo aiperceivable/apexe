@@ -8,7 +8,7 @@ locally, and serves CLI and imported OpenAPI operations through MCP and A2A.
 Configured access controls, approval checks and audit records accompany the
 execution path.
 
-**Version:** 0.15.0
+**Version:** 0.15.1
 
 **Status:** CLI discovery, initialization, binding/Skill generation, local
 module execution, reviewed native argv and PATH shims, MCP/A2A serving, OpenAPI
@@ -64,7 +64,7 @@ modules (0.15.0). See the [user manual](user-manual.md#embedded-child-commands-f
 and [`docs/overlays.md`](overlays.md#a-trailing-mini-language-opaque_after-versus-tail_parsed).
 
 > The section headings below tagged "(v0.1.0 …)" record when each piece first
-> landed; the crate is now **0.15.0**. For the authoritative current state see
+> landed. For the authoritative current state see
 > [`CHANGELOG.md`](../CHANGELOG.md) and [`docs/user-manual.md`](user-manual.md).
 
 ## Architecture
@@ -194,11 +194,11 @@ src/
 
 | Crate | Version | Usage |
 |-------|---------|-------|
-| `apcore` | >=0.32.3, <0.34.0 | Module trait, Registry, ACL, ModuleError, ErrorCode, Context, Config |
-| `apcore-toolkit` | 0.14.1 | ScannedModule, YAMLWriter, Verifier, ModuleAnnotations, `deduplicate_ids` |
-| `apcore-mcp` | 0.23.2 | APCoreMCP server with structured results (stdio, streamable-http, SSE, Explorer UI) |
-| `apcore-a2a` | 0.8.4 | A2A agent server with token/JWT authentication (`build_app_with_auth`) |
-| `apcore-cli` | >=0.13.0, <0.15.0 | Man pages, module detail formatting and OpenAPI proxy hazard detection |
+| `apcore` | >=0.33.0 | Module trait, Registry, ACL, ModuleError, ErrorCode, Context, Config |
+| `apcore-toolkit` | >=0.14.2 | ScannedModule, YAMLWriter, Verifier, ModuleAnnotations, `deduplicate_ids` |
+| `apcore-mcp` | >=0.23.3 | APCoreMCP server with structured results (stdio, streamable-http, SSE, Explorer UI) |
+| `apcore-a2a` | >=0.8.5 | A2A agent server with token/JWT authentication (`build_app_with_auth`) |
+| `apcore-cli` | >=0.14.0 | Man pages, module detail formatting and OpenAPI proxy hazard detection |
 
 ## v0.1.0 Features
 
@@ -232,7 +232,7 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, progra
 ### MCP Server (v0.1.0 new, replaces v0.1.x self-built server)
 - `McpServerBuilder`: bindings_dir → Registry → Executor → APCoreMCP
 - Transports: stdio, streamable-http (was "http"), SSE
-- MCP tool discovery and invocation via the published apcore-mcp 0.23.2 SDK.
+- MCP tool discovery and invocation via the published apcore-mcp SDK.
   It negotiates `2025-06-18` and retains `2025-03-26` and `2024-11-05`. Compatible clients
   receive object `outputSchema` and redacted `structuredContent`, with JSON text
   retained for compatibility. HTTP selects the format per protocol-version header.

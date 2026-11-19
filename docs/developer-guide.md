@@ -138,9 +138,9 @@ fields. Structured-output support belongs to the apcore-mcp SDK, not copied sour
 or dependency patches in apexe. The SDK implementation exposes object output
 schemas, validates after redaction and retains legacy text. Stdio/SSE use
 session negotiation; stateless HTTP uses the protocol header per request.
-The normal Cargo dependency uses published apcore-mcp 0.23.2 with apcore 0.32.3,
-including local-reference sensitive-field redaction. Run integration tests against
-the registry dependencies recorded in Cargo.lock. Client-side annotations are
+The published SDKs support sensitive-field redaction through local schema
+references. Run integration tests against the registry dependencies recorded in
+`Cargo.lock`. Client-side annotations are
 hints; access control remains an executor decision. See the
 [current MCP result contract](user-manual.md#13-error-handling-and-ai-guidance).
 

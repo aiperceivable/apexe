@@ -8,7 +8,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 0.15.0 |
+| **Version** | 0.15.1 |
 | **Date** | 2026-11-15 |
 | **Platform** | macOS / Linux |
 
@@ -3146,7 +3146,7 @@ the payload in `structuredContent`, with serialized JSON also retained in
 }
 ```
 
-The published `apcore-mcp 0.23.2` dependency negotiates **`2025-06-18`**,
+The published `apcore-mcp` dependency negotiates **`2025-06-18`**,
 retaining `2025-03-26` and `2024-11-05` for legacy clients. On stdio and SSE this
 decision belongs to the live connection.
 Streamable HTTP remains stateless: after initialization, send
@@ -3164,7 +3164,7 @@ clients receive neither new structured field. Authentication, approval and
 execution governance use the existing pipeline on every transport.
 
 Sensitive fields referenced through local JSON Schema pointers or scoped anchors
-are redacted by apcore 0.32.3 before MCP validates and publishes the result.
+are redacted by apcore before MCP validates and publishes the result.
 Output validation supports a single declared Draft 7, 2019-09 or 2020-12 dialect;
 unresolved references, mixed dialects and precision-losing JSON numbers are
 rejected without exposing the payload. External schema resources are never fetched.

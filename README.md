@@ -120,11 +120,11 @@ OpenAPI import is a server feature; local exec and shims execute CLI commands.
 
 | Crate | Role |
 |-------|------|
-| [apcore](https://github.com/aiperceivable/apcore-rust) >=0.32.3, <0.34.0 | Module trait, Registry, ACL, ModuleError, Context |
-| [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit-rust) 0.14.1 | ScannedModule, YAMLWriter, DisplayResolver |
-| [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) 0.23.2 | MCP server with structured results, middleware, auth, Explorer UI |
-| [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust) 0.8.4 | A2A agent server sharing the same governed `Executor` |
-| [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) >=0.13.0, <0.15.0 | Man pages, module detail formatting and OpenAPI proxy hazard detection |
+| [apcore](https://github.com/aiperceivable/apcore-rust) >=0.33.0 | Module trait, Registry, ACL, ModuleError, Context |
+| [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit-rust) >=0.14.2 | ScannedModule, YAMLWriter, DisplayResolver |
+| [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) >=0.23.3 | MCP server with structured results, middleware, auth, Explorer UI |
+| [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust) >=0.8.5 | A2A agent server sharing the same governed `Executor` |
+| [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) >=0.14.0 | Man pages, module detail formatting and OpenAPI proxy hazard detection |
 
 ---
 
