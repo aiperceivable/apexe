@@ -194,11 +194,11 @@ src/
 
 | Crate | Version | Usage |
 |-------|---------|-------|
-| `apcore` | 0.32.3 | Module trait, Registry, ACL, ModuleError, ErrorCode, Context, Config |
+| `apcore` | >=0.32.3, <0.34.0 | Module trait, Registry, ACL, ModuleError, ErrorCode, Context, Config |
 | `apcore-toolkit` | 0.14.1 | ScannedModule, YAMLWriter, Verifier, ModuleAnnotations, `deduplicate_ids` |
 | `apcore-mcp` | 0.23.2 | APCoreMCP server with structured results (stdio, streamable-http, SSE, Explorer UI) |
 | `apcore-a2a` | 0.8.4 | A2A agent server with token/JWT authentication (`build_app_with_auth`) |
-| `apcore-cli` | 0.13.0 | Man pages, module detail formatting and OpenAPI proxy hazard detection |
+| `apcore-cli` | >=0.13.0, <0.15.0 | Man pages, module detail formatting and OpenAPI proxy hazard detection |
 
 ## v0.1.0 Features
 

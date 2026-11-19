@@ -8,6 +8,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-11-18
+
+### Changed
+
+- Refresh `Cargo.lock` (`tokio` 1.54.1, `openssl` 0.10.82,
+  `rustls-webpki` 0.103.17, `mio` 1.2.5, and other patch updates). No crate API
+  changes.
+- Allow APCore 0.33 and APCore CLI 0.14 in the dependency manifest alongside
+  the currently locked versions.
+
+### Compatibility
+
+- Verified with local builds of APCore 0.33.0, APCore CLI 0.14.0, Toolkit
+  0.14.2, MCP 0.23.4, and A2A 0.8.5. Refresh the registry lockfile after these
+  SDK versions are published before producing a release with them.
+
 ## [0.15.0] - 2026-11-16
 
 ### Added
