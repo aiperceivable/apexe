@@ -48,7 +48,7 @@ Choose a surface according to the work:
 | Work | Surface |
 |---|---|
 | Prepare and inspect installed CLI coverage | `init`, `list --verbose`; `scan` for custom tools |
-| Run CLI tools from Claude Code, Codex, pi or OpenCode | [Agent Skill](agent-skill.md) + native `exec -- <COMMAND> ...` |
+| Run CLI tools from Claude Code, Codex, pi or OpenCode | [Shell or hook integration](agent-shell.md), with the [Agent Skill](agent-skill.md) as an explicit `exec` fallback |
 | Execute locally with structured input/output | `exec <MODULE_ID>` with inline, file or stdin JSON |
 | Activate eligible external-command PATH shims | `env --enable`; diagnose with `env --check` |
 | Expose CLI modules and optional HTTP operations | `serve` for MCP; `a2a` for A2A; add `--openapi` for HTTP import |
@@ -57,9 +57,9 @@ Choose a surface according to the work:
 
 The normal CLI workflow is **initialize → review → execute or serve**. Coverage
 depends on the installed tool, discoverable grammar and matching reviewed rules.
-Native argv and shims require explicit reviewed capabilities; the current BSD
-pilot covers cat/head/ls. HTTP operations are imported at server startup and
-are unavailable to local exec/shims.
+Native `exec` requires reviewed capabilities. Shims can also use eligible
+scanned routes selected by the operator. HTTP operations are imported at server
+startup for MCP or A2A.
 
 Local exec/shims load the default ACL when present. Servers need `--acl` to
 apply access control; MCP interactive approval is enabled separately with
@@ -454,8 +454,10 @@ ineligible bindings, ACL denials or removed installed routes never fall back to
 unmanaged execution. Rescan when the executable or its grammar changes.
 
 Native stdout and stderr pass through unchanged; module mode prints the captured
-JSON result. Both modes return the exact child exit status (128 + signal on
-Unix). Diagnostics go to the log files by default; `--log-stderr` mirrors them
+JSON result. Both modes preserve normal child exit codes. On Unix, passthrough
+reports `128 + signal` for signal termination; captured module mode reports
+`exit_code: -1` in JSON and the CLI process exits with status 255. Diagnostics
+go to the log files by default; `--log-stderr` mirrors them
 to stderr. Failures remain visible on stderr. Pipes, redirections, wildcards and `&&` are
 handled by the calling shell, not interpreted by `exec`. Use one `exec` call per
 pipeline stage that needs governance. Child flags such as `--help`, `--man` or
@@ -475,9 +477,23 @@ on the controlling terminal (`/dev/tty`) and accepts `y`/`yes`; a
 non-interactive stdin is refused with a remedy instead of blocking. Captured
 module execution has no interactive client, so a call that still needs approval
 is refused. Dry-run can inspect the requirement but cannot obtain approval.
-`--as` is an asserted simulation identity. Module mode supplies
-no stdin; reviewed native commands inherit stdin only when their overlay declares
-`streaming_stdin_safe`. PTY sessions remain unsupported.
+`--as` is an asserted simulation identity. See the execution surfaces below for
+stdin behavior. Stdin is not validated by the argv policy; see the
+[Threat Model](threat-model.md#511-local-execution-and-the-remaining-stage-2-boundaries).
+
+#### Execution surfaces
+
+| Surface | Child I/O and timeout | Approval and sandbox |
+| --- | --- | --- |
+| Reviewed native and installed PATH shims | Inherited stdin and output streams; `local_timeout` defaults to 0 (no deadline). | Local terminal approval where required. Local sandbox policy can select these modules. |
+| Explicit unmanaged passthrough | Null stdin, inherited output streams, `local_timeout`. No schema-based argument path checks. | Local approval when required; sandbox policy can select the `unmanaged.<basename>` ID. |
+| Module-mode `exec` | Null stdin and captured output; `default_timeout` is 30 seconds by default. | No interactive approval. Local sandbox policy can select these modules. |
+| MCP and A2A subprocesses | Null stdin and captured output; configured execution and transport limits apply. A2A has a separate task deadline. | MCP approval needs a capable client or store; A2A CLI has no interactive approval. The CLI's local sandbox configuration does not apply. |
+| Imported OpenAPI operations | HTTP proxy request and response, not subprocess I/O. | Protocol approval rules apply. No local subprocess sandbox or path guard. |
+
+Passthrough uses the inherited environment subject to the denylist; captured
+subprocesses use the scrubbed allowlist. See [Sandboxing](sandbox.md) for each
+backend's capabilities and enforcement limits.
 
 #### Explicit unmanaged execution
 
@@ -962,6 +978,9 @@ See the [OpenAPI guide](openapi.md) and its
 Both servers can import an OpenAPI 3.0/3.1 document at startup, alongside the
 CLI bindings. Imported operations are HTTP proxy modules, not CLI targets;
 no generated binding files or helper programs are needed.
+The import resolves inherited and referenced parameters into the tool schema.
+Startup validates the selected operations against the proxy's supported
+encodings. See the [OpenAPI compatibility rules](openapi.md#governance-and-compatibility).
 
 To run both MCP and A2A against a temporary local API, use Python 3 from the
 repository root:
@@ -1288,7 +1307,7 @@ for Codex and Claude Code.
 | Argument / option | Default | Behavior |
 |---|---|---|
 | `<HOST>` | required | `opencode`, `pi`, `codex` or `claude` |
-| `--check` | off | Check launcher readiness and the host configuration file or environment |
+| `--check` | off | Check launcher readiness, the shim installation's bound ACL and the host configuration |
 | `--format <text\|json>` | `text` | Diagnostic format; requires `--check` |
 | `--write` | off | Write the host configuration instead of printing it; preserves other keys and refuses invalid JSON |
 | `--scope <project\|user>` | `project` (pi: `user`) | Configuration scope for `--write` |
@@ -1311,9 +1330,14 @@ already exists. For OpenCode and pi it also refuses when the installed
 that path. Codex has no shell file to write: `agent codex --write` runs
 `apexe env --reload --shell zsh` instead. Claude Code project scope writes
 `.claude/settings.json`; MCP-only also writes `.mcp.json` at the project root
-and adds `Bash` to `permissions.deny`. OpenCode MCP-only sets
-`tools.bash: false`. Codex MCP-only prints a `config.toml` snippet; pi has no
-stable MCP-only profile in the tested version.
+and adds `Bash` to `permissions.deny`. OpenCode MCP-only writes a V2 shell deny
+rule for OpenCode 2.3.0 only after checking for conflicting configuration. See
+[host merge and scope behavior](agent-shell.md#mcp-only-deployment). Codex
+MCP-only prints a `config.toml` snippet; pi has no
+stable MCP-only profile in the tested version. Shell writes require a loadable
+ACL recorded in the shim manifest. Reload older shim installations to bind an
+existing default policy. MCP-only configuration requires a loadable ACL and
+passes its path to `serve --acl`.
 
 Without `--write`, the command never touches host configuration. OpenCode and pi
 output a complete JSON object to merge into their settings file. Codex output
@@ -1392,22 +1416,21 @@ apexe setup --yes --offline
 
 The steps, in order:
 
-1. `init` — resolve the configured rules source, write bindings and a starter
-   ACL.
-2. `env --enable --no-rc` — install `apexe-sh` and the command shims **without**
-   editing shell startup files. A managed `PATH` block reshapes every new
-   terminal, where login-time tooling resolves its own `rm`/`ln`/`sort` through
-   the shims; that is the right trade for a host that reads its own shell, not
-   the right default for the whole machine.
+1. Resolve the configured rules source and write bindings through `init`. Fresh
+   setup uses the `strict` starter ACL profile and preserves existing policy
+   choices.
+2. Install `apexe-sh` and the command shims through `env --enable --no-rc`, or
+   refresh an existing installation through `env --reload`. The manifest
+   records the selected ACL. Existing shim settings and startup files are
+   preserved when refreshing.
 3. `agent <host> --write --scope user` for each detected host that accepts a
    configuration file. With a terminal, `setup` asks per host; without one it
    prints the command instead. `--yes` writes unprompted.
 4. Codex is reported, not changed: it reads its login shell, so the remedy is
    `apexe agent codex --write`, which is the operator's decision.
 
-The summary states what is governed: with shell startup untouched, only the
-configured hosts and `apexe sh` are governed until someone runs
-`apexe env --enable`.
+On a fresh installation, configured hosts and `apexe sh` use the new shims.
+Use `apexe env --enable` to add the shim directory to shell startup.
 
 `scripts/install.sh` downloads a release, verifies its checksum, installs into
 `~/.local/bin` (never with `sudo`), and then executes `apexe setup`.
@@ -1575,21 +1598,24 @@ only) to have the child resolved and gated:
    operand** — not before `{}`, which may be a later operand or a flag value —
    so a matched file named `-rf` is a path, not an option. A `{}` in a flag
    value gets no separator;
-5. one approval covers the parent and the child. The parent execution is audited;
-   the child analysis is a `child_exec` audit record (with the parent trace),
+5. one terminal prompt covers the parent and any child that requires human
+   approval. If none requires approval, execution needs no prompt. The parent
+   execution is audited; the child analysis is a `child_exec` audit record (with the parent trace),
    **including a `refused` row for a refused analysis**, and in `delegate` the
    child shim adds its own execution record and the grant id.
 
-`delegate` adds per-match governance on top of that: the parent sets `PATH` to
-the installed shim directory first, creates a short-lived grant naming the child
-module(s) and the parent's starting paths, and each match re-enters the child
-shim. The child shim still runs its ACL and path guard against the **actual**
-`{}` path (including symlink resolution and `-execdir`'s working directory);
-the grant only stands the approval prompt down, because the parent already put
-the same child module and tree to a human. The grant file is 0600 in a 0700
-directory, expires after 30 minutes, and is removed when the parent call
-returns. A path outside the parent's starting paths is refused even with a
-valid grant.
+`delegate` adds per-match governance on top of that. The parent launches with
+the selected shim directory first in `PATH` and passes a short-lived grant to
+its children. Each match re-enters the shim and checks the prepared child
+binding, arguments, starting paths and selected ACL. The shim reruns the ACL
+and path guard against the **actual** `{}` path, including symlink resolution
+and `-execdir`'s working directory. Only a completed terminal approval for the
+prepared child can satisfy a per-match approval requirement. The ordinary
+execution scope carries no approval and cannot satisfy a new requirement.
+An absent
+terminal, a refusal or a prompt timeout leaves no usable grant. The grant
+file is 0600 in a 0700 directory, expires after 30 minutes, and is removed when
+the parent execution finishes or times out.
 
 The effective decision is the **intersection** of the parent's gates and the
 child's. `find /etc -exec rm {} \;` is refused at write strength even when
@@ -2143,9 +2169,11 @@ no caller, target or rule. `disclose_refusal_reason` is disabled to preserve the
 boundary between principals. Explicit `--auth none` and an unauthenticated
 library builder retain the detailed reason shown above. A2A JSON-RPC
 notifications (requests with no `id`) produce HTTP 204 with an empty body;
-explicit `id: null` requests still receive replies. A2A 1.0 SSE events use
-`statusUpdate` / `artifactUpdate` wrappers, and endpoint versions live in
-`supportedInterfaces`, rather than the obsolete 0.3 top-level fields.
+explicit `id: null` requests still receive replies. The current SDK's legacy
+streaming method uses `statusUpdate` / `artifactUpdate` wrappers. The Agent
+Card's `supportedInterfaces` advertises 1.0, but the current server does not
+implement the entire advertised wire contract; see the
+[compatibility flow](#11-a2a-server).
 
 The same applies to an approval denial and an approval timeout (§9.6); an
 approval *pending* is untouched and still arrives as
@@ -2556,6 +2584,14 @@ operator can change without a release. Reach for code last.
 | Classification: `destructive`, `open_world`, `requires_approval`, `risk` | The same overlay's `annotations` | Same two limits |
 | What a *fresh* `apexe init` writes for everyone | `EXEC_WRAPPER_TOOLS` and the other lists in `src/adapter/annotations.rs` | This is the last resort: it changes a default, and every machine that has written its own data already outranks it |
 
+An MCP or A2A service refuses to start with an ACL containing an
+`approval: required` rule unless approval is enabled. For MCP, use
+`apexe serve --enable-approval` with an elicitation-capable client, or
+configure an approval store in the library builder. A2A requires a
+library-configured approval store and has no CLI approval backend.
+Modules whose approval requirement comes only from annotations retain the
+server's existing opt-in behavior.
+
 Two consequences worth knowing before choosing:
 
 - **Comments do not survive.** A policy write (`apexe acl init`/`sync`,
@@ -2817,7 +2853,12 @@ uses. **Approval** is the one exception: `apexe serve` offers
 decision (§9.6), while `apexe a2a` has no such flag at all — A2A has no
 elicitation transport, so a prompt could never be delivered over it — approval on A2A is
 library-only (supply an `ApprovalStore` to `A2aServerBuilder`).
-Transport authentication (§10) is likewise `apexe serve` only.
+A2A uses bearer token authentication by default; it also supports JWT.
+
+> **Wire compatibility:** The current SDK advertises JSONRPC 1.0 in its
+> Agent Card but does not support the complete A2A 1.0 interface. Startup
+> warns on stderr. Use the authenticated, headerless legacy `message/send`
+> flow below. This is not a claim of full 0.3 interoperability either.
 
 ```bash
 apexe a2a                                       # http://127.0.0.1:8000
@@ -2833,17 +2874,27 @@ Every apexe skill takes a JSON object — `build_input_schema` always produces
 `"type": "object"` — so its arguments ride in a **DataPart**, and the skill's
 `skillId` goes in the message metadata:
 
+With `cli.cp` registered, a permitted test file, and the same
+`APEXE_AUTH_TOKEN` set in the server and client environments, send:
+
 ```bash
-curl -X POST http://127.0.0.1:8000/ -H 'content-type: application/json' -d '{
+curl --fail-with-body http://127.0.0.1:8000/ \
+  -H "Authorization: Bearer ${APEXE_AUTH_TOKEN:?set APEXE_AUTH_TOKEN}" \
+  -H 'Content-Type: application/json' -d '{
   "jsonrpc": "2.0", "id": 1, "method": "message/send",
   "params": { "message": {
-    "role": "user",
+    "role": "ROLE_USER",
     "messageId": "m1",
     "metadata": { "skillId": "cli.cp" },
-    "parts": [ { "kind": "data", "data": { "source_file": ["/tmp/a"], "target": "/tmp/b" } } ]
+    "parts": [ { "data": { "source_file": ["/tmp/a"], "target": "/tmp/b" } } ]
   } }
 }'
 ```
+
+The legacy method returns the Task directly under `result`. For a
+self-contained authenticated loopback example using a temporary local API, run
+`python3 examples/openapi_import/demo.py` from the repository root (see the
+[runnable example](../examples/openapi_import/README.md) for options).
 
 A **TextPart carrying prose does not work**, and the error says why in terms of
 the mechanism rather than the remedy:
@@ -2908,52 +2959,24 @@ unauthenticated surface may disclose detailed refusal reasons.
 
 ## 12. Integrating with AI Agents
 
-### Terminal agents: Skill and native exec
+### Terminal agents: shell or hook integration
 
-For Claude Code, Codex, pi and OpenCode, follow the
-[four-step Agent quick integration](agent-skill.md#quick-integration):
+Start with [Shell Integration](agent-shell.md). `apexe setup` initializes
+bindings and the starter ACL, installs shims, and offers to configure detected
+OpenCode, pi and Claude Code hosts. Configure Codex through its login shell.
+Once the host route is verified, covered commands use ordinary shell syntax.
+Use [the host verification procedure](agent-shell.md#verify-any-host) to check
+an ordinary call in the actual agent session and confirm its audit record.
 
-1. Install apexe and initialize CLI coverage in the agent's execution environment;
-   review bindings and the selected ACL. Native argv requires reviewed grammar,
-   currently provided by the BSD cat/head/ls pilot.
-2. Install the shared Skill from an apexe checkout with
-   `python3 scripts/install_agent_skill.py --scope user`, or use project scope.
-   User installs use `~/.claude/skills/apexe` for Claude Code and
-   `~/.agents/skills/apexe` for Codex/pi,
-   which OpenCode also discovers.
-3. Copy the [project instruction template](agent-skill.md#3-declare-the-projects-execution-route)
-   into `CLAUDE.md` or `AGENTS.md`, selecting the real configuration before task tools.
-4. Start a fresh session and ask for an ordinary directory listing and pipeline.
-   Inspect actual calls, output and status using the guide's acceptance checks.
+When the host cannot use this integration, follow the
+[Agent Skill fallback](agent-skill.md#quick-integration). The operator selects
+the project configuration and the agent uses explicit `apexe exec` with
+separate preflight and execution calls. The [exec reference](#47-apexe-exec)
+covers native passthrough, module JSON and approval. Contributors can verify
+the fallback using the [maintainer procedure](agent-skill-verification.md).
 
-In a configured project, the default external CLI route is native
-`apexe exec -- <command> ...`, without MCP or shell activation. Preflight and
-execution are separate calls with model inspection between them. Each pipeline
-stage enters exec, with one stage preflight per assistant response. Every call
-preserves explicit ACL/binding overrides. The first refusal ends all tool use,
-including `todowrite` and plan updates; the agent returns a text report only.
-Shell builtins and native host file tools retain their existing interfaces,
-without using them to evade refusal.
-
-Installation alone does not enroll unrelated projects or enforce unrestricted
-terminal routing. A missing ACL leaves local access control inactive; host file
-permission refusal differs from an apexe ACL decision. See
-[Agent troubleshooting](agent-skill.md#troubleshooting) for discovery, policy,
-coverage and provider failures. The [exec reference](#47-apexe-exec) describes
-native passthrough, governed JSON alternatives and approval behavior.
-Contributors validating a revision should use the
-[maintainer three-scenario procedure](agent-skill-verification.md).
-
-### Optional enhancement: governed shell environment
-
-Use `env` when an authorized shell/script workflow needs ordinary command names
-backed by eligible PATH shims. Activation must occur in the shell that executes
-the commands; a later independent agent tool call may start a new shell. Keep
-using explicit exec when that process lifetime is uncertain. `env --check`
-inspects state; enable/reload/deactivation change installation state. Builtins,
-aliases, absolute paths and uncovered tools can bypass shims. See the
-[Agent Skill guide](agent-skill.md#optional-enhancement-env) and
-[env reference](#48-apexe-env).
+For an independently launched shell or script, see the
+[env reference](#48-apexe-env) for activation, coverage and diagnostics.
 
 ### Optional protocol integration: MCP and A2A
 

@@ -29,6 +29,7 @@
 //!   alternative. A human's own "no" is left verbatim; it is already clear.
 
 use std::io::IsTerminal;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -136,7 +137,14 @@ fn classify(result: &ApprovalResult) -> Disposition {
 ///
 /// [`APPROVAL_FLAGS`]: crate::adapter::annotations
 fn needs_prompt(request: &ApprovalRequest) -> bool {
-    let extra = &request.annotations.extra;
+    needs_prompt_for_input(&request.annotations, &request.arguments)
+}
+
+pub(crate) fn needs_prompt_for_input(
+    annotations: &apcore::ModuleAnnotations,
+    input: &serde_json::Value,
+) -> bool {
+    let extra = &annotations.extra;
     let flag_derived = extra
         .get(APPROVAL_BASIS_KEY)
         .and_then(|basis| basis.as_str())
@@ -150,7 +158,7 @@ fn needs_prompt(request: &ApprovalRequest) -> bool {
     else {
         return true;
     };
-    let Some(arguments) = request.arguments.as_object() else {
+    let Some(arguments) = input.as_object() else {
         return true;
     };
     escalating
@@ -218,6 +226,7 @@ pub struct ApprovalGate {
     /// so flag-based stand-down cannot distinguish "module annotation only"
     /// from "the operator's ACL demanded a human". In that case always prompt.
     always_prompt: bool,
+    local_approval_record: Option<Arc<AtomicBool>>,
 }
 
 impl ApprovalGate {
@@ -249,6 +258,7 @@ impl ApprovalGate {
             inner,
             audit,
             always_prompt: false,
+            local_approval_record: None,
         }
     }
 
@@ -258,6 +268,12 @@ impl ApprovalGate {
     /// cannot be inferred from the module annotations alone.
     pub fn always_prompt(mut self) -> Self {
         self.always_prompt = true;
+        self
+    }
+
+    /// Record a positive response from the terminal for this prepared call.
+    pub(crate) fn record_local_approval(mut self, record: Arc<AtomicBool>) -> Self {
+        self.local_approval_record = Some(record);
         self
     }
 
@@ -339,6 +355,9 @@ impl ApprovalHandler for ApprovalGate {
         let mut result = self.inner.request_approval(request).await?;
         match classify(&result) {
             Disposition::Granted => {
+                if let Some(record) = &self.local_approval_record {
+                    record.store(true, Ordering::Release);
+                }
                 tracing::info!(
                     module_id = %request.module_id,
                     "Approval granted"
@@ -419,6 +438,32 @@ impl ApprovalHandler for ApprovalGate {
         self.audit_refusal(APPROVAL_TOKEN_LOOKUP_MODULE_ID, "", None, Some(approval_id))
             .await;
         Ok(result)
+    }
+}
+
+/// Resolve a fresh SDK approval check for a child running inside a match.
+#[derive(Debug)]
+pub(crate) struct DelegatedApproval(pub(crate) bool);
+
+#[async_trait]
+impl ApprovalHandler for DelegatedApproval {
+    async fn request_approval(
+        &self,
+        _request: &ApprovalRequest,
+    ) -> Result<ApprovalResult, ModuleError> {
+        Ok(if self.0 {
+            ApprovalResult::approved("parent-terminal-approval")
+        } else {
+            ApprovalResult::rejected(
+                "This delegated child requires approval outside the parent's approved scope",
+            )
+        })
+    }
+
+    async fn check_approval(&self, _approval_id: &str) -> Result<ApprovalResult, ModuleError> {
+        Ok(ApprovalResult::rejected(
+            "Delegated terminal approval has no out-of-band lookup",
+        ))
     }
 }
 
@@ -592,6 +637,28 @@ mod tests {
         let mut request = ApprovalRequest::default();
         request.module_id = module_id.to_string();
         request
+    }
+
+    #[tokio::test]
+    async fn test_local_approval_record_only_marks_positive_human_decisions() {
+        for (answer, expected) in [("yes", true), ("no", false)] {
+            let record = Arc::new(AtomicBool::new(false));
+            let gate =
+                ApprovalGate::wrapping(Box::new(LocalApprovalHandler::with_answer(answer)), None)
+                    .record_local_approval(record.clone());
+            gate.request_approval(&request("cli.printf")).await.unwrap();
+            assert_eq!(record.load(Ordering::Acquire), expected);
+        }
+        let record = Arc::new(AtomicBool::new(false));
+        let gate = ApprovalGate::wrapping(Box::new(LocalApprovalHandler::with_answer("yes")), None)
+            .record_local_approval(record.clone());
+        let inactive = flag_derived_request(&["recursive"], serde_json::json!({}));
+        let stand_down = gate.request_approval(&inactive).await.unwrap();
+        assert_eq!(
+            stand_down.approved_by.as_deref(),
+            Some(STOOD_DOWN_AUTHORITY)
+        );
+        assert!(!record.load(Ordering::Acquire));
     }
 
     /// A request for a module marked only because it accepts `escalating`,

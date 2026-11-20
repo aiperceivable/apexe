@@ -135,7 +135,9 @@ impl ScanCache {
 ///   the script runner as `bun test test`. An entry written by 4 keeps the
 ///   duplicate: reusing it would hand out the pre-fix contract for a binary whose
 ///   name, variant and version are all unchanged.
-const SCAN_FORMAT_VERSION: u32 = 5;
+/// - 6: custom parser chains no longer share the built-in cache. Older
+///   results may have been produced by a custom plugin.
+const SCAN_FORMAT_VERSION: u32 = 6;
 
 /// Build the on-disk cache file name for one scan result.
 ///

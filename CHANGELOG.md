@@ -6,7 +6,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
-## [Unreleased]
+## [0.15.2] - 2026-11-20
+
+### Changed
+
+- Raise the Rust SDK minimums to `apcore-toolkit` 0.15.0, `apcore-cli`
+  0.14.1 and `apcore-mcp` 0.23.4. The lockfile now shares one `apcore`
+  0.33.0 across the SDKs.
+
+### Fixed
+
+- OpenAPI imports for MCP and A2A now resolve inherited parameters and
+  same-document references. An operation can override its Path Item
+  parameters. Fields that were previously omitted can now appear in the
+  tool schema, including required fields that callers must supply.
+- Validate the selected OpenAPI operations before proxy registration.
+  Startup errors identify operations with ambiguous inputs or encodings the
+  proxy cannot forward. Excluded operations do not block startup.
+- Embedded native commands use the selected ACL. Child approval can prompt
+  even when the parent needs no approval. Delegation grants are scoped to the
+  spawned command and cleaned up on timeout.
+- Native resolution checks the complete candidate set when leading options
+  make routing ambiguous. A denied child route does not fall back to the root
+  command. Dry-run reports failed path checks and shows the sandbox argv used
+  at execution.
+- Host configuration edits preserve existing MCP entries, refuse invalid or
+  conflicting settings before publication, and report completed edits when a
+  later file write fails.
+
+### Compatibility
+
+- A2A startup warns about incomplete 1.0 interoperability. The authenticated
+  legacy `message/send` flow remains available.
 
 ## [0.15.1] - 2026-11-19
 
@@ -20,9 +51,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ### Compatibility
 
-- Verified with local builds of APCore 0.33.0, APCore CLI 0.14.0, Toolkit
-  0.14.2, MCP 0.23.4, and A2A 0.8.5. Refresh the registry lockfile after these
-  SDK versions are published before producing a release with them.
+- This release was tested with local builds of APCore 0.33.0, APCore CLI
+  0.14.0, Toolkit 0.14.2, MCP 0.23.4, and A2A 0.8.5.
 
 ## [0.15.0] - 2026-11-16
 

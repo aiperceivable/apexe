@@ -352,6 +352,30 @@ async fn test_user_manual_states_that_filters_gate_execution() {
 /// assertions on the four literals could not fail if the fallback flipped from
 /// `AuthMode::Token` to `AuthMode::None`, which is the regression that matters.
 #[test]
+fn test_user_manual_documents_execution_surfaces_and_a2a_compatibility() {
+    let manual = include_str!("../docs/user-manual.md");
+    let (_, surfaces) = manual.split_once("#### Execution surfaces").unwrap();
+    let (surfaces, _) = surfaces
+        .split_once("#### Explicit unmanaged execution")
+        .unwrap();
+    for contract in [
+        "Inherited stdin and output streams",
+        "Null stdin and captured output",
+        "The CLI's local sandbox configuration does not apply",
+        "No local subprocess sandbox or path guard",
+    ] {
+        assert!(surfaces.contains(contract), "missing {contract}");
+    }
+    assert!(manual.contains("`128 + signal` for signal termination"));
+    assert!(manual.contains("`exit_code: -1` in JSON and the CLI process exits with status 255"));
+    let (_, a2a) = manual.split_once("## 11. A2A Server").unwrap();
+    let (a2a, _) = a2a.split_once("## 12.").unwrap();
+    assert!(a2a.contains("does not support the complete A2A 1.0 interface"));
+    assert!(a2a.contains("Authorization: Bearer ${APEXE_AUTH_TOKEN"));
+    assert!(a2a.contains("\"method\": \"message/send\""));
+}
+
+#[test]
 fn test_user_manual_documents_transport_authentication() {
     use apexe::auth::{resolve_auth, AuthMode, AuthOptions, ResolvedAuth};
 

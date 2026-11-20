@@ -29,13 +29,13 @@ apexe list --verbose --format json
 ```
 
 Review the generated bindings and `~/.apexe/acl.yaml` before execution. If this
-environment is already prepared, inspect the existing configuration rather
-than initializing it again. An absent ACL leaves access control inactive.
+environment is already prepared, use its existing configuration. Apexe loads
+the configured default ACL automatically, so routine commands omit `--acl`.
+An absent ACL leaves access control inactive.
 
 The init report's `native_ready` array identifies reviewed native coverage.
-The current BSD pilot covers cat/head/ls; scanning GNU variants or other tools
-does not establish native eligibility. If the intended commands are not
-native-ready, resolve coverage before expecting the native workflow below.
+Check the intended commands on the actual installation before trying the native
+workflow below.
 See [initialization](quickstart.md#2-initialize) and [exec](user-manual.md#47-apexe-exec).
 
 ### 2. Install the same skill in your agent
@@ -104,23 +104,9 @@ Do not load instructions with bare sed, cat, head or an interpreter. Stop
 if required instructions are missing, truncated or refused by the host.
 
 Follow the Skill for ordinary CLI tasks, including initial directory listing
-and readonly probes. When this fallback route is active, use native
-`apexe exec -- <command> ...`. If the host already routes commands through
-`apexe-sh`, PATH shims, or a hook, run the command normally instead.
-Record the selected working directory, bindings and ACL before any task call.
-Carry any explicitly selected ACL (--acl before --) and binding override into
-EVERY preflight, execution, pipeline stage and retry; never try defaults first.
-Submit preflight alone and inspect its actual returned checks before execution
-in a separate tool call. For pipelines, submit exactly one stage's preflight
-per assistant response, read and state its decision, then choose the next stage
-in a NEW response. Do not batch or queue dependent stages, even if the host
-runs tool calls serially. Do not join preflight and execution with && or ;.
-Stop on the first refusal, with no later task tools queued or requested.
-If a call omitted a selected ACL, stop and report the error and any operation
-already completed; a corrected retry does not repair that earlier call.
-Do not bypass refusal with raw binaries, another tool, unmanaged execution
-or policy changes. Keep shell builtins and host file tools on their existing
-interfaces. Use pipefail or collect all stage statuses for pipeline execution.
+and readonly probes. Use native `apexe exec -- <command> ...` for this fallback.
+If the operator configures a shell, PATH shim or hook for this workspace, use
+ordinary command syntax for the commands it covers.
 ```
 
 The unified Skill defines the stop rule for all four hosts: each preflight is
@@ -129,12 +115,11 @@ all tools, including `todowrite`, `update_plan` and other tracking or cleanup.
 Use an updated installed Skill with this rule. A stopped CLI pipeline alone
 does not satisfy the all-tool stop requirement.
 
-For a custom configuration, replace the opening configuration sentence with
-actual canonical bindings and ACL paths. State that the selected `--acl` must
-appear before `--` in every task exec, including the first preflight. For
-example, the shape is `apexe exec --acl /actual/reviewed-acl.yaml --dry-run -- ls -la`;
-replace that example path with your real path. Provide the host access to the
-selected files. See [ACL reading](#host-acl-reading-and-apexe-paths-checks).
+The template uses the configured defaults. Use `--acl` only for an explicitly
+selected policy outside the default path. If the project needs that override,
+replace the opening configuration sentence with the selected policy path and
+put `--acl <path>` before `--` on each native preview and execution. Provide the
+host access to the selected files. See [ACL reading](#host-acl-reading-and-apexe-paths-checks).
 
 Installing the Skill makes it available; project or task instructions establish
 where the routing rule applies. Automatic selection depends on the host and
@@ -187,7 +172,7 @@ for a controlled denial test without changing your normal ACL.
 | cat/head previews are submitted together | Require one stage per assistant response. Two serial tool calls in one response are still a batch; stop and correct the routing instructions. |
 | An agent updates todos or a plan after an ACL refusal | Confirm the updated unified Skill body loaded. Return the refusal report as text without any further tools, including task tracking. A stopped CLI pipeline alone does not satisfy the all-tool stop check. |
 | The command has no binding or native grammar | Inspect `native_ready` and the concrete preflight. Install matching reviewed rules or use advertised module JSON only for a grammar gap when its normal checks permit the same operation. Do not use raw fallback. |
-| A required ACL is absent or omitted | Restore the operator-selected policy/configuration. Carry its path into every call. If a call already omitted it, stop and report the error rather than counting a retry as success. |
+| A required ACL is absent or a policy override was omitted | Restore the selected policy. With the default ACL, check the configured file. If a call omitted an explicit override, stop and report what ran under the wrong configuration. |
 | apexe returns `ACL_DENIED`, a path/schema refusal or unresolved approval | Stop without requesting later stages or using another tool to finish the denied operation. Report the reason for operator review. Do not widen policy to make the task pass. |
 | The model cannot start | Check the host's provider, credentials and account-supported model. No tool calls means agent routing has not been tested. |
 | A later tool call loses shim activation | Independent tool calls may start new shells. Keep explicit exec, or activate and verify shims in the same shell that executes the task. |
@@ -211,17 +196,13 @@ using `--setting-sources`, include `project`, for example
 applicable `CLAUDE.md` was read. Model/provider setup is part of your agent
 host configuration; sourcing a personal provider script is not an apexe step.
 
-## Optional enhancement: env
+## Other integrations
 
-Explicit exec works without shims. Use `env` when an authorized shell/script
-workflow needs ordinary command names, and verify activation and every intended
-shim route in the same shell before using those names. Enable/reload and the
-deactivation helper change installation state; `env --check` inspects it.
-Builtins, aliases, functions, absolute paths and uncovered tools can bypass
-shims. See the [env reference](user-manual.md#48-apexe-env).
+When the host can use a shell or hook, follow [Shell Integration](agent-shell.md)
+and retire the fallback project rule after verifying ordinary commands in the
+actual agent session. For a protocol client, use the configured MCP or A2A
+entry point. See [OpenAPI import](openapi.md) for serving HTTP APIs.
 
-`scan --skills-dir` generates command-specific module Skills; it complements
-this shared routing Skill. Use [MCP/A2A](user-manual.md#12-integrating-with-ai-agents)
-for protocol clients and [OpenAPI import](openapi.md) for HTTP APIs. Normal
-exec/env provide process controls and typed-path checks, not an OS sandbox;
-see the [threat model](threat-model.md).
+`scan --skills-dir` is a separate export of per-module schemas, behavior and
+examples. Use the advertised schemas from the connected server when calling
+MCP tools.

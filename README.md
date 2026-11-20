@@ -24,10 +24,9 @@ For terminal-capable AI agents, start with the [Shell Integration guide](docs/ag
 OpenCode and pi can use `apexe-sh` directly, Codex uses login-shell PATH shims,
 and Claude Code uses a `PreToolUse` hook. Install the shared
 [apexe Agent Skill](docs/agent-skill.md) only as a fallback when the host cannot
-be configured with a shell or hook; it routes external CLI commands through
-native `apexe exec -- <command> ...` and carries an explicit ACL into every
-preflight, execution and pipeline stage. Use MCP/A2A for protocol clients. Servers can also import HTTP operations from an
-OpenAPI document, alongside CLI modules, using
+be configured with a shell or hook. It routes external CLI commands through
+native `apexe exec -- <command> ...` and preserves the selected policy on
+every call. MCP/A2A clients can use CLI modules and OpenAPI operations through
 the same executor for schema validation, configured ACLs and auditing.
 
 ### Choose your entry point
@@ -121,10 +120,10 @@ OpenAPI import is a server feature; local exec and shims execute CLI commands.
 | Crate | Role |
 |-------|------|
 | [apcore](https://github.com/aiperceivable/apcore-rust) >=0.33.0 | Module trait, Registry, ACL, ModuleError, Context |
-| [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit-rust) >=0.14.2 | ScannedModule, YAMLWriter, DisplayResolver |
-| [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) >=0.23.3 | MCP server with structured results, middleware, auth, Explorer UI |
+| [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit-rust) >=0.15.0 | ScannedModule, YAMLWriter, DisplayResolver, OpenAPI scanning and proxy validation |
+| [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) >=0.23.4 | MCP server with structured results, middleware, auth, Explorer UI |
 | [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust) >=0.8.5 | A2A agent server sharing the same governed `Executor` |
-| [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) >=0.14.0 | Man pages, module detail formatting and OpenAPI proxy hazard detection |
+| [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) >=0.14.1 | Man pages and module detail formatting |
 
 ---
 
@@ -254,33 +253,15 @@ See the [Quick Start guide](docs/quickstart.md) for the full workflow.
 
 ### Claude Code, Codex, pi and OpenCode: shell/hook first, Skill fallback
 
-Start with [Shell Integration](docs/agent-shell.md): OpenCode and pi can use
-`apexe-sh` directly, Codex uses login-shell PATH shims, and Claude Code uses a
-`PreToolUse` hook. Use `apexe agent <host>` to print or write the host
-configuration.
+`apexe setup` installs shims and offers to configure detected hosts. OpenCode
+and pi can use `apexe-sh` directly, Codex uses login-shell PATH shims, and
+Claude Code uses a `PreToolUse` hook. Follow [Shell Integration](docs/agent-shell.md)
+to configure the host and verify an ordinary command in a fresh agent session.
 
-The shared Agent Skill is the fallback for hosts that cannot be configured with
-a shell or hook. Follow the [four-step Agent quick integration](docs/agent-skill.md#quick-integration)
-only in that case: prepare and review CLI coverage/ACL, install the Skill,
-declare the route in `CLAUDE.md` or `AGENTS.md`, then check an ordinary listing
-and pipeline. From an apexe source checkout, install for your user:
-
-```bash
-python3 scripts/install_agent_skill.py --scope user
-```
-
-Claude Code uses `~/.claude/skills/apexe`; Codex and pi share
-`~/.agents/skills/apexe`, which OpenCode also discovers. In a project without
-host integration, the Skill routes ordinary CLI requests through
-`apexe exec -- ...`, with inspected preflights, the selected ACL on every call
-and immediate stopping on apexe exec refusal. Do not install it alongside an
-active `apexe-sh`/PATH/hook integration: the Skill tells the agent to run host
-routed commands normally instead of double-wrapping them.
-
-Installing the Skill alone does not enroll projects or intercept unrestricted
-shell tools. Copy the [project instruction template](docs/agent-skill.md#3-declare-the-projects-execution-route)
-and inspect actual calls during acceptance. See [troubleshooting](docs/agent-skill.md#troubleshooting)
-for discovery, stale copies, native coverage and ACL issues, and the
+For hosts without shell or hook integration, follow the
+[Agent Skill fallback](docs/agent-skill.md#quick-integration). The project
+selects the bindings and ACL, and the Skill routes external commands through
+explicit `apexe exec`. Contributors can use the
 [maintainer verification procedure](docs/agent-skill-verification.md) for controlled
 three-scenario tests. Generated per-module Skills complement this shared route.
 
@@ -450,6 +431,8 @@ apexe serve --no-log-arguments --acl ~/.apexe/acl.yaml # Drop argument payloads 
 ### `apexe a2a`
 
 Serve CLI modules and optional imported OpenAPI operations through A2A. Shares configured governance (ACL, logging, audit) with `apexe serve` via the same `Executor`.
+The current SDK advertises A2A 1.0 but has incomplete wire support. Use the
+[authenticated legacy flow](docs/user-manual.md#11-a2a-server).
 
 ```bash
 apexe a2a --acl ~/.apexe/acl.yaml # http://127.0.0.1:8000 (default)

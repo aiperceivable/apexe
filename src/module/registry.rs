@@ -215,6 +215,37 @@ pub(crate) fn build_executor_for_invocation(
     scanned: &ScannedModule,
     module: CliModule,
 ) -> Result<Arc<Executor>, ModuleError> {
+    build_invocation_with_acl_summary(opts, scanned, module).map(|(executor, _)| executor)
+}
+
+/// Reuse the ACL assessment used to configure the approval gate, without a
+/// second policy read that might observe different rules.
+#[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+pub(crate) fn build_invocation_with_acl_summary(
+    opts: &ExecutorOptions<'_>,
+    scanned: &ScannedModule,
+    module: CliModule,
+) -> Result<(Arc<Executor>, AclSummary), ModuleError> {
+    build_bound_invocation(opts, scanned, module, None)
+}
+
+#[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+pub(crate) fn build_executor_for_delegated_child(
+    opts: &ExecutorOptions<'_>,
+    scanned: &ScannedModule,
+    module: CliModule,
+    approval: LocalDelegation,
+) -> Result<Arc<Executor>, ModuleError> {
+    build_bound_invocation(opts, scanned, module, Some(approval)).map(|(executor, _)| executor)
+}
+
+#[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
+fn build_bound_invocation(
+    opts: &ExecutorOptions<'_>,
+    scanned: &ScannedModule,
+    module: CliModule,
+    approval: Option<LocalDelegation>,
+) -> Result<(Arc<Executor>, AclSummary), ModuleError> {
     let audit = opts
         .audit_path
         .map(|path| Arc::new(crate::governance::AuditManager::new(path)));
@@ -225,7 +256,33 @@ pub(crate) fn build_executor_for_invocation(
     let mut descriptor = build_descriptor(scanned);
     descriptor.output_schema = apcore::Module::output_schema(&module);
     registry.register(&scanned.module_id, Box::new(module), descriptor)?;
-    finish_executor(opts, registry, audit, true)
+    assemble_executor(opts, registry, audit, true, approval)
+}
+
+#[derive(Default)]
+pub(crate) struct AclSummary {
+    pub(crate) requires_approval: bool,
+    pub(crate) policy_digest: Option<String>,
+}
+
+/// Approval state tied to this local invocation's loaded policy.
+pub(crate) enum LocalDelegation {
+    Parent {
+        policy_digest: Option<String>,
+        human_approved: Arc<std::sync::atomic::AtomicBool>,
+    },
+    Child {
+        policy_digest: Option<String>,
+        approved: bool,
+    },
+}
+
+impl LocalDelegation {
+    fn policy_digest(&self) -> &Option<String> {
+        match self {
+            Self::Parent { policy_digest, .. } | Self::Child { policy_digest, .. } => policy_digest,
+        }
+    }
 }
 
 /// Which contract a replay runs under.
@@ -258,7 +315,8 @@ pub(crate) fn build_executor_for_replay(
     argv: Vec<String>,
     io: crate::module::ExecutionIo,
     tier: ReplayTier,
-    child_exec_analyzed: bool,
+    children: Option<super::cli_module::PreparedChildren>,
+    incoming_approval: Option<LocalDelegation>,
 ) -> Result<Arc<Executor>, ModuleError> {
     let audit = opts
         .audit_path
@@ -277,14 +335,20 @@ pub(crate) fn build_executor_for_replay(
         scanned.input_schema["x-apexe-short-flag-bundling"] = serde_json::json!(true);
     }
     let scanned = &scanned;
+    let approval = children
+        .as_ref()
+        .and_then(|children| children.delegation.as_ref())
+        .map(|plan| LocalDelegation::Parent {
+            policy_digest: plan.policy_digest.clone(),
+            human_approved: plan.human_approved.clone(),
+        })
+        .or(incoming_approval);
     let mut module = CliModule::from_scanned(scanned, opts.timeout_ms)?
         .with_fixed_argv(argv)?
         .with_execution_io(io)
         .with_audit(audit.clone())
-        .with_sandbox(opts.sandbox.clone());
-    if child_exec_analyzed {
-        module = module.with_child_exec_analyzed();
-    }
+        .with_sandbox(opts.sandbox.clone())
+        .with_prepared_children(children);
     if tier == ReplayTier::Scanned {
         module = module.with_audit_tier("scanned");
     }
@@ -292,12 +356,14 @@ pub(crate) fn build_executor_for_replay(
     descriptor.output_schema = apcore::Module::output_schema(&module);
     let registry = Arc::new(Registry::new());
     registry.register(&scanned.module_id, Box::new(module), descriptor)?;
-    finish_executor(
+    assemble_executor(
         opts,
         registry,
         audit,
         matches!(io, crate::module::ExecutionIo::Passthrough { .. }),
+        approval,
     )
+    .map(|(executor, _)| executor)
 }
 
 /// Import HTTP operations before installing ACL, so both sources are governed.
@@ -364,6 +430,17 @@ fn finish_executor(
     audit: Option<Arc<crate::governance::AuditManager>>,
     local_io: bool,
 ) -> Result<Arc<Executor>, ModuleError> {
+    assemble_executor(opts, registry, audit, local_io, None).map(|(executor, _)| executor)
+}
+
+#[allow(clippy::result_large_err)] // Match the crate-wide ModuleError boundary.
+fn assemble_executor(
+    opts: &ExecutorOptions<'_>,
+    registry: Arc<Registry>,
+    audit: Option<Arc<crate::governance::AuditManager>>,
+    local_io: bool,
+    approval: Option<LocalDelegation>,
+) -> Result<(Arc<Executor>, AclSummary), ModuleError> {
     // Snapshot the ids that survived registration (a module whose `CliModule`
     // failed to build is logged and skipped), taken before the registry moves
     // into the `Executor`. `include_hidden` is true because a module annotated
@@ -372,22 +449,39 @@ fn finish_executor(
 
     let mut executor = Executor::new(registry, config_for_timeouts(opts.timeout_ms));
     install_middleware(&executor, opts, audit.clone());
-    let acl_requires_approval = install_acl(
+    let acl = install_acl(
         &mut executor,
         opts,
         &registered_ids,
         audit.as_ref(),
         !local_io,
     )?;
-    install_approval_handler(
-        &mut executor,
-        opts,
-        audit.clone(),
-        local_io,
-        acl_requires_approval,
-    );
-
-    Ok(Arc::new(executor))
+    if let Some(approval) = approval {
+        if approval.policy_digest() != &acl.policy_digest {
+            return Err(ModuleError::new(
+                ErrorCode::ApprovalDenied,
+                "ACL changed after embedded command analysis; retry the parent command",
+            ));
+        }
+        let gate = match approval {
+            LocalDelegation::Parent { human_approved, .. } => ApprovalGate::wrapping(
+                Box::new(crate::module::approval::LocalApprovalHandler::new()),
+                audit,
+            )
+            .record_local_approval(human_approved),
+            LocalDelegation::Child { approved, .. } => ApprovalGate::wrapping(
+                Box::new(crate::module::approval::DelegatedApproval(approved)),
+                audit,
+            ),
+        };
+        executor.set_approval_handler(Box::new(require_human_with_acl(
+            gate,
+            acl.requires_approval,
+        )));
+    } else {
+        install_approval_handler(&mut executor, opts, audit, local_io, acl.requires_approval);
+    }
+    Ok((Arc::new(executor), acl))
 }
 
 /// Apply the [`ModuleFilter`] and say what it did.
@@ -505,9 +599,9 @@ fn install_acl(
     registered_ids: &[String],
     audit: Option<&Arc<crate::governance::AuditManager>>,
     warn_unmatched_targets: bool,
-) -> Result<bool, ModuleError> {
+) -> Result<AclSummary, ModuleError> {
     let Some(acl_path) = opts.acl_path else {
-        return Ok(false);
+        return Ok(AclSummary::default());
     };
     if !acl_path.exists() {
         return Err(ModuleError::new(
@@ -537,9 +631,40 @@ fn install_acl(
         let audit = audit.clone();
         acl.set_audit_logger(move |entry| audit.log_acl_decision(entry));
     }
-    let requires_approval = acl.rules().iter().any(apcore::ACLRule::approval_required);
+    let requires_approval = validate_approval_backend(acl_path, &acl, opts.enable_approval)?;
+    use sha2::{Digest, Sha256};
+    let policy = serde_json::json!([acl.default_effect(), acl.rules()]);
+    let policy_digest = Some(format!("{:x}", Sha256::digest(policy.to_string())));
     executor.set_acl(acl);
     tracing::info!(acl = %acl_path.display(), "ACL enforcement active");
+    Ok(AclSummary {
+        requires_approval,
+        policy_digest,
+    })
+}
+
+/// A loaded policy that requires a human decision needs a configured backend.
+#[allow(clippy::result_large_err)] // Preserve the shared ModuleError boundary.
+pub(crate) fn validate_approval_backend(
+    acl_path: &Path,
+    acl: &apcore::ACL,
+    enabled: bool,
+) -> Result<bool, ModuleError> {
+    let requires_approval = acl.rules().iter().any(apcore::ACLRule::approval_required);
+    if requires_approval && !enabled {
+        return Err(ModuleError::new(
+            ErrorCode::GeneralInvalidInput,
+            format!(
+                "ACL '{}' contains 'approval: required' but this server has no approval handler",
+                acl_path.display()
+            ),
+        )
+        .with_retryable(false)
+        .with_ai_guidance(
+            "Use 'apexe serve --enable-approval' with an elicitation-capable MCP client, \
+             or configure an approval store in the server builder.",
+        ));
+    }
     Ok(requires_approval)
 }
 
@@ -1062,6 +1187,26 @@ mod tests {
             .expect_err("a denied module must not be callable");
         assert_eq!(err.code, ErrorCode::ACLDenied);
         assert!(!err.message.contains("[ACLDenied]"), "{}", err.message);
+    }
+
+    #[test]
+    fn test_build_executor_requires_approval_backend_for_explicit_acl_approval() {
+        let directory = TempDir::new().unwrap();
+        write_two_modules(directory.path());
+        let acl_path = directory.path().join("acl.yaml");
+        std::fs::write(
+            &acl_path,
+            "rules:\n- callers: ['*']\n  targets: ['cli.cp']\n  effect: allow\n  approval: required\ndefault_effect: deny\n",
+        )
+        .unwrap();
+        let mut options = opts(Some(directory.path()));
+        options.acl_path = Some(&acl_path);
+
+        let error = build_executor(&options).expect_err("incomplete approval setup");
+        assert!(error.message.contains("approval: required"), "{error}");
+
+        options.enable_approval = true;
+        assert!(build_executor(&options).is_ok());
     }
 
     #[tokio::test]

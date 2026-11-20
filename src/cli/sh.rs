@@ -92,6 +92,7 @@ pub(crate) struct ShimReport {
     pub(crate) manifest_version: Option<u32>,
     pub(crate) bindings_dir: Option<PathBuf>,
     pub(crate) acl: Option<PathBuf>,
+    pub(crate) acl_pinned: bool,
     pub(crate) commands: Vec<String>,
     pub(crate) scanned_commands: Vec<String>,
     pub(crate) unverified_modules: Vec<UnverifiedModule>,
@@ -216,7 +217,7 @@ fn session_command(argv: &[OsString]) -> anyhow::Result<String> {
     anyhow::bail!("session client requires -c <command>")
 }
 
-fn shim_directory(config: &ApexeConfig) -> PathBuf {
+pub(super) fn shim_directory(config: &ApexeConfig) -> PathBuf {
     std::env::var_os("APEXE_SHIM_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| config.config_dir.join("bin"))
@@ -467,6 +468,9 @@ pub(crate) fn check_report(
             manifest_version,
             bindings_dir,
             acl,
+            acl_pinned: manifest
+                .as_ref()
+                .is_some_and(|manifest| manifest.acl.is_some()),
             commands,
             scanned_commands,
             unverified_modules,

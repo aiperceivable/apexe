@@ -1,390 +1,108 @@
 ---
 name: apexe
-description: Fallback routing and governance guidance for apexe exec when the host has no apexe shell, PATH shim, or PreToolUse hook integration. Do not wrap commands when host-level integration already routes them. Resolve project policy, preserve the selected ACL, inspect preflights separately, and stop apexe exec routing on refusal.
+description: Route external CLI commands through explicit apexe exec when a project or operator has selected apexe and the agent lacks a configured shell or hook. Use the configured entry point directly when shell or MCP integration is already active.
 license: Apache-2.0
 ---
 
 # apexe
 
-This Skill is the fallback for environments without host-level apexe
-integration. It routes external CLI execution through
-`apexe exec -- <command> <arguments>` using the host's existing terminal tool.
+Use the execution route already selected for this project or task.
 
-Use it only when the host shell is not `apexe-sh`, PATH shims are not active,
-and no `PreToolUse` hook routes Bash calls through apexe. When host integration
-is active, run commands normally; wrapping them in `apexe exec` causes double
-governance and can bypass a persistent session. The fallback needs no MCP
-server or shell activation. Requires apexe 0.9 or later, installed bindings and
-matching reviewed grammar for native mode.
+- **Configured terminal integration.** For commands covered by `apexe-sh`, PATH
+  shims or the Claude Code `PreToolUse` hook, use the host terminal with ordinary
+  command syntax. The integration routes the call to apexe. Treat an uncovered
+  command as a coverage gap when the task requires governed execution.
+- **Configured MCP integration.** Use the advertised tool and input schema
+  within the configured MCP surface. A refusal ends the attempted operation
+  through that surface and any alternative route.
+- **Explicit exec fallback.** Use the steps below when project instructions or
+  the operator select apexe-governed terminal execution and there is no
+  configured shell or hook for the workflow. Mere discovery of apexe or this
+  Skill does not enroll a project.
 
-## Precedence
+## Select the fallback configuration
 
-Before routing anything, determine the host integration:
+Before the first task CLI call, obtain the applicable project instructions
+(`CLAUDE.md` or `AGENTS.md`) and this Skill through the host's instruction
+loader or file reader. Use complete instructions already supplied by the
+host. For a terminal-only host, use shell builtins with input redirection to
+read the discovered instruction paths. Stop if required material is missing,
+truncated or refused. The first task call includes directory listings,
+orientation and readonly probes.
 
-1. Host shell is `apexe-sh`, PATH shims are active, or a `PreToolUse` hook
-   routes Bash calls through apexe: run commands normally. Do **not** wrap them
-   in `apexe exec`.
-2. No host integration, or the user explicitly asks for `apexe exec`: use the
-   fallback route described below.
-3. If both are active, host integration wins. Wrapping a host-routed command
-   causes double governance and can bypass a persistent session.
+Use the working directory, bindings and ACL selected by the project or
+operator. For the configured default ACL, leave `--acl` out of the command
+even when the project names the default file. Apexe loads that file
+automatically. Use `--acl` only when the project or operator explicitly
+selects a different policy. Preserve any explicit `--acl` or `--bindings-dir`
+override through every preview, execution and pipeline stage. In native mode,
+put those options before `--`. If a submitted call omitted a required
+override, stop and report what already ran under the wrong configuration.
 
-Host integration is configured by the operator through `apexe agent` and
-`apexe env`; this Skill does not configure it.
+For discovery, run apexe itself directly. `apexe config --show` reports
+configuration, and `apexe list --verbose --format json` reports module IDs,
+schemas and ACL context. Supply the selected binding and ACL overrides to
+`list` when applicable. Check `native_ready` in an existing init report or
+preflight the invocation to establish native coverage. If the selected
+policy is unavailable or the host refuses access to it, report that
+prerequisite. A preview with `acl_decision: no_acl_loaded` cannot authorize work.
 
-For every preflight, submit exactly one tool request in that assistant response:
-the preflight itself. Put task tracking or other housekeeping in an earlier,
-separate response, never alongside a potentially refused call. For a pipeline,
-preview one stage at a time. Wait for its result, read the returned checks, and briefly
-state that stage's admission or refusal before deciding the next call in a new
-assistant response. Never emit `cat` and `head` preflights together. Two separate
-tool calls in one response are a batch, even if the host executes them in order;
-host serialization does not give the model a chance to inspect the first result.
-Do not use a batch tool, parallel dispatch or a loop that queues later stages.
-On refusal, stop with no remaining stages or other tools requested or queued.
+## Preview and execute
 
-## Stop apexe exec routing after refusal
+Route every external program in scope through apexe, including external
+stages of compound commands. Shell builtins and native host file tools keep
+their own interfaces. Preserve literal arguments and quote shell strings
+for the host.
 
-On the first governance refusal from an `apexe exec` call, or a required
-host-permission refusal that prevents loading the selected project policy or
-ACL, stop ALL tool use for that task and return a text report only. This includes `todowrite`,
-`update_plan`, task-status changes, file readers/editors, discovery commands,
-cleanup and bookkeeping tools, even if their purpose is to mark work refused
-or cancel unfinished steps. Describe completed and unfinished work in the
-report without a tool call. Do not request a later pipeline stage or use another
-execution surface to finish the refused operation.
-
-Check that no other tool is queued with a preflight before submitting it.
-Stopping CLI execution alone is insufficient if a tracking tool runs afterward.
-Do not repair, retry or investigate the refusal through tools in the refused
-task; the operator can authorize a subsequent task to resolve the prerequisite
-or review policy. Missing native grammar alone and ordinary child nonzero
-statuses are distinct from governance refusal, as described below.
-
-## Resolve project policy before task commands
-
-Loading this Skill is not sufficient to select the task's policy. Before any
-task CLI call, including a readonly probe or `--dry-run`, retrieve the complete
-applicable project instructions (`CLAUDE.md` for Claude Code; `AGENTS.md` for
-Codex, pi or OpenCode) using the host reader or the builtin loading method below.
-If the host already supplied their full contents, use those contents. A file
-name, instruction summary or Skill description does not establish configuration.
-In Claude Code, use `Read` for the applicable `CLAUDE.md` when its full contents
-are not available; do not list the directory first to discover policy afterward.
-Stop if required instructions are missing, truncated or refused by the host.
-
-Resolve the working directory, bindings and ACL from those instructions and
-the operator's task-specific configuration. Keep a configuration record for
-the task: the selected paths, whether each uses an explicit override or an
-instructed default, and the instruction that selected it. Resolve conflicting
-selections before execution. Use defaults only when the applicable instructions
-select them; a successful call under a default policy does not validate a
-different operator-selected policy.
-
-When an ACL path is selected, every task `apexe exec` must contain
-`--acl <selected-path>` before `--`, starting with the first preflight. Carry
-explicit binding overrides the same way. Check the actual command you are
-about to submit against this configuration record. Include the selected ACL
-in each pipeline stage, not just one stage or the preflight. Do not run a
-default-policy trial before using the selected policy, and do not infer policy
-selection from `acl_decision: allowed`: that field reports a decision, not
-which ACL file was loaded. Read the selected ACL through the host reader when
-needed to understand its rules; reading it later cannot authorize earlier calls.
-
-The unqualified examples below apply only when the task selects the default
-configuration. For a task selecting `/workspace/reviewed-acl.yaml`, the separate
-preflight and execution calls instead use:
+For a new invocation or changed arguments, submit the concrete preflight as
+the sole tool request in its assistant response. Read the result before
+requesting execution in a separate response.
 
 ```bash
-apexe exec --acl /workspace/reviewed-acl.yaml --dry-run -- ls -la
-# Inspect the result before a separate execution call with the same ACL.
-apexe exec --acl /workspace/reviewed-acl.yaml -- ls -la
-```
-
-Use the actual operator-provided path, never the example path. If you discover
-that a submitted call omitted the selected ACL, stop and report the routing
-error and any operation that already ran. Repeating it with the correct ACL
-does not repair the earlier execution or make the task compliant.
-
-## Select the execution route
-
-Apply the precedence section first. If the host already routes commands through
-`apexe-sh`, PATH shims, or a `PreToolUse` hook, run the command normally and do
-not wrap it. The rest of this section applies only to the fallback route.
-
-An environment is in scope when the operator or project instructions declare
-apexe-governed CLI execution and identify the intended configuration, or the
-user explicitly requests it. Installing this Skill or finding apexe on PATH
-alone does not enroll unrelated projects. If the task claims a configured
-environment but prerequisites are missing, report the gap; do not silently
-fall back to raw execution.
-
-Before running an external program in scope, route it through apexe. For
-example, a request to list all directory entries becomes `apexe exec -- ls -la`,
-not bare `ls -la`. Preserve the working directory, arguments and task intent.
-Prefer native argv; use governed module JSON only for a grammar gap as described
-below. Do not wrap an already governed call again.
-
-### Route before the first terminal call
-
-Instruction loading is part of the routing boundary. Prefer the host's Skill
-loader or file reader. If only a terminal is available, read the discovered
-Skill file with shell builtins and input redirection, without spawning a
-reader program. For example, after setting `skill_path` to the host-discovered
-installed entry point, retrieve the complete contents, continuing with another
-read if the host truncates them. The name or frontmatter alone is insufficient:
-
-```bash
-skill_text=
-while IFS= read -r line || test -n "$line"; do
-  skill_text="$skill_text$line
-"
-done < "$skill_path"
-printf '%s' "$skill_text"
-unset skill_text
-```
-
-Emit the retrieved text once rather than writing each line separately, so a
-streaming terminal host can capture the complete instructions in one result.
-Do not bootstrap with bare `sed`, `cat`, `head` or an interpreter. These are
-external CLI calls even when they only read instructions. Do not switch readers
-after a host permission refusal. Project instructions must provide this loading
-rule before the Skill body is available; a rule inside an unread Skill cannot
-govern its own loading. This builtin read is for retrieving the selected
-instructions, not for reading task data around an apexe refusal.
-
-Initial inspection, orientation, readonly probes and quick checks are already
-CLI execution. Do not run a raw command to prepare for a later governed call.
-Loading this Skill does not itself govern subsequent commands: rewrite the
-execution route before submitting each terminal call.
-
-For example, `pwd && ls -la` is not an admissible preliminary inspection. `pwd`
-can remain a shell builtin, but `ls` must enter apexe even in that first call:
-
-```bash
-pwd && apexe exec --dry-run -- ls -la
-# Inspect preflight before the separate execution call.
-apexe exec -- ls -la
-```
-
-Check every external program in a compound command, conditional branch or
-pipeline before sending it to the terminal. Readonly status does not exempt
-`ls`, `cat`, `head` or another external program from this route. If it cannot
-be admitted, report the coverage or governance failure instead of first trying
-the original program. The direct apexe administration calls below are the
-discovery route; bare task commands are not a substitute for discovery.
-
-Keep shell builtins such as `cd`, `pwd`, `test` and `printf` in the host shell. Keep
-host-provided file readers, editors and other non-CLI tools on their existing
-interfaces; this Skill routes external CLI commands, not every agent tool.
-Do not select another tool to evade an apexe refusal. Run apexe's own discovery,
-preflight and configuration commands directly without recursive wrapping.
-Do not replace an unsupported command or pipeline with `sh -c`, `bash -c`,
-an interpreter script or an absolute binary path to bypass admission.
-
-## Discover the environment
-
-Use the configured working directory, binding directory and ACL for the task.
-Carry explicit binding-directory and ACL overrides into every preflight and
-execution, including retries; do not silently revert to a different default.
-When they are not already known, inspect them once:
-
-```bash
-apexe --version
-apexe config --show
-apexe list --verbose --format json
-```
-
-Verbose listings contain a `modules` array with `id`, `input_schema`, annotations
-and ACL context. Listing a module does not establish native eligibility or
-authorize a concrete invocation. An existing initialization report's
-`native_ready` array is useful; otherwise check the intended native call with
-`--dry-run`. Current reviewed native coverage includes BSD cat/head/ls; do not
-assume GNU variants or other scanned tools are eligible.
-
-If setup is missing, report the missing binary, bindings or policy. When setup
-is part of the authorized task, use `apexe init --format json` and review the
-resulting bindings and ACL before execution. Initialization writes local state
-and may acquire rules from Git; do not repeat it just to inspect eligibility.
-Use `scan` for an authorized custom-tool setup. Neither init nor scan proves
-complete native grammar or automatically activates shims.
-
-Local execution loads the default ACL when present. If no ACL is loaded,
-access control is inactive: do not present such a call as policy-authorized.
-Use the operator-provided `--acl` path when needed; if policy is required and
-unavailable, report the prerequisite instead of creating permissive rules.
-Host permission to read an ACL and apexe's decision under that ACL are separate.
-If a host reader refuses access, stop and report that prerequisite; do not
-remove `--acl`, switch to the default policy or use a raw CLI to read around
-the host's refusal. Operators should provide canonical paths and the required
-host file permissions for the selected configuration.
-
-## Execute native argv by default
-
-For a newly selected invocation or changed arguments, preview the same command
-you intend to execute in a preflight-only terminal call. Wait for the result and
-inspect its checks before submitting execution in a separate tool call:
-
-```bash
-# First tool call: preflight only.
 apexe exec --dry-run -- ls -la
-# Read the returned checks. Separate tool call after admission:
+```
+
+Execute the same arguments and configuration when the plan has `valid: true`,
+`mode: native`, `acl_decision: allowed`, matching paths and arguments, and no
+unresolved approval.
+
+```bash
 apexe exec -- ls -la
 ```
 
-Never submit preflight and execution together, even with `&&`, `;`, a newline,
-or a conditional: a shell exit status does not replace reading the returned
-checks. Do not submit another execution speculatively alongside a preflight.
-Every preflight must be the sole tool request in its assistant response,
-including non-CLI tracking tools. For a pipeline, preflight its stages in order.
-Read the returned `valid`, `mode`, `acl_decision`, approval,
-argument and path checks; report the current stage's decision briefly. Only
-after admission may a new assistant response request the next stage. Separate
-terminal calls in the same response, or inside a host batch, still violate this
-rule. Do not request a later stage before the previous result is available.
-On the first governance refusal from an `apexe exec` call, stop all tools and
-return only the text report as specified above; do not preflight or execute
-remaining stages.
+Preflight cannot grant approval. For flag-derived annotations,
+`approval_required` may report a static ceiling. The gate checks the actual
+arguments during execution. Native local execution can prompt on a
+controlling terminal and refuses when one is required and unavailable.
 
-Preflight reports `valid`, `mode`, `module_id`, `acl_decision`,
-`approval_required`, `checks`, resolved `binary_path`, `argv` and typed path
-checks where applicable. Continue only when the invocation is valid, its mode
-is `native`, the intended policy allows it, its paths and arguments match the
-task, and it does not require an unresolved approval. Treat
-`approval_required: true` conservatively: inspect the annotations and explain
-the requirement before continuing. For flag-derived annotations it can be a
-static ceiling; the execution gate checks the arguments actually sent and may
-stand down for a benign call. Do not change annotations to clear the warning.
-A successful preflight neither obtains human approval nor reserves permission:
-execution checks the call again. Calls that actually need interactive approval
-fail closed locally because exec has no connected approval client.
-
-Put all apexe options before `--`; every later token belongs to the child:
+For pipelines, preview one stage at a time in order. Briefly state each
+stage's decision after reading its result. Request each later stage in a
+new response. Keep preflights, execution and task tracking in separate
+responses. For example, preview `apexe exec --dry-run -- cat input.txt` and
+`apexe exec --dry-run -- head -n 2`. After both are admitted, use a shell with
+`pipefail` or collect all stage statuses.
 
 ```bash
-apexe --timeout 10 exec --acl /path/to/reviewed-acl.yaml -- ls -la
+set -o pipefail && apexe exec -- cat input.txt | apexe exec -- head -n 2
 ```
 
-Pass a literal argument vector when the host supports one. If the host accepts
-a shell command string, quote data for that shell and avoid inserting tool
-output as executable syntax. Native output passes through and the process
-status is the child's status; Unix signals return `128 + signal`. stdout is
-not a JSON envelope. A nonzero status can be an ordinary CLI outcome; inspect
-stderr and the command's meaning before retrying, especially after possible
-side effects.
+The shell handles redirections outside apexe's typed-path checks. Native
+execution passes through child streams and exit status. Streaming stdin
+requires support in the reviewed binding.
 
-The shell owns pipes, redirections, expansions and compound commands. Wrap each
-external program in an in-scope pipeline independently:
+## Respond to coverage gaps and refusals
 
-First assistant response: submit only the first stage's preflight.
+For a native grammar gap alone, use the equivalent advertised module JSON
+operation when its schema, ACL, path and approval checks permit it. Preview
+with the same configuration and require `mode: module` and an allowed ACL
+decision before execution. Module JSON captures the result and supplies null
+stdin to the child. A child exit status may describe an ordinary command
+outcome. Check stderr before deciding what it means.
 
-```bash
-apexe exec --dry-run -- cat input.txt
-```
-
-Read the result and state whether cat was admitted. If valid and allowed in
-native mode, with matching paths and no unresolved approval, a new assistant
-response may submit only the next preflight. If refused, stop here.
-
-```bash
-apexe exec --dry-run -- head -n 5
-```
-
-Read head's result and state its decision. Only after both stages are admitted
-may another assistant response submit execution:
-
-```bash
-set -o pipefail && apexe exec -- cat input.txt | apexe exec -- head -n 5
-```
-
-Use the shell's `pipefail` support or collect individual stage statuses when
-checking pipeline success. A successful final stage can hide an earlier refusal.
-
-stdin passes through only when the reviewed binding admits streaming input.
-A redirection such as `> output.txt` is performed by the shell outside apexe's
-typed-path checks. Do not claim an entire pipeline or shell expression was
-governed merely because one stage used exec.
-
-## Handle missing grammar and refusals
-
-Distinguish unsupported native grammar from policy, approval, schema or path
-refusal. Inspect preflight output and available error guidance. Never respond
-to a governance refusal by invoking the original binary directly, using an
-absolute path, changing PATH, enabling `--unmanaged allow`, widening the ACL,
-or weakening annotations or path rules.
-
-If the task still maps to an advertised module and native grammar alone is
-unavailable, use module JSON as a compatible alternative only when its normal
-schema, policy, approval and path checks permit the same operation. Read the
-advertised property names and types; do not translate flags by guessing:
-
-```bash
-# Use the property names and shapes from this machine's binding.
-apexe exec cli.ls --input '{"file":["."]}' --dry-run
-apexe exec cli.ls --input '{"file":["."]}'
-```
-
-Module JSON returns captured execution results, including `exit_code`,
-`stdout` and `stderr`, and uses null child stdin. `--input-file request.json`
-or `--input-file -` supplies JSON input; it does not stream data to the child.
-Those input sources and native argv are mutually exclusive.
-`--error-format json` provides a versioned apexe failure envelope on stderr;
-keep `--log-stderr` off when parsing it. A completed child's nonzero exit can
-still return a normal result instead of an apexe failure envelope. In native
-mode, child stderr remains passthrough and is not necessarily JSON.
-
-After a governance refusal, report its reason, any operation already completed,
-the unfinished work and the operator action needed, without further tools.
-Do not try spelling variants, another execution surface or tracking updates.
-A grammar-only gap may use the admitted JSON alternative above; it is not
-permission to bypass policy, schema or path refusal. `--as` is a dry-run
-assertion, not authenticated impersonation or execution approval.
-
-## Shell integration precedence
-
-When the host shell or hook already routes commands, do not use explicit exec;
-let the host integration govern the call. Use `env` for an authorized existing
-script or shell workflow that benefits from governed native command names.
-Explicit exec remains the fallback when no host integration is active.
-Enabling writes shims and managed shell startup blocks; it cannot change the
-parent shell.
-
-```bash
-# One-time setup when shell integration is requested.
-apexe env --enable
-```
-
-After successful setup, activate in the shell that executes commands
-(bash/zsh defaults):
-
-```bash
-source ~/.apexe/bin/apexe-activate.sh &&
-apexe env --check &&
-test "$(command -v cat)" = "$HOME/.apexe/bin/cat" &&
-test "$(command -v head)" = "$HOME/.apexe/bin/head" &&
-cat input.txt | head -n 5
-```
-
-Use the helper paths printed by apexe for a custom shim directory. POSIX sh
-uses `.` instead of `source`; consult `apexe env --help` for other shells.
-The guarded example also checks that both names resolve to the expected shims;
-adapt those paths for a custom directory. Only rely on bare names after checking
-activation, installed routes and policy. Stop on any failed check so the shell
-cannot continue with a raw binary after a failed activation.
-If your host starts a new shell for each tool call, source the helper and run
-the command in that same call, or keep using explicit exec. A sourced helper in
-one process cannot activate later independent processes.
-
-Use `apexe env --reload` after authorized binding changes. It preserves stored
-installation settings and enables an absent installation; it is not a read-only
-inspection. `apexe env --check` is the inspection command. Deactivation via the
-sourced `apexe-deactivate.sh` helper uninstalls owned shims and managed startup
-blocks and restores that shell's saved environment; it is not just a temporary
-PATH toggle, so do not automatically deactivate an operator's existing setup.
-
-Shims cover eligible external commands only. Builtins, aliases, functions,
-absolute paths and uncovered tools can bypass them. Skills guide behavior;
-the agent host must enforce any requirement that commands cannot bypass apexe.
-Normal exec and shims provide process controls and typed-path checks, not an
-OS sandbox. Imported HTTP APIs require MCP/A2A OpenAPI import and are outside
-local exec; use those protocols only when the task calls for them.
+On the first apexe governance refusal in fallback mode, or a host permission
+refusal that prevents loading required instructions or policy, stop all tool
+use for the task. Return a text report with the reason, completed work,
+remaining work and the operator action needed. This includes stopping later
+pipeline stages, retries, cleanup, plan updates and task tracking. Preserve
+the same authorization boundary across raw CLI, other tools and execution
+surfaces.

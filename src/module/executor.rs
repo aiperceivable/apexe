@@ -980,7 +980,12 @@ fn spawn_isolated(
     binary_path: &str,
     args: &[String],
 ) -> Result<tokio::process::Child, ModuleError> {
-    spawn_with_io(binary_path, args, super::ExecutionIo::Captured)
+    spawn_with_io(
+        binary_path,
+        args,
+        super::ExecutionIo::Captured,
+        super::io::LocalEnvironment::default(),
+    )
 }
 
 #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
@@ -988,6 +993,7 @@ pub(super) fn spawn_with_io(
     binary_path: &str,
     args: &[String],
     io: super::ExecutionIo,
+    environment: super::io::LocalEnvironment<'_>,
 ) -> Result<tokio::process::Child, ModuleError> {
     let local = matches!(io, super::ExecutionIo::Passthrough { .. });
     let mut command = Command::new(binary_path);
@@ -1019,6 +1025,15 @@ pub(super) fn spawn_with_io(
         // resolve through the same governance layer.
         for key in LOCAL_ENV_DENYLIST {
             command.env_remove(key);
+        }
+        if let Some(path) = environment.path {
+            command.env("PATH", path);
+        }
+        let delegation_key = crate::governance::delegation::DELEGATION_ENV;
+        if let Some(grant) = environment.delegation {
+            command.env(delegation_key, grant);
+        } else {
+            command.env_remove(delegation_key);
         }
     } else {
         command.env_clear();

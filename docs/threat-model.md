@@ -472,17 +472,19 @@ now moves two boundaries.
 from corpus assertions and fallback inference, not a policy you have approved. Use overlays to correct
 classifications for tools you rely on.
 
-### 5.3 Access control and approval are both opt-in
+### 5.3 Policy selection at startup
 
-Neither `--acl` nor `--enable-approval` is on by default. A bare `apexe serve`
+For manual startup, supply `--acl` and `--enable-approval` to enable those
+gates. A bare `apexe serve`
 gives you the contract (schema validation), CLI process controls (§4.1, §4.2,
 §4.5, §4.6), typed-path checks and the audit trail — and **no ACL or approval
 policy**: every registered module is
 callable by every caller.
 
-This is the gap most likely to produce a false sense of safety, because the
-starter policy *is* deny-by-default and apexe then does not apply it for you.
-Wire both flags in explicitly:
+`apexe agent --mcp-only` requires a loadable ACL and always includes its path
+in the generated server arguments. `apexe setup` records the selected ACL in
+the shim manifest, so removing that file causes covered invocations to fail.
+For a manually started MCP server with ACL and approval, use the following.
 
 ```bash
 apexe serve --acl ~/.apexe/acl.yaml --enable-approval
@@ -658,7 +660,9 @@ all, and neither answer is true.
 
 Module-mode `apexe exec` executes declared modules with captured output and
 null stdin. Native `apexe exec -- <command>` and Stage 2 shims share reviewed
-argument resolution, passthrough output and explicit stdin capabilities. Native
+argument resolution and passthrough streams. See the
+[execution surface matrix](user-manual.md#execution-surfaces) for stdin and
+sandbox defaults. Native
 exec works without activation and checks executable identity, including absolute
 paths; it does not restrict commands invoked outside that entry point. It uses the fixed `local` ACL caller; `--as` is accepted only for
 a non-executing simulation and marks that identity as asserted. It loads the
@@ -670,7 +674,7 @@ describes the shipped stdin and shim boundaries:
 - **Explicit unmanaged execution lacks argument path typing.** Native exec
   defaults to refusing unknown commands. `--unmanaged allow|approval` opts into
   literal argv under an `unmanaged.<basename>` ACL target; the loaded ACL still
-  applies. Timeout, environment scrubbing and audit remain, but schema-derived
+  applies. Timeout, the passthrough environment denylist and audit remain, but schema-derived
   path checks cannot run. stdin is null. Arbitrary programs can start subprocesses
   or access files directly, so this option requires external containment for
   agents. `approval` still requires ACL permission; native local execution
@@ -679,16 +683,18 @@ describes the shipped stdin and shim boundaries:
   argv. An inherited stdin is not schema-validated, not path-checked and not
   recorded — and for any tool that reads a program from stdin (`python -`,
   `awk`, `sh -s`, `sed -f -`) that is a complete bypass by a different route
-  than §5.9's. F8 requires an allowlist (`streaming_stdin_safe`, a human
-  assertion per module), never a denylist.
+  than §5.9's. Local managed calls inherit stdin whether or not the overlay
+  declares `streaming_stdin_safe`. Treat stdin-producing processes as part of
+  the caller's trust boundary, and use OS confinement when that is not safe.
 - **Embedded child commands are argv-gated, not confined.** A command that
   embeds another program's argv (`find . -exec rm {} \;`) is refused by
   default. `child_exec.mode: analyze` resolves the child to its own reviewed
   module and applies that module's schema, ACL, path policy and approval at the
   parent's starting paths; `delegate` re-enters the installed child shim per
   match, so the actual `{}` path, symlinks and `-execdir`'s working directory
-  are checked and the parent approval is delegated by a scoped, short-lived
-  grant. Neither mode confines the child's own logic: `sh -c`,
+  are checked. The short-lived grant binds the selected policy, caller and
+  prepared child scope. Only a positive terminal decision for that scope
+  satisfies a fresh approval requirement. Neither mode confines the child's own logic: `sh -c`,
   `sed 'w /etc/x'`, `python -c` and TOCTOU still need an external confinement
   backend. The module-JSON/MCP surface never executes an exec-list without the
   native analysis, and `trust_uncovered` is an explicit operator

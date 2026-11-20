@@ -119,12 +119,6 @@ struct PreparedCall {
     /// The caller's argv, when the route classified every token and must run it
     /// verbatim. The dry-run plan reports this instead of a re-rendered form.
     replay: Option<super::shim::Replay>,
-    /// Delegated child-command grant; held until the parent call returns.
-    ///
-    /// Never read: the value exists for its `Drop`, which removes the grant so
-    /// a later call cannot reuse it.
-    #[allow(dead_code)]
-    delegation: Option<crate::governance::delegation::DelegationHandle>,
     /// The sandbox runtime attached to this executor, if `sandbox` is active.
     sandbox: Option<std::sync::Arc<crate::governance::SandboxRuntime>>,
 }
@@ -169,15 +163,12 @@ impl ExecArgs {
     /// A module-id call knows its route outright; a native call knows its tool
     /// from `argv[0]`, and route resolution only ever consults routes whose
     /// `command_path[0]` is that tool (see [`native::resolve`], which builds its
-    /// manifest from exactly these modules). So the subset is provable, and the
-    /// cost of `apexe exec` stops growing with the number of tools installed.
+    /// manifest from these modules). Canonical root and subcommand filenames
+    /// provide the existing fast path for unambiguous invocations.
     ///
-    /// Two cases deliberately load everything: an operator-declared
-    /// `bindings.pattern` (which decides what counts as a binding at all — a
-    /// second copy of that rule here could silently disagree with it), and a
-    /// `argv[0]` that is not a plausible tool name (a path, a wrapper name
-    /// whose binding lives under a sanitized id). Narrowing that finds no file
-    /// falls back inside [`crate::output::load_modules_for_ids`].
+    /// Configured patterns and ambiguous leading options need complete
+    /// discovery. A filename prefix cannot prove that a hand-authored binding
+    /// outside the namespace has no candidate for the invocation.
     fn load_callable_modules(
         &self,
         config: &ApexeConfig,
@@ -189,18 +180,21 @@ impl ExecArgs {
                 config.bindings_pattern.as_deref(),
             )?);
         };
-        if config.bindings_pattern.is_some() {
+        if config.bindings_pattern.is_some()
+            || self
+                .native
+                .get(1)
+                .is_some_and(|token| token.starts_with('-'))
+        {
             return Ok(crate::output::load_modules_from_dir(
                 dir,
                 config.bindings_pattern.as_deref(),
             )?);
         }
         if let Some(tool_id) = self.module_namespace_tool() {
-            let token = self.subcommand_token();
+            let token = self.native.get(1).map(String::as_str);
             return Ok(crate::output::load_modules_for_tool_route(
-                dir,
-                &tool_id,
-                token.as_deref(),
+                dir, &tool_id, token,
             )?);
         }
         Ok(crate::output::load_modules_for_ids(dir, &[namespace])?)
@@ -217,16 +211,6 @@ impl ExecArgs {
                 .all(|character| character.is_ascii_alphanumeric() || "_-.".contains(character))
             && !tool.starts_with('.');
         plausible.then(|| format!("cli.{tool}"))
-    }
-
-    /// The subcommand token a native call starts with, or `None` for a flag.
-    ///
-    /// `git --no-pager status` yields `None`: the token is not where route
-    /// resolution looks first, so the caller falls back to the tool namespace
-    /// rather than guessing.
-    fn subcommand_token(&self) -> Option<String> {
-        let token = self.native.get(1)?;
-        (!token.starts_with('-')).then(|| token.clone())
     }
 
     /// The module-id namespace this call can reach, or `None` to load it all.
@@ -325,7 +309,6 @@ impl ExecArgs {
             unmanaged_binary: None,
             opaque_tail: None,
             replay: None,
-            delegation: None,
             sandbox: options.sandbox.clone(),
         })
     }
@@ -338,16 +321,23 @@ impl ExecArgs {
         dir: &std::path::Path,
         context: &Context<Value>,
     ) -> anyhow::Result<PreparedCall> {
-        let invocation =
-            native::resolve(&self.native, self.unmanaged, &modules, config, dir, context).await?;
+        let invocation = native::resolve(
+            &self.native,
+            self.unmanaged,
+            &modules,
+            config,
+            dir,
+            options.acl_path,
+            context,
+        )
+        .await?;
         let native::NativeInvocation {
             module,
             input,
             unmanaged,
             opaque_tail,
             replay,
-            child_exec_analyzed,
-            delegation,
+            children,
         } = invocation;
         let io = crate::module::ExecutionIo::Passthrough {
             stdin: super::shim::passthrough_stdin_mode(),
@@ -384,7 +374,8 @@ impl ExecArgs {
                         replay.argv().to_vec(),
                         io,
                         tier,
-                        child_exec_analyzed,
+                        children,
+                        None,
                     )?;
                     (executor, ExecutionMode::Native, Some(replay))
                 }
@@ -420,7 +411,6 @@ impl ExecArgs {
             unmanaged_binary,
             opaque_tail,
             replay,
-            delegation,
             sandbox: options.sandbox.clone(),
         })
     }
@@ -490,14 +480,7 @@ impl ExecArgs {
             result["argv"] = call.input["argv"].clone();
             result["path_guard_available"] = json!(false);
             result["stdin"] = json!(crate::module::StdinMode::Null);
-            add_sandbox_plan(
-                &mut result,
-                call,
-                scanned,
-                crate::module::ExecutionIo::Passthrough {
-                    stdin: crate::module::StdinMode::Null,
-                },
-            )?;
+            add_sandbox_plan(&mut result, call)?;
         } else {
             let io = if call.mode == ExecutionMode::Native {
                 let stdin = super::shim::passthrough_stdin_mode();
@@ -514,24 +497,21 @@ impl ExecArgs {
                 call.opaque_tail.clone(),
                 call.replay.as_ref(),
             )?;
-            add_sandbox_plan(&mut result, call, scanned, io)?;
+            if result["valid"] == true {
+                add_sandbox_plan(&mut result, call)?;
+            }
         }
         Ok(result)
     }
 }
 
-fn add_sandbox_plan(
-    result: &mut Value,
-    call: &PreparedCall,
-    scanned: &apcore_toolkit::ScannedModule,
-    io: crate::module::ExecutionIo,
-) -> anyhow::Result<()> {
+fn add_sandbox_plan(result: &mut Value, call: &PreparedCall) -> anyhow::Result<()> {
     let Some(sandbox) = call.sandbox.as_ref() else {
         result["sandbox"] = json!({"outcome": "not_configured"});
         return Ok(());
     };
     let binary = result["binary_path"].as_str().unwrap_or_default();
-    let mut argv: Vec<String> = result["argv"]
+    let argv: Vec<String> = result["argv"]
         .as_array()
         .map(|values| {
             values
@@ -541,11 +521,6 @@ fn add_sandbox_plan(
                 .collect()
         })
         .unwrap_or_default();
-    if io == crate::module::ExecutionIo::Captured {
-        if let Some(flag) = scanned.metadata.get("json_flag").and_then(Value::as_str) {
-            argv.extend(shell_words::split(flag).unwrap_or_default());
-        }
-    }
     match sandbox.plan(&call.module_id, binary, &argv) {
         Ok(Some(plan)) => {
             let outcome = plan.planned_outcome();
@@ -597,6 +572,13 @@ fn add_command_plan(
     // form here would describe an argv the executor will not use.
     if let Some(replay) = replay {
         result["argv"] = json!(replay.argv());
+        if let Err(error) = module.check_input_paths(input) {
+            result["valid"] = json!(false);
+            result["checks"]
+                .as_array_mut()
+                .ok_or_else(|| anyhow::anyhow!("Invalid preflight checks"))?
+                .push(json!({"check":"path_guard", "passed":false, "error":error.to_dict()}));
+        }
     } else {
         match module.planned_argv(input) {
             Ok(argv) => result["argv"] = json!(argv),

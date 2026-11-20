@@ -2551,6 +2551,93 @@ fn rm_schema() -> Value {
     })
 }
 
+#[test]
+fn test_native_embedded_child_uses_explicit_acl_and_same_caller() {
+    let fixture = analysis_fixture(
+        "cli.printf",
+        "printf",
+        "/usr/bin/printf",
+        printf_schema(),
+        "analyze",
+        false,
+    );
+    let default = fixture.home.path().join(".apexe/acl.yaml");
+    let selected = fixture.home.path().join("selected.yaml");
+    let allow = "rules:\n- callers: ['local']\n  targets: ['cli.find', 'cli.printf']\n  effect: allow\ndefault_effect: deny\n";
+    let deny_child = "rules:\n- callers: ['local']\n  targets: ['cli.find']\n  effect: allow\ndefault_effect: deny\n";
+    std::fs::write(fixture.home.path().join("fixture.txt"), "fixture").unwrap();
+    let run = || {
+        let mut command = fixture.command();
+        command.args(["exec", "--acl"]).arg(&selected).args([
+            "--",
+            "/usr/bin/find",
+            "fixture.txt",
+            "-exec",
+            "printf",
+            "child-started",
+            ";",
+        ]);
+        command
+    };
+    std::fs::write(&default, deny_child).unwrap();
+    std::fs::write(&selected, allow).unwrap();
+    run().assert().success().stdout("child-started");
+    std::fs::write(&default, allow).unwrap();
+    std::fs::write(&selected, deny_child).unwrap();
+    run()
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicates::str::contains("cli.printf"));
+}
+
+#[test]
+fn test_analyze_requires_approval_when_only_the_child_is_gated() {
+    let fixture = analysis_fixture(
+        "cli.printf",
+        "printf",
+        "/usr/bin/printf",
+        printf_schema(),
+        "analyze",
+        false,
+    );
+    std::fs::write(fixture.home.path().join("fixture.txt"), "fixture").unwrap();
+    let acl = fixture.home.path().join(".apexe/acl.yaml");
+    std::fs::write(acl, "rules:\n- callers: ['local']\n  targets: ['cli.printf']\n  effect: allow\n  approval: required\ndefault_effect: allow\n").unwrap();
+    let args = [
+        "--",
+        "/usr/bin/find",
+        "fixture.txt",
+        "-exec",
+        "printf",
+        "child-started",
+        ";",
+    ];
+    let plan = fixture
+        .command()
+        .args(["exec", "--dry-run"])
+        .args(args)
+        .assert()
+        .success();
+    let plan: Value = serde_json::from_slice(&plan.get_output().stdout).unwrap();
+    assert_eq!(plan["approval_required"], true);
+    fixture
+        .command()
+        .arg("exec")
+        .args(args)
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicates::str::contains("no controlling terminal"));
+    fixture
+        .shim("find")
+        .args(&args[2..])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicates::str::contains("no controlling terminal"));
+}
+
 fn printf_schema() -> Value {
     json!({
         "type": "object",
@@ -2624,6 +2711,146 @@ fn delegate_fixture() -> Fixture {
 
 fn audit_after(fixture: &Fixture) -> String {
     std::fs::read_to_string(fixture.home.path().join(".apexe/audit.jsonl")).unwrap_or_default()
+}
+
+#[test]
+fn test_native_delegate_dry_run_does_not_issue_a_grant() {
+    let fixture = delegate_fixture();
+    std::fs::write(fixture.home.path().join("fixture.txt"), "fixture").unwrap();
+    let args = [
+        "--",
+        "/usr/bin/find",
+        "fixture.txt",
+        "-exec",
+        "rm",
+        "{}",
+        ";",
+    ];
+    fixture
+        .command()
+        .args(["exec", "--dry-run"])
+        .args(args)
+        .assert()
+        .success();
+    assert!(!fixture.home.path().join(".apexe/delegation").exists());
+    assert!(!audit_after(&fixture).contains("delegate_grant"));
+    assert!(fixture.home.path().join("fixture.txt").exists());
+}
+
+#[test]
+fn test_native_delegate_uses_the_selected_shim_directory_and_acl() {
+    let fixture = analysis_fixture(
+        "cli.printf",
+        "printf",
+        "/usr/bin/printf",
+        printf_schema(),
+        "delegate",
+        false,
+    );
+    let custom = fixture.home.path().join("custom-shims");
+    fixture
+        .command()
+        .args(["env", "--enable", "--shim-dir"])
+        .arg(&custom)
+        .assert()
+        .success();
+    std::fs::write(fixture.home.path().join("fixture.txt"), "fixture").unwrap();
+    std::fs::write(
+        fixture.home.path().join(".apexe/acl.yaml"),
+        "default_effect: deny\nrules: []\n",
+    )
+    .unwrap();
+    let selected = fixture.home.path().join("selected.yaml");
+    std::fs::write(&selected, "default_effect: allow\nrules: []\n").unwrap();
+    std::fs::remove_dir_all(fixture.shims()).unwrap();
+    fixture
+        .command()
+        .env("APEXE_SHIM_DIR", &custom)
+        .args(["exec", "--acl"])
+        .arg(&selected)
+        .args([
+            "--",
+            "/usr/bin/find",
+            "fixture.txt",
+            "-exec",
+            "printf",
+            "selected",
+            ";",
+        ])
+        .assert()
+        .success()
+        .stdout("selected");
+    let audit = audit_after(&fixture);
+    assert!(
+        audit.contains("\"decision\":\"delegated_allow\""),
+        "{audit}"
+    );
+    assert!(audit.contains("\"human_approved\":false"), "{audit}");
+}
+
+#[test]
+fn test_native_delegate_parent_acl_denial_does_not_issue_a_grant() {
+    let fixture = delegate_fixture();
+    let item = fixture.home.path().join("fixture.txt");
+    std::fs::write(&item, "fixture").unwrap();
+    std::fs::write(fixture.home.path().join(".apexe/acl.yaml"),
+        "rules:\n- callers: ['local']\n  targets: ['cli.rm']\n  effect: allow\ndefault_effect: deny\n").unwrap();
+    fixture
+        .command()
+        .args([
+            "exec",
+            "--",
+            "/usr/bin/find",
+            "fixture.txt",
+            "-exec",
+            "rm",
+            "{}",
+            ";",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("denied"));
+    assert!(item.exists());
+    assert!(!fixture.home.path().join(".apexe/delegation").exists());
+    assert!(!audit_after(&fixture).contains("delegate_grant"));
+}
+
+#[test]
+fn test_native_delegate_timeout_cleans_up_the_grant() {
+    let fixture = analysis_fixture(
+        "cli.sleep",
+        "sleep",
+        "/bin/sleep",
+        json!({
+            "type":"object", "properties":{"duration":{"type":"string", "x-apexe-positional":0}}
+        }),
+        "delegate",
+        false,
+    );
+    std::fs::write(fixture.home.path().join("fixture.txt"), "fixture").unwrap();
+    fixture
+        .command()
+        .env("APEXE_LOCAL_TIMEOUT", "1")
+        .args([
+            "exec",
+            "--",
+            "/usr/bin/find",
+            "fixture.txt",
+            "-exec",
+            "sleep",
+            "2",
+            ";",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("timed out after 1000ms"));
+    assert!(audit_after(&fixture).contains("delegate_grant"));
+    assert_eq!(
+        std::fs::read_dir(fixture.home.path().join(".apexe/delegation"))
+            .unwrap()
+            .count(),
+        0
+    );
 }
 
 #[test]
@@ -2966,6 +3193,67 @@ fn write_sandbox_config_for(fixture: &Fixture, backend: &str, module: &str) {
         ),
     )
     .unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn test_sandbox_captured_preview_matches_launched_arguments() {
+    let fixture = Fixture::new();
+    let binary = fixture.script("argvtoy", "printf '<%s>\\n' \"$@\"");
+    let schema = json!({"type":"object","properties":{
+        "format":{"type":"string","x-apexe-flag":"--format","x-apexe-conflicts-with":["plain"]},
+        "plain":{"type":"boolean","x-apexe-flag":"--plain"}
+    },"additionalProperties":false});
+    fixture.write(
+        "cli.argvtoy",
+        "argvtoy",
+        binary.to_str().unwrap(),
+        schema,
+        false,
+    );
+    let mut modules = apexe::output::load_modules_from_dir(&fixture.bindings(), None).unwrap();
+    write_sandbox_config_for(&fixture, "sandbox-exec", "cli.argvtoy");
+    for (flag, input, expected) in [
+        ("--format json", "{}", vec!["--format", "json"]),
+        (
+            "--format json",
+            r#"{"format":"text"}"#,
+            vec!["--format", "text"],
+        ),
+        ("--format json", r#"{"plain":true}"#, vec!["--plain"]),
+        ("--json", "{}", vec!["--json"]),
+    ] {
+        modules[0].metadata.insert("json_flag".into(), json!(flag));
+        apexe::output::YamlOutput::without_verification()
+            .write(&modules, &fixture.bindings(), false)
+            .unwrap();
+        let plan = fixture
+            .command()
+            .args(["exec", "--dry-run", "cli.argvtoy", "--input", input])
+            .assert()
+            .success();
+        let launch = fixture
+            .command()
+            .args(["exec", "cli.argvtoy", "--input", input])
+            .assert()
+            .success();
+        let plan: Value = serde_json::from_slice(&plan.get_output().stdout).unwrap();
+        let output: Value = serde_json::from_slice(&launch.get_output().stdout).unwrap();
+        let launch_args = plan["sandbox"]["launch"]["argv"].as_array().unwrap();
+        let position = launch_args
+            .iter()
+            .position(|arg| arg == binary.to_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            launch_args[position + 1..],
+            json!(expected).as_array().unwrap()[..]
+        );
+        let recorded: String = expected.iter().map(|arg| format!("<{arg}>\n")).collect();
+        assert_eq!(
+            output["stdout"].as_str().unwrap().trim_end(),
+            recorded.trim_end()
+        );
+    }
 }
 
 fn write_sandbox_config(fixture: &Fixture) {

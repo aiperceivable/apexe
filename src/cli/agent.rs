@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use clap::ValueEnum;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::config::ApexeConfig;
@@ -82,7 +83,10 @@ fn install(
     write: bool,
     scope: Option<AgentScope>,
 ) -> anyhow::Result<()> {
-    let report = sh::check_report(config, None, false, &[])?;
+    let mut report = sh::check_report(config, None, false, &[])?;
+    if write {
+        check_shell_acl(&mut report, config);
+    }
     for warning in &report.warnings {
         eprintln!("Warning: {warning}");
     }
@@ -90,19 +94,13 @@ fn install(
         eprintln!("Problem: {problem}");
     }
     if write {
-        if selects_shell_by_path(host) || host == AgentHost::Claude {
-            // Shell-path hosts need the launcher, and the Claude hook refuses
-            // Bash calls without its manifest. Validate before enabling either.
-            anyhow::ensure!(
-                report.problems.is_empty(),
-                "refusing to write {} configuration: {} installation problem(s) would \
-                 block shell calls. Run 'apexe env --enable', then \
-                 'apexe agent --check {}'.",
-                host_name(host),
-                report.problems.len(),
-                host_name(host)
-            );
-        }
+        anyhow::ensure!(
+            report.problems.is_empty(),
+            "refusing to write {} configuration: {} installation problem(s). Run 'apexe agent --check {}'.",
+            host_name(host),
+            report.problems.len(),
+            host_name(host)
+        );
         return write_host(host, scope, &report);
     }
     match host {
@@ -114,15 +112,70 @@ fn install(
     Ok(())
 }
 
-/// Whether the host selects its shell by path, rather than loading shims from
-/// `PATH` or a hook.
-///
-/// Only these hosts hand `apexe-sh` to something that spawns it directly, so
-/// only these hosts are bricked by an entry point that is absent. Codex and
-/// Claude Code cannot replace their shell; their configuration names a shim
-/// directory or a hook command and keeps working through the system shell.
-fn selects_shell_by_path(host: AgentHost) -> bool {
-    matches!(host, AgentHost::Opencode | AgentHost::Pi)
+fn load_acl(
+    selected: Option<&Path>,
+    config: &ApexeConfig,
+) -> anyhow::Result<(PathBuf, apcore::ACL)> {
+    let path = selected.map_or_else(|| config.config_dir.join("acl.yaml"), Path::to_path_buf);
+    let policy = crate::governance::AclManager::from_config(&path).with_context(|| {
+        format!("Cannot load ACL at {}. Restore or repair the selected policy, or run 'apexe init' to prepare a missing default ACL", path.display())
+    })?;
+    Ok((std::path::absolute(path)?, policy.into_inner()))
+}
+
+fn check_shell_acl(report: &mut CheckReport, config: &ApexeConfig) {
+    if report.shims.manifest_present {
+        match load_acl(report.shims.acl.as_deref(), config) {
+            Err(error) => report.problems.push(format!("{error:#}")),
+            Ok((path, _)) if !report.shims.acl_pinned => report.problems.push(format!(
+                "ACL {} is not pinned in this shim installation; run 'apexe env --reload --shim-dir {}' to bind the policy",
+                path.display(), report.shims.directory.display()
+            )),
+            Ok(_) => {}
+        }
+    }
+}
+
+fn mcp_arguments(config: &ApexeConfig) -> anyhow::Result<Vec<String>> {
+    let directory = sh::shim_directory(config);
+    let manifest = directory.join(crate::runtime_path::MANIFEST_NAME);
+    let installation = match std::fs::symlink_metadata(&manifest) {
+        Ok(_) => Some(super::shim::read_manifest(&directory).with_context(|| {
+            format!(
+                "Cannot read selected installation from {}",
+                manifest.display()
+            )
+        })?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    let (acl, policy) = load_acl(
+        installation.as_ref().and_then(|entry| entry.acl.as_deref()),
+        config,
+    )?;
+    crate::module::registry::validate_approval_backend(&acl, &policy, false)?;
+    let mut arguments = vec!["serve".into(), "--acl".into(), config_path_arg(&acl)?];
+    if let Some(installation) = installation {
+        anyhow::ensure!(
+            installation.bindings_pattern == config.bindings_pattern,
+            "The binding pattern in {} differs from the effective apcore configuration. Restore the matching pattern before generating host configuration",
+            manifest.display()
+        );
+        arguments.extend([
+            "--bindings-dir".into(),
+            config_path_arg(&installation.bindings_dir)?,
+        ]);
+    }
+    Ok(arguments)
+}
+
+fn config_path_arg(path: &Path) -> anyhow::Result<String> {
+    path.to_str().map(str::to_owned).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Host configuration requires a valid UTF-8 path: {}",
+            path.display()
+        )
+    })
 }
 
 fn mcp(
@@ -131,15 +184,12 @@ fn mcp(
     write: bool,
     scope: Option<AgentScope>,
 ) -> anyhow::Result<()> {
-    let report = sh::check_report(config, None, false, &[])?;
     let executable = std::env::current_exe()?.canonicalize()?;
-    let mut arguments = vec!["serve".to_string()];
-    if let Some(acl) = &report.shims.acl {
-        arguments.push("--acl".into());
-        arguments.push(acl.display().to_string());
+    let arguments = if host == AgentHost::Pi {
+        Vec::new()
     } else {
-        eprintln!("Warning: no ACL loaded; the MCP server will not enforce access control");
-    }
+        mcp_arguments(config)?
+    };
     let executable = executable
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("apexe executable path must be valid UTF-8"))?;
@@ -148,29 +198,27 @@ fn mcp(
         AgentHost::Opencode => {
             let mut command = vec![json!(executable)];
             command.extend(arguments.iter().map(|argument| json!(argument)));
+            let service = json!({
+                "type": "local",
+                "command": command,
+            });
             let snippet = json!({
-                "mcp": {
-                    "apexe": {
-                        "type": "local",
-                        "command": command,
-                        "enabled": true
-                    }
-                },
-                "tools": {"bash": false}
+                "mcp": {"servers": {"apexe": service}},
+                "permissions": [opencode_shell_deny()]
             });
             if write {
                 let path = host_config_path(host, scope)?;
-                write_json(&path, |object| {
-                    object.insert("mcp".into(), snippet["mcp"].clone());
-                    let tools = object
-                        .entry("tools")
-                        .or_insert_with(|| json!({}))
-                        .as_object_mut();
-                    if let Some(tools) = tools {
-                        tools.insert("bash".into(), json!(false));
+                let settings = prepare_json(&path, |object| {
+                    let mcp = object_entry(object, "mcp")?;
+                    merge_service(mcp, "servers", &service)?;
+                    let rules = array_entry(object, "permissions", "permissions")?;
+                    if !rules.iter().any(|rule| rule == &opencode_shell_deny()) {
+                        rules.push(opencode_shell_deny());
                     }
                     Ok(())
                 })?;
+                verify_opencode_permission_sources(&path, scope, &settings["permissions"])?;
+                publish_json(&path, &settings)?;
                 println!("Wrote {}", path.display());
             } else {
                 println!("{}", serde_json::to_string_pretty(&snippet)?);
@@ -188,39 +236,50 @@ fn mcp(
             if write {
                 let path = host_config_path(host, scope)?;
                 let selected_scope = scope.unwrap_or(AgentScope::Project);
-                if selected_scope == AgentScope::Project {
+                let settings =
+                    prepare_json(&path, |object| ensure_permission_deny(object, "Bash"))?;
+                let completed = if selected_scope == AgentScope::Project {
                     let mcp_path = std::env::current_dir()?.join(".mcp.json");
                     write_json(&mcp_path, |object| {
-                        object.insert("mcpServers".into(), mcp["mcpServers"].clone());
-                        Ok(())
+                        merge_service(object, "mcpServers", &mcp["mcpServers"]["apexe"])
                     })?;
                     println!("Wrote {}", mcp_path.display());
+                    Some(mcp_path)
                 } else {
-                    println!(
-                        "Run `claude mcp add --scope user apexe -- {} {}` to register the user-scope server.",
-                        executable,
-                        arguments.join(" ")
+                    let command = shell_words::join(
+                        std::iter::once(executable).chain(arguments.iter().map(String::as_str)),
                     );
+                    println!("Run `claude mcp add --scope user apexe -- {command}` to register the user-scope server.");
+                    None
+                };
+                let result = publish_json(&path, &settings);
+                match completed {
+                    Some(completed) => result.with_context(|| format!(
+                        "Already wrote {}; failed to write {}. Correct the error and retry the same command",
+                        completed.display(), path.display()
+                    ))?,
+                    None => result?,
                 }
-                write_json(&path, |object| {
-                    ensure_permission_deny(object, "Bash");
-                    Ok(())
-                })?;
                 println!("Wrote {}", path.display());
+                println!(
+                    "Reload Claude Code and verify MCP access and Bash denial in the running host."
+                );
             } else {
                 println!("{}", serde_json::to_string_pretty(&mcp)?);
                 println!("Also add `Bash` to permissions.deny in .claude/settings.json.");
             }
         }
         AgentHost::Codex => {
-            let quoted = shell_words::quote(executable);
+            let quoted = toml_basic_string(executable);
             let args = arguments
                 .iter()
-                .map(|argument| format!("{:?}", argument))
+                .map(|argument| toml_basic_string(argument))
                 .collect::<Vec<_>>()
                 .join(", ");
             println!("[mcp_servers.apexe]\ncommand = {quoted}\nargs = [{args}]");
-            println!("Codex keeps its shell; combine this with a sandbox or accept that MCP-only is not strict.");
+            println!(
+                "# Codex keeps its shell; combine this configuration with a sandbox if needed."
+            );
             anyhow::ensure!(
                 !write,
                 "Codex MCP configuration is printed; merge it into config.toml manually"
@@ -234,24 +293,250 @@ fn mcp(
     Ok(())
 }
 
-fn ensure_permission_deny(object: &mut Map<String, Value>, rule: &str) {
-    let permissions = object
-        .entry("permissions")
+fn toml_basic_string(value: &str) -> String {
+    // JSON string escapes are valid TOML basic-string escapes. TOML also
+    // requires escaping DEL, which serde_json leaves as a literal character.
+    json!(value).to_string().replace('\u{7f}', "\\u007F")
+}
+
+fn object_entry<'a>(
+    object: &'a mut Map<String, Value>,
+    key: &str,
+) -> anyhow::Result<&'a mut Map<String, Value>> {
+    object
+        .entry(key)
         .or_insert_with(|| json!({}))
-        .as_object_mut();
-    let Some(permissions) = permissions else {
-        return;
-    };
-    let deny = permissions
-        .entry("deny")
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("'{key}' must be an object"))
+}
+
+fn array_entry<'a>(
+    object: &'a mut Map<String, Value>,
+    key: &str,
+    label: &str,
+) -> anyhow::Result<&'a mut Vec<Value>> {
+    object
+        .entry(key)
         .or_insert_with(|| json!([]))
-        .as_array_mut();
-    let Some(deny) = deny else {
-        return;
-    };
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("'{label}' must be an array"))
+}
+
+fn merge_service(
+    object: &mut Map<String, Value>,
+    key: &str,
+    service: &Value,
+) -> anyhow::Result<()> {
+    object_entry(object, key)?.insert("apexe".into(), service.clone());
+    Ok(())
+}
+
+fn ensure_permission_deny(object: &mut Map<String, Value>, rule: &str) -> anyhow::Result<()> {
+    let permissions = object_entry(object, "permissions")?;
+    let deny = array_entry(permissions, "deny", "permissions.deny")?;
+    anyhow::ensure!(
+        deny.iter().all(Value::is_string),
+        "'permissions.deny' must contain only strings"
+    );
     if !deny.iter().any(|value| value == rule) {
         deny.push(json!(rule));
     }
+    Ok(())
+}
+
+fn opencode_shell_deny() -> Value {
+    json!({"action": "shell", "resource": "*", "effect": "deny"})
+}
+
+// Let the supported host locate and normalize its config sources. Do not
+// guess the ordering of user, project, or legacy permission rules.
+fn verify_opencode_permission_sources(
+    path: &Path,
+    scope: Option<AgentScope>,
+    rules: &Value,
+) -> anyhow::Result<()> {
+    verify_opencode_permissions(path, scope.unwrap_or(AgentScope::Project), rules).map_err(|error| anyhow::anyhow!(
+        "Cannot verify OpenCode MCP-only permissions for {}: {error:#}. Use 'apexe agent opencode --mcp-only' and configure permissions manually",
+        path.display()
+    ))
+}
+
+fn verify_opencode_permissions(
+    path: &Path,
+    scope: AgentScope,
+    rules: &Value,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        std::env::var_os("OPENCODE_CONFIG_CONTENT").is_none(),
+        "OPENCODE_CONFIG_CONTENT is set; cannot isolate the permission edit"
+    );
+    if scope == AgentScope::Project {
+        anyhow::ensure!(
+            std::env::var_os("OPENCODE_DISABLE_PROJECT_CONFIG").is_none(),
+            "OPENCODE_DISABLE_PROJECT_CONFIG is set; cannot verify the project permission edit"
+        );
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let version = runtime.block_on(opencode_output(&["--version"], None))?;
+    let version = version.trim();
+    anyhow::ensure!(
+        matches!(version, "opencode v2.3.0" | "2.3.0"),
+        "automatic MCP-only edits require OpenCode 2.3.0"
+    );
+    if scope == AgentScope::User {
+        let config_dir = runtime.block_on(opencode_output(&["debug", "paths", "config"], None))?;
+        ensure_opencode_config_dir(path, config_dir.trim())?;
+    }
+    let diagnostics =
+        runtime.block_on(opencode_output(&["--standalone", "debug", "config"], None))?;
+    for source in serde_json::from_str::<Vec<Value>>(&diagnostics)? {
+        let name = source["path"].as_str().unwrap_or("unnamed config source");
+        verify_opencode_source(name, &source["info"])?;
+    }
+    verify_opencode_source("proposed configuration", &json!({"permissions": rules}))?;
+
+    // Test the proposal without publishing it. The source check above rejects
+    // conflicts even if the diagnostic overlay would hide them through order.
+    let candidate = json!({"permissions": rules}).to_string();
+    let diagnostics = runtime.block_on(opencode_output(
+        &["--standalone", "debug", "agents"],
+        Some(&candidate),
+    ))?;
+    verify_opencode_agents(&diagnostics)
+}
+
+fn ensure_opencode_config_dir(path: &Path, config_dir: &str) -> anyhow::Result<()> {
+    let actual = Path::new(config_dir);
+    let matches = path.parent().is_some_and(|expected| {
+        actual == expected
+            || expected
+                .canonicalize()
+                .ok()
+                .is_some_and(|directory| actual.canonicalize().ok() == Some(directory))
+    });
+    anyhow::ensure!(
+        matches,
+        "OpenCode uses a different user configuration directory"
+    );
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct OpenCodePermission {
+    action: String,
+    resource: String,
+    effect: OpenCodeEffect,
+}
+
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum OpenCodeEffect {
+    Allow,
+    Ask,
+    Deny,
+}
+
+fn verify_opencode_source(name: &str, info: &Value) -> anyhow::Result<()> {
+    if let Some(rules) = info.get("permissions") {
+        refuse_opencode_conflicts(name, rules)?;
+    }
+    if let Some(agents) = info.get("agents") {
+        let agents = agents
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("'{name}': unrecognized OpenCode agents"))?;
+        for (agent, info) in agents {
+            if let Some(rules) = info.get("permissions") {
+                refuse_opencode_conflicts(&format!("{name} (agent {agent})"), rules)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn refuse_opencode_conflicts(source: &str, rules: &Value) -> anyhow::Result<()> {
+    let rules: Vec<OpenCodePermission> = serde_json::from_value(rules.clone())
+        .with_context(|| format!("'{source}': unrecognized OpenCode permissions"))?;
+    anyhow::ensure!(
+        rules.iter().all(|rule| rule.effect == OpenCodeEffect::Deny
+            || !(opencode_matches_action(&rule.action, b"shell")
+                || opencode_matches_action(&rule.action, b"bash"))),
+        "'{source}': conflicting OpenCode shell permission"
+    );
+    Ok(())
+}
+
+fn opencode_matches_action(pattern: &str, action: &[u8]) -> bool {
+    // Track the matched prefixes of the fixed ASCII action. OpenCode action
+    // patterns use whole-value '*' and '?' matching.
+    let mut matched = vec![false; action.len() + 1];
+    matched[0] = true;
+    for symbol in pattern.bytes() {
+        if symbol == b'*' {
+            for index in 1..matched.len() {
+                matched[index] |= matched[index - 1];
+            }
+        } else {
+            for index in (1..matched.len()).rev() {
+                matched[index] = matched[index - 1]
+                    && (symbol == b'?'
+                        || symbol == action[index - 1]
+                        || (cfg!(windows) && symbol.eq_ignore_ascii_case(&action[index - 1])));
+            }
+            matched[0] = false;
+        }
+    }
+    matched[action.len()]
+}
+
+fn verify_opencode_agents(diagnostics: &str) -> anyhow::Result<()> {
+    #[derive(Deserialize)]
+    struct Agent {
+        id: String,
+        permissions: Vec<OpenCodePermission>,
+    }
+    let agents: Vec<Agent> = serde_json::from_str(diagnostics)?;
+    anyhow::ensure!(
+        !agents.is_empty(),
+        "OpenCode reported no effective agent rules"
+    );
+    for agent in agents {
+        let blanket_shell_deny = agent
+            .permissions
+            .iter()
+            .rev()
+            .filter(|rule| opencode_matches_action(&rule.action, b"shell"))
+            .find(|rule| rule.effect != OpenCodeEffect::Deny || rule.resource == "*")
+            .is_some_and(|rule| rule.effect == OpenCodeEffect::Deny);
+        anyhow::ensure!(
+            blanket_shell_deny,
+            "cannot confirm Shell denial for OpenCode agent '{}'",
+            agent.id
+        );
+    }
+    Ok(())
+}
+
+async fn opencode_output(args: &[&str], candidate: Option<&str>) -> anyhow::Result<String> {
+    let mut command = tokio::process::Command::new("opencode");
+    command
+        .args(args)
+        .kill_on_drop(true)
+        .env("OPENCODE_DISABLE_AUTOUPDATE", "true")
+        .env("OPENCODE_DISABLE_DEFAULT_PLUGINS", "true")
+        .stdin(std::process::Stdio::null());
+    if let Some(candidate) = candidate {
+        command.env("OPENCODE_CONFIG_CONTENT", candidate);
+    }
+    let output =
+        tokio::time::timeout(std::time::Duration::from_secs(5), command.output()).await??;
+    anyhow::ensure!(
+        output.status.success(),
+        "OpenCode diagnostics exited with {}",
+        output.status
+    );
+    Ok(String::from_utf8(output.stdout)?)
 }
 
 fn write_host(
@@ -338,30 +623,46 @@ fn write_json(
     path: &Path,
     mutate: impl FnOnce(&mut Map<String, Value>) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    let existing_permissions = std::fs::metadata(path)
-        .ok()
-        .map(|metadata| metadata.permissions());
-    let mut root = if path.exists() {
-        let text = std::fs::read_to_string(path)?;
-        serde_json::from_str::<Value>(&text)
-            .map_err(|error| anyhow::anyhow!("{} is not valid JSON: {error}", path.display()))?
-    } else {
-        Value::Object(Map::new())
+    let root = prepare_json(path, mutate)?;
+    publish_json(path, &root)
+}
+
+fn prepare_json(
+    path: &Path,
+    mutate: impl FnOnce(&mut Map<String, Value>) -> anyhow::Result<()>,
+) -> anyhow::Result<Value> {
+    let mut root = match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str::<Value>(&text)
+            .with_context(|| format!("{} is not valid JSON", path.display()))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Value::Object(Map::new()),
+        Err(error) => return Err(error).with_context(|| format!("Cannot read {}", path.display())),
     };
     let object = root
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("{} must contain a JSON object", path.display()))?;
-    mutate(object)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let temporary = path.with_extension("apexe-tmp");
-    std::fs::write(&temporary, serde_json::to_vec_pretty(&root)?)?;
-    if let Some(permissions) = existing_permissions {
-        std::fs::set_permissions(&temporary, permissions)?;
-    }
-    std::fs::rename(&temporary, path)?;
-    Ok(())
+    mutate(object).map_err(|error| anyhow::anyhow!("{}: {error:#}", path.display()))?;
+    Ok(root)
+}
+
+fn publish_json(path: &Path, root: &Value) -> anyhow::Result<()> {
+    let publish = || -> anyhow::Result<()> {
+        let existing_permissions = match std::fs::metadata(path) {
+            Ok(metadata) => Some(metadata.permissions()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let temporary = path.with_extension("apexe-tmp");
+        std::fs::write(&temporary, serde_json::to_vec_pretty(root)?)?;
+        if let Some(permissions) = existing_permissions {
+            std::fs::set_permissions(&temporary, permissions)?;
+        }
+        std::fs::rename(&temporary, path)?;
+        Ok(())
+    };
+    publish().with_context(|| format!("Cannot write {}", path.display()))
 }
 
 fn claude_hook_arguments(command: &str) -> Option<Vec<String>> {
@@ -425,7 +726,8 @@ fn ensure_claude_hook(object: &mut Map<String, Value>, executable: &Path) -> any
 }
 
 fn check(config: &ApexeConfig, host: AgentHost, format: CheckFormat) -> anyhow::Result<()> {
-    let launcher = sh::check_report(config, None, false, &[])?;
+    let mut launcher = sh::check_report(config, None, false, &[])?;
+    check_shell_acl(&mut launcher, config);
     let host_report = inspect_host(host, &launcher);
     let report = DoctorReport {
         host: host_report,

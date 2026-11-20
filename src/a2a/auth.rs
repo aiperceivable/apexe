@@ -2,10 +2,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use apcore::{Identity, ModuleError};
+use apcore::Identity;
 use apcore_a2a::Authenticator;
 use async_trait::async_trait;
 use serde_json::{json, Value};
+
+use crate::auth::ResolvedAuth;
 
 struct CredentialAdapter {
     inner: Arc<dyn apcore_mcp::Authenticator>,
@@ -24,26 +26,24 @@ impl Authenticator for CredentialAdapter {
     }
 }
 
-#[allow(clippy::result_large_err)] // Preserve the shared ModuleError boundary.
-pub(crate) fn resolve(
-    host: &str,
-    options: &crate::auth::AuthOptions,
-) -> Result<Option<Arc<dyn Authenticator>>, ModuleError> {
-    let resolved = crate::auth::resolve_auth("http", host, options)?;
-    if let crate::auth::ResolvedAuth::Token {
+pub(super) fn announce_generated_token(auth: &ResolvedAuth) {
+    if let ResolvedAuth::Token {
         token,
         generated: true,
         ..
-    } = &resolved
+    } = auth
     {
         // Startup credentials must remain visible independently of tracing filters.
         use std::io::Write;
         let _ = writeln!(std::io::stderr().lock(), "A2A bearer token: {token}");
     }
-    Ok(resolved.authenticator().map(|inner| {
+}
+
+pub(super) fn adapt(auth: &ResolvedAuth) -> Option<Arc<dyn Authenticator>> {
+    auth.authenticator().map(|inner| {
         Arc::new(CredentialAdapter {
             inner,
-            jwt: matches!(resolved, crate::auth::ResolvedAuth::Jwt { .. }),
+            jwt: matches!(auth, ResolvedAuth::Jwt { .. }),
         }) as Arc<dyn Authenticator>
-    }))
+    })
 }

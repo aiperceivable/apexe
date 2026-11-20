@@ -57,6 +57,14 @@ pub struct CliModule {
     /// native-surface analyzer. False on every other surface, where an
     /// exec-list input is refused rather than admitted half-checked.
     child_exec_analyzed: bool,
+    children: Option<PreparedChildren>,
+}
+
+/// Launch settings derived from the native analyzer for this parent only.
+#[derive(Debug)]
+pub(crate) struct PreparedChildren {
+    pub(crate) path: std::ffi::OsString,
+    pub(crate) delegation: Option<crate::governance::delegation::DelegationPlan>,
 }
 
 impl CliModule {
@@ -79,6 +87,7 @@ impl CliModule {
             sandbox: None,
             audit_tier: None,
             child_exec_analyzed: false,
+            children: None,
         }
     }
 
@@ -99,6 +108,12 @@ impl CliModule {
     /// Attach the sandbox runtime built from the `sandbox:` configuration.
     pub fn with_sandbox(mut self, sandbox: Option<Arc<crate::governance::SandboxRuntime>>) -> Self {
         self.sandbox = sandbox;
+        self
+    }
+
+    pub(crate) fn with_prepared_children(mut self, children: Option<PreparedChildren>) -> Self {
+        self.child_exec_analyzed = children.is_some();
+        self.children = children;
         self
     }
 
@@ -550,7 +565,7 @@ impl CliModule {
     /// covers module-JSON calls. This runs first and unconditionally, because
     /// [`Self::fixed_argv`] returns before rendering ever happens.
     #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
-    fn check_input_paths(&self, inputs: &Value) -> Result<(), ModuleError> {
+    pub(crate) fn check_input_paths(&self, inputs: &Value) -> Result<(), ModuleError> {
         let (Some(properties), Some(values)) = (
             self.input_schema["properties"].as_object(),
             inputs.as_object(),
@@ -723,6 +738,18 @@ impl Module for CliModule {
 
         let start = std::time::Instant::now();
         let args = self.execution_argv(&inputs)?;
+        // The SDK's approval gate and the live argv/path checks have run.
+        // Keep the activated scope alive only for this execution future.
+        let grant = match self
+            .children
+            .as_ref()
+            .and_then(|children| children.delegation.as_ref())
+        {
+            Some(plan) => {
+                Some(plan.activate(&self.module_id, &ctx.trace_id, self.audit.as_deref())?)
+            }
+            None => None,
+        };
         let mut sandbox_outcome = None;
 
         let output = match super::io::execute(
@@ -734,6 +761,13 @@ impl Module for CliModule {
             self.execution_io,
             self.sandbox.as_deref(),
             &self.module_id,
+            super::io::LocalEnvironment {
+                path: self
+                    .children
+                    .as_ref()
+                    .map(|children| children.path.as_os_str()),
+                delegation: grant.as_ref().map(|grant| grant.id()),
+            },
             &mut sandbox_outcome,
         )
         .await

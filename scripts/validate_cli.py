@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import hashlib
 import hmac
 import json
+import os
 import re
 import shutil
 import time
@@ -780,10 +781,26 @@ def validate_agent_shell(session, fixture):
         ["agent", "opencode", "--mcp-only"],
         env=environment,
     )
+    # The CLI gate tests apexe's command, not the installed host. Use a
+    # deterministic adapter probe; live host conformance is a separate gate.
+    probe_dir = session.root / "opencode-probe"
+    probe_dir.mkdir()
+    probe = probe_dir / "opencode"
+    probe.write_text(
+        "#!/bin/sh\n"
+        "case \"$1\" in --version) printf '%s\\n' 'opencode v2.3.0';;\n"
+        "*) if [ \"$3\" = agents ]; then\n"
+        "     test -n \"${OPENCODE_CONFIG_CONTENT:-}\" || exit 1\n"
+        "     printf '%s\\n' "
+        "'[{\"id\":\"build\",\"permissions\":[{\"action\":\"shell\",\"resource\":\"*\",\"effect\":\"deny\"}]}]'\n"
+        "   else printf '%s\\n' '[]'; fi;; esac\n",
+        encoding="utf-8",
+    )
+    probe.chmod(0o755)
     session.run(
         "agent mcp only write opencode",
         ["agent", "opencode", "--mcp-only", "--write"],
-        env=environment,
+        env={**environment, "PATH": str(probe_dir) + os.pathsep + environment["PATH"]},
     )
     session.run(
         "agent mcp only write claude",

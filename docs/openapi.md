@@ -62,16 +62,19 @@ apcore module-ID rules. Module-ID collisions with CLI bindings fail startup.
 | `APEXE_AUTH_TOKEN` / `--auth-token`, or `--auth jwt` | Incoming MCP HTTP or A2A requests |
 
 MCP stdio inherits its process boundary and does not need transport auth.
-MCP HTTP and A2A default to token authentication. Use launch environment
-variables for persistent credentials. `--show-config` preserves the OpenAPI
-source, origin and namespace but omits tokens and specification headers.
+MCP HTTP and A2A default to token authentication. `--show-config` preserves
+the OpenAPI source, origin and namespace and omits credentials.
 
 ```bash
 apexe serve --openapi ./openapi.yaml --acl ./acl.yaml \
   --show-config claude-desktop
 ```
 
-Supply omitted credentials separately in the client's launch environment.
+Set `APEXE_OPENAPI_TOKEN` for upstream operations and `APEXE_AUTH_TOKEN` or
+`APEXE_JWT_SECRET` as needed for incoming transport authentication. For a
+protected remote specification, provide `--openapi-header` in a locally
+managed launch configuration, or fetch the specification separately and pass
+its local file path to `--openapi`.
 `--no-log-arguments` also keeps operation arguments and returned data out of
 execution payload logs; audit records retain module, trace, caller and outcome.
 
@@ -87,17 +90,21 @@ elicitation and uses an approval store only through its library API.
 Schema and ACL refusals happen before an HTTP request. The local subprocess
 path guard does not govern a remote API's filesystem or data objects.
 
-The current SDK proxy supports:
+The proxy supports scalar path parameters with escaped values, scalar query
+parameters and default exploded scalar arrays on GET, DELETE, HEAD and OPTIONS,
+and JSON object bodies on POST, PUT and PATCH. Responses must be JSON. The
+import resolves same-document Parameter and Request Body Objects. An operation
+parameter overrides an inherited Path Item parameter by its name and location.
+An inherited or referenced field can now appear in the tool schema. Callers
+must supply it if it is required.
 
-- Path parameters with escaped values.
-- Query parameters on GET/DELETE/HEAD/OPTIONS/TRACE.
-- JSON bodies on POST/PUT/PATCH.
-- JSON responses.
-
-A body method declaring query parameters fails startup because the SDK would
-encode them in the body. Missing origins, malformed documents and registration
-collisions also fail startup. Multipart uploads, per-input header/cookie
-parameters and non-JSON responses are outside this initial import surface.
+Startup validates the operations selected by `--tags` and `--prefix` before
+proxy registration. A selected operation fails startup if its query inputs
+would go to a JSON body, input names collide across locations, or its request
+encoding cannot be represented by the proxy. Errors identify the operation and
+the affected inputs where available. Missing origins, malformed documents and
+registration collisions also fail startup. The portable import excludes
+TRACE, multipart uploads and per-input header or cookie parameters.
 OpenAPI import is available to MCP/A2A; `apexe exec` and PATH shims remain CLI
 execution surfaces.
 
@@ -105,8 +112,11 @@ execution surfaces.
 
 [OpenAPI integration tests](../tests/openapi_integration.rs) cover real path/query
 calls, credential separation, schema/ACL refusals before network I/O, filtering,
-CLI coexistence, collisions, invalid origins/encoding, protected YAML spec
-fetching, both server builders, and an actual MCP CLI session.
+CLI coexistence, invalid origins, protected YAML spec fetching and both server
+builders. A real MCP CLI session checks that inherited and referenced fields
+appear in the schema, operation overrides apply, and actual requests carry the
+resolved path and query values. Startup tests exercise collisions, unsupported
+query encoding and selection of unaffected operations.
 [Example smoke tests](../tests/examples_smoke.rs) execute the runnable scripts,
 covering local JSON and protected remote JSON specs, actual MCP/A2A calls, JSON
 body creation and denied DELETE operations. Run the full suite with

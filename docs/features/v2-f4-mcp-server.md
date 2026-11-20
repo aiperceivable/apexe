@@ -19,7 +19,8 @@
 
 Replace the custom MCP JSON-RPC server (6 files, ~1,200 LOC) with apcore-mcp's `APCoreMCP` builder. This gains MCP integration, streamable-http transport, Explorer UI, and middleware support without maintaining a custom implementation. The current protocol version and output capabilities are documented in [the user manual](../user-manual.md). (Transport-level authentication shipped as a first-class CLI flag set — `--auth`, `--auth-token`, `--jwt-secret`, `--allow-unauthenticated-bind` — required by default on the HTTP-family transports; see §4.1.)
 
-apexe uses the published `apcore-mcp 0.23.0` and `apcore 0.32.1` crates. The MCP
+apexe uses the published crates listed in the
+[dependency manifest](../FEATURE_MANIFEST.md#apcore-ecosystem-integration). The MCP
 SDK owns protocol negotiation, `outputSchema`, and post-redaction
 `structuredContent`; the core SDK resolves local schema references during
 sensitive-field redaction. apexe registers its existing output schemas and uses

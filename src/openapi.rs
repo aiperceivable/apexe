@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
 use apcore::{ErrorCode, ModuleError, Registry};
-use apcore_toolkit::{HTTPProxyRegistryWriter, OpenAPIScanner, ScanOptions, ScannedModule};
+use apcore_toolkit::{
+    validate_effective_proxy_modules, HTTPProxyRegistryWriter, OpenAPIScanner, ScanOptions,
+    ScannedModule,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -118,7 +121,7 @@ pub(crate) async fn register_operations(
     let mut scan_options = ScanOptions::new();
     scan_options.base_path_prefix = Some(source.prefix.clone());
     let modules = OpenAPIScanner::new()
-        .scan(&document, &scan_options)
+        .scan_with_effective_parameters(&document, &scan_options)
         .await
         .map_err(|error| import_error(format!("Failed to scan OpenAPI: {error}")))?;
     let modules: Vec<ScannedModule> = modules
@@ -126,7 +129,7 @@ pub(crate) async fn register_operations(
         .filter(|module| opts.filter.admits(module))
         .map(complete_annotations)
         .collect();
-    validate_import(registry, &document, &modules)?;
+    validate_import(registry, &modules)?;
     let writer = build_proxy_writer(source, &document, timeout)?;
     for result in writer.write(&modules, registry) {
         if let Some(error) = result.verification_error {
@@ -187,11 +190,7 @@ fn build_proxy_writer(
 }
 
 #[allow(clippy::result_large_err)] // Match the crate-wide ModuleError boundary.
-fn validate_import(
-    registry: &Registry,
-    document: &serde_json::Value,
-    modules: &[ScannedModule],
-) -> Result<(), ModuleError> {
+fn validate_import(registry: &Registry, modules: &[ScannedModule]) -> Result<(), ModuleError> {
     for module in modules {
         if registry.has(&module.module_id) {
             return Err(import_error(format!(
@@ -200,11 +199,7 @@ fn validate_import(
             )));
         }
     }
-    let hazards = apcore_cli::detect_proxy_hazards(document, modules);
-    if let Some(hazard) = hazards.first() {
-        return Err(import_error(format!("OpenAPI operation '{}' has query parameters on a body method; the HTTP proxy cannot encode this operation correctly", hazard.module_id)));
-    }
-    Ok(())
+    validate_effective_proxy_modules(modules).map_err(|error| import_error(error.to_string()))
 }
 
 #[allow(clippy::result_large_err)] // Match the crate-wide ModuleError boundary.

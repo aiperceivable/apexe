@@ -213,7 +213,9 @@ fn test_exec_native_acl_denial_omits_secret_plan() {
 #[test]
 fn test_exec_native_path_guard_refuses_credentials() {
     let fixture = Fixture::new();
-    fixture.module("cat", "/bin/cat", file_schema(), true);
+    let mut schema = file_schema();
+    schema["properties"]["file"]["x-apexe-tail-parsed"] = json!(true);
+    fixture.module("cat", "/bin/cat", schema, true);
     let path = fixture.home.path().join(".ssh/id_rsa");
     fixture
         .command()
@@ -230,6 +232,10 @@ fn test_exec_native_path_guard_refuses_credentials() {
         .clone();
     let plan: Value = serde_json::from_slice(&plan).unwrap();
     assert_eq!(plan["path_guard"][0]["allowed"], false);
+    assert_eq!(plan["valid"], false);
+    assert!(plan["checks"].as_array().unwrap().iter().any(|check| {
+        check["check"] == "path_guard" && check["passed"] == false && check["error"].is_object()
+    }));
 }
 
 #[test]
@@ -539,6 +545,78 @@ fn test_exec_native_routes_subcommands_without_acl_fallback_to_root() {
 }
 
 #[test]
+fn test_exec_leading_option_discovers_child_in_mixed_layout() {
+    let fixture = Fixture::new();
+    let binary = fixture.script("toy", "printf '%s\\n' \"$@\"");
+    fixture.module(
+        "toy",
+        binary.to_str().unwrap(),
+        json!({
+            "type":"object", "additionalProperties":false,
+            "properties":{"verbose":{"type":"boolean","x-apexe-flag":"--verbose"}}
+        }),
+        false,
+    );
+    let mut child = apexe::output::load_modules_from_dir(&fixture.bindings(), None)
+        .unwrap()
+        .remove(0);
+    child.module_id = "cli.toy.show".into();
+    child.target.push_str(" show");
+    child
+        .metadata
+        .insert("command_path".into(), json!(["toy", "show"]));
+    child.input_schema["properties"]["verbose"]["x-apexe-flag-position"] =
+        json!("before-subcommand");
+    apexe::output::YamlOutput::without_verification()
+        .write(&[child], &fixture.bindings(), false)
+        .unwrap();
+    std::fs::rename(
+        fixture.bindings().join("cli.toy.show.binding.yaml"),
+        fixture.bindings().join("custom.binding.yaml"),
+    )
+    .unwrap();
+    let run = |dry_run| {
+        let mut command = fixture.command();
+        command.arg("exec");
+        if dry_run {
+            command.arg("--dry-run");
+        }
+        command.args(["--", binary.to_str().unwrap(), "--verbose", "show"]);
+        command
+    };
+    let config = fixture.home.path().join(".apexe/apcore.yaml");
+    let full_discovery =
+        "version: \"1.0\"\nproject: {name: fixture}\nbindings: {pattern: \"*.binding.ya?l\"}\n";
+    std::fs::write(&config, full_discovery).unwrap();
+    let expected = run(true).assert().success();
+    let expected: Value = serde_json::from_slice(&expected.get_output().stdout).unwrap();
+    std::fs::remove_file(&config).unwrap();
+    let actual = run(true).assert().success();
+    let actual: Value = serde_json::from_slice(&actual.get_output().stdout).unwrap();
+    assert_eq!(actual["module_id"], "cli.toy.show");
+    assert_eq!(actual["module_id"], expected["module_id"]);
+    assert_eq!(actual["argv"], expected["argv"]);
+    for explicit_glob in [false, true] {
+        if explicit_glob {
+            std::fs::write(&config, full_discovery).unwrap();
+        }
+        run(false).assert().success().stdout("--verbose\nshow\n");
+    }
+    fixture.acl("rules:\n- callers: ['local']\n  targets: ['cli.toy']\n  effect: allow\ndefault_effect: deny\n");
+    for explicit_glob in [true, false] {
+        if !explicit_glob {
+            std::fs::remove_file(&config).unwrap();
+        }
+        let denied = run(false).assert().failure().stdout("");
+        let stderr = String::from_utf8_lossy(&denied.get_output().stderr);
+        assert!(
+            stderr.contains("denied") && stderr.contains("cli.toy.show"),
+            "{stderr}"
+        );
+    }
+}
+
+#[test]
 fn test_exec_opaque_bundle_keeps_root_acl() {
     let fixture = Fixture::new();
     let binary = fixture.script("toy", "touch started");
@@ -782,6 +860,25 @@ fn test_exec_module_preserves_exact_failure_status() {
         .assert()
         .code(7)
         .stdout(predicates::str::contains("\"exit_code\":7"));
+}
+
+#[test]
+fn test_exec_module_preserves_captured_signal_sentinel() {
+    let fixture = Fixture::new();
+    let binary = fixture.script("toy", "kill -TERM $$");
+    fixture.module(
+        "toy",
+        binary.to_str().unwrap(),
+        json!({"type":"object","properties":{},"additionalProperties":false}),
+        false,
+    );
+    let result = fixture
+        .command()
+        .args(["exec", "cli.toy"])
+        .assert()
+        .code(255);
+    let output: Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    assert_eq!(output["exit_code"], -1);
 }
 
 /// Native argv inherits the caller's stdin.

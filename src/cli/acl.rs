@@ -235,11 +235,12 @@ impl AclExplainArgs {
 
 /// Write the starter policy when none exists, then refresh the denials.
 ///
-/// The behaviour `scan --write-acl` keeps for compatibility: it may create a
-/// policy (an explicit request) and may tighten one, and it never grants.
+/// Initialization chooses the profile for a new file. Existing policies keep
+/// their default effect and operator rules when generated rules are refreshed.
 pub(super) fn write_starter_or_sync(
     acl_path: &Path,
     modules: &[ScannedModule],
+    profile: PolicyProfile,
 ) -> anyhow::Result<()> {
     let policy = if acl_path.exists() {
         // `merge_default`, not `sync_deny_floor`: this path is the operator
@@ -258,7 +259,7 @@ pub(super) fn write_starter_or_sync(
         }
         synced
     } else {
-        AclManager::generate_starter(modules, PolicyProfile::Developer)
+        AclManager::generate_starter(modules, profile)
     };
     write_policy(&policy, acl_path)
 }

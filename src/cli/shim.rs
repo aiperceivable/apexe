@@ -311,7 +311,7 @@ pub(super) fn try_execute(raw: &[OsString]) -> Option<anyhow::Result<i32>> {
                     .ok_or_else(|| anyhow::anyhow!("Native arguments must be valid UTF-8"))
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
-        execute(&name, &args, &manifest, &config)
+        execute(&name, &args, &manifest, &config, &directory)
     }))
 }
 
@@ -581,10 +581,11 @@ fn execute(
     args: &[String],
     manifest: &Manifest,
     config: &ApexeConfig,
+    directory: &Path,
 ) -> anyhow::Result<i32> {
     let started = std::time::Instant::now();
     let context = super::local::context(super::local::LOCAL_CALLER, false);
-    let inherited_delegation = crate::governance::delegation::active_from_env(config);
+    let inherited_delegation = crate::governance::delegation::active_from_env(config)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -605,10 +606,25 @@ fn execute(
         }
     };
     let module_id = selected.module_id.clone();
+    let audit = crate::governance::AuditManager::new(&config.audit_log);
+    let incoming_approval = inherited_delegation
+        .as_ref()
+        .map(|grant| {
+            check_delegated_scope(grant, selected, &input.input, &context, directory, &audit)
+        })
+        .transpose()?;
+    let acl = match &inherited_delegation {
+        Some(grant) => grant.acl.clone(),
+        None => super::local::acl_path(manifest.acl.as_deref(), config)?,
+    };
     let stdin = passthrough_stdin_mode();
-    let mut analyzed = false;
-    let mut delegation_handle = None;
+    let mut children = None;
+    let mut enriched_parent = None;
     if !input.exec_lists.is_empty() {
+        anyhow::ensure!(
+            inherited_delegation.is_none(),
+            "A delegated child cannot start another embedded command list"
+        );
         let Some(replay) = replay.as_mut() else {
             return Err(anyhow::anyhow!(
                 "This route embeds a command list but does not replay its argv; the list cannot \
@@ -627,10 +643,12 @@ fn execute(
             replay.argv_mut(),
             &analysis_modules,
             manifest,
+            directory,
+            acl.as_deref(),
             &context,
         ));
-        delegation_handle = match analysis {
-            Ok(handle) => handle,
+        let analysis = match analysis {
+            Ok(analysis) => analysis,
             Err(error) => {
                 runtime.block_on(audit_resolution_refusal(
                     name,
@@ -644,45 +662,14 @@ fn execute(
                 return Err(error);
             }
         };
-        analyzed = true;
-    }
-    let audit = crate::governance::AuditManager::new(&config.audit_log);
-    let delegated = match inherited_delegation.as_ref() {
-        Some(grant) if grant.child_modules.contains(&selected.module_id) => {
-            if !super::child_exec::inputs_within(grant, &input.input, &selected.input_schema) {
-                audit.log_governance_event(
-                    "child_exec",
-                    serde_json::json!({
-                        "parent_module": grant.parent_module,
-                        "parent_trace": grant.parent_trace,
-                        "child_module": selected.module_id,
-                        "grant": grant.id,
-                        "decision": "delegated_refuse",
-                    }),
-                );
-                return Err(anyhow::anyhow!(
-                    "Delegated child '{}' names a path outside the parent's starting paths",
-                    selected.module_id
-                ));
-            }
-            true
-        }
-        _ => false,
-    };
-    if delegated {
-        if let Some(grant) = inherited_delegation.as_ref() {
-            audit.log_governance_event(
-                "child_exec",
-                serde_json::json!({
-                    "parent_module": grant.parent_module,
-                    "parent_trace": grant.parent_trace,
-                    "child_module": selected.module_id,
-                    "grant": grant.id,
-                    "decision": "delegated_allow",
-                }),
-            );
+        children = Some(analysis.prepared);
+        if !analysis.approval_scope.is_empty() {
+            let mut parent = selected.clone();
+            super::child_exec::require_child_approval(&mut parent, &analysis.approval_scope);
+            enriched_parent = Some(parent);
         }
     }
+    let selected = enriched_parent.as_ref().unwrap_or(selected);
     let executor = match replay {
         Some(replay) => build_executor_for_replay(
             manifest,
@@ -691,9 +678,10 @@ fn execute(
             replay.argv,
             stdin,
             replay.tier,
-            analyzed,
-            delegated,
-        )?,
+            children,
+            incoming_approval,
+            acl.as_deref(),
+        ),
         None => build_executor(
             manifest,
             config,
@@ -701,15 +689,77 @@ fn execute(
             &module_id,
             input.opaque_tail,
             stdin,
-            delegated,
-        )?,
+            incoming_approval,
+            acl.as_deref(),
+        ),
     };
-    let output = runtime.block_on(executor.call(&module_id, input.input, Some(&context), None))?;
-    drop(delegation_handle);
+    let output = executor.and_then(|executor| {
+        runtime
+            .block_on(executor.call(&module_id, input.input, Some(&context), None))
+            .map_err(Into::into)
+    });
+    if let Some(grant) = &inherited_delegation {
+        let decision = if output.is_ok() {
+            "delegated_allow"
+        } else {
+            "delegated_refuse"
+        };
+        audit_delegation(&audit, grant, &module_id, decision);
+    }
+    let output = output?;
     output["exit_code"]
         .as_i64()
         .and_then(|code| i32::try_from(code).ok())
         .ok_or_else(|| anyhow::anyhow!("Passthrough returned no exit status"))
+}
+
+fn check_delegated_scope(
+    grant: &crate::governance::delegation::Delegation,
+    module: &ScannedModule,
+    input: &serde_json::Value,
+    context: &apcore::Context<serde_json::Value>,
+    directory: &Path,
+    audit: &crate::governance::AuditManager,
+) -> anyhow::Result<crate::module::registry::LocalDelegation> {
+    let mut matching = grant
+        .children
+        .iter()
+        .filter(|scope| scope.matches(grant, module, input));
+    let first = matching.next();
+    if grant.shim_dir != directory.canonicalize()?
+        || grant.caller != context.caller_id
+        || !crate::models::route_is_reviewed(&module.metadata)
+        || first.is_none()
+        || !super::child_exec::inputs_within(grant, input, &module.input_schema)
+    {
+        audit_delegation(audit, grant, &module.module_id, "delegated_refuse");
+        anyhow::bail!(
+            "Delegated child '{}' names a path outside the parent's starting paths or does not match the analyzed invocation",
+            module.module_id
+        );
+    }
+    Ok(crate::module::registry::LocalDelegation::Child {
+        policy_digest: grant.policy_digest.clone(),
+        approved: first
+            .into_iter()
+            .chain(matching)
+            .any(|scope| scope.approved(grant)),
+    })
+}
+
+fn audit_delegation(
+    audit: &crate::governance::AuditManager,
+    grant: &crate::governance::delegation::Delegation,
+    module_id: &str,
+    decision: &str,
+) {
+    audit.log_governance_event(
+        "child_exec",
+        serde_json::json!({
+            "parent_module": grant.parent_module, "parent_trace": grant.parent_trace,
+            "child_module": module_id, "grant": grant.id, "decision": decision,
+        }),
+    );
 }
 
 /// Stdin mode for a local passthrough call.
@@ -769,21 +819,17 @@ fn build_executor_for_replay(
     argv: Vec<String>,
     stdin: StdinMode,
     tier: RouteTier,
-    child_exec_analyzed: bool,
-    delegated: bool,
+    children: Option<crate::module::cli_module::PreparedChildren>,
+    incoming_approval: Option<crate::module::registry::LocalDelegation>,
+    acl: Option<&Path>,
 ) -> anyhow::Result<std::sync::Arc<apcore::Executor>> {
-    let acl = super::local::acl_path(manifest.acl.as_deref(), config)?;
-    let mut options = super::local::options(
+    let options = super::local::options(
         config,
         &manifest.bindings_dir,
         manifest.bindings_pattern.as_deref(),
-        acl.as_deref(),
+        acl,
         manifest.filter.clone(),
     );
-    if delegated {
-        options.enable_approval = false;
-        options.local_approval = false;
-    }
     let replay_tier = match tier {
         RouteTier::Verified => crate::module::registry::ReplayTier::Reviewed,
         RouteTier::Scanned | RouteTier::Legacy => crate::module::registry::ReplayTier::Scanned,
@@ -794,10 +840,12 @@ fn build_executor_for_replay(
         argv,
         ExecutionIo::Passthrough { stdin },
         replay_tier,
-        child_exec_analyzed,
+        children,
+        incoming_approval,
     )?)
 }
 
+#[allow(clippy::too_many_arguments)] // Accepts the resolved policy and invocation separately.
 fn build_executor(
     manifest: &Manifest,
     config: &ApexeConfig,
@@ -805,21 +853,29 @@ fn build_executor(
     module_id: &str,
     tail: Option<crate::adapter::argv::OpaqueTail>,
     stdin: StdinMode,
-    delegated: bool,
+    incoming_approval: Option<crate::module::registry::LocalDelegation>,
+    acl: Option<&Path>,
 ) -> anyhow::Result<std::sync::Arc<apcore::Executor>> {
-    let acl = super::local::acl_path(manifest.acl.as_deref(), config)?;
-    let mut options = super::local::options(
+    let options = super::local::options(
         config,
         &manifest.bindings_dir,
         manifest.bindings_pattern.as_deref(),
-        acl.as_deref(),
+        acl,
         manifest.filter.clone(),
     );
-    if delegated {
-        options.enable_approval = false;
-        options.local_approval = false;
-    }
     let io = ExecutionIo::Passthrough { stdin };
+    if let Some(approval) = incoming_approval {
+        let selected = modules
+            .iter()
+            .find(|module| module.module_id == module_id)
+            .ok_or_else(|| anyhow::anyhow!("Module not found: {module_id}"))?;
+        let module = crate::module::CliModule::from_scanned(selected, options.timeout_ms)?
+            .with_execution_io(io)
+            .with_opaque_tail(tail);
+        return Ok(crate::module::registry::build_executor_for_delegated_child(
+            &options, selected, module, approval,
+        )?);
+    }
     if let Some(tail) = tail {
         let selected = modules
             .iter()

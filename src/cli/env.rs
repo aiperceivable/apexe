@@ -236,7 +236,7 @@ impl EnvArgs {
                 executable: std::env::current_exe()?.canonicalize()?,
                 bindings_dir: bindings,
                 bindings_pattern: config.bindings_pattern.clone(),
-                acl: self.acl.as_deref().map(std::path::absolute).transpose()?,
+                acl: acl.as_deref().map(std::path::absolute).transpose()?,
                 filter,
                 commands,
                 scanned: self.scanned.unwrap_or_default(),

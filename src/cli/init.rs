@@ -84,6 +84,14 @@ fn parse_source(value: &str) -> Result<String, String> {
 
 impl InitArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
+        self.execute_with_policy_profile(config, crate::governance::PolicyProfile::Developer)
+    }
+
+    pub(super) fn execute_with_policy_profile(
+        self,
+        config: &ApexeConfig,
+        profile: crate::governance::PolicyProfile,
+    ) -> anyhow::Result<()> {
         self.validate(config)?;
         write_progress(self.format, format_args!("[1/3] Preparing CLI rules..."))?;
         let source = match crate::corpus::bootstrap::prepare(
@@ -145,7 +153,14 @@ impl InitArgs {
                     .into(),
             );
         }
-        let report = self.initialize(config, &orchestrator, candidates, degraded, warnings)?;
+        let report = self.initialize(
+            config,
+            &orchestrator,
+            candidates,
+            degraded,
+            warnings,
+            profile,
+        )?;
         write_report(&report, self.format)?;
         anyhow::ensure!(
             !report
@@ -182,6 +197,7 @@ impl InitArgs {
         candidates: Vec<String>,
         degraded: bool,
         warnings: Vec<String>,
+        profile: crate::governance::PolicyProfile,
     ) -> anyhow::Result<InitReport> {
         let mut report = create_report(config, degraded, warnings)?;
         let scan = scan_options(config, candidates);
@@ -220,7 +236,7 @@ impl InitArgs {
             self.format,
             format_args!("[3/3] Saving bindings and ACL..."),
         )?;
-        save_bindings(&scan, config, &admitted, &existing, &report.acl)?;
+        save_bindings(&scan, config, &admitted, &existing, &report.acl, profile)?;
         Ok(report)
     }
 }
@@ -231,6 +247,7 @@ fn save_bindings(
     admitted: &[ScannedModule],
     existing: &[ScannedModule],
     acl: &std::path::Path,
+    profile: crate::governance::PolicyProfile,
 ) -> anyhow::Result<()> {
     if !admitted.is_empty() {
         scan.write_bindings(admitted, &config.bindings_dir)?;
@@ -244,7 +261,7 @@ fn save_bindings(
         admitted
     };
     if !modules.is_empty() {
-        super::acl::write_starter_or_sync(acl, modules)?;
+        super::acl::write_starter_or_sync(acl, modules, profile)?;
     }
     Ok(())
 }

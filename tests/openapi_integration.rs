@@ -217,7 +217,10 @@ async fn test_openapi_import_fails_on_missing_origin_and_unsupported_query_encod
         .await
         .err()
         .unwrap();
-    assert!(error.message.contains("cannot encode"));
+    assert!(error.message.contains("api.get_pet"));
+    assert!(error
+        .message
+        .contains("query parameters cannot be forwarded"));
 }
 
 #[tokio::test]
@@ -308,11 +311,24 @@ async fn read_rpc(
 }
 
 #[tokio::test]
-async fn test_cli_mcp_serves_and_calls_imported_openapi() {
+async fn test_cli_mcp_discovers_and_forwards_effective_openapi_parameters() {
     use tokio::io::AsyncBufReadExt;
     let server = start_api().await;
     let dir = TempDir::new().unwrap();
-    let source = source(&dir, &document(), &server.base_url);
+    let mut spec = document();
+    let path = &mut spec["paths"]["/pets/{id}"];
+    path["parameters"] = json!([
+        {"$ref":"#/components/parameters/PetId"},
+        {"name":"q","in":"query","schema":{"type":"integer"}}
+    ]);
+    path["get"]["parameters"] = json!([
+        {"$ref":"#/components/parameters/PetQuery"}
+    ]);
+    spec["components"]["parameters"] = json!({
+        "PetId":{"name":"id","in":"path","required":true,"schema":{"type":"string"}},
+        "PetQuery":{"name":"q","in":"query","required":true,"schema":{"type":"string"}}
+    });
+    let source = source(&dir, &spec, &server.base_url);
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_apexe"))
         .env("HOME", dir.path())
         .env("NO_PROXY", LOOPBACK_NO_PROXY)
@@ -348,21 +364,80 @@ async fn test_cli_mcp_serves_and_calls_imported_openapi() {
     )
     .await;
     let tools = read_rpc(&mut lines).await;
-    let name = tools["result"]["tools"]
+    let tool = tools["result"]["tools"]
         .as_array()
         .unwrap()
         .iter()
-        .find_map(|tool| {
+        .find(|tool| {
             tool["name"]
                 .as_str()
-                .filter(|name| name.contains("get_pet"))
-                .map(str::to_owned)
+                .is_some_and(|name| name.contains("get_pet"))
         })
         .unwrap();
-    send_rpc(&mut stdin, json!({"jsonrpc":"2.0", "id":3,"method":"tools/call","params":{"name":name,"arguments":{"id":"1","q":"from-mcp"}}})).await;
+    let schema = &tool["inputSchema"];
+    assert_eq!(schema["properties"]["id"]["type"], "string");
+    assert_eq!(schema["properties"]["q"]["type"], "string");
+    let required = schema["required"].as_array().unwrap();
+    assert!(required.contains(&json!("id")));
+    assert!(required.contains(&json!("q")));
+    send_rpc(&mut stdin, json!({"jsonrpc":"2.0", "id":3,"method":"tools/call","params":{"name":tool["name"],"arguments":{"id":"a/b","q":"from-mcp"}}})).await;
     let result = read_rpc(&mut lines).await;
     assert_ne!(result["result"]["isError"], true, "{result}");
     assert_eq!(server.calls.load(Ordering::SeqCst), 1);
+    assert!(result.to_string().contains("a/b"));
     assert!(result.to_string().contains("from-mcp"));
     child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_openapi_effective_hazards_reject_only_selected_operations() {
+    let dir = TempDir::new().unwrap();
+    let mut spec = document();
+    spec["paths"]["/ambiguous/{id}"] = json!({
+        "parameters":[{
+            "name":"id","in":"path","required":true,"schema":{"type":"string"}
+        }],
+        "get":{
+            "operationId":"ambiguousQuery","tags":["unsupported"],
+            "parameters":[{"name":"id","in":"query","schema":{"type":"string"}}]
+        },
+        "post":{
+            "operationId":"ambiguousBody","tags":["unsupported"],
+            "requestBody":{"content":{"application/json":{"schema":{
+                "type":"object","properties":{"id":{"type":"string"}}
+            }}}}
+        }
+    });
+    spec["paths"]["/query-on-post"] = json!({
+        "parameters":[{"$ref":"#/components/parameters/Mode"}],
+        "post":{"operationId":"createWithQuery","tags":["unsupported"]}
+    });
+    spec["components"]["parameters"]["Mode"] =
+        json!({"name":"mode","in":"query","schema":{"type":"string"}});
+    let source = source(&dir, &spec, "http://127.0.0.1:1");
+    let mut opts = options(&dir);
+    let error = build_executor_with_openapi(&opts, &source)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.code, ErrorCode::GeneralInvalidInput);
+    for expected in [
+        "api.ambiguous_query",
+        "api.ambiguous_body",
+        "api.create_with_query",
+        "mode",
+    ] {
+        assert!(error.message.contains(expected), "{}", error.message);
+    }
+    assert!(error.message.contains("path, query"), "{}", error.message);
+    assert!(
+        error.message.contains("path, JSON body"),
+        "{}",
+        error.message
+    );
+
+    opts.filter.tags = Some(vec!["pets".into()]);
+    let executor = build_executor_with_openapi(&opts, &source).await.unwrap();
+    assert_eq!(executor.registry().count(), 1);
+    assert!(executor.registry().has("api.get_pet"));
 }

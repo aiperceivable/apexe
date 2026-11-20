@@ -139,34 +139,6 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "apcore"
-version = "0.32.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53e2d064d713fbcdded65292833766c1bc32bf36ea06e8c503d85932e014ea04"
-dependencies = [
- "async-stream",
- "async-trait",
- "chrono",
- "dashmap",
- "futures-core",
- "futures-util",
- "jsonschema 0.28.3",
- "notify",
- "parking_lot",
- "referencing 0.28.3",
- "regex",
- "schemars",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "apcore"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23f7c4d184641deb06d4140cfc058c8f73f6ea57b6e0948b37a9335cb0dc83af"
@@ -199,7 +171,7 @@ version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c46b98df27ca96248deeb4d421dd269e262f8a25fe2b2a92e667f0996c5246e"
 dependencies = [
- "apcore 0.33.0",
+ "apcore",
  "apcore-toolkit",
  "async-stream",
  "async-trait",
@@ -226,13 +198,13 @@ dependencies = [
 
 [[package]]
 name = "apcore-cli"
-version = "0.14.0"
+version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8fb5769cddd58e0b3cc2aff81d6e83fa3599c061e13fd3429dce0845581f90b"
+checksum = "f830f0c7bf2cc7c4af081d90ac547fb7741fcbe47f657fc320de66e0e2e04819"
 dependencies = [
  "aes-gcm",
  "anyhow",
- "apcore 0.32.3",
+ "apcore",
  "apcore-toolkit",
  "async-trait",
  "base64",
@@ -262,11 +234,11 @@ dependencies = [
 
 [[package]]
 name = "apcore-mcp"
-version = "0.23.3"
+version = "0.23.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78075fd48a878e36d4319ac56374f6f9a2b0db3a8e3b872a1a6553822f570eb4"
+checksum = "714200907b3d1e802e3b7b3472758cc6cd0fc21d6ad7177dcf95c7c6173e06fb"
 dependencies = [
- "apcore 0.33.0",
+ "apcore",
  "apcore-toolkit",
  "async-trait",
  "axum",
@@ -296,15 +268,16 @@ dependencies = [
 
 [[package]]
 name = "apcore-toolkit"
-version = "0.14.2"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89f674a345fefe7aae5a3241ba8075b0418658b50a83903f5b6bc1c591b382e0"
+checksum = "a76301238650b9b7dc78b084b672f20f812d5f69b95a91a5510f9d9d5ee851e0"
 dependencies = [
- "apcore 0.33.0",
+ "apcore",
  "async-trait",
  "chrono",
  "futures-timer",
  "indexmap",
+ "percent-encoding",
  "regex",
  "reqwest",
  "serde",
@@ -323,7 +296,7 @@ name = "apexe"
 version = "0.15.1"
 dependencies = [
  "anyhow",
- "apcore 0.33.0",
+ "apcore",
  "apcore-a2a",
  "apcore-cli",
  "apcore-mcp",

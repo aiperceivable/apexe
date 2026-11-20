@@ -270,6 +270,115 @@ fn test_serve_help_shows_expected_flags() {
         .stdout(predicate::str::contains("--explorer"));
 }
 
+#[cfg(unix)]
+fn write_a2a_echo_binding(home: &std::path::Path) {
+    let binding = home.join(".apexe/bindings");
+    std::fs::create_dir_all(&binding).unwrap();
+    std::fs::write(
+        binding.join("cli.echo.binding.yaml"),
+        r#"
+spec_version: '1.0'
+bindings:
+- module_id: cli.echo
+  target: exec:///bin/echo
+  description: Echo fixture
+  input_schema: {type: object}
+  output_schema: {type: object}
+"#,
+    )
+    .unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn test_a2a_default_startup_discloses_incomplete_wire_support() {
+    let home = tempfile::tempdir().unwrap();
+    write_a2a_echo_binding(home.path());
+    let address = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let mut server = std::process::Command::new(env!("CARGO_BIN_EXE_apexe"))
+        .env_clear()
+        .env("HOME", home.path())
+        .env("PATH", "/usr/bin:/bin")
+        .current_dir(home.path())
+        .args(["a2a", "--url", &format!("http://{address}")])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_millis(250))
+        .build()
+        .unwrap();
+    let card_url = format!("http://{address}/.well-known/agent-card.json");
+    let ready = (0..100).any(|_| {
+        if client.get(&card_url).send().is_ok() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        false
+    });
+    let _ = server.kill();
+    let output = server.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(ready, "{stderr}");
+    assert_eq!(stderr.matches("A2A bearer token:").count(), 1);
+    assert_eq!(
+        stderr.matches("incomplete A2A 1.0 wire support").count(),
+        1,
+        "{stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_a2a_failed_bind_does_not_announce_a_token_or_warning() {
+    let home = tempfile::tempdir().unwrap();
+    write_a2a_echo_binding(home.path());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let failed = fixture_command(home.path())
+        .args([
+            "--error-format",
+            "json",
+            "a2a",
+            "--url",
+            &format!("http://{address}"),
+        ])
+        .env_remove("APEXE_AUTH_TOKEN")
+        .assert()
+        .failure();
+    let stderr = &failed.get_output().stderr;
+    let error: serde_json::Value = serde_json::from_slice(stderr).unwrap();
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("A2A bind failed:"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_a2a_failed_startup_writes_only_the_json_error() {
+    let home = tempfile::tempdir().unwrap();
+    let missing = home.path().join("missing-bindings");
+    let failed = fixture_command(home.path())
+        .args(["--error-format", "json", "a2a", "--bindings-dir"])
+        .arg(missing)
+        .assert()
+        .failure();
+    let stderr = &failed.get_output().stderr;
+    let error: serde_json::Value = serde_json::from_slice(stderr)
+        .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(stderr)));
+    assert_eq!(error["error"]["code"], "GENERAL_INTERNAL_ERROR");
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("no modules found in registry"));
+}
+
 #[test]
 fn test_a2a_help_shows_expected_flags() {
     // Regression for the WARNING finding: `apexe a2a` had no CLI integration
@@ -1171,6 +1280,55 @@ fn test_setup_prepares_rules_and_shims_from_a_reviewed_corpus() {
         config.join("bin/fixture").exists(),
         "setup must install a shim for the reviewed route"
     );
+    let policy: serde_yaml::Value =
+        serde_yaml::from_slice(&std::fs::read(config.join("acl.yaml")).unwrap()).unwrap();
+    assert_eq!(policy["default_effect"], "deny");
+    assert!(policy["rules"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .all(|rule| !rule["targets"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|target| target == "cli.*")));
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(config.join("bin/.apexe-shims.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["acl"], config.join("acl.yaml").to_str().unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_setup_refresh_preserves_the_selected_shim_policy() {
+    let home = tempfile::tempdir().unwrap();
+    write_fixture_corpus(
+        home.path(),
+        r#"{"readonly":true,"requires_approval":false}"#,
+    );
+    fixture_command(home.path())
+        .args(["init"])
+        .assert()
+        .success();
+    let custom = home.path().join("custom-acl.yaml");
+    let rules = "default_effect: deny\nrules: []\n";
+    std::fs::write(&custom, rules).unwrap();
+    fixture_command(home.path())
+        .args(["env", "--enable", "--no-rc", "--acl"])
+        .arg(&custom)
+        .assert()
+        .success();
+    fixture_command(home.path())
+        .args(["setup", "--no-hosts"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(custom.to_str().unwrap()));
+    assert_eq!(std::fs::read_to_string(&custom).unwrap(), rules);
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(home.path().join(".apexe/bin/.apexe-shims.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["acl"], custom.to_str().unwrap());
 }
 
 /// A flag-scoped approval ceiling stands down for a call that sends no

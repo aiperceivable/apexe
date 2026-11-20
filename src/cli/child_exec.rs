@@ -12,6 +12,7 @@
 //! confinement backend), never admitted on the parent approval alone.
 
 use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
 use apcore::Context;
 use apcore_toolkit::ScannedModule;
@@ -20,7 +21,7 @@ use serde_json::{json, Value};
 use crate::adapter::argv::{ExecList, ResolvedArgv};
 use crate::cli::shim::Manifest;
 use crate::config::{ApexeConfig, ChildExecMode};
-use crate::governance::delegation::DelegationHandle;
+use crate::governance::delegation::{ChildScope, DelegationPlan};
 use crate::module::registry;
 use crate::module::{CliModule, ExecutionIo};
 
@@ -35,6 +36,28 @@ pub(super) fn refusal() -> anyhow::Error {
          to run each match through the child shim) to have the child command resolved and \
          checked against its own module, or use a confinement backend"
     )
+}
+
+pub(super) struct AnalyzedChildren {
+    pub(super) prepared: crate::module::cli_module::PreparedChildren,
+    pub(super) approval_scope: Vec<String>,
+}
+
+/// Apply a call-scoped child approval requirement to this parent's executor.
+/// An unrelated flag ceiling on the parent cannot stand down this requirement.
+pub(super) fn require_child_approval(parent: &mut ScannedModule, scope: &[String]) {
+    if scope.is_empty() {
+        return;
+    }
+    let annotations = parent.annotations.get_or_insert_with(Default::default);
+    annotations.requires_approval = true;
+    annotations
+        .extra
+        .remove(crate::adapter::annotations::APPROVAL_BASIS_KEY);
+    parent.description.push_str(&format!(
+        "\nApproval also covers embedded modules: {}.",
+        scope.join(", ")
+    ));
 }
 
 /// Analyze every embedded command list and, where the child module supports it,
@@ -53,24 +76,58 @@ pub(super) async fn analyze(
     replay: &mut Vec<String>,
     modules: &[ScannedModule],
     manifest: &Manifest,
+    shim_dir: &Path,
+    acl: Option<&Path>,
     context: &Context<Value>,
-) -> anyhow::Result<Option<DelegationHandle>> {
-    let analysis = Analysis::new(config, parent, parent_input, modules, manifest, context)?;
+) -> anyhow::Result<AnalyzedChildren> {
+    let analysis = Analysis::new(
+        config,
+        parent,
+        parent_input,
+        modules,
+        manifest,
+        shim_dir,
+        acl,
+        context,
+    )?;
     let mut insertions = Vec::new();
-    let mut child_modules = Vec::new();
+    let mut children = Vec::new();
+    let mut policy_digest = None;
+    let mut approval_scope = Vec::new();
     for list in exec_lists {
-        if let Err(error) = analysis
-            .analyze_list(list, &mut insertions, &mut child_modules)
-            .await
-        {
-            analysis.refuse(list, "analysis_refused");
-            return Err(error);
+        match analysis.analyze_list(list, &mut insertions).await {
+            Ok(Some((child, requires_approval, digest))) => {
+                if !children.is_empty() {
+                    anyhow::ensure!(
+                        policy_digest == digest,
+                        "ACL changed during embedded command analysis; retry"
+                    );
+                }
+                policy_digest = digest;
+                if requires_approval {
+                    approval_scope.push(child.module_id.clone());
+                }
+                children.push(child);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                analysis.refuse(list, "analysis_refused");
+                return Err(error);
+            }
         }
     }
     for index in insertions.into_iter().rev() {
         replay.insert(index, "--".to_string());
     }
-    analysis.finish(child_modules)
+    approval_scope.sort();
+    approval_scope.dedup();
+    Ok(AnalyzedChildren {
+        prepared: crate::module::cli_module::PreparedChildren {
+            path: pinned_path(analysis.shim_dir.as_deref(), &analysis.clean_path)?,
+            delegation: analysis.finish(children, policy_digest)?,
+        },
+        approval_scope,
+    })
 }
 
 /// One resolved child command: its module, parsed argv and raw child operands.
@@ -88,21 +145,25 @@ struct Analysis<'a> {
     parent: &'a ScannedModule,
     modules: &'a [ScannedModule],
     manifest: &'a Manifest,
+    shim_dir: Option<PathBuf>,
+    acl: Option<&'a Path>,
     context: &'a Context<Value>,
     parent_roots: Vec<String>,
     /// `PATH` without shim directories, used to resolve the real binary.
     clean_path: OsString,
-    delegate: bool,
     audit: crate::governance::AuditManager,
 }
 
 impl<'a> Analysis<'a> {
+    #[allow(clippy::too_many_arguments)] // Resolved policy is supplied by the parent surface.
     fn new(
         config: &'a ApexeConfig,
         parent: &'a ScannedModule,
         parent_input: &'a Value,
         modules: &'a [ScannedModule],
         manifest: &'a Manifest,
+        shim_dir: &Path,
+        acl: Option<&'a Path>,
         context: &'a Context<Value>,
     ) -> anyhow::Result<Self> {
         let audit = crate::governance::AuditManager::new(&config.audit_log);
@@ -126,20 +187,22 @@ impl<'a> Analysis<'a> {
         // analyze mode the shim directories are stripped, so the name resolves
         // to the real binary that was checked. In delegate mode the shim
         // directory is first, so each match re-enters the installed child shim
-        // and its approval is delegated by the grant created in `finish`.
+        // and the per-match scope is activated only when the parent executes.
         let clean_path =
             crate::runtime_path::clean_path(&std::env::var_os("PATH").unwrap_or_default());
-        let execution_path = pinned_path(delegate, &clean_path);
-        std::env::set_var("PATH", execution_path);
+        let shim_dir = delegate
+            .then(|| std::path::absolute(shim_dir))
+            .transpose()?;
         Ok(Self {
             config,
             parent,
             modules,
             manifest,
+            shim_dir,
+            acl,
             context,
             parent_roots: path_values(parent_input, &parent.input_schema),
             clean_path,
-            delegate,
             audit,
         })
     }
@@ -164,13 +227,18 @@ impl<'a> Analysis<'a> {
         &self,
         list: &ExecList,
         insertions: &mut Vec<usize>,
-        child_modules: &mut Vec<String>,
-    ) -> anyhow::Result<()> {
-        let Some(child) = self.resolve_child(list, child_modules)? else {
-            return Ok(());
+    ) -> anyhow::Result<Option<(ChildScope, bool, Option<String>)>> {
+        let Some(child) = self.resolve_child(list)? else {
+            return Ok(None);
         };
         self.check_child(list, &child, insertions)?;
-        self.preflight_child(&child).await
+        let (requires_approval, policy_digest) = self.preflight_child(&child).await?;
+        let batched = list
+            .tokens
+            .last()
+            .is_some_and(|terminator| terminator == "+");
+        let scope = ChildScope::new(child.module, child.argv.input, batched, requires_approval);
+        Ok(Some((scope, requires_approval, policy_digest)))
     }
 
     /// Resolve the program, check the executed binary, and parse the child argv.
@@ -178,16 +246,11 @@ impl<'a> Analysis<'a> {
     /// Returns `None` for a `trust_uncovered` program: the operator vouched for
     /// it, so there is nothing to parse, and the parent approval is the only
     /// remaining gate. That use is audited as `trusted_unanalyzed`.
-    fn resolve_child<'b>(
-        &self,
-        list: &'b ExecList,
-        child_modules: &mut Vec<String>,
-    ) -> anyhow::Result<Option<Child<'a>>> {
+    fn resolve_child<'b>(&self, list: &'b ExecList) -> anyhow::Result<Option<Child<'a>>> {
         let Some((module, program)) = self.resolve_program(list)? else {
             return Ok(None);
         };
-        self.parse_child(list, module, program, child_modules)
-            .map(Some)
+        self.parse_child(list, module, program).map(Some)
     }
 
     /// Find the reviewed module and verify the binary `find` will execute.
@@ -220,10 +283,21 @@ impl<'a> Analysis<'a> {
             ));
         };
         self.check_binary(program, module)?;
-        if self.delegate {
-            let shim = crate::runtime_path::default_shim_dir().join(program);
+        if let Some(directory) = &self.shim_dir {
+            let shim = directory.join(program);
+            let installed = crate::cli::shim::read_manifest(directory)?;
             anyhow::ensure!(
-                shim.is_file() && self.manifest.commands.contains_key(program),
+                shim.is_file()
+                    && installed.bindings_dir.canonicalize()?
+                        == self.manifest.bindings_dir.canonicalize()?
+                    && installed
+                        .commands
+                        .get(program)
+                        .is_some_and(|routes| routes.iter().any(|route| {
+                            route.module_id == module.module_id
+                                && route.tier == crate::cli::shim::RouteTier::Verified
+                                && !route.tombstone
+                        })),
                 "Embedded command '{program}' is not installed as a shim; delegate mode runs \
                  each match through the installed shim, so install it with `apexe env --enable` \
                  (add `--also {program}` for a command the default policy leaves out) or use \
@@ -239,13 +313,11 @@ impl<'a> Analysis<'a> {
         list: &'b ExecList,
         module: &'a ScannedModule,
         program: &str,
-        child_modules: &mut Vec<String>,
     ) -> anyhow::Result<Child<'a>> {
         let operands = &list.tokens[1..list.tokens.len().saturating_sub(1)];
         let argv = parse_child_argv(operands, module, program)?;
         reject_computes_paths(module, program)?;
         reject_child_parameters(&argv.input, module, program)?;
-        child_modules.push(module.module_id.clone());
         Ok(Child {
             program: program.to_string(),
             module,
@@ -323,7 +395,7 @@ impl<'a> Analysis<'a> {
     }
 
     /// Run the child module's real preflight for the same caller.
-    async fn preflight_child(&self, child: &Child<'a>) -> anyhow::Result<()> {
+    async fn preflight_child(&self, child: &Child<'a>) -> anyhow::Result<(bool, Option<String>)> {
         let input = &child.argv.input;
         let module = CliModule::from_scanned(child.module, 0)?;
         if let Err(error) = module.planned_argv(input) {
@@ -334,7 +406,7 @@ impl<'a> Analysis<'a> {
                 error.message
             ));
         }
-        let executor = self.child_executor(child)?;
+        let (executor, acl) = self.child_executor(child)?;
         let preflight = executor
             .validate(&child.module.module_id, input, Some(self.context))
             .await?;
@@ -352,6 +424,14 @@ impl<'a> Analysis<'a> {
                 child.module.module_id
             ));
         }
+        // The SDK merges ACL and module approval into one boolean. Apply
+        // the same conservative rule as the regular gate: if an ACL may be
+        // the source, only a human decision can satisfy the requirement.
+        let annotations = apcore::Module::annotations(&module);
+        let requires_approval = preflight.requires_approval
+            && (acl.requires_approval
+                || !annotations.requires_approval
+                || crate::module::approval::needs_prompt_for_input(&annotations, input));
         self.audit.log_governance_event(
             "child_exec",
             json!({
@@ -360,50 +440,31 @@ impl<'a> Analysis<'a> {
                 "program": child.program,
                 "child_module": child.module.module_id,
                 "decision": "analyzed",
-                "requires_approval": preflight.requires_approval,
+                "requires_approval": requires_approval,
             }),
         );
-        Ok(())
+        Ok((requires_approval, acl.policy_digest))
     }
 
-    /// Create the delegate grant, or report the per-match grant failure.
-    fn finish(&self, mut child_modules: Vec<String>) -> anyhow::Result<Option<DelegationHandle>> {
-        if !self.delegate {
+    /// Prepare a per-match scope. Dry-run must never activate it.
+    fn finish(
+        &self,
+        children: Vec<ChildScope>,
+        policy_digest: Option<String>,
+    ) -> anyhow::Result<Option<DelegationPlan>> {
+        let Some(shim_dir) = self.shim_dir.as_ref().filter(|_| !children.is_empty()) else {
             return Ok(None);
-        }
-        child_modules.sort();
-        child_modules.dedup();
-        let handle = crate::governance::delegation::create(
-            self.config,
-            &self.parent.module_id,
-            &self.context.trace_id,
-            &child_modules,
-            &self.parent_roots,
-        )
-        .map_err(|error| {
-            self.audit.log_governance_event(
-                "child_exec",
-                json!({
-                    "parent_module": self.parent.module_id,
-                    "parent_trace": self.context.trace_id,
-                    "children": child_modules,
-                    "decision": "refused",
-                    "reason": "delegation_unavailable",
-                }),
-            );
-            anyhow::anyhow!("Delegated approval could not be created: {error}")
-        })?;
-        self.audit.log_governance_event(
-            "child_exec",
-            json!({
-                "parent_module": self.parent.module_id,
-                "parent_trace": self.context.trace_id,
-                "children": child_modules,
-                "grant": handle.id(),
-                "decision": "delegate_grant",
-            }),
-        );
-        Ok(Some(handle))
+        };
+        Ok(Some(DelegationPlan {
+            config_dir: self.config.config_dir.clone(),
+            children,
+            roots: self.parent_roots.clone(),
+            shim_dir: shim_dir.canonicalize()?,
+            acl: self.acl.map(Path::canonicalize).transpose()?,
+            policy_digest,
+            caller: self.context.caller_id.clone(),
+            human_approved: Default::default(),
+        }))
     }
 }
 
@@ -412,19 +473,18 @@ impl<'a> Analysis<'a> {
     fn child_executor(
         &self,
         child: &Child<'a>,
-    ) -> anyhow::Result<std::sync::Arc<apcore::Executor>> {
-        let acl = crate::cli::local::acl_path(self.manifest.acl.as_deref(), self.config)?;
+    ) -> anyhow::Result<(std::sync::Arc<apcore::Executor>, registry::AclSummary)> {
         let options = crate::cli::local::options(
             self.config,
             &self.manifest.bindings_dir,
             self.manifest.bindings_pattern.as_deref(),
-            acl.as_deref(),
+            self.acl,
             self.manifest.filter.clone(),
         );
         let module = CliModule::from_scanned(child.module, 0)?
             .with_execution_io(ExecutionIo::Captured)
             .with_child_exec_analyzed();
-        Ok(registry::build_executor_for_invocation(
+        Ok(registry::build_invocation_with_acl_summary(
             &options,
             child.module,
             module,
@@ -433,13 +493,13 @@ impl<'a> Analysis<'a> {
 }
 
 /// The PATH the parent gets: shim-first in delegate, shim-free otherwise.
-fn pinned_path(delegate: bool, clean_path: &std::ffi::OsStr) -> OsString {
-    if !delegate {
-        return clean_path.to_os_string();
-    }
-    let mut directories = vec![crate::runtime_path::default_shim_dir()];
-    directories.extend(std::env::split_paths(clean_path));
-    std::env::join_paths(directories).unwrap_or_else(|_| clean_path.to_os_string())
+fn pinned_path(shim_dir: Option<&Path>, clean_path: &std::ffi::OsStr) -> anyhow::Result<OsString> {
+    Ok(match shim_dir {
+        Some(directory) => std::env::join_paths(
+            std::iter::once(directory.to_path_buf()).chain(std::env::split_paths(clean_path)),
+        )?,
+        None => clean_path.to_os_string(),
+    })
 }
 
 /// Whether every path this child call names is under one of the grant's roots.

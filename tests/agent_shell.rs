@@ -175,12 +175,17 @@ impl Fixture {
         self.command().args(["env", "--enable"]).assert().success();
     }
 
+    fn enable_agent(&self) {
+        self.write_acl();
+        self.enable();
+    }
+
+    fn acl(&self) -> PathBuf {
+        self.home.path().join(".apexe/acl.yaml")
+    }
+
     fn write_acl(&self) {
-        std::fs::write(
-            self.home.path().join(".apexe/acl.yaml"),
-            "rules: []\ndefault_effect: deny\n",
-        )
-        .unwrap();
+        std::fs::write(self.acl(), "rules: []\ndefault_effect: deny\n").unwrap();
     }
 
     fn agent_report(&self, host: &str) -> Value {
@@ -857,7 +862,7 @@ fn test_agent_install_prints_each_host_configuration() {
 #[test]
 fn test_agent_check_detects_opencode_shell_configuration() {
     let fixture = Fixture::new();
-    fixture.enable();
+    fixture.enable_agent();
     std::fs::write(
         fixture.home.path().join("opencode.json"),
         json!({"shell": fixture.shims().join("apexe-sh")}).to_string(),
@@ -880,7 +885,7 @@ fn test_agent_check_detects_opencode_shell_configuration() {
 #[test]
 fn test_agent_check_opencode_respects_project_shell_overrides() {
     let fixture = Fixture::new();
-    fixture.enable();
+    fixture.enable_agent();
     let user = fixture.home.path().join(".config/opencode/opencode.json");
     std::fs::create_dir_all(user.parent().unwrap()).unwrap();
     std::fs::write(&user, json!({"shell":fixture.entry_point()}).to_string()).unwrap();
@@ -919,7 +924,7 @@ fn test_agent_check_opencode_respects_project_shell_overrides() {
 #[test]
 fn test_agent_check_pi_expands_home_paths_and_preserves_uninstall_warning() {
     let fixture = Fixture::new();
-    fixture.enable();
+    fixture.enable_agent();
     let settings = fixture.home.path().join(".pi/agent/settings.json");
     std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
     for (path, expected) in [
@@ -949,7 +954,7 @@ fn test_agent_check_codex_requires_login_activation_not_only_interactive_rc() {
     }
     for (shell, profile) in shells {
         let fixture = Fixture::new();
-        fixture.enable();
+        fixture.enable_agent();
         fixture
             .command()
             .env("SHELL", &shell)
@@ -984,7 +989,7 @@ fn test_agent_check_codex_requires_login_activation_not_only_interactive_rc() {
 #[test]
 fn test_agent_check_warns_but_does_not_fail_without_host_config() {
     let fixture = Fixture::new();
-    fixture.enable();
+    fixture.enable_agent();
 
     fixture
         .command()
@@ -995,9 +1000,82 @@ fn test_agent_check_warns_but_does_not_fail_without_host_config() {
 }
 
 #[test]
-fn test_agent_write_preserves_existing_opencode_keys() {
+fn test_agent_shell_refuses_when_the_pinned_default_acl_is_deleted() {
+    let fixture = Fixture::new();
+    std::fs::write(
+        fixture.acl(),
+        "default_effect: deny\nrules:\n- callers: [local]\n  targets: [cli.apxepwd]\n  effect: allow\n",
+    )
+    .unwrap();
+    fixture.enable();
+    fixture
+        .command()
+        .args(["agent", "opencode", "--write"])
+        .assert()
+        .success();
+    fixture
+        .entry_command()
+        .args(["-c", "apxepwd"])
+        .assert()
+        .success();
+
+    std::fs::remove_file(fixture.acl()).unwrap();
+    fixture
+        .entry_command()
+        .args(["-c", "apxepwd"])
+        .assert()
+        .failure()
+        .stdout("");
+    let result = fixture
+        .command()
+        .args(["agent", "--check", "opencode", "--format", "json"])
+        .assert()
+        .failure();
+    let report: Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    assert_eq!(report["host"]["configured"], true);
+    assert_eq!(report["launcher"]["shims"]["acl_pinned"], true);
+    assert!(report["launcher"]["problems"]
+        .to_string()
+        .contains("Cannot load ACL"));
+}
+
+#[test]
+fn test_agent_write_requires_a_policy_and_upgrades_legacy_shims_on_reload() {
     let fixture = Fixture::new();
     fixture.enable();
+    let settings = fixture.home.path().join("opencode.json");
+    fixture
+        .command()
+        .args(["agent", "opencode", "--write"])
+        .assert()
+        .failure()
+        .stderr(contains("Cannot load ACL"));
+    assert!(!settings.exists());
+    fixture.write_acl();
+    fixture
+        .command()
+        .args(["agent", "opencode", "--write"])
+        .assert()
+        .failure()
+        .stderr(contains("not pinned"));
+    assert!(!settings.exists());
+    fixture
+        .command()
+        .args(["env", "--reload"])
+        .assert()
+        .success();
+    fixture
+        .command()
+        .args(["agent", "opencode", "--write"])
+        .assert()
+        .success();
+    assert!(settings.exists());
+}
+
+#[test]
+fn test_agent_write_preserves_existing_opencode_keys() {
+    let fixture = Fixture::new();
+    fixture.enable_agent();
     let path = fixture.home.path().join("opencode.json");
     std::fs::write(&path, r#"{"theme":"dark","shell":"old"}"#).unwrap();
 
@@ -1033,7 +1111,7 @@ fn test_agent_write_refuses_when_launcher_is_not_installed() {
 #[test]
 fn test_agent_write_refuses_when_entry_point_is_not_the_launcher() {
     let fixture = Fixture::new();
-    fixture.enable();
+    fixture.enable_agent();
     // The incident this guards: the entry point went missing, and it was filled
     // in by hand with a shell script instead of by `apexe env --enable`. The file
     // is executable and delegates to a real shell, so nothing looks broken until
@@ -1067,7 +1145,7 @@ fn test_agent_write_claude_refuses_without_a_ready_installation() {
 #[test]
 fn test_env_disable_warns_when_claude_hook_would_block_shell_calls() {
     let fixture = Fixture::new();
-    fixture.enable();
+    fixture.enable_agent();
     fixture
         .command()
         .args(["agent", "claude", "--write"])
@@ -1087,7 +1165,7 @@ fn test_env_disable_warns_when_claude_hook_would_block_shell_calls() {
 #[test]
 fn test_agent_check_rejects_a_stale_claude_hook_even_with_shims_on_path() {
     let fixture = Fixture::new();
-    fixture.enable();
+    fixture.enable_agent();
     let path = fixture.home.path().join(".claude/settings.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(
@@ -1123,7 +1201,7 @@ fn test_agent_check_rejects_a_stale_claude_hook_even_with_shims_on_path() {
 #[test]
 fn test_agent_check_codex_ignores_startup_files_of_other_shells() {
     let fixture = Fixture::new();
-    fixture.enable();
+    fixture.enable_agent();
     let profile = fixture.home.path().join(".profile");
     std::fs::rename(&profile, fixture.home.path().join(".zprofile")).unwrap();
     let output = fixture
@@ -1144,7 +1222,7 @@ fn test_env_disable_warns_when_host_still_selects_launcher() {
     // Disabling removes apexe-sh. A host already configured to it cannot start a
     // command afterwards, and nothing else in the output says so.
     let fixture = Fixture::new();
-    fixture.enable();
+    fixture.enable_agent();
     fixture
         .command()
         .args(["agent", "pi", "--write", "--scope", "user"])
@@ -1165,7 +1243,7 @@ fn test_env_disable_warns_when_host_still_selects_launcher() {
 #[test]
 fn test_agent_write_refuses_invalid_json() {
     let fixture = Fixture::new();
-    fixture.enable();
+    fixture.enable_agent();
     let path = fixture.home.path().join("opencode.json");
     std::fs::write(&path, "{not json").unwrap();
 
@@ -1185,7 +1263,7 @@ fn test_agent_write_codex_selects_the_resolved_real_shell() {
         ("/bin/sh", Some("/bin/bash"), ".bashrc", ".zprofile"),
     ] {
         let fixture = Fixture::new();
-        fixture.enable();
+        fixture.enable_agent();
         let mut command = fixture.command();
         command.env("SHELL", shell);
         if let Some(real) = real_shell {
@@ -1208,7 +1286,7 @@ fn test_agent_check_does_not_accept_a_stale_shell_path() {
         ("opencode", "shell", "opencode.json"),
     ] {
         let fixture = Fixture::new();
-        fixture.enable();
+        fixture.enable_agent();
         let path = fixture.home.path().join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
@@ -1240,7 +1318,7 @@ fn test_agent_check_does_not_accept_a_stale_shell_path() {
 #[test]
 fn test_agent_write_claude_repairs_quoted_stale_hooks_without_duplicates() {
     let fixture = Fixture::new();
-    fixture.enable();
+    fixture.enable_agent();
     let path = fixture.home.path().join(".claude/settings.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let old = fixture.home.path().join("old installation/apexe");
@@ -1284,7 +1362,7 @@ fn test_agent_write_claude_repairs_quoted_stale_hooks_without_duplicates() {
 #[test]
 fn test_agent_write_claude_refuses_malformed_hook_settings_without_changes() {
     let fixture = Fixture::new();
-    fixture.enable();
+    fixture.enable_agent();
     let path = fixture.home.path().join(".claude/settings.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     for original in [r#"{"hooks":[]}"#, r#"{"hooks":{"PreToolUse":{}}}"#] {
@@ -1310,7 +1388,7 @@ fn test_sh_without_installation_keeps_ordinary_shell_semantics() {
 #[test]
 fn test_agent_write_claude_adds_a_pretooluse_hook() {
     let fixture = Fixture::new();
-    fixture.enable();
+    fixture.enable_agent();
 
     fixture
         .command()
@@ -1329,7 +1407,7 @@ fn test_agent_write_claude_adds_a_pretooluse_hook() {
 #[test]
 fn test_agent_write_pi_uses_user_scope() {
     let fixture = Fixture::new();
-    fixture.enable();
+    fixture.enable_agent();
 
     fixture
         .command()
@@ -1345,26 +1423,256 @@ fn test_agent_write_pi_uses_user_scope() {
 #[test]
 fn test_agent_mcp_only_writes_opencode_mcp_and_disables_bash() {
     let fixture = Fixture::new();
-    fixture.enable();
+    fixture.write_acl();
+    let path = fixture.home.path().join("opencode.json");
+    let existing = json!({"type":"local", "command":["echo"]});
+    std::fs::write(
+        &path,
+        json!({"mcp":{"servers":{"existing":existing}},"tools":{"read":true}}).to_string(),
+    )
+    .unwrap();
+    let bin = install_opencode_probe(&fixture, "opencode v2.3.0", "[]", true);
+    let write = || {
+        fixture
+            .command()
+            .env("PATH", &bin)
+            .args(["agent", "opencode", "--mcp-only", "--write"])
+            .assert()
+            .success()
+    };
+    write();
+    let bytes = std::fs::read(&path).unwrap();
+    write();
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value["mcp"]["servers"]["existing"], existing);
+    assert_eq!(value["tools"]["read"], true);
+    assert_eq!(
+        value["permissions"],
+        json!([{"action":"shell","resource":"*","effect":"deny"}])
+    );
+    let command = value["mcp"]["servers"]["apexe"]["command"]
+        .as_array()
+        .unwrap();
+    assert!(command[0].as_str().unwrap().ends_with("apexe"));
+    assert_eq!(command[1], "serve");
+    assert_eq!(command[2], "--acl");
+    assert_eq!(command[3], fixture.acl().to_str().unwrap());
+}
 
+fn install_opencode_probe(
+    fixture: &Fixture,
+    version: &str,
+    sources: &str,
+    deny_confirmed: bool,
+) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = fixture.home.path().join("probe-bin");
+    std::fs::create_dir(&bin).unwrap();
+    let executable = bin.join("opencode");
+    let agents = if deny_confirmed {
+        r#"[{"id":"build","permissions":[{"action":"shell","resource":"*","effect":"deny"}]}]"#
+    } else {
+        r#"[{"id":"build","permissions":[]}]"#
+    };
+    std::fs::write(&executable, format!("#!/bin/sh\nif [ \"$1\" = --version ]; then\n  printf '%s\\n' '{version}'\nelif [ \"$3\" = agents ]; then\n  printf '%s\\n' '{agents}'\nelse\n  printf '%s\\n' '{sources}'\nfi\n")).unwrap();
+    std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+#[test]
+fn test_setup_plans_with_the_selected_shim_installation() {
+    let fixture = Fixture::new();
+    let selected = fixture.home.path().join("selected-shims");
+    let bin = install_opencode_probe(&fixture, "opencode v2.3.0", "[]", true);
+    std::fs::write(
+        fixture.home.path().join("opencode.json"),
+        json!({"shell": selected.join("apexe-sh")}).to_string(),
+    )
+    .unwrap();
+    fixture
+        .command()
+        .env("PATH", bin)
+        .env("APEXE_SHIM_DIR", &selected)
+        .args(["setup", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(contains(selected.to_str().unwrap()))
+        .stdout(contains("already configured"));
+}
+
+#[test]
+fn test_agent_opencode_mcp_refuses_conflicting_or_unverified_permissions() {
+    for (version, sources, reason) in [
+        (
+            "opencode v2.3.0",
+            r#"[{"path":"user/opencode.json","info":{"permissions":[{"action":"shell","resource":"*","effect":"allow"}]}}]"#,
+            "conflicting OpenCode shell permission",
+        ),
+        ("opencode v2.2.0", "[]", "require OpenCode 2.3.0"),
+    ] {
+        let fixture = Fixture::new();
+        fixture.write_acl();
+        let bin = install_opencode_probe(&fixture, version, sources, true);
+        let path = fixture.home.path().join("opencode.json");
+        let original = r#"{"mcp":{"existing":{"type":"local","command":["echo"]}}}"#;
+        std::fs::write(&path, original).unwrap();
+        fixture
+            .command()
+            .env("PATH", bin)
+            .args(["agent", "opencode", "--mcp-only", "--write"])
+            .assert()
+            .failure()
+            .stderr(contains(reason));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+    }
+}
+
+#[test]
+fn test_agent_opencode_keeps_original_when_host_does_not_confirm_shell_denial() {
+    let fixture = Fixture::new();
+    fixture.write_acl();
+    let bin = install_opencode_probe(&fixture, "opencode v2.3.0", "[]", false);
+    let path = fixture.home.path().join("opencode.json");
+    let original = r#"{"mcp":{"existing":{"type":"local","command":["echo"]}}}"#;
+    std::fs::write(&path, original).unwrap();
+    fixture
+        .command()
+        .env("PATH", bin)
+        .args(["agent", "opencode", "--mcp-only", "--write"])
+        .assert()
+        .failure()
+        .stderr(contains("cannot confirm Shell denial"));
+    assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+}
+
+#[test]
+fn test_agent_opencode_rejects_an_invalid_mcp_server_container() {
+    let fixture = Fixture::new();
+    fixture.write_acl();
+    let path = fixture.home.path().join("opencode.json");
+    let original = r#"{"mcp":{"servers":[]}}"#;
+    std::fs::write(&path, original).unwrap();
     fixture
         .command()
         .args(["agent", "opencode", "--mcp-only", "--write"])
         .assert()
-        .success();
+        .failure()
+        .stderr(contains("'servers' must be an object"));
+    assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+}
 
-    let path = fixture.home.path().join("opencode.json");
-    let value: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    assert_eq!(value["tools"]["bash"], false);
-    let command = value["mcp"]["apexe"]["command"].as_array().unwrap();
-    assert!(command[0].as_str().unwrap().ends_with("apexe"));
-    assert_eq!(command[1], "serve");
+#[test]
+fn test_agent_mcp_only_rejects_missing_or_invalid_acl_before_writing() {
+    let fixture = Fixture::new();
+    let settings = fixture.home.path().join("opencode.json");
+    for policy in [None, Some("rules: [\n")] {
+        if let Some(policy) = policy {
+            std::fs::write(fixture.acl(), policy).unwrap();
+        }
+        fixture
+            .command()
+            .args(["agent", "opencode", "--mcp-only", "--write"])
+            .assert()
+            .failure()
+            .stderr(contains("Cannot load ACL"));
+        assert!(!settings.exists());
+    }
+}
+
+#[test]
+fn test_agent_mcp_only_refuses_policy_requiring_an_unconfigured_approval_backend() {
+    let fixture = Fixture::new();
+    let bin = install_opencode_probe(&fixture, "opencode v2.3.0", "[]", true);
+    std::fs::write(
+        fixture.acl(),
+        "rules:\n- callers: ['*']\n  targets: ['cli.*']\n  effect: allow\n  approval: required\ndefault_effect: deny\n",
+    )
+    .unwrap();
+    let settings = fixture.home.path().join("opencode.json");
+    let original = r#"{"mcp":{"servers":{}}}"#;
+    std::fs::write(&settings, original).unwrap();
+    fixture
+        .command()
+        .env("PATH", bin)
+        .args(["agent", "opencode", "--mcp-only", "--write"])
+        .assert()
+        .failure()
+        .stderr(contains("approval: required"))
+        .stderr(contains("--enable-approval"));
+    assert_eq!(std::fs::read_to_string(settings).unwrap(), original);
+}
+
+#[test]
+fn test_agent_mcp_only_keeps_the_shim_installations_custom_acl() {
+    let fixture = Fixture::new();
+    fixture.write_acl();
+    let selected = fixture.home.path().join("selected.yaml");
+    std::fs::copy(fixture.acl(), &selected).unwrap();
+    fixture
+        .command()
+        .args(["env", "--enable", "--acl"])
+        .arg(&selected)
+        .assert()
+        .success();
+    fixture
+        .command()
+        .args(["agent", "opencode", "--mcp-only"])
+        .assert()
+        .success()
+        .stdout(contains(selected.to_str().unwrap()));
+    std::fs::remove_file(&selected).unwrap();
+    fixture
+        .command()
+        .args(["agent", "opencode", "--mcp-only"])
+        .assert()
+        .failure()
+        .stderr(contains(selected.to_str().unwrap()));
+}
+
+#[test]
+fn test_agent_mcp_only_uses_the_bindings_from_the_selected_shim_installation() {
+    let fixture = Fixture::new();
+    fixture.write_acl();
+    let selected = fixture.home.path().join("selected bindings");
+    std::fs::rename(fixture.bindings(), &selected).unwrap();
+    fixture
+        .command()
+        .args(["env", "--enable", "--no-rc", "--bindings-dir"])
+        .arg(&selected)
+        .assert()
+        .success();
+    let output = fixture
+        .command()
+        .args(["agent", "opencode", "--mcp-only"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let command = value["mcp"]["servers"]["apexe"]["command"]
+        .as_array()
+        .unwrap();
+    assert!(command
+        .windows(2)
+        .any(|pair| pair == [json!("--bindings-dir"), json!(selected)]));
+
+    let manifest_path = fixture.shims().join(".apexe-shims.json");
+    let mut manifest: Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["bindings_pattern"] = json!("*.selected.yaml");
+    std::fs::write(manifest_path, manifest.to_string()).unwrap();
+    fixture
+        .command()
+        .args(["agent", "opencode", "--mcp-only"])
+        .assert()
+        .failure()
+        .stderr(contains("differs from the effective apcore configuration"));
 }
 
 #[test]
 fn test_agent_mcp_only_writes_claude_mcp_and_denies_bash() {
     let fixture = Fixture::new();
-    fixture.enable();
+    fixture.enable_agent();
 
     fixture
         .command()
@@ -1393,16 +1701,60 @@ fn test_agent_mcp_only_writes_claude_mcp_and_denies_bash() {
 }
 
 #[test]
+fn test_agent_claude_mcp_validates_both_files_before_publishing() {
+    let fixture = Fixture::new();
+    fixture.write_acl();
+    let mcp = fixture.home.path().join(".mcp.json");
+    let settings = fixture.home.path().join(".claude/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let original = r#"{"mcpServers":{"existing":{"command":"echo"}}}"#;
+    std::fs::write(&mcp, original).unwrap();
+    let invalid = r#"{"permissions":{"deny":false}}"#;
+    std::fs::write(&settings, invalid).unwrap();
+    let write = || {
+        fixture
+            .command()
+            .args(["agent", "claude", "--mcp-only", "--write"])
+            .assert()
+    };
+    write()
+        .failure()
+        .stderr(contains("permissions.deny"))
+        .stderr(contains("settings.json"));
+    assert_eq!(std::fs::read_to_string(&mcp).unwrap(), original);
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), invalid);
+    std::fs::write(&settings, r#"{"permissions":{"deny":["Read"]}}"#).unwrap();
+    std::fs::create_dir(settings.with_extension("apexe-tmp")).unwrap();
+    write()
+        .failure()
+        .stderr(contains("Already wrote"))
+        .stderr(contains("settings.json"));
+    assert_eq!(
+        std::fs::read_to_string(&settings).unwrap(),
+        r#"{"permissions":{"deny":["Read"]}}"#
+    );
+    std::fs::remove_dir(settings.with_extension("apexe-tmp")).unwrap();
+    write().success();
+    write().success();
+    let mcp: Value = serde_json::from_slice(&std::fs::read(mcp).unwrap()).unwrap();
+    let settings: Value = serde_json::from_slice(&std::fs::read(settings).unwrap()).unwrap();
+    assert_eq!(mcp["mcpServers"]["existing"]["command"], "echo");
+    assert!(mcp["mcpServers"]["apexe"].is_object());
+    assert_eq!(settings["permissions"]["deny"], json!(["Read", "Bash"]));
+}
+
+#[test]
 fn test_agent_mcp_only_prints_codex_and_pi_guidance() {
     let fixture = Fixture::new();
-    fixture.enable();
+    fixture.enable_agent();
 
     fixture
         .command()
         .args(["agent", "codex", "--mcp-only"])
         .assert()
         .success()
-        .stdout(contains("[mcp_servers.apexe]"));
+        .stdout(contains("[mcp_servers.apexe]\ncommand = \""))
+        .stdout(contains("\n# Codex keeps its shell;"));
 
     fixture
         .command()

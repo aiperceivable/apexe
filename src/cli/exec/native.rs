@@ -19,10 +19,7 @@ pub(super) struct NativeInvocation {
     /// Set when the grammar classified every token, so the call must run the
     /// caller's argv verbatim rather than a re-rendered form.
     pub replay: Option<Replay>,
-    /// Whether the child-exec policy analyzed the embedded command lists.
-    pub child_exec_analyzed: bool,
-    /// Grant created for delegate mode; held until the parent call returns.
-    pub delegation: Option<crate::governance::delegation::DelegationHandle>,
+    pub children: Option<crate::module::cli_module::PreparedChildren>,
 }
 
 pub(super) async fn resolve(
@@ -31,6 +28,7 @@ pub(super) async fn resolve(
     modules: &[ScannedModule],
     config: &ApexeConfig,
     bindings: &Path,
+    acl: Option<&Path>,
     context: &Context<Value>,
 ) -> anyhow::Result<NativeInvocation> {
     let started = std::time::Instant::now();
@@ -39,7 +37,7 @@ pub(super) async fn resolve(
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| anyhow::anyhow!("Native command must have a UTF-8 file name"))?;
-    match resolve_invocation(name, args, policy, modules, &manifest, config, context).await {
+    match resolve_invocation(name, args, policy, modules, &manifest, config, acl, context).await {
         Ok(invocation) => Ok(invocation),
         Err(error) => {
             super::super::shim::audit_resolution_refusal(
@@ -175,6 +173,7 @@ fn extend_with_verified_routes(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Accepts the resolved policy and invocation separately.
 async fn resolve_invocation(
     name: &str,
     args: &[String],
@@ -182,6 +181,7 @@ async fn resolve_invocation(
     modules: &[ScannedModule],
     manifest: &Manifest,
     config: &ApexeConfig,
+    acl: Option<&Path>,
     context: &Context<Value>,
 ) -> anyhow::Result<NativeInvocation> {
     let binary = resolve_binary(&args[0])?;
@@ -196,8 +196,8 @@ async fn resolve_invocation(
             "Resolved executable differs from the binding for {}; rescan with the intended PATH",
             module.module_id
         );
-        let mut child_exec_analyzed = false;
-        let mut delegation = None;
+        let mut module = module.clone();
+        let mut children = None;
         if !input.exec_lists.is_empty() {
             let Some(replay) = replay.as_mut() else {
                 return Err(anyhow::anyhow!(
@@ -211,27 +211,31 @@ async fn resolve_invocation(
                 &manifest.bindings_dir,
                 config.bindings_pattern.as_deref(),
             )?;
-            delegation = super::super::child_exec::analyze(
+            let analysis = super::super::child_exec::analyze(
                 config,
-                module,
+                &module,
                 &input.input,
                 &input.exec_lists,
                 replay.argv_mut(),
                 &analysis_modules,
                 manifest,
+                &std::env::var_os("APEXE_SHIM_DIR")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(crate::runtime_path::default_shim_dir),
+                acl,
                 context,
             )
             .await?;
-            child_exec_analyzed = true;
+            children = Some(analysis.prepared);
+            super::super::child_exec::require_child_approval(&mut module, &analysis.approval_scope);
         }
         return Ok(NativeInvocation {
-            module: module.clone(),
+            module,
             input: input.input,
             unmanaged: None,
             opaque_tail: input.opaque_tail,
             replay,
-            child_exec_analyzed,
-            delegation,
+            children,
         });
     }
     // A binding without reviewed grammar is a coverage gap, not an unmanaged
@@ -421,8 +425,7 @@ fn unmanaged_invocation(
         unmanaged: Some(module),
         opaque_tail: None,
         replay: None,
-        child_exec_analyzed: false,
-        delegation: None,
+        children: None,
     })
 }
 

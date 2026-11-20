@@ -195,10 +195,10 @@ src/
 | Crate | Version | Usage |
 |-------|---------|-------|
 | `apcore` | >=0.33.0 | Module trait, Registry, ACL, ModuleError, ErrorCode, Context, Config |
-| `apcore-toolkit` | >=0.14.2 | ScannedModule, YAMLWriter, Verifier, ModuleAnnotations, `deduplicate_ids` |
-| `apcore-mcp` | >=0.23.3 | APCoreMCP server with structured results (stdio, streamable-http, SSE, Explorer UI) |
+| `apcore-toolkit` | >=0.15.0 | ScannedModule, YAMLWriter, Verifier, OpenAPI scanning and proxy validation |
+| `apcore-mcp` | >=0.23.4 | APCoreMCP server with structured results (stdio, streamable-http, SSE, Explorer UI) |
 | `apcore-a2a` | >=0.8.5 | A2A agent server with token/JWT authentication (`build_app_with_auth`) |
-| `apcore-cli` | >=0.14.0 | Man pages, module detail formatting and OpenAPI proxy hazard detection |
+| `apcore-cli` | >=0.14.1 | Man pages and module detail formatting |
 
 ## v0.1.0 Features
 
@@ -261,10 +261,10 @@ Additional: ParserPipeline, SubcommandDiscovery, ScanCache, ToolResolver, progra
 | Crate | Purpose |
 |-------|---------|
 | `apcore` | Core module system, ACL, errors |
-| `apcore-toolkit` | Scanner types, YAML writer, verifiers |
+| `apcore-toolkit` | Scanner types, YAML writer, verifiers, OpenAPI scanning and proxy validation |
 | `apcore-mcp` | MCP protocol server |
 | `apcore-a2a` | A2A protocol server |
-| `apcore-cli` | Man pages, module detail formatting and OpenAPI proxy hazard detection |
+| `apcore-cli` | Man pages and module detail formatting |
 | `clap` (derive mode) | CLI argument parsing |
 | `serde` + `serde_json` + `serde_yaml` | Serialization |
 | `tokio` | Async runtime |

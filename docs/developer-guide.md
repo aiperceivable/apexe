@@ -35,6 +35,7 @@ historical decisions and may use crate-level terminology rather than operator
 language:
 
 - [apcore integration technical design](apcore-integration/tech-design.md)
+- [Architecture contract remediation](architecture-contracts/tech-design.md)
 - [Feature manifest](FEATURE_MANIFEST.md)
 - [Feature index](features/v2-overview.md)
 - [Feature specifications](features/)

@@ -659,8 +659,12 @@ impl ScanArgs {
             info!(path = %acl_path.display(), "Would write ACL policy");
             return Ok(());
         }
-        crate::cli::acl::write_starter_or_sync(&acl_path, modules)
-            .map_err(|e| anyhow::anyhow!("Failed to write ACL: {e}"))?;
+        crate::cli::acl::write_starter_or_sync(
+            &acl_path,
+            modules,
+            crate::governance::PolicyProfile::Developer,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to write ACL: {e}"))?;
         Ok(())
     }
 
@@ -1154,12 +1158,15 @@ impl A2aArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
         let server = self.build_server(config)?;
         let runtime = tokio::runtime::Runtime::new()?;
-        match self.openapi.options()? {
-            Some(options) => runtime
-                .block_on(server.serve_with_openapi(&options))
-                .map_err(Into::into),
-            None => runtime.block_on(server.serve()).map_err(Into::into),
-        }
+        let openapi = self.openapi.options()?;
+        runtime
+            .block_on(server.serve_on_ready(openapi.as_ref(), || {
+                let _ = std::io::Write::write_all(
+                    &mut std::io::stderr().lock(),
+                    b"Warning: incomplete A2A 1.0 wire support; use the documented legacy compatibility flow.\n",
+                );
+            }))
+            .map_err(Into::into)
     }
 
     fn build_server(&self, config: &ApexeConfig) -> anyhow::Result<crate::a2a::A2aServerBuilder> {

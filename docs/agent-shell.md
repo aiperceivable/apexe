@@ -15,9 +15,9 @@ agent -> apexe-sh -c "<command>"
            | execve(real shell, PATH with shim directory first)
            v
       /bin/zsh -c "<command>"
-           | external command with a reviewed shim
+           | external command resolved to an installed shim
            v
-      apexe exec -> ACL, approval, audit
+      command shim -> shared executor -> configured ACL, approval, audit
 ```
 
 `apexe-sh` does not parse the command string and does not stay in the process
@@ -30,6 +30,12 @@ functions, `sudo`, interpreter-internal execution and commands without a shim
 are not. This is not a sandbox.
 
 ## One-time setup
+
+After a binary-only install, run `apexe setup` to initialize bindings, create
+a `strict` starter ACL on fresh installations, bind the policy to the shims,
+and offer to configure detected hosts. Review the summary and ACL. For Codex,
+follow the login-shell step below.
+These commands prepare and inspect the components individually.
 
 ```bash
 apexe init
@@ -216,8 +222,11 @@ The writer refuses invalid JSON and OpenCode refuses when `opencode.jsonc`
 already exists. OpenCode, pi and Claude hook installation also refuse an
 incomplete launcher installation: a missing entry point breaks shell-path
 hosts, and a missing manifest makes the Claude hook deny Bash calls. Invalid
-Claude hook container types are refused without changing the file. Review the
-file after writing.
+Claude hook container types are refused without changing the file. Shell
+configuration writes and `apexe agent --check` also require a loadable ACL
+recorded in the shim manifest. For an older installation with an implicit
+default ACL, run `apexe env --reload` to bind it. Use the installed `--shim-dir`
+if you chose a custom directory. Review the host file after writing.
 
 ### Repair stale integration without bypassing policy
 
@@ -296,9 +305,10 @@ this as experimental until it has run across your host versions.
 
 ## MCP-only deployment
 
-MCP-only gives the agent apexe tools without a shell. It is the strongest
-boundary because the tool inventory is the surface, but it is not suitable for
-agents that must do arbitrary coding.
+MCP-only configures access to apexe tools and requests that the host disable
+its shell tool. Verify the effective permission in the running host after
+reload before relying on it as a boundary. It is not suitable for agents that
+must do arbitrary coding.
 
 ```bash
 apexe agent opencode --mcp-only --write
@@ -306,35 +316,61 @@ apexe agent claude --mcp-only --write
 apexe agent codex --mcp-only
 ```
 
-- OpenCode: adds an `mcp.apexe` local server and sets `tools.bash: false`.
-- Claude Code: writes `.mcp.json` and adds `Bash` to `permissions.deny`. User
-  scope prints the `claude mcp add --scope user` command instead of editing
-  `~/.claude.json`.
+- OpenCode: merges `mcp.servers.apexe` and a V2 `shell` deny rule. Automatic edits
+  require OpenCode 2.3.0. apexe checks discovered permission sources and
+  previews the proposed rule through the host's effective agent diagnostics.
+  A conflict or an inconclusive preview stops publication. In user scope,
+  this preview covers the current project context. For other versions or
+  conflicts, omit `--write` for a snippet and review permissions manually.
+- Claude Code: project scope merges `mcpServers.apexe` in `.mcp.json` and adds
+  `Bash` to `permissions.deny` in `.claude/settings.json`. Both files' shapes
+  are checked before either write. If publishing the second file fails, the
+  diagnostic reports the completed write; correct the error and retry the same
+  command. User scope updates `~/.claude/settings.json` and prints the
+  `claude mcp add --scope user` command you must run to register the server.
+  In project scope, approve the server if Claude Code prompts. The acceptance
+  fixture verified MCP invocation and Bash refusal after restart in both
+  scopes with Claude Code 2.1.318 on macOS in non-interactive `dontAsk` mode.
 - Codex: prints a `[mcp_servers.apexe]` TOML block. Codex keeps its shell, so
   this is not strict MCP-only; combine it with a sandbox.
 - pi: no stable MCP-only profile in the tested version.
 
-The generated server command is `<apexe> serve` plus `--acl` when an ACL is
-loaded. Without an ACL, the server does not enforce access control.
+The generator validates and includes the selected ACL via `--acl`. It uses a
+policy recorded in the local shim manifest when present and otherwise uses
+the default ACL, including on installations without shims. When a manifest
+exists, the generator also uses its binding directory via `--bindings-dir`.
+A manifest whose binding pattern differs from the active apcore configuration
+stops generation. MCP applies its own tool filters and the selected ACL.
+A missing or malformed policy stops generation before host files are changed.
+The generator also stops if that policy requires human approval. Configure an
+elicitation-capable MCP client with `apexe serve --enable-approval` to use
+that policy.
+Regenerate older MCP configurations to include the selected ACL and bindings.
 
 ## Verify any host
 
-Run these in the agent's terminal:
-
-```text
-command -v ls
-apexe sh --check --format json
-apexe exec -- ls -la
-```
-
-Then inspect the audit trail:
+For a shell or hook deployment, check the host configuration and selected ACL
+before starting a fresh agent session.
 
 ```bash
-tail -n 5 ~/.apexe/audit.jsonl
+apexe agent --check <host> --format json
 ```
 
-A governed call produces an `"event":"execution"` record with the module id.
-Scanned routes also carry `"tier":"scanned"`.
+Confirm that the host is configured and the report lists the intended ACL and
+shim route. For PATH-based integration, confirm in the actual agent terminal
+that `command -v ls` points to the installed shim. The Claude Code hook can
+route a simple command even when its original shell resolves the native binary.
+
+Ask the agent for a normal detailed directory listing, including hidden entries.
+In the terminal tool request, check for `ls -la` with ordinary command syntax.
+Use an equivalent CLI operation if this installation covers a different tool.
+
+Check the apexe audit log (default `~/.apexe/audit.jsonl`) for a new
+`"event":"execution"` record with the expected module ID. Confirm the
+corresponding ACL decision as well. Scanned routes carry `"tier":"scanned"`.
+To test denial, use a harmless command with an installed shim and an explicit
+deny in a disposable test policy. Check for an ACL deny record and confirm
+that the child command did not run.
 
 ## Boundaries and troubleshooting
 

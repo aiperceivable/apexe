@@ -77,19 +77,11 @@ for the complete product surface and its boundaries.
 
 | Crate | Minimum version | Current responsibility |
 |---|---|---|
-| `apcore` | 0.32.1 | Shared `Registry`, `Executor`, schema validation, ACL, context and sensitive-field redaction |
-| `apcore-mcp` | 0.23.0 | MCP builder, transports, authentication, negotiation and structured result validation |
-| `apcore-a2a` | 0.8.3 | Authenticated A2A router and agent card over the shared executor |
-| `apcore-cli` | 0.12.4 | Man pages, module detail formatting and proxy hazard detection |
-| `apcore-toolkit` | 0.14.0 | Scanned modules, YAML binding output and OpenAPI scanning/proxy helpers |
-
-```toml
-apcore = "0.32.1"
-apcore-mcp = "0.23.0"
-apcore-a2a = "0.8.3"
-apcore-cli = "0.12.4"
-apcore-toolkit = { version = "0.14.0", default-features = false, features = ["http-proxy"] }
-```
+| `apcore` | 0.33.0 | Shared `Registry`, `Executor`, schema validation, ACL, context and sensitive-field redaction |
+| `apcore-mcp` | 0.23.4 | MCP builder, transports, authentication, negotiation and structured result validation |
+| `apcore-a2a` | 0.8.5 | Authenticated A2A router and agent card over the shared executor |
+| `apcore-cli` | 0.14.1 | Man pages and module detail formatting |
+| `apcore-toolkit` | 0.15.0 | Scanned modules, YAML binding output, effective OpenAPI scanning and proxy validation |
 
 Cargo.lock records registry packages and checksums. Integration uses published
 crates; local path patches and copied SDK source are not part of the design.

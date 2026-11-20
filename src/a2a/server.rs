@@ -4,6 +4,7 @@ use apcore::{ErrorCode, Executor, ModuleError};
 use apcore_a2a::{APCoreA2AConfig, BackendSource};
 use apcore_mcp::ApprovalStore;
 
+use crate::auth::ResolvedAuth;
 use crate::module::{build_executor, ExecutorOptions};
 
 /// Builder for serving CLI modules and imported OpenAPI operations through A2A.
@@ -251,9 +252,18 @@ impl A2aServerBuilder {
     pub fn transport_auth(
         &self,
     ) -> Result<Option<Arc<dyn apcore_a2a::Authenticator>>, ModuleError> {
+        let auth = self.resolve_transport_auth()?;
+        super::auth::announce_generated_token(&auth);
+        Ok(super::auth::adapt(&auth))
+    }
+
+    #[allow(clippy::result_large_err)] // Preserve the shared ModuleError boundary.
+    fn resolve_transport_auth(&self) -> Result<ResolvedAuth, ModuleError> {
         match &self.auth_options {
-            Some(options) => super::auth::resolve(&parse_bind_url(&self.url)?.host, options),
-            None => Ok(None),
+            Some(options) => {
+                crate::auth::resolve_auth("http", &parse_bind_url(&self.url)?.host, options)
+            }
+            None => Ok(ResolvedAuth::Disabled),
         }
     }
 
@@ -466,9 +476,7 @@ impl A2aServerBuilder {
     // the rest of the apexe/apcore API surface.
     #[allow(clippy::result_large_err)]
     pub async fn serve(self) -> Result<(), ModuleError> {
-        let (router, _) = self.app(None).await?;
-        let listener = self.listener().await?;
-        Self::serve_router(listener, router).await
+        self.serve_on_ready(None, || {}).await
     }
 
     /// Import OpenAPI operations alongside CLI bindings and serve A2A.
@@ -477,8 +485,19 @@ impl A2aServerBuilder {
         self,
         openapi: &crate::openapi::OpenApiOptions,
     ) -> Result<(), ModuleError> {
-        let (router, _) = self.app(Some(openapi)).await?;
+        self.serve_on_ready(Some(openapi), || {}).await
+    }
+
+    #[allow(clippy::result_large_err)] // Preserve the shared ModuleError boundary.
+    pub(crate) async fn serve_on_ready(
+        self,
+        openapi: Option<&crate::openapi::OpenApiOptions>,
+        on_ready: impl FnOnce(),
+    ) -> Result<(), ModuleError> {
+        let ((router, _), auth) = self.prepare_app(openapi).await?;
         let listener = self.listener().await?;
+        super::auth::announce_generated_token(&auth);
+        on_ready();
         Self::serve_router(listener, router).await
     }
 
@@ -514,11 +533,25 @@ impl A2aServerBuilder {
         &self,
         openapi: Option<&crate::openapi::OpenApiOptions>,
     ) -> Result<(axum::Router, serde_json::Value), ModuleError> {
+        let (app, auth) = self.prepare_app(openapi).await?;
+        super::auth::announce_generated_token(&auth);
+        Ok(app)
+    }
+
+    #[allow(clippy::result_large_err)] // Preserve the shared ModuleError boundary.
+    async fn prepare_app(
+        &self,
+        openapi: Option<&crate::openapi::OpenApiOptions>,
+    ) -> Result<((axum::Router, serde_json::Value), ResolvedAuth), ModuleError> {
         let (executor, config) = match openapi {
             Some(options) => self.prepare_with_openapi(options).await?,
             None => self.prepare()?,
         };
-        self.assemble_app(executor, config).await
+        let auth = self.resolve_transport_auth()?;
+        let app = self
+            .assemble_app(executor, config, super::auth::adapt(&auth))
+            .await?;
+        Ok((app, auth))
     }
 
     #[allow(clippy::result_large_err)] // Preserve the shared ModuleError boundary.
@@ -526,6 +559,7 @@ impl A2aServerBuilder {
         &self,
         executor: Arc<Executor>,
         config: APCoreA2AConfig,
+        auth: Option<Arc<dyn apcore_a2a::Authenticator>>,
     ) -> Result<(axum::Router, serde_json::Value), ModuleError> {
         let logging = executor.find_middleware("logging");
         // Avoid duplicate-name warnings while the SDK installs its own logger.
@@ -535,7 +569,7 @@ impl A2aServerBuilder {
         let (router, card) = apcore_a2a::build_app_with_auth(
             BackendSource::Executor(executor.clone()),
             config,
-            self.transport_auth()?,
+            auth,
         )
         .await
         .map_err(|error| {
@@ -737,7 +771,7 @@ mod tests {
             let mut before = executor.middlewares();
             let original = executor.find_middleware("logging");
             let _app = builder
-                .assemble_app(executor.clone(), config)
+                .assemble_app(executor.clone(), config, None)
                 .await
                 .unwrap();
             let mut after = executor.middlewares();

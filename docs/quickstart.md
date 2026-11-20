@@ -1,11 +1,10 @@
 # apexe Quick Start
 
-Run existing tools through schemas, access rules and audit records. This guide
-starts with CLI coverage: install, initialize, inspect and review. Terminal
-agents use the shared [Agent Skill](agent-skill.md) to route ordinary external
-CLI commands through native exec by default in apexe-configured environments;
-PATH shims and MCP/A2A are optional integration paths. To expose an HTTP API,
-follow the [OpenAPI import guide](openapi.md); HTTP import is a server feature.
+Run existing tools through schemas, access rules and audit records. The standard
+terminal-agent setup connects a [shell or hook](agent-shell.md) so covered
+commands enter apexe with their ordinary syntax. Use the [Agent Skill](agent-skill.md)
+for explicit `exec` routing when the host cannot use that integration. Use
+[OpenAPI import](openapi.md) to expose HTTP operations over MCP or A2A.
 
 ## 1. Install
 
@@ -43,9 +42,12 @@ machine.
 apexe init
 ```
 
-If you installed with `scripts/install.sh`, `apexe setup` already ran this step
-and configured any agent host it detected. Run `init` directly when you want to
-redo the rules and bindings without reinstalling the binary.
+If the installer ran `apexe setup` successfully, initialization and shim
+installation are complete. Fresh setup creates a `strict` starter ACL and
+records its path in the shim manifest. Read the setup summary for host configuration
+results. Setup can configure detected OpenCode, pi and Claude Code hosts with
+operator consent. Codex uses a separate login-shell step. Run `init` directly
+to prepare or refresh rules and bindings on their own.
 
 This obtains the configured rules source, normally
 [cli-permissions](https://github.com/aiperceivable/cli-permissions), and discovers
@@ -115,10 +117,14 @@ are generated suggestions rather than your own review.
 
 ## 4. Execute locally
 
-Native exec is the default terminal-agent entry point. It requires matching
-reviewed grammar: check `native_ready` in an existing init report or preflight
-the intended command. GNU scanning support alone is insufficient; the current
-native pilot covers BSD cat/head/ls.
+For Claude Code, Codex, pi or OpenCode, follow the
+[host setup and verification steps](agent-shell.md). Once the host and shim
+route are verified, ask the agent to run the ordinary command, for example
+`ls -la`. If your host cannot use the shell or hook integration, follow the
+[Agent Skill fallback](agent-skill.md#quick-integration).
+
+For a direct invocation, native `apexe exec` requires matching reviewed
+grammar. Check `native_ready` in the init report or preview the concrete call.
 
 ```bash
 apexe exec --dry-run -- ls -la
@@ -133,18 +139,6 @@ inherited only with an explicit reviewed capability. Local execution loads the
 default ACL when present and uses caller `local`. Native local calls that need
 approval prompt on the controlling terminal; a non-interactive process is
 refused with a remedy. See the [exec reference](user-manual.md#47-apexe-exec).
-
-For Claude Code, Codex, pi or OpenCode, start with
-[Shell Integration](agent-shell.md): OpenCode and pi can use `apexe-sh`, Codex
-uses login-shell PATH shims, and Claude Code uses a `PreToolUse` hook. If the
-host cannot be configured with a shell or hook, use the
-[four-step Agent Skill fallback](agent-skill.md#quick-integration). It covers
-user/project Skill installation, a copyable `CLAUDE.md`/`AGENTS.md` rule and
-acceptance using ordinary listing and pipeline requests. Installing the Skill
-alone does not enroll every project. No MCP server or shim activation is needed
-for the fallback native exec route. Use [Agent troubleshooting](agent-skill.md#troubleshooting)
-when the observed tool calls differ; contributors can use the separate
-[maintainer verification procedure](agent-skill-verification.md).
 
 When native grammar alone is unavailable, module JSON works with initialized
 bindings if its normal checks permit the operation. Discover the actual schema

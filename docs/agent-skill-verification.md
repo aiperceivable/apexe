@@ -1,8 +1,9 @@
 # Agent Skill maintainer verification
 
-Use this procedure after changing the shared Skill, project instruction
-template or host setup. Ordinary users should start with the
-[quick integration guide](agent-skill.md#quick-integration).
+Use this procedure after changing the shared Skill or its project instruction
+template. It tests the explicit `exec` fallback. Verify a configured shell or
+hook using [the host integration guide](agent-shell.md#verify-any-host). For
+fallback installation, use the [quick integration guide](agent-skill.md#quick-integration).
 
 Verification applies to a particular Skill body, project configuration, host
 version and actual model. A past run with a different Skill or provider does

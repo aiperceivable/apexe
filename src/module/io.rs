@@ -33,6 +33,13 @@ pub(crate) enum ExecutionOutput {
     Passthrough(PassthroughOutput, Option<crate::governance::SandboxOutcome>),
 }
 
+/// Per-command launch overrides for a prepared embedded invocation.
+#[derive(Default)]
+pub(super) struct LocalEnvironment<'a> {
+    pub(super) path: Option<&'a std::ffi::OsStr>,
+    pub(super) delegation: Option<&'a str>,
+}
+
 pub(crate) fn exit_code(status: std::process::ExitStatus) -> i32 {
     if let Some(code) = status.code() {
         return code;
@@ -48,7 +55,7 @@ pub(crate) fn exit_code(status: std::process::ExitStatus) -> i32 {
 
 #[allow(clippy::result_large_err)] // Preserve the crate-wide ModuleError boundary.
 #[allow(clippy::too_many_arguments)] // Mirrors the execution inputs; a builder would only move them.
-pub(crate) async fn execute(
+pub(super) async fn execute(
     binary: &str,
     args: &[String],
     json_flag: Option<&str>,
@@ -57,6 +64,7 @@ pub(crate) async fn execute(
     io: ExecutionIo,
     sandbox: Option<&crate::governance::SandboxRuntime>,
     module_id: &str,
+    environment: LocalEnvironment<'_>,
     sandbox_outcome: &mut Option<crate::governance::SandboxOutcome>,
 ) -> Result<ExecutionOutput, ModuleError> {
     // The sandbox plan sees the exact child argv. The JSON flag is appended by
@@ -102,7 +110,7 @@ pub(crate) async fn execute(
         None => (binary, args),
     };
     let run = async {
-        let mut child = super::executor::spawn_with_io(program, program_args, io)?;
+        let mut child = super::executor::spawn_with_io(program, program_args, io, environment)?;
         let status = child.wait().await.map_err(|error| {
             ModuleError::new(
                 ErrorCode::ModuleExecuteError,
@@ -158,6 +166,7 @@ mod tests {
             passthrough(),
             None,
             "cli.test",
+            LocalEnvironment::default(),
             &mut None,
         )
         .await
@@ -180,6 +189,7 @@ mod tests {
             passthrough(),
             None,
             "cli.test",
+            LocalEnvironment::default(),
             &mut None,
         )
         .await

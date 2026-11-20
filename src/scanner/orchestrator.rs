@@ -75,7 +75,7 @@ pub struct ScanOrchestrator {
     config: ApexeConfig,
     resolver: ToolResolver,
     pipeline: ParserPipeline,
-    cache: ScanCache,
+    cache: Option<ScanCache>,
     man_parser: ManPageParser,
     completion_parser: CompletionParser,
     overlays: OverlayStore,
@@ -83,19 +83,25 @@ pub struct ScanOrchestrator {
 
 impl ScanOrchestrator {
     pub fn new(config: ApexeConfig) -> Self {
-        Self::build(config, ParserPipeline::new(None))
+        let cache = ScanCache::new(config.cache_dir.clone());
+        Self::build(config, ParserPipeline::new(None), Some(cache))
     }
 
     /// Construct with custom plugins for the parser pipeline.
+    ///
+    /// Custom parsers have no stable cache identity. With plugins installed,
+    /// scan results are never read from or written to the built-in cache.
     pub fn with_plugins(
         config: ApexeConfig,
         plugins: Vec<Box<dyn super::protocol::CliParser>>,
     ) -> Self {
-        Self::build(config, ParserPipeline::new(Some(plugins)))
+        if plugins.is_empty() {
+            return Self::new(config);
+        }
+        Self::build(config, ParserPipeline::new(Some(plugins)), None)
     }
 
-    fn build(config: ApexeConfig, pipeline: ParserPipeline) -> Self {
-        let cache = ScanCache::new(config.cache_dir.clone());
+    fn build(config: ApexeConfig, pipeline: ParserPipeline, cache: Option<ScanCache>) -> Self {
         let mut overlays = OverlayStore::empty();
         // A packaged corpus first, then configured ones, then the operator's own
         // directory: on a tie
@@ -231,12 +237,15 @@ impl ScanOrchestrator {
         if !no_cache {
             if let Some(mut cached) = self
                 .cache
-                .get_with_depth(
-                    command_name,
-                    detected.variant,
-                    resolved.version.as_deref(),
-                    depth,
-                )
+                .as_ref()
+                .and_then(|cache| {
+                    cache.get_with_depth(
+                        command_name,
+                        detected.variant,
+                        resolved.version.as_deref(),
+                        depth,
+                    )
+                })
                 .filter(|cached| cached.binary_path == resolved.binary_path)
             {
                 info!(tool = %command_name, variant = detected.variant.as_str(), "Using cached scan result");
@@ -256,8 +265,10 @@ impl ScanOrchestrator {
         // Written before the curated layer, so what lands on disk is tiers 1-3
         // and nothing else -- the part that really is a function of this
         // binary, which is what the cache key names.
-        if let Err(e) = self.cache.put_with_depth(&tool, depth) {
-            warn!(tool = %command_name, "Failed to cache scan result: {e}");
+        if let Some(cache) = &self.cache {
+            if let Err(e) = cache.put_with_depth(&tool, depth) {
+                warn!(tool = %command_name, "Failed to cache scan result: {e}");
+            }
         }
 
         self.apply_curated_layer(&mut tool, command_name, &detected);
@@ -1065,6 +1076,55 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_scan_custom_parser_uses_its_own_results_with_a_warm_builtin_cache() {
+        use crate::scanner::protocol::{CliParser, ParsedHelp};
+        use std::os::unix::fs::PermissionsExt;
+
+        struct FixtureParser;
+        impl CliParser for FixtureParser {
+            fn name(&self) -> &str {
+                "fixture"
+            }
+            fn priority(&self) -> u32 {
+                0
+            }
+            fn can_parse(&self, _: &str, _: &str) -> bool {
+                true
+            }
+            fn parse(&self, _: &str, _: &str) -> anyhow::Result<ParsedHelp> {
+                Ok(ParsedHelp {
+                    description: "Parsed by the custom fixture".into(),
+                    ..Default::default()
+                })
+            }
+        }
+
+        let directory = TempDir::new().unwrap();
+        let binary = directory.path().join("apexe-cache-fixture");
+        std::fs::write(
+            &binary,
+            "#!/bin/sh\nprintf 'Usage: apexe-cache-fixture [OPTIONS]\\n  --list  List items\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tools = [binary.to_str().unwrap().into()];
+        let builtin = ScanOrchestrator::new(test_config(&directory));
+        let custom =
+            ScanOrchestrator::with_plugins(test_config(&directory), vec![Box::new(FixtureParser)]);
+        let original = builtin.scan(&tools, false, 1);
+        let custom_cached = custom.scan(&tools, false, 1);
+        let custom_refreshed = custom.scan(&tools, true, 1);
+        for result in [custom_cached, custom_refreshed] {
+            assert_eq!(result.tools[0].description, "Parsed by the custom fixture");
+        }
+        assert_eq!(
+            builtin.scan(&tools, false, 1).tools[0].description,
+            original.tools[0].description
+        );
+    }
+
     fn test_config(tmp: &TempDir) -> ApexeConfig {
         ApexeConfig {
             bindings_dir: tmp.path().join("modules"),
@@ -1286,9 +1346,12 @@ mod tests {
         let config = test_config(&tmp);
         let orchestrator = ScanOrchestrator::new(config);
         // Verify by attempting a cache operation
-        let result = orchestrator
-            .cache
-            .get("nonexistent", ToolVariant::Unknown, None);
+        let result =
+            orchestrator
+                .cache
+                .as_ref()
+                .unwrap()
+                .get("nonexistent", ToolVariant::Unknown, None);
         assert!(result.is_none());
     }
 

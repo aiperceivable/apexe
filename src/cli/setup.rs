@@ -58,24 +58,24 @@ struct HostPlan {
 
 impl SetupArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
-        let shim_dir = config.config_dir.join("bin");
+        let shim_dir = super::sh::shim_directory(config);
         let hosts = plan_hosts(&shim_dir, self.no_hosts);
         if self.dry_run {
-            print_plan(self.overlays.as_deref(), self.reference.as_deref(), &hosts);
+            print_plan(
+                self.overlays.as_deref(),
+                self.reference.as_deref(),
+                &shim_dir,
+                &hosts,
+            );
             return Ok(());
         }
         self.install_rules(config)?;
-        self.install_shims(config)?;
+        let acl = self.install_shims(config, &shim_dir)?;
         let failures = self.configure_hosts(&hosts, config)?;
         println!();
-        println!(
-            "Shell startup was not modified: only configured hosts and 'apexe sh' are governed."
-        );
+        println!("Existing shell startup configuration was preserved.");
         println!("Run 'apexe env --enable' to govern every new terminal.");
-        println!(
-            "Review the ACL at {} before execution.",
-            config.config_dir.join("acl.yaml").display()
-        );
+        println!("Review the ACL at {} before execution.", acl.display());
         println!("Next: apexe list --verbose, then apexe exec or apexe env --check.");
         anyhow::ensure!(
             failures == 0,
@@ -93,7 +93,7 @@ impl SetupArgs {
             force: self.force,
             format: super::init::ReportFormat::Table,
         }
-        .execute(config)
+        .execute_with_policy_profile(config, crate::governance::PolicyProfile::Strict)
     }
 
     /// Install the launcher and shims without touching shell startup files.
@@ -103,13 +103,26 @@ impl SetupArgs {
     /// right trade for a host that only reads its own shell, not the right
     /// default for a machine-wide install, so `setup` leaves startup alone and
     /// lets the host integration carry governance.
-    fn install_shims(&self, config: &ApexeConfig) -> anyhow::Result<()> {
+    fn install_shims(&self, config: &ApexeConfig, directory: &Path) -> anyhow::Result<PathBuf> {
+        let installed = directory
+            .join(crate::runtime_path::MANIFEST_NAME)
+            .try_exists()?;
+        let selected = if installed {
+            super::shim::read_manifest(directory)?.acl
+        } else {
+            None
+        };
+        let acl = selected.unwrap_or_else(|| config.config_dir.join("acl.yaml"));
         EnvArgs {
-            enable: true,
+            enable: !installed,
+            reload: installed,
+            shim_dir: Some(directory.to_path_buf()),
             no_rc: true,
+            acl: Some(acl.clone()),
             ..EnvArgs::default()
         }
-        .execute(config)
+        .execute(config)?;
+        Ok(acl)
     }
 
     fn configure_hosts(&self, hosts: &[HostPlan], config: &ApexeConfig) -> anyhow::Result<usize> {
@@ -190,7 +203,12 @@ fn action_for(host: AgentHost, configured: bool) -> HostAction {
     }
 }
 
-fn print_plan(overlays: Option<&str>, reference: Option<&str>, hosts: &[HostPlan]) {
+fn print_plan(
+    overlays: Option<&str>,
+    reference: Option<&str>,
+    shim_dir: &Path,
+    hosts: &[HostPlan],
+) {
     match (overlays, reference) {
         (Some(source), Some(reference)) => {
             println!("Would prepare rules from {source} at {reference}.")
@@ -201,7 +219,10 @@ fn print_plan(overlays: Option<&str>, reference: Option<&str>, hosts: &[HostPlan
         }
         (None, None) => println!("Would prepare rules from the configured source."),
     }
-    println!("Would install shims under the config directory without editing shell startup.");
+    println!(
+        "Would install shims in {} without editing shell startup.",
+        shim_dir.display()
+    );
     if hosts.is_empty() {
         println!("Would leave agent hosts alone.");
         return;
