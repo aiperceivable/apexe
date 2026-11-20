@@ -1,6 +1,6 @@
 [package]
 name = "apexe"
-version = "0.15.1"
+version = "0.15.2"
 edition = "2021"
 # Compile integration tests together instead of linking one binary per file.
 autotests = false
