@@ -197,15 +197,6 @@ if [ "${RUN_SETUP}" -eq 0 ]; then
     exit 0
 fi
 
-# `curl | sh` leaves stdin attached to the download pipe, where a prompt would
-# read script text instead of an answer. Reattach the terminal when there is
-# one; without one, setup detects the non-interactive case and writes nothing.
-if ! [ -t 0 ]; then
-    if (exec </dev/tty) 2>/dev/null; then
-        exec </dev/tty
-    fi
-fi
-
 # Rebuild the argument vector with quoting intact: a source path may contain
 # spaces, and a single string would split it.
 set -- setup
@@ -215,4 +206,20 @@ if [ "${SETUP_OFFLINE}" -eq 1 ]; then set -- "$@" --offline; fi
 if [ "${SETUP_FORCE}" -eq 1 ]; then set -- "$@" --force; fi
 if [ -n "${SETUP_OVERLAYS}" ]; then set -- "$@" --overlays "${SETUP_OVERLAYS}"; fi
 if [ -n "${SETUP_REF}" ]; then set -- "$@" --ref "${SETUP_REF}"; fi
-exec "${PREFIX}/apexe" "$@"
+
+printf '\nPreparing rules, shims and agent hosts (the first run may download the rules corpus).\n'
+
+# Hand off to 'apexe setup' with the terminal attached when there is one, and
+# with the non-interactive pipe otherwise, where setup writes no host config.
+#
+# The redirection belongs to the handoff command, never to the shell: under
+# `curl | sh` this script is the shell's stdin, so rebinding the shell's own
+# stdin makes it look for the rest of the script on the terminal and hang.
+# That is why the handoff is also the last statement in this file.
+if [ -t 0 ]; then
+    exec "${PREFIX}/apexe" "$@"
+elif (exec </dev/tty) 2>/dev/null; then
+    exec "${PREFIX}/apexe" "$@" </dev/tty
+else
+    exec "${PREFIX}/apexe" "$@"
+fi

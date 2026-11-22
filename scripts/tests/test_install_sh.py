@@ -6,10 +6,13 @@ import http.server
 import os
 from pathlib import Path
 import platform
+import pty
+import select
 import subprocess
 import tarfile
 import tempfile
 import threading
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,6 +33,69 @@ def run(*arguments):
         text=True,
         env=dict(os.environ),
     )
+
+
+def pipe_script_through_a_terminal(arguments, environment, timeout=40.0):
+    """Run the script exactly as `curl ... | sh` does, with a terminal present.
+
+    stdin is a pipe carrying the script in small pieces, and a pty provides the
+    controlling terminal `/dev/tty` resolves to. A script that rebinds its own
+    stdin stops reading the pipe and waits on the terminal instead, which shows
+    up here as a deadline instead of a blocked suite.
+
+    Returns the terminal output, the child's wait status and whether the
+    deadline was hit.
+    """
+    read_end, write_end = os.pipe()
+    pid, terminal = pty.fork()
+    if pid == 0:  # child: script on the pipe, terminal for /dev/tty
+        os.dup2(read_end, 0)
+        os.close(read_end)
+        os.close(write_end)
+        os.execve("/bin/sh", ["sh", "-s", "--", *arguments], environment)
+    os.close(read_end)
+
+    script = SCRIPT.read_bytes()
+    output = b""
+    sent = 0
+    status = None
+    stalled = True
+    eof = False
+    deadline = time.monotonic() + timeout
+    try:
+        while time.monotonic() < deadline:
+            if sent < len(script):
+                try:
+                    sent += os.write(write_end, script[sent:sent + 64])
+                except BrokenPipeError:
+                    sent = len(script)
+                time.sleep(0.002)
+            if eof:
+                time.sleep(0.01)
+            else:
+                ready, _, _ = select.select([terminal], [], [], 0.02)
+                if ready:
+                    try:  # EIO once the child is gone
+                        chunk = os.read(terminal, 65536)
+                    except OSError:
+                        chunk = b""
+                    if chunk:
+                        output += chunk
+                    else:
+                        eof = True
+            waited, state = os.waitpid(pid, os.WNOHANG)
+            if waited == pid:
+                status, stalled = state, False
+                break
+    finally:
+        os.close(write_end)
+        if stalled:
+            try:
+                os.kill(pid, 9)
+            except ProcessLookupError:
+                pass
+            os.waitpid(pid, 0)
+    return output.decode(errors="replace"), status, stalled
 
 
 class InstallPlanTests(unittest.TestCase):
@@ -107,7 +173,14 @@ class InstallExecutionTests(unittest.TestCase):
         package = root / name
         package.mkdir()
         binary = package / "apexe"
-        binary.write_text("#!/bin/sh\necho 'apexe 0.0.0-fixture'\n", encoding="utf-8")
+        binary.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ]; then echo 'apexe 0.0.0-fixture'; exit 0; fi\n"
+            "log=${APEXE_FIXTURE_LOG:-/dev/null}\n"
+            "if [ -t 0 ]; then terminal=yes; else terminal=no; fi\n"
+            "printf '%s tty=%s\\n' \"$*\" \"$terminal\" >> \"$log\"\n",
+            encoding="utf-8",
+        )
         binary.chmod(0o755)
         archive = release / f"{name}.tar.gz"
         with tarfile.open(archive, "w:gz") as tar:
@@ -147,6 +220,31 @@ class InstallExecutionTests(unittest.TestCase):
             [str(installed), "--version"], capture_output=True, text=True
         )
         self.assertIn("apexe 0.0.0-fixture", version.stdout)
+
+    def test_piped_script_hands_off_without_reading_its_own_text(self):
+        """`curl | sh` must not end up waiting for the script on the terminal.
+
+        The script is its own shell's stdin, so attaching the terminal to the
+        shell (rather than to `apexe setup`) makes it look for the rest of the
+        script on the tty and stall after `Installed ...`.
+        """
+        prefix = Path(self.directory.name) / "prefix-handoff"
+        log = Path(self.directory.name) / "setup.log"
+        environment = dict(
+            os.environ,
+            APEXE_RELEASE_REPOSITORY=self.base,
+            APEXE_FIXTURE_LOG=str(log),
+        )
+        output, status, stalled = pipe_script_through_a_terminal(
+            ["--prefix", str(prefix)], environment
+        )
+        self.assertFalse(stalled, f"the piped script stalled:\n{output}")
+        self.assertEqual(status, 0, output)
+        self.assertIn("Preparing rules", output)
+        recorded = log.read_text(encoding="utf-8") if log.is_file() else ""
+        self.assertIn("setup", recorded, output)
+        # The terminal reaches setup, which is where a prompt belongs.
+        self.assertIn("tty=yes", recorded, output)
 
     def test_install_refuses_a_checksum_mismatch(self):
         self.checksum.write_text("deadbeef  apexe.tar.gz\n", encoding="utf-8")
