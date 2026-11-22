@@ -12,6 +12,13 @@ expose CLI and OpenAPI operations to AI agents through MCP and A2A.
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org)
 
+**Contents:** [What is apexe?](#what-is-apexe) · [Installation](#installation) ·
+[Quick Start](#quick-start) · [Integrations](#integrations) ·
+[Key capabilities](#key-capabilities) · [Commands](#commands) ·
+[How It Works](#how-it-works) · [Configuration](#configuration) ·
+[File Locations](#file-locations) · [Examples](#examples) ·
+[Developer Guide](#developer-guide) · [Documentation](#documentation)
+
 ## What is apexe?
 
 `apexe` gives humans and AI agents a shared execution layer for existing tools.
@@ -20,13 +27,9 @@ and applies configured access rules and approval checks before execution.
 Calls leave audit records. Your CLI binaries keep working as they are; scanning
 requires no LLM or changes to their source code.
 
-For terminal-capable AI agents, start with the [Shell Integration guide](docs/agent-shell.md):
-OpenCode and pi can use `apexe-sh` directly, Codex uses login-shell PATH shims,
-and Claude Code uses a `PreToolUse` hook. Install the shared
-[apexe Agent Skill](docs/agent-skill.md) only as a fallback when the host cannot
-be configured with a shell or hook. It routes external CLI commands through
-native `apexe exec -- <command> ...` and preserves the selected policy on
-every call. MCP/A2A clients can use CLI modules and OpenAPI operations through
+For terminal-capable AI agents, configure the host as described in
+[Integrations](#integrations) — shell or hook first, the shared Agent Skill only
+as a fallback. MCP/A2A clients use CLI modules and OpenAPI operations through
 the same executor for schema validation, configured ACLs and auditing.
 
 ### Choose your entry point
@@ -44,86 +47,6 @@ the same executor for schema validation, configured ACLs and auditing.
 | Write or explain the access policy | `apexe acl` | Starter policy, refreshed denials, and the rule that decided one module |
 | Inspect sandbox delegation | `apexe sandbox check` | Selected backend, enforcement level, capabilities and selected modules |
 | Cover a custom CLI | `apexe scan` | Deterministic discovery, YAML bindings and optional Claude Skills; policy authorship stays with `apexe acl` |
-
-Initialize CLI coverage, inspect the generated policy, then use native exec
-for commands with matching reviewed grammar:
-
-```bash
-apexe init
-apexe list --verbose
-# Review ~/.apexe/acl.yaml and check native_ready in the init report.
-apexe exec --dry-run -- ls -la
-apexe exec -- ls -la
-```
-
-### Key capabilities
-
-- **Discover and describe CLI commands** — Read `--help`, man pages and shell
-  completions with 6 built-in parsers (Man, BSD Usage, GNU, Click, Cobra, Clap).
-  Detect the installed variant and apply matching reviewed overlays as a fourth tier.
-  Generate schemas with types, defaults, enums, required fields and argument placement.
-- **Initialize from reviewed rules** — Acquire and cache external rules from
-  cli-permissions or your own Git source. Pin a revision, work offline, refresh
-  init-owned bindings and preserve custom bindings and existing policy.
-- **Execute locally** — Use module JSON or eligible native argv, inspect checks
-  with `--dry-run`, and preserve native streams and child status. PATH shims
-  reuse the local governance path; native eligibility requires explicit reviewed
-  grammar and capabilities. The current BSD pilot covers cat/head/ls.
-- **Serve through MCP and A2A** — Share the executor across both protocols. MCP
-  offers stdio, streamable HTTP, legacy SSE, structured results, an Explorer UI,
-  client configuration snippets and optional metrics. HTTP-family transports
-  require token authentication by default; JWT supports caller identities and roles.
-- **Import HTTP APIs** — Load OpenAPI 3.0/3.1 JSON or YAML from a file or URL at
-  server startup. CLI and API modules share validation, filters, configured ACLs
-  and audit records. Specification-fetch, upstream API and client credentials
-  stay separate. See [supported proxy operations](docs/openapi.md).
-- **Apply policy and record decisions** — Generate a default-deny starter ACL,
-  classify readonly/destructive/idempotent/network-reaching behavior, and gate
-  calls on their actual escalating arguments when approval is enabled. Audit
-  executions, refusals and ACL decisions without recording input values.
-- **Check paths and bound subprocesses** — Always check schema-typed filesystem
-  paths against system and credential boundaries. Execute CLI argv without a
-  shell, scrub captured/server child environments, inherit the caller's
-  environment for local shell execution, enforce timeouts and cap captured
-  output.
-  Servers also offer retry and circuit breaking; local execution disables both.
-- **Verify CLI contracts** — Detect source drift against the pre-overlay
-  baseline. Optional readonly, isolated and explicitly authorized dry-run cases
-  test concrete invocations; recorded evidence is invalidated by changed
-  bindings, binaries or case files. Verification does not certify every invocation.
-- **Support integrations** — Configure host shell/hook integration with
-  `apexe agent`; install the shared Agent Skill as a fallback for hosts that
-  cannot be configured; export YAML bindings and optional per-module Claude Skills,
-  embed the Rust library, and export OpenAI tool definitions programmatically.
-  Structured CLI errors and module guidance help callers inspect and correct failures.
-
-Coverage depends on the installed CLI, its discoverable grammar and matching
-rules. Local `exec` and shims use the default ACL when present; `serve` and `a2a`
-require an explicit `--acl` to enforce access control. MCP interactive approval
-is opt-in with `--enable-approval`; A2A approval stores are a library integration.
-OpenAPI import is a server feature; local exec and shims execute CLI commands.
-
-> **`apexe` is not a sandbox.** Normal execution runs with the host process's
-> privileges. PATH shims cover eligible external commands and can be bypassed
-> by builtins, aliases or absolute paths. OS isolation for explicit verification
-> cases does not sandbox normal execution. A separate specification,
-> [`docs/sandbox.md`](docs/sandbox.md), defines opt-in per-module delegation to an
-> OS/backend sandbox; 0.15.0 implements it for modules listed in `sandbox.modules`. Its default pair is macOS
-> `sandbox-exec` (OS, deprecated, canonical paths) and Linux `bwrap` (the
-> `bubblewrap` package); `systemd-run` is system/root only, because its user
-> manager ignores path properties. See the
-> [threat model](docs/threat-model.md) for the boundary and deployment
-> requirements.
-
-### Built on the apcore ecosystem
-
-| Crate | Role |
-|-------|------|
-| [apcore](https://github.com/aiperceivable/apcore-rust) >=0.33.0 | Module trait, Registry, ACL, ModuleError, Context |
-| [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit-rust) >=0.15.0 | ScannedModule, YAMLWriter, DisplayResolver, OpenAPI scanning and proxy validation |
-| [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) >=0.23.4 | MCP server with structured results, middleware, auth, Explorer UI |
-| [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust) >=0.8.5 | A2A agent server sharing the same governed `Executor` |
-| [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) >=0.14.1 | Man pages and module detail formatting |
 
 ---
 
@@ -199,8 +122,8 @@ and a `/?` parser, and is not implemented.
 
 ## Quick Start
 
-Initialize once and review policy. Terminal agents use the shared Skill and
-native exec; env is optional shell integration and MCP/A2A are protocol options:
+Initialize once and review the generated policy, then run commands through
+native argv or module JSON:
 
 ```bash
 # Fetch cli-permissions and prepare bindings for matching tools on this machine.
@@ -244,14 +167,17 @@ are allowed to every caller, destructive and network-reaching modules are
 denied to every caller, and the `local` caller may additionally run `cli.*`
 above those denials. Anything else falls through to `default_effect: deny`.
 Run `apexe acl init --profile strict` when nothing should be granted
-implicitly. Existing manual rules and policy defaults are preserved. Local
-exec/env load the default ACL when present; `serve` and `a2a` still need an
-explicit `--acl`. The current native pilot covers BSD cat/head/ls; GNU scanning support
-does not imply native eligibility. When matching native grammar is unavailable,
-use module JSON if its checks permit; a server is not required for local use.
-See the [Quick Start guide](docs/quickstart.md) for the full workflow.
+implicitly. Existing manual rules and policy defaults are preserved. The
+current native pilot covers BSD cat/head/ls: GNU scanning support does not imply
+native eligibility, and initialized modules without matching grammar stay usable
+through module JSON when their checks permit. See the
+[Quick Start guide](docs/quickstart.md) for the full workflow.
 
-### Claude Code, Codex, pi and OpenCode: shell/hook first, Skill fallback
+---
+
+## Integrations
+
+### Agent hosts: shell/hook first, Skill fallback
 
 `apexe setup` installs shims and offers to configure detected hosts. OpenCode
 and pi can use `apexe-sh` directly, Codex uses login-shell PATH shims, and
@@ -265,25 +191,64 @@ explicit `apexe exec`. Contributors can use the
 [maintainer verification procedure](docs/agent-skill-verification.md) for controlled
 three-scenario tests. Generated per-module Skills complement this shared route.
 
-### Optional MCP integration: Claude Desktop
+### MCP client snippets
+
+Print a client configuration with `apexe serve --show-config`. The snippet
+carries the rest of the command line (`--bindings-dir`, `--prefix`, `--tags`,
+`--acl`, `--name`, the governance toggles), so pass the flags you intend to
+serve with. `--auth-token` / `--jwt-secret` are deliberately never included.
 
 ```bash
 apexe serve --show-config claude-desktop --acl ~/.apexe/acl.yaml
 # Copy output to ~/Library/Application Support/Claude/claude_desktop_config.json
 # Restart Claude Desktop — initialized commands appear as MCP tools
-```
 
-The snippet carries the rest of the command line (`--bindings-dir`, `--prefix`,
-`--tags`, `--acl`, `--name`, the governance toggles), so pass the flags you
-intend to serve with. `--auth-token` / `--jwt-secret` are deliberately never
-included.
-
-### Optional MCP integration: Cursor
-
-```bash
 apexe serve --show-config cursor --acl ~/.apexe/acl.yaml
 # Add to Cursor's MCP settings
 ```
+
+---
+
+## Key capabilities
+
+- **Discover and describe CLI commands** — Read `--help`, man pages and shell
+  completions with 6 built-in parsers (Man, BSD Usage, GNU, Click, Cobra, Clap).
+  Detect the installed variant and apply matching reviewed overlays as a fourth tier.
+  Generate schemas with types, defaults, enums, required fields and argument placement.
+- **Initialize from reviewed rules** — Acquire and cache external rules from
+  cli-permissions or your own Git source. Pin a revision, work offline, refresh
+  init-owned bindings and preserve custom bindings and existing policy.
+- **Execute locally** — Use module JSON or eligible native argv, inspect checks
+  with `--dry-run`, and preserve native streams and child status. PATH shims
+  reuse the local governance path; native eligibility requires explicit reviewed
+  grammar and capabilities.
+- **Serve through MCP and A2A** — Share the executor across both protocols. MCP
+  offers stdio, streamable HTTP, legacy SSE, structured results, an Explorer UI,
+  client configuration snippets and optional metrics. HTTP-family transports
+  require token authentication by default; JWT supports caller identities and roles.
+- **Import HTTP APIs** — Load OpenAPI 3.0/3.1 JSON or YAML from a file or URL at
+  server startup. CLI and API modules share validation, filters, configured ACLs
+  and audit records. Specification-fetch, upstream API and client credentials
+  stay separate. See [supported proxy operations](docs/openapi.md).
+- **Apply policy and record decisions** — Generate a default-deny starter ACL,
+  classify readonly/destructive/idempotent/network-reaching behavior, and gate
+  calls on their actual escalating arguments when approval is enabled. Audit
+  executions, refusals and ACL decisions without recording input values.
+- **Check paths and bound subprocesses** — Always check schema-typed filesystem
+  paths against system and credential boundaries. Execute CLI argv without a
+  shell, scrub captured/server child environments, inherit the caller's
+  environment for local shell execution, enforce timeouts and cap captured
+  output.
+  Servers also offer retry and circuit breaking; local execution disables both.
+- **Verify CLI contracts** — Detect source drift against the pre-overlay
+  baseline. Optional readonly, isolated and explicitly authorized dry-run cases
+  test concrete invocations; recorded evidence is invalidated by changed
+  bindings, binaries or case files. Verification does not certify every invocation.
+- **Support integrations** — Configure host shell/hook integration with
+  `apexe agent`; install the shared Agent Skill as a fallback for hosts that
+  cannot be configured; export YAML bindings and optional per-module Claude Skills,
+  embed the Rust library, and export OpenAI tool definitions programmatically.
+  Structured CLI errors and module guidance help callers inspect and correct failures.
 
 ---
 
@@ -333,8 +298,12 @@ cat request.json | apexe exec cli.ls --input-file - --error-format json
 ```
 
 Native mode preserves streams and child status. The JSON property names depend
-on the binding. Unknown commands default to denial; explicit unmanaged policies
-are described in the [exec reference](docs/user-manual.md#47-apexe-exec).
+on the binding. Unknown commands default to refusal; `--unmanaged allow|approval`
+opts in without overriding the ACL, and unmanaged argv gets no schema-based path
+checks and a null stdin. Local execution defaults to the `local` caller and
+loads `~/.apexe/acl.yaml` when present; a malformed policy fails closed. `run`
+has been replaced by `exec`, with no alias, and `--as` is available only for
+`--dry-run`. See the [exec reference](docs/user-manual.md#47-apexe-exec).
 
 ### `apexe env`
 
@@ -353,9 +322,32 @@ source ~/.apexe/bin/apexe-deactivate.sh
 `--scanned off|readonly|all` admits bindings without a reviewed overlay; a
 scanned route replays the validated original argv. `--replace-unowned`
 regenerates the reserved `apexe-sh` and activation helpers after a lost
-ownership record. The namespaced helpers are installed with apexe; no source
-checkout is needed. See the [env reference](docs/user-manual.md#48-apexe-env)
-for shell support and activation boundaries.
+ownership record. `--shim-dir` selects a custom installation directory.
+
+`--enable` installs shims and configures startup in one step, detecting the
+shell from `SHELL`; use `--shell` and `--rc-file` for a custom startup layout.
+bash, zsh and fish load shims in new interactive terminals; bash and zsh also
+activate in noninteractive login shells, including Codex terminal calls, and
+POSIX sh uses `.` instead of `source`. No separate `eval` or `rehash` is
+needed. `--reload` refreshes the command set while retaining the installed
+binding directory, ACL and filters; with no installation it enables shims using
+the current settings. Deactivation removes the shim directory from the current
+PATH and restores `APEXE_SHIM_DIR` without uninstalling anything, and the
+namespaced helpers stay installed. Unlike a Python venv, sourcing selects
+governed external commands but adds no prompt prefix: activate the venv first,
+then apexe, and deactivate in the reverse order. `--check` prints `PASS`,
+`FAIL`, `WARN` and `SKIP` results plus a summary without executing wrapped
+commands; failures, including a missing ACL, return status 1, warnings 0.
+
+Shims inherit output streams, preserve exit status and use the same local
+policy. Only matching authoritative overlays that declare order-independent
+accepted invocations are eligible; stdin and short bundles require explicit
+capabilities, and the verified BSD corpus pilot enables `cat`, `head` and `ls`.
+Builtins, aliases and absolute paths bypass PATH shims. The namespaced helpers
+are installed with apexe, so no source checkout is needed. See
+[F8](docs/features/v2-f8-local-execution.md) and the
+[env reference](docs/user-manual.md#48-apexe-env) for shell support and
+activation boundaries.
 
 ### `apexe sh`
 
@@ -427,6 +419,20 @@ apexe serve --no-log-arguments --acl ~/.apexe/acl.yaml # Drop argument payloads 
 > bind refuses to start without `--allow-unauthenticated-bind`. stdio is
 > unaffected. See [`docs/user-manual.md`](docs/user-manual.md).
 
+Import an OpenAPI document alongside scanned CLI tools:
+
+```bash
+apexe serve --openapi ./openapi.yaml --openapi-base-url https://api.example.com --acl ./acl.yaml
+apexe a2a --openapi ./openapi.yaml --openapi-base-url https://api.example.com --acl ./acl.yaml
+```
+
+OpenAPI 3.0/3.1 JSON or YAML sources may be local files or HTTP(S) URLs.
+Operations default to the `api.*` namespace and share schema validation, ACL
+checks and audit records with CLI modules. Set `APEXE_OPENAPI_TOKEN` for the
+upstream API credential; `--openapi-header` is only for fetching the
+specification. See the [OpenAPI guide](docs/openapi.md) and
+[runnable API example](examples/openapi_import/README.md) for flags, proxy limits
+and tested setup.
 
 ### `apexe a2a`
 
@@ -449,7 +455,6 @@ apexe a2a --cors-origin https://example.com --acl ~/.apexe/acl.yaml # Allow a br
 > A2A has no interactive elicitation transport, so there is **no `--enable-approval`
 > flag** on `apexe a2a` (it's available on `apexe serve`, and on A2A only via the
 > library `ApprovalStore` API). See [`docs/user-manual.md`](docs/user-manual.md).
-
 
 ### `apexe verify`
 
@@ -700,6 +705,7 @@ including how to cross-check a draft against a reference installation and the
 traps already hit in practice (of the 38 flags `ls` shares between its BSD and
 GNU variants, **zero** have identical descriptions — never copy one across).
 
+---
 
 ## How It Works
 
@@ -763,6 +769,26 @@ the ACL permits the operation. See [user manual §8](docs/user-manual.md).
 | `--format json\|yaml` | `"type": "string", "enum": ["json","yaml"]` |
 | `--include a --include b` | `"type": "array", "items": {"type":"string"}` |
 
+### Coverage and limits
+
+Coverage depends on the installed CLI, its discoverable grammar and matching
+rules. Local `exec` and shims use the default ACL when present; `serve` and `a2a`
+require an explicit `--acl` to enforce access control. MCP interactive approval
+is opt-in with `--enable-approval`; A2A approval stores are a library integration.
+OpenAPI import is a server feature; local exec and shims execute CLI commands.
+
+> **`apexe` is not a sandbox.** Normal execution runs with the host process's
+> privileges. PATH shims cover eligible external commands and can be bypassed
+> by builtins, aliases or absolute paths. OS isolation for explicit verification
+> cases does not sandbox normal execution. A separate specification,
+> [`docs/sandbox.md`](docs/sandbox.md), defines opt-in per-module delegation to an
+> OS/backend sandbox; 0.15.0 implements it for modules listed in `sandbox.modules`. Its default pair is macOS
+> `sandbox-exec` (OS, deprecated, canonical paths) and Linux `bwrap` (the
+> `bubblewrap` package); `systemd-run` is system/root only, because its user
+> manager ignores path properties. See the
+> [threat model](docs/threat-model.md) for the boundary and deployment
+> requirements.
+
 ---
 
 ## Configuration
@@ -816,6 +842,24 @@ See [examples/README.md](examples/README.md) for full details.
 | [verification](examples/verification/) | Isolated case verification and evidence invalidation | `python3 examples/verification/demo.py` |
 | [openapi_import](examples/openapi_import/) | HTTP API import through MCP/A2A with ACL enforcement | `python3 examples/openapi_import/demo.py` |
 
+Run the self-contained examples from the repository root with Python 3:
+
+```bash
+cargo build --all-features
+python3 examples/local_execution/demo.py --apexe target/debug/apexe
+# On macOS, with the reviewed companion corpus available:
+python3 examples/local_execution/demo.py --apexe target/debug/apexe \
+  --corpus ../cli-permissions/overlays --shims
+python3 examples/openapi_import/demo.py --apexe target/debug/apexe
+python3 examples/openapi_import/demo.py --apexe target/debug/apexe --remote-spec
+```
+
+The local demo checks preflight, execution, ACL denial and audit in a temporary
+HOME; `--shims` also checks a native pipeline and owned uninstall. The OpenAPI
+demo starts its own local HTTP API and exercises both MCP and A2A, including
+JSON requests, ACL denial and separate specification/API credentials. See the
+[Quick Start](docs/quickstart.md#7-customize-and-maintain) for the walkthrough.
+
 ---
 
 ## Developer Guide
@@ -838,6 +882,18 @@ on macOS; `bwrap` and unprivileged user namespaces on Linux). The full example
 gate requires `jq`, `curl` and the reviewed cli-permissions corpus. CI runs the
 full gates on Linux and macOS and uploads JSON receipts. See the
 [Developer Guide](docs/developer-guide.md) for coverage rules and platform scope.
+
+### Ecosystem crates
+
+Built on the apcore ecosystem:
+
+| Crate | Role |
+|-------|------|
+| [apcore](https://github.com/aiperceivable/apcore-rust) >=0.33.0 | Module trait, Registry, ACL, ModuleError, Context |
+| [apcore-toolkit](https://github.com/aiperceivable/apcore-toolkit-rust) >=0.15.0 | ScannedModule, YAMLWriter, DisplayResolver, OpenAPI scanning and proxy validation |
+| [apcore-mcp](https://github.com/aiperceivable/apcore-mcp-rust) >=0.23.4 | MCP server with structured results, middleware, auth, Explorer UI |
+| [apcore-a2a](https://github.com/aiperceivable/apcore-a2a-rust) >=0.8.5 | A2A agent server sharing the same governed `Executor` |
+| [apcore-cli](https://github.com/aiperceivable/apcore-cli-rust) >=0.14.1 | Man pages and module detail formatting |
 
 ### Adding a Custom Parser
 
@@ -887,115 +943,6 @@ gh workflow run release.yml -f tag=rust/vX.Y.Z
 ```
 
 ---
-
-## Local execution and OpenAPI import
-
-```bash
-# Use native argv without activating PATH shims.
-apexe exec --dry-run -- ls -la
-apexe exec -- ls -la
-
-# Inspect a module with JSON input, then execute with captured JSON output.
-apexe exec cli.ls --input '{"file":["."]}' --dry-run
-apexe exec cli.ls --input '{"file":["."]}'
-
-# Import an HTTP API alongside scanned CLI tools.
-apexe serve --openapi ./openapi.yaml --openapi-base-url https://api.example.com --acl ./acl.yaml
-apexe a2a --openapi ./openapi.yaml --openapi-base-url https://api.example.com --acl ./acl.yaml
-```
-
-Local execution defaults to the `local` caller and loads `~/.apexe/acl.yaml`
-when present; a malformed policy fails closed. Native mode requires the same
-reviewed grammar as shims and preserves child streams and exit status. Unknown
-commands default to refusal; `--unmanaged allow|approval` opts in without
-overriding the ACL. Unmanaged argv has no schema-based path checks and receives
-null stdin. `run` has been replaced by `exec`, with no alias. `--as` is available
-only for `--dry-run`. OpenAPI 3.0/3.1 JSON/YAML sources may be local files or HTTP(S)
-URLs. Operations default to the `api.*` namespace and share schema validation,
-ACL and auditing with CLI modules. Set `APEXE_OPENAPI_TOKEN` for the upstream
-API credential; `--openapi-header` is only for fetching the specification.
-See the [command reference](docs/user-manual.md#47-apexe-exec),
-[OpenAPI guide](docs/openapi.md), and [runnable API example](examples/openapi_import/README.md)
-for flags, proxy limits and tested setup.
-
-After initialization with rules that declare reviewed native grammar, install the
-shell helpers once, then source them in bash or zsh. No source checkout is needed:
-
-```bash
-apexe env --enable
-source ~/.apexe/bin/apexe-activate.sh
-apexe env --check
-printf 'one\ntwo\n' | cat | head -n1
-ls -la
-# Leave the governed shell; the installation stays in place.
-source ~/.apexe/bin/apexe-deactivate.sh
-# The installed helper remains available and automatically re-enables shims.
-source ~/.apexe/bin/apexe-activate.sh
-```
-
-The scripts are generated by the installed apexe binary, including an executable
-installed in `~/.cargo/bin`. Activation uses `--reload`, preserving installed
-bindings, ACL and filters; when absent, an installation is enabled automatically.
-Deactivation removes the shim directory from the current PATH and restores
-`APEXE_SHIM_DIR`, leaving the installation and any entries added after
-activation in place. The namespaced helpers remain installed after disable.
-No separate `eval` or `rehash` is needed. POSIX sh uses
-`.` instead of `source`; executing a script changes only its child process.
-
-Like Python's venv activation, sourcing changes the current terminal. apexe
-selects governed external commands; it does not select Python, add a prompt
-prefix or define a `deactivate` function. To combine them, activate the venv first, then apexe;
-deactivate apexe first, then call the venv's `deactivate`.
-For custom shim directories, the helpers are installed directly in `<shim-dir>`;
-enable/reload prints their full paths. See the
-[command reference](docs/user-manual.md#48-apexe-env) for configuration and lifecycle.
-
-`--enable` installs shims and configures startup in one step, detecting the shell
-from `SHELL`; use `--shell` and `--rc-file` for a
-custom startup layout. bash, zsh and fish load shims in new interactive
-terminals; bash and zsh also activate in noninteractive login shells, including
-Codex terminal calls. Existing zsh installations can add login activation with
-`apexe env --reload --shell zsh`, then restart Codex. sh uses its login profile. PowerShell requires
-`apexe env --enable --shell powershell --rc-file "$PROFILE"` in the target host.
-Enabling preserves existing configuration and avoids duplicate blocks. Once
-enabled, use native commands directly without repeating setup. `--reload`
-retains the installed binding directory, ACL and filters when refreshing the
-command set. With no installation, it automatically enables shims using current
-settings.
-`apexe env --check` diagnoses the active PATH, owned links, manifest, installed
-bindings, source scripts and ACL without executing wrapped commands. It prints
-`PASS`, `FAIL`, `WARN` and `SKIP` results and a summary; failures return status 1,
-including missing ACLs. Warnings alone return status 0.
-Custom installations can use `--shim-dir`; otherwise the check honors
-`APEXE_SHIM_DIR`. See the [command reference](docs/user-manual.md#48-apexe-env)
-for its scope and exit status.
-
-Shims inherit output streams, preserve exit status and use the same local
-policy. Only matching authoritative overlays declaring order-independent
-accepted invocations are eligible. stdin and short bundles require explicit
-capabilities; the verified BSD corpus pilot enables `cat`, `head` and `ls`.
-Builtins, aliases and absolute paths bypass PATH shims. See
-[F8](docs/features/v2-f8-local-execution.md) and the
-[runnable local example](examples/local_execution/README.md) for latency, scope
-and temporary-home demonstrations.
-
-Run the self-contained examples from the repository root with Python 3:
-
-```bash
-cargo build --all-features
-python3 examples/local_execution/demo.py --apexe target/debug/apexe
-# On macOS, with the reviewed companion corpus available:
-python3 examples/local_execution/demo.py --apexe target/debug/apexe \
-  --corpus ../cli-permissions/overlays --shims
-python3 examples/openapi_import/demo.py --apexe target/debug/apexe
-python3 examples/openapi_import/demo.py --apexe target/debug/apexe --remote-spec
-```
-
-The local demo checks preflight, execution, ACL denial and audit in a temporary
-HOME; `--shims` also checks a native pipeline and owned uninstall. The OpenAPI
-demo starts its own local HTTP API and exercises both MCP and A2A, including
-JSON requests, ACL denial and separate specification/API credentials. See the
-[Quick Start](docs/quickstart.md#7-customize-and-maintain) for the walkthrough.
 
 ## Documentation
 
