@@ -736,7 +736,28 @@ def validate_agent_shell(session, fixture):
         stdin=persistent_event,
         check=contains("APEXE_SESSION_SOCKET"),
     )
-    for host in ["opencode", "pi", "codex", "claude"]:
+    antigravity_event = (
+        '{"toolCall":{"name":"run_command","args":{"CommandLine":"toy --ready"}}}'
+    )
+    session.run(
+        "agent shell hook antigravity",
+        ["hook", "antigravity"],
+        env=environment,
+        stdin=antigravity_event,
+        check=contains("overwrite"),
+    )
+    antigravity_persistent_event = (
+        '{"toolCall":{"name":"run_command","args":{"CommandLine":"pwd"}},'
+        '"conversationId":"c1","cwd":"/tmp"}'
+    )
+    session.run(
+        "agent shell hook antigravity persistent",
+        ["hook", "antigravity", "--persistent"],
+        env=environment,
+        stdin=antigravity_persistent_event,
+        check=contains("APEXE_SESSION_SOCKET"),
+    )
+    for host in ["opencode", "pi", "codex", "claude", "antigravity"]:
         session.run(
             "agent install " + host,
             ["agent", host],
@@ -763,13 +784,13 @@ def validate_agent_shell(session, fixture):
         ["agent", "pi", "--write", "--scope", "user"],
         env=environment,
     )
-    for host in ["codex", "claude"]:
+    for host in ["codex", "claude", "antigravity"]:
         session.run(
             "agent write " + host,
             ["agent", host, "--write"],
             env=environment,
         )
-    for host in ["opencode", "pi", "codex", "claude"]:
+    for host in ["opencode", "pi", "codex", "claude", "antigravity"]:
         session.run(
             "agent configured " + host,
             ["agent", "--check", host, "--format", "json"],
@@ -805,6 +826,11 @@ def validate_agent_shell(session, fixture):
     session.run(
         "agent mcp only write claude",
         ["agent", "claude", "--mcp-only", "--write"],
+        env=environment,
+    )
+    session.run(
+        "agent mcp only write antigravity",
+        ["agent", "antigravity", "--mcp-only", "--write", "--scope", "user"],
         env=environment,
     )
     session.run("agent shell env disable", ["env", "--disable", "--shim-dir", shim])

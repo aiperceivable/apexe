@@ -6,17 +6,19 @@ use serde_json::{json, Map, Value};
 use crate::config::ApexeConfig;
 
 const MAX_HOOK_INPUT_BYTES: u64 = 1024 * 1024;
+const MISSING_SHIMS_MESSAGE: &str = "apexe shims are not installed for this environment; \
+    run 'apexe env --enable' before relying on the hook";
 
 /// Translate a host hook event into a governed execution request.
 #[derive(Debug, clap::Args)]
 #[command(
-    after_help = "Reads one JSON event from stdin and writes the host's hook response to stdout.\n\nClaude Code: configure this command as a PreToolUse hook for Bash. Simple external commands are rewritten to `apexe sh -c '<command>'`; shell builtins, pipelines, redirections and compound commands are left unchanged and rely on the installed PATH shims."
+    after_help = "Reads one JSON event from stdin and writes the host's hook response to stdout.\n\nClaude Code: configure `apexe hook claude` as a PreToolUse hook for Bash.\nAntigravity: configure `apexe hook antigravity` as a PreToolUse hook for run_command.\nSimple external commands are rewritten to `apexe sh -c '<command>'`; shell builtins, pipelines, redirections and compound commands are left unchanged and rely on the installed PATH shims."
 )]
 pub struct HookArgs {
     /// Hook protocol to serve.
     #[arg(value_enum)]
     pub host: HookHost,
-    /// Route every Bash call through a persistent governed shell session.
+    /// Route every shell tool call through a persistent governed shell session.
     ///
     /// Experimental: the session preserves cwd, variables, functions and
     /// aliases across calls. It is started on demand and is scoped to the
@@ -28,17 +30,19 @@ pub struct HookArgs {
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum HookHost {
     Claude,
+    Antigravity,
 }
 
 impl HookArgs {
     pub fn execute(self, config: &ApexeConfig) -> anyhow::Result<()> {
         match self.host {
             HookHost::Claude => claude(config, self.persistent),
+            HookHost::Antigravity => antigravity(config, self.persistent),
         }
     }
 }
 
-fn claude(config: &ApexeConfig, persistent: bool) -> anyhow::Result<()> {
+fn read_hook_event() -> anyhow::Result<Value> {
     let mut input = String::new();
     std::io::stdin()
         .take(MAX_HOOK_INPUT_BYTES + 1)
@@ -47,7 +51,11 @@ fn claude(config: &ApexeConfig, persistent: bool) -> anyhow::Result<()> {
         input.len() as u64 <= MAX_HOOK_INPUT_BYTES,
         "hook input exceeds 1 MiB"
     );
-    let event: Value = serde_json::from_str(&input)?;
+    Ok(serde_json::from_str(&input)?)
+}
+
+fn claude(config: &ApexeConfig, persistent: bool) -> anyhow::Result<()> {
+    let event = read_hook_event()?;
     let tool_name = event
         .get("tool_name")
         .and_then(Value::as_str)
@@ -71,10 +79,7 @@ fn claude(config: &ApexeConfig, persistent: bool) -> anyhow::Result<()> {
     }
     let shim_dir = shim_directory(config);
     if !shim_dir.join(crate::runtime_path::MANIFEST_NAME).is_file() {
-        return deny(
-            "apexe shims are not installed for this environment; run 'apexe env --enable' \
-             before relying on the hook",
-        );
+        return deny(MISSING_SHIMS_MESSAGE);
     }
     if persistent {
         let session_id = event
@@ -86,17 +91,7 @@ fn claude(config: &ApexeConfig, persistent: bool) -> anyhow::Result<()> {
             .and_then(Value::as_str)
             .map(PathBuf::from)
             .unwrap_or(std::env::current_dir()?);
-        let socket = session_path(session_id, &cwd);
-        let executable = executable
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("apexe executable path must be valid UTF-8"))?;
-        let rewritten = format!(
-            "APEXE_SESSION_SOCKET={} APEXE_SESSION_CWD={} {} sh -c {}",
-            shell_words::quote(socket.to_str().unwrap_or_default()),
-            shell_words::quote(cwd.to_str().unwrap_or_default()),
-            shell_words::quote(executable),
-            shell_words::quote(command)
-        );
+        let rewritten = persistent_command(session_id, &cwd, &executable, command)?;
         return allow(
             tool_input,
             &rewritten,
@@ -107,19 +102,110 @@ fn claude(config: &ApexeConfig, persistent: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let executable = executable
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("apexe executable path must be valid UTF-8"))?;
-    let rewritten = format!(
-        "{} sh -c {}",
-        shell_words::quote(executable),
-        shell_words::quote(command)
-    );
+    let rewritten = shell_command(&executable, command)?;
     allow(
         tool_input,
         &rewritten,
         "Routed through the apexe governed shell",
     )
+}
+
+fn antigravity(config: &ApexeConfig, persistent: bool) -> anyhow::Result<()> {
+    let event = read_hook_event()?;
+    let Some(tool_call) = event.get("toolCall").and_then(Value::as_object) else {
+        return Ok(());
+    };
+    if tool_call.get("name").and_then(Value::as_str) != Some("run_command") {
+        return Ok(());
+    }
+    let Some(command) = tool_call
+        .get("args")
+        .and_then(|args| args.get("CommandLine"))
+        .and_then(Value::as_str)
+    else {
+        return Ok(());
+    };
+    if command.trim().is_empty() {
+        return Ok(());
+    }
+
+    let executable = std::env::current_exe()?.canonicalize()?;
+    if is_routed(command, &executable) {
+        return Ok(());
+    }
+    let shim_dir = shim_directory(config);
+    if !shim_dir.join(crate::runtime_path::MANIFEST_NAME).is_file() {
+        return antigravity_deny(MISSING_SHIMS_MESSAGE);
+    }
+    if persistent {
+        let session_id = event
+            .get("conversationId")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        let cwd = event
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .unwrap_or(std::env::current_dir()?);
+        let rewritten = persistent_command(session_id, &cwd, &executable, command)?;
+        return antigravity_allow(
+            &rewritten,
+            "Routed through the apexe persistent governed session",
+        );
+    }
+    if !should_rewrite(command) {
+        return Ok(());
+    }
+
+    let rewritten = shell_command(&executable, command)?;
+    antigravity_allow(&rewritten, "Routed through the apexe governed shell")
+}
+
+fn shell_command(executable: &Path, command: &str) -> anyhow::Result<String> {
+    let executable = executable
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("apexe executable path must be valid UTF-8"))?;
+    Ok(format!(
+        "{} sh -c {}",
+        shell_words::quote(executable),
+        shell_words::quote(command)
+    ))
+}
+
+fn persistent_command(
+    session_id: &str,
+    cwd: &Path,
+    executable: &Path,
+    command: &str,
+) -> anyhow::Result<String> {
+    let socket = session_path(session_id, cwd);
+    let executable = executable
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("apexe executable path must be valid UTF-8"))?;
+    Ok(format!(
+        "APEXE_SESSION_SOCKET={} APEXE_SESSION_CWD={} {} sh -c {}",
+        shell_words::quote(socket.to_str().unwrap_or_default()),
+        shell_words::quote(cwd.to_str().unwrap_or_default()),
+        shell_words::quote(executable),
+        shell_words::quote(command)
+    ))
+}
+
+fn antigravity_allow(command: &str, reason: &str) -> anyhow::Result<()> {
+    print_json(json!({
+        "decision": "allow",
+        "reason": reason,
+        "overwrite": {
+            "CommandLine": command,
+        }
+    }))
+}
+
+fn antigravity_deny(reason: &str) -> anyhow::Result<()> {
+    print_json(json!({
+        "decision": "deny",
+        "reason": reason,
+    }))
 }
 
 fn allow(tool_input: &Map<String, Value>, command: &str, reason: &str) -> anyhow::Result<()> {

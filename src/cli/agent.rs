@@ -12,7 +12,7 @@ use super::sh::{self, CheckFormat, CheckReport, ENTRY_NAME};
 /// Print host configuration or check the installed launcher for one host.
 #[derive(Debug, clap::Args)]
 #[command(
-    after_help = "Examples:\n  apexe agent opencode                    Print the OpenCode shell configuration\n  apexe agent --check pi                  Check pi launcher and config readiness\n  apexe agent --check claude --format json\n\nHosts that accept a custom shell use the installed apexe-sh entry. Codex and\nClaude Code cannot replace their shell; their output explains the supported\nPATH or hook integration."
+    after_help = "Examples:\n  apexe agent opencode                    Print the OpenCode shell configuration\n  apexe agent antigravity                 Print the Antigravity hooks.json configuration\n  apexe agent --check pi                  Check pi launcher and config readiness\n  apexe agent --check claude --format json\n\nHosts that accept a custom shell use the installed apexe-sh entry. Codex,\nClaude Code and Antigravity cannot replace their shell; their output explains\nthe supported PATH or PreToolUse hook integration."
 )]
 pub struct AgentArgs {
     /// Host to configure or check.
@@ -48,6 +48,7 @@ pub enum AgentHost {
     Pi,
     Codex,
     Claude,
+    Antigravity,
 }
 
 #[derive(Debug, Serialize)]
@@ -108,6 +109,7 @@ fn install(
         AgentHost::Pi => println!("{}", report.host_config.pi),
         AgentHost::Codex => println!("{}", report.host_config.codex),
         AgentHost::Claude => println!("{}", report.host_config.claude_code),
+        AgentHost::Antigravity => println!("{}", report.host_config.antigravity),
     }
     Ok(())
 }
@@ -289,7 +291,49 @@ fn mcp(
             println!("pi has no stable MCP-only profile in the tested version; use `apexe agent pi` for shellPath integration.");
             anyhow::ensure!(!write, "pi MCP configuration is not generated");
         }
+        AgentHost::Antigravity => {
+            write_antigravity_mcp(executable, &arguments, write, scope)?;
+        }
     }
+    Ok(())
+}
+
+fn write_antigravity_mcp(
+    executable: &str,
+    arguments: &[String],
+    write: bool,
+    scope: Option<AgentScope>,
+) -> anyhow::Result<()> {
+    let service = json!({
+        "command": executable,
+        "args": arguments
+    });
+    let snippet = json!({
+        "mcpServers": {
+            "apexe": service
+        }
+    });
+    if !write {
+        println!("{}", serde_json::to_string_pretty(&snippet)?);
+        println!(
+            "# Merge into ~/.gemini/config/mcp_config.json. Antigravity keeps its terminal tool; restrict run_command in Settings if you need strict MCP-only access."
+        );
+        return Ok(());
+    }
+    if scope == Some(AgentScope::Project) {
+        anyhow::bail!(
+            "Antigravity MCP configuration is user-level (~/.gemini/config/mcp_config.json); use --scope user"
+        );
+    }
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot locate home directory"))?;
+    let path = home.join(".gemini/config/mcp_config.json");
+    write_json(&path, |object| {
+        merge_service(object, "mcpServers", &service)
+    })?;
+    println!("Wrote {}", path.display());
+    println!(
+        "Antigravity keeps its terminal tool; restrict run_command in Antigravity Settings if you need strict MCP-only access."
+    );
     Ok(())
 }
 
@@ -572,6 +616,12 @@ fn write_host(
             write_json(&path, |object| ensure_claude_hook(object, &executable))?;
             println!("Wrote {}", path.display());
         }
+        AgentHost::Antigravity => {
+            let path = host_config_path(host, scope)?;
+            let executable = std::env::current_exe()?.canonicalize()?;
+            write_json(&path, |object| ensure_antigravity_hook(object, &executable))?;
+            println!("Wrote {}", path.display());
+        }
     }
     Ok(())
 }
@@ -606,6 +656,8 @@ fn host_config_path(host: AgentHost, scope: Option<AgentScope>) -> anyhow::Resul
         }
         (AgentHost::Claude, AgentScope::Project) => cwd.join(".claude/settings.json"),
         (AgentHost::Claude, AgentScope::User) => home.join(".claude/settings.json"),
+        (AgentHost::Antigravity, AgentScope::Project) => cwd.join(".agents/hooks.json"),
+        (AgentHost::Antigravity, AgentScope::User) => home.join(".gemini/config/hooks.json"),
         (AgentHost::Codex, _) => anyhow::bail!("Codex configuration is written by apexe env"),
     };
     if host == AgentHost::Opencode && !path.exists() {
@@ -665,22 +717,25 @@ fn publish_json(path: &Path, root: &Value) -> anyhow::Result<()> {
     publish().with_context(|| format!("Cannot write {}", path.display()))
 }
 
-fn claude_hook_arguments(command: &str) -> Option<Vec<String>> {
+fn hook_arguments(command: &str, host: &str) -> Option<Vec<String>> {
     let arguments = shell_words::split(command).ok()?;
     let executable = Path::new(arguments.first()?).file_stem()?.to_str()?;
     let owned = executable == "apexe"
         && arguments.get(1).is_some_and(|argument| argument == "hook")
-        && arguments
-            .get(2)
-            .is_some_and(|argument| argument == "claude")
+        && arguments.get(2).is_some_and(|argument| argument == host)
         && (arguments.len() == 3 || arguments.len() == 4 && arguments[3] == "--persistent");
     owned.then_some(arguments)
 }
 
-fn repair_claude_hooks(entries: &mut [Value], executable: &str) -> bool {
+fn repair_pretooluse_hooks(
+    entries: &mut [Value],
+    matcher: &str,
+    host: &str,
+    executable: &str,
+) -> bool {
     let mut repaired = false;
     for entry in entries {
-        if entry["matcher"] != "Bash" {
+        if entry["matcher"] != matcher {
             continue;
         }
         let Some(hooks) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
@@ -690,7 +745,7 @@ fn repair_claude_hooks(entries: &mut [Value], executable: &str) -> bool {
             let Some(mut arguments) = hook
                 .get("command")
                 .and_then(Value::as_str)
-                .and_then(claude_hook_arguments)
+                .and_then(|command| hook_arguments(command, host))
             else {
                 continue;
             };
@@ -716,10 +771,60 @@ fn ensure_claude_hook(object: &mut Map<String, Value>, executable: &Path) -> any
         .or_insert_with(|| json!([]))
         .as_array_mut()
         .ok_or_else(|| anyhow::anyhow!("Claude PreToolUse hooks must be an array"))?;
-    if !repair_claude_hooks(entries, executable) {
+    if !repair_pretooluse_hooks(entries, "Bash", "claude", executable) {
         entries.push(json!({
             "matcher": "Bash",
             "hooks": [{"type":"command", "command":format!("{} hook claude", shell_words::quote(executable)), "timeout":30}]
+        }));
+    }
+    Ok(())
+}
+
+fn ensure_antigravity_hook(
+    object: &mut Map<String, Value>,
+    executable: &Path,
+) -> anyhow::Result<()> {
+    let executable = executable
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("apexe executable path must be valid UTF-8"))?;
+    if let Some(apexe) = object.get("apexe") {
+        let apexe = apexe
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("Antigravity 'apexe' hook must be a JSON object"))?;
+        if let Some(pre_tool_use) = apexe.get("PreToolUse") {
+            anyhow::ensure!(
+                pre_tool_use.is_array(),
+                "Antigravity PreToolUse hooks must be an array"
+            );
+        }
+    }
+    let mut repaired = false;
+    for (name, spec) in object.iter_mut() {
+        let disabled = spec.get("enabled").and_then(Value::as_bool) == Some(false);
+        if disabled && name != "apexe" {
+            continue;
+        }
+        let Some(entries) = spec.get_mut("PreToolUse").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        if repair_pretooluse_hooks(entries, "run_command", "antigravity", executable) {
+            repaired = true;
+            if disabled {
+                if let Some(map) = spec.as_object_mut() {
+                    map.remove("enabled");
+                }
+            }
+        }
+    }
+    if !repaired {
+        let spec = object_entry(object, "apexe")?;
+        if spec.get("enabled").and_then(Value::as_bool) == Some(false) {
+            spec.remove("enabled");
+        }
+        let entries = array_entry(spec, "PreToolUse", "apexe.PreToolUse")?;
+        entries.push(json!({
+            "matcher": "run_command",
+            "hooks": [{"type":"command", "command":format!("{} hook antigravity", shell_words::quote(executable)), "timeout":30}]
         }));
     }
     Ok(())
@@ -749,7 +854,7 @@ fn check(config: &ApexeConfig, host: AgentHost, format: CheckFormat) -> anyhow::
 }
 
 fn inspect_host(host: AgentHost, launcher: &CheckReport) -> HostReport {
-    let binary = which::which(binary_name(host)).ok();
+    let binary = detect_host_installation(host);
     let mut first_existing = None;
     for path in config_candidates(host) {
         if first_existing.is_none() && path.is_file() {
@@ -820,6 +925,9 @@ fn inspect_configuration_file(
     if host == AgentHost::Claude && !claude_hooks(&text).is_empty() {
         return Some((false, "Claude hook selects a stale apexe executable; run `apexe env --enable`, then `apexe agent claude --write` for the same scope".into()));
     }
+    if host == AgentHost::Antigravity && !antigravity_hooks(&text).is_empty() {
+        return Some((false, "Antigravity hook selects a stale apexe executable; run `apexe env --enable`, then `apexe agent antigravity --write` for the same scope".into()));
+    }
     None
 }
 
@@ -836,6 +944,10 @@ fn config_candidates(host: AgentHost) -> Vec<PathBuf> {
         AgentHost::Claude => vec![
             cwd.join(".claude/settings.json"),
             home.join(".claude/settings.json"),
+        ],
+        AgentHost::Antigravity => vec![
+            cwd.join(".agents/hooks.json"),
+            home.join(".gemini/config/hooks.json"),
         ],
     }
 }
@@ -884,13 +996,45 @@ fn claude_hooks(text: &str) -> Vec<Vec<String>> {
     let Some(entries) = value["hooks"]["PreToolUse"].as_array() else {
         return Vec::new();
     };
+    collect_matching_hooks(entries, "Bash", "claude")
+}
+
+fn antigravity_hooks(text: &str) -> Vec<Vec<String>> {
+    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(text) else {
+        return Vec::new();
+    };
+    map.values()
+        .filter(|spec| spec.get("enabled").and_then(Value::as_bool) != Some(false))
+        .filter_map(|spec| spec.get("PreToolUse").and_then(Value::as_array))
+        .flat_map(|entries| collect_matching_hooks(entries, "run_command", "antigravity"))
+        .collect()
+}
+
+fn collect_matching_hooks(entries: &[Value], matcher: &str, host: &str) -> Vec<Vec<String>> {
     entries
         .iter()
-        .filter(|entry| entry["matcher"] == "Bash")
+        .filter(|entry| entry["matcher"] == matcher)
         .filter_map(|entry| entry["hooks"].as_array())
         .flatten()
-        .filter_map(|hook| hook["command"].as_str().and_then(claude_hook_arguments))
+        .filter_map(|hook| {
+            hook["command"]
+                .as_str()
+                .and_then(|command| hook_arguments(command, host))
+        })
         .collect()
+}
+
+fn hooks_match_current_exe(hooks: &[Vec<String>]) -> bool {
+    let current = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.canonicalize().ok());
+    hooks.iter().any(|arguments| {
+        Path::new(&arguments[0])
+            .canonicalize()
+            .ok()
+            .zip(current.as_ref())
+            .is_some_and(|(left, right)| left == *right)
+    })
 }
 
 fn host_text_configured(host: AgentHost, text: &str, shim_dir: &Path) -> bool {
@@ -898,44 +1042,47 @@ fn host_text_configured(host: AgentHost, text: &str, shim_dir: &Path) -> bool {
         AgentHost::Opencode => selects_entry(text, "shell", &shim_dir.join(ENTRY_NAME)),
         AgentHost::Pi => selects_entry(text, "shellPath", &shim_dir.join(ENTRY_NAME)),
         AgentHost::Codex => text.contains(shim_dir.to_string_lossy().as_ref()),
-        AgentHost::Claude => claude_hooks(text).iter().any(|arguments| {
-            Path::new(&arguments[0])
-                .canonicalize()
-                .ok()
-                .zip(
-                    std::env::current_exe()
-                        .ok()
-                        .and_then(|path| path.canonicalize().ok()),
-                )
-                .is_some_and(|(left, right)| left == right)
-        }),
+        AgentHost::Claude => hooks_match_current_exe(&claude_hooks(text)),
+        AgentHost::Antigravity => hooks_match_current_exe(&antigravity_hooks(text)),
     }
 }
 
 /// Report host configuration that still depends on the removed installation.
 ///
-/// OpenCode/pi lose their shell entry point; Claude's remaining hook refuses
-/// Bash without its manifest. Uninstall stays explicit and possible, but never
-/// silently edits another application's configuration to hide that consequence.
+/// OpenCode/pi lose their shell entry point; Claude and Antigravity hooks
+/// refuse shell tool calls without a manifest. Uninstall stays explicit and
+/// possible, but never silently edits another application's configuration to
+/// hide that consequence.
 pub(crate) fn warn_if_host_depends_on_removed_shims(shim_dir: &Path) {
-    const DEPENDENT_HOSTS: [AgentHost; 3] = [AgentHost::Opencode, AgentHost::Pi, AgentHost::Claude];
+    const DEPENDENT_HOSTS: [AgentHost; 4] = [
+        AgentHost::Opencode,
+        AgentHost::Pi,
+        AgentHost::Claude,
+        AgentHost::Antigravity,
+    ];
     for host in DEPENDENT_HOSTS {
         for path in config_candidates(host) {
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
             if host_text_configured(host, &text, shim_dir) {
-                if host == AgentHost::Claude {
-                    eprintln!("Warning: claude still has an apexe hook in {}; without shims it will refuse Bash calls. Run 'apexe env --enable' to restore the installation, or explicitly remove that hook to stop routing through apexe.", path.display());
-                    continue;
+                match host {
+                    AgentHost::Claude => {
+                        eprintln!("Warning: claude still has an apexe hook in {}; without shims it will refuse Bash calls. Run 'apexe env --enable' to restore the installation, or explicitly remove that hook to stop routing through apexe.", path.display());
+                    }
+                    AgentHost::Antigravity => {
+                        eprintln!("Warning: antigravity still has an apexe hook in {}; without shims it will refuse run_command calls. Run 'apexe env --enable' to restore the installation, or explicitly remove that hook to stop routing through apexe.", path.display());
+                    }
+                    _ => {
+                        eprintln!(
+                            "Warning: {} still selects {} as its shell; disabling it broke that host. \
+                             Run 'apexe env --enable' to restore it, or remove the setting from {}.",
+                            host_name(host),
+                            shim_dir.join(ENTRY_NAME).display(),
+                            path.display()
+                        );
+                    }
                 }
-                eprintln!(
-                    "Warning: {} still selects {} as its shell; disabling it broke that host. \
-                     Run 'apexe env --enable' to restore it, or remove the setting from {}.",
-                    host_name(host),
-                    shim_dir.join(ENTRY_NAME).display(),
-                    path.display()
-                );
             }
         }
     }
@@ -994,16 +1141,17 @@ pub(crate) fn detected_host_status(shim_dir: &Path) -> Vec<(AgentHost, PathBuf, 
 }
 
 fn detected_hosts(shim_dir: &Path) -> Vec<DetectedHost> {
-    const HOSTS: [AgentHost; 4] = [
+    const HOSTS: [AgentHost; 5] = [
         AgentHost::Opencode,
         AgentHost::Pi,
         AgentHost::Codex,
         AgentHost::Claude,
+        AgentHost::Antigravity,
     ];
     HOSTS
         .iter()
         .filter_map(|host| {
-            let binary = which::which(binary_name(*host)).ok()?;
+            let binary = detect_host_installation(*host)?;
             // Configuration files only. `inspect_host` also accepts a process
             // PATH that already contains the shim directory, which answers a
             // different question: this report runs inside a governed shell, so
@@ -1043,6 +1191,7 @@ fn remedy(host: AgentHost) -> &'static str {
              then restart Codex"
         }
         AgentHost::Claude => "apexe agent claude --write --scope user",
+        AgentHost::Antigravity => "apexe agent antigravity --write --scope user",
     }
 }
 
@@ -1059,13 +1208,29 @@ fn host_is_configured(host: AgentHost, candidates: &[PathBuf], shim_dir: &Path) 
         .unwrap_or(false)
 }
 
-fn binary_name(host: AgentHost) -> &'static str {
+fn detect_host_installation(host: AgentHost) -> Option<PathBuf> {
     match host {
-        AgentHost::Opencode => "opencode",
-        AgentHost::Pi => "pi",
-        AgentHost::Codex => "codex",
-        AgentHost::Claude => "claude",
+        AgentHost::Opencode => which::which("opencode").ok(),
+        AgentHost::Pi => which::which("pi").ok(),
+        AgentHost::Codex => which::which("codex").ok(),
+        AgentHost::Claude => which::which("claude").ok(),
+        AgentHost::Antigravity => which::which("agy")
+            .ok()
+            .or_else(|| which::which("antigravity").ok())
+            .or_else(detect_antigravity_home),
     }
+}
+
+fn detect_antigravity_home() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    [
+        ".gemini/antigravity",
+        ".gemini/antigravity-ide",
+        ".gemini/antigravity-cli",
+    ]
+    .into_iter()
+    .map(|relative| home.join(relative))
+    .find(|path| path.is_dir())
 }
 
 fn configured_note(host: AgentHost) -> String {
@@ -1074,6 +1239,7 @@ fn configured_note(host: AgentHost) -> String {
         AgentHost::Pi => "pi is configured to use apexe-sh; restart it after changing the file".into(),
         AgentHost::Codex => "Codex loads shims from its login-shell startup files; restart Codex after reloading shims".into(),
         AgentHost::Claude => "Claude Code has an apexe PreToolUse hook configured".into(),
+        AgentHost::Antigravity => "Antigravity has an apexe PreToolUse hook configured".into(),
     }
 }
 
@@ -1101,6 +1267,9 @@ fn print_text(report: &DoctorReport) {
             "[PASS] HOST {} {}",
             host_name(report.host.host),
             path.display()
+        ),
+        None if report.host.host == AgentHost::Antigravity => println!(
+            "[WARN] HOST antigravity installation not found on PATH or in ~/.gemini/antigravity*"
         ),
         None => println!(
             "[WARN] HOST {} executable not found on PATH",
@@ -1138,6 +1307,7 @@ pub(crate) fn host_name(host: AgentHost) -> &'static str {
         AgentHost::Pi => "pi",
         AgentHost::Codex => "codex",
         AgentHost::Claude => "claude",
+        AgentHost::Antigravity => "antigravity",
     }
 }
 
@@ -1179,10 +1349,12 @@ mod tests {
         let hosts = [
             detected(AgentHost::Opencode, false),
             detected(AgentHost::Claude, false),
+            detected(AgentHost::Antigravity, false),
         ];
         let lines = hint_lines(&hosts);
         assert!(lines[0].contains("--scope user"));
         assert!(lines[1].contains("--scope user"));
+        assert!(lines[2].contains("--scope user"));
     }
 
     #[test]

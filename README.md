@@ -40,8 +40,8 @@ the same executor for schema validation, configured ACLs and auditing.
 | Prepare installed CLI coverage | `apexe init`, `apexe list --verbose` | Matching reviewed rules, typed bindings and a starter ACL to inspect |
 | Run a CLI command locally | `apexe exec` | Module JSON with captured output, or reviewed native argv with passthrough streams |
 | Keep native command names in your shell | `apexe env` | PATH shims for eligible external commands, activation helpers and installation checks |
-| Configure a terminal agent's shell or hook | [Shell Integration](docs/agent-shell.md), `apexe agent` | `apexe-sh` for OpenCode/pi, login-shell PATH for Codex, `PreToolUse` hook for Claude Code |
-| Route CLI commands when the host cannot be configured | [Agent Skill](docs/agent-skill.md) + `apexe exec -- ...` | Fallback native execution routing for Claude Code, Codex, pi and OpenCode |
+| Configure a terminal agent's shell or hook | [Shell Integration](docs/agent-shell.md), `apexe agent` | `apexe-sh` for OpenCode/pi, login-shell PATH for Codex, `PreToolUse` hook for Claude Code and Antigravity |
+| Route CLI commands when the host cannot be configured | [Agent Skill](docs/agent-skill.md) + `apexe exec -- ...` | Fallback native execution routing for Claude Code, Antigravity, Codex, pi and OpenCode |
 | Connect a protocol client or import an HTTP API | `apexe serve`, `apexe a2a` | CLI modules and optional imported OpenAPI operations over MCP or A2A |
 | Check a CLI contract after changes | `apexe verify` | Source drift reports and optional digest-bound evidence from explicit behavioral cases |
 | Write or explain the access policy | `apexe acl` | Starter policy, refreshed denials, and the rule that decided one module |
@@ -382,13 +382,15 @@ experimental. See the [hook reference](docs/user-manual.md#412-apexe-hook).
 
 ### `apexe agent`
 
-Print or write host configuration for OpenCode, pi, Codex or Claude Code:
+Print or write host configuration for OpenCode, pi, Codex, Claude Code or Antigravity:
 
 ```bash
 apexe agent opencode
+apexe agent antigravity --write
 apexe agent --check pi --format json
 apexe agent opencode --write
 apexe agent claude --mcp-only --write
+apexe agent antigravity --mcp-only --write --scope user
 ```
 
 `--write` merges into the host's JSON atomically and refuses invalid files;

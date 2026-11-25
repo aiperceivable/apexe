@@ -1791,3 +1791,353 @@ fn test_claude_persistent_hook_routes_compound_commands_to_a_session() {
     assert!(command.contains("APEXE_SESSION_SOCKET"), "{command}");
     assert!(command.contains("cd /tmp && pwd"), "{command}");
 }
+
+#[test]
+fn test_antigravity_hook_rewrites_simple_command_and_passes_through_others() {
+    let fixture = Fixture::new();
+    fixture.enable();
+
+    let simple = json!({
+        "toolCall": {
+            "id": "toolu_01",
+            "name": "run_command",
+            "args": {"CommandLine": "apxepwd"}
+        },
+        "conversationId": "conv-1",
+        "cwd": fixture.home.path()
+    });
+    let output = fixture
+        .command()
+        .args(["hook", "antigravity"])
+        .write_stdin(simple.to_string())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let response: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(response["decision"], "allow");
+    let rewritten = response["overwrite"]["CommandLine"].as_str().unwrap();
+    assert!(rewritten.contains(" sh -c apxepwd"), "{rewritten}");
+
+    for event in [
+        json!({"toolCall": {"name": "read_file", "args": {"Path": "/tmp/a"}}}),
+        json!({"toolCall": {"name": "run_command", "args": {"CommandLine": "cd /tmp && pwd"}}}),
+        json!({"toolCall": {"name": "run_command", "args": {"CommandLine": "apexe sh -c ls"}}}),
+        json!({"toolCall": {"name": "run_command", "args": {"CommandLine": "   "}}}),
+    ] {
+        let output = fixture
+            .command()
+            .args(["hook", "antigravity"])
+            .write_stdin(event.to_string())
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        assert!(
+            output.is_empty(),
+            "event {event} should pass through with empty stdout, got: {}",
+            String::from_utf8_lossy(&output)
+        );
+    }
+}
+
+#[test]
+fn test_antigravity_hook_denies_when_shims_are_missing() {
+    let fixture = Fixture::new();
+    let event = json!({
+        "toolCall": {
+            "name": "run_command",
+            "args": {"CommandLine": "ls -la"}
+        }
+    });
+    let output = fixture
+        .command()
+        .args(["hook", "antigravity"])
+        .write_stdin(event.to_string())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let response: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(response["decision"], "deny");
+    assert!(response["reason"]
+        .as_str()
+        .unwrap()
+        .contains("apexe env --enable"));
+}
+
+#[test]
+fn test_antigravity_persistent_hook_routes_compound_commands_to_a_session() {
+    let fixture = Fixture::new();
+    fixture.enable();
+    let event = json!({
+        "toolCall": {
+            "name": "run_command",
+            "args": {"CommandLine": "cd /tmp && pwd"}
+        },
+        "conversationId": "conv-persistent",
+        "cwd": fixture.home.path()
+    });
+    let output = fixture
+        .command()
+        .args(["hook", "antigravity", "--persistent"])
+        .write_stdin(event.to_string())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let response: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(response["decision"], "allow");
+    let command = response["overwrite"]["CommandLine"].as_str().unwrap();
+    assert!(command.contains("APEXE_SESSION_SOCKET"), "{command}");
+    assert!(command.contains("cd /tmp && pwd"), "{command}");
+}
+
+#[test]
+fn test_agent_antigravity_write_check_repair_and_disable_warning() {
+    let fixture = Fixture::new();
+    fixture.enable_agent();
+    std::fs::create_dir_all(fixture.home.path().join(".gemini/antigravity")).unwrap();
+
+    // Project write preserves sibling hooks and sets configured = true.
+    let path = fixture.home.path().join(".agents/hooks.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let old = fixture.home.path().join("old install/apexe");
+    let stale = format!(
+        "{} hook antigravity --persistent",
+        shell_words::quote(old.to_str().unwrap())
+    );
+    std::fs::write(
+        &path,
+        json!({
+            "lint-checker": {"PostToolUse": [{"matcher": "run_command", "hooks": [{"type": "command", "command": "./lint.sh"}]}]},
+            "apexe": {"PreToolUse": [{"matcher": "run_command", "hooks": [{"type": "command", "command": stale, "timeout": 45}]}]}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // Stale executable is rejected by --check even when Desktop home exists.
+    let stale_report = fixture.agent_report("antigravity");
+    assert_eq!(stale_report["host"]["configured"], false);
+    assert!(stale_report["host"]["binary"]
+        .as_str()
+        .unwrap()
+        .ends_with(".gemini/antigravity"));
+    assert!(stale_report["host"]["note"]
+        .as_str()
+        .unwrap()
+        .contains("--write"));
+
+    // Writing twice repairs the stale hook in place without duplicating it.
+    for _ in 0..2 {
+        fixture
+            .command()
+            .args(["agent", "antigravity", "--write"])
+            .assert()
+            .success();
+    }
+    let value: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let entries = value["apexe"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    let command = entries[0]["hooks"][0]["command"].as_str().unwrap();
+    let arguments = shell_words::split(command).unwrap();
+    assert_eq!(
+        std::path::Path::new(&arguments[0]).canonicalize().unwrap(),
+        std::path::Path::new(env!("CARGO_BIN_EXE_apexe"))
+            .canonicalize()
+            .unwrap()
+    );
+    assert_eq!(&arguments[1..], ["hook", "antigravity", "--persistent"]);
+    assert_eq!(entries[0]["hooks"][0]["timeout"], 45);
+    assert!(value["lint-checker"].is_object());
+
+    let configured_report = fixture.agent_report("antigravity");
+    assert_eq!(configured_report["host"]["configured"], true);
+
+    // Disabling shims warns about the active Antigravity hook without editing hooks.json.
+    fixture
+        .command()
+        .args(["env", "--disable"])
+        .assert()
+        .success()
+        .stderr(contains("antigravity"))
+        .stderr(contains("run_command"))
+        .stderr(contains("apexe env --enable"));
+    assert!(path.is_file());
+}
+
+#[test]
+fn test_agent_antigravity_refuses_malformed_hooks_and_ignores_disabled_hook() {
+    let fixture = Fixture::new();
+    fixture.enable_agent();
+    let path = fixture.home.path().join(".agents/hooks.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+    for original in [r#"{"apexe":[]}"#, r#"{"apexe":{"PreToolUse":{}}}"#] {
+        std::fs::write(&path, original).unwrap();
+        fixture
+            .command()
+            .args(["agent", "antigravity", "--write"])
+            .assert()
+            .failure();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    let current = std::path::Path::new(env!("CARGO_BIN_EXE_apexe"))
+        .canonicalize()
+        .unwrap();
+    std::fs::write(
+        &path,
+        json!({
+            "apexe": {
+                "enabled": false,
+                "PreToolUse": [{"matcher": "run_command", "hooks": [{
+                    "type": "command",
+                    "command": format!("{} hook antigravity", shell_words::quote(current.to_str().unwrap()))
+                }]}]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let report = fixture.agent_report("antigravity");
+    assert_eq!(report["host"]["configured"], false);
+
+    // Explicitly running --write re-enables a disabled `apexe` hook without duplicating it.
+    fixture
+        .command()
+        .args(["agent", "antigravity", "--write"])
+        .assert()
+        .success();
+    let reenabled: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(reenabled["apexe"].get("enabled").is_none());
+    assert_eq!(
+        reenabled["apexe"]["PreToolUse"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        fixture.agent_report("antigravity")["host"]["configured"],
+        true
+    );
+
+    // A disabled non-`apexe` hook does not satisfy --write; an active `apexe` entry is still added.
+    std::fs::write(
+        &path,
+        json!({
+            "disabled-backup": {
+                "enabled": false,
+                "PreToolUse": [{"matcher": "run_command", "hooks": [{
+                    "type": "command",
+                    "command": "/old/apexe hook antigravity"
+                }]}]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fixture
+        .command()
+        .args(["agent", "antigravity", "--write"])
+        .assert()
+        .success();
+    let active: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(active["disabled-backup"]["enabled"], false);
+    assert!(active["apexe"]["PreToolUse"].is_array());
+    assert_eq!(
+        fixture.agent_report("antigravity")["host"]["configured"],
+        true
+    );
+}
+
+#[test]
+fn test_agent_antigravity_user_scope_writes_global_hooks_json() {
+    let fixture = Fixture::new();
+    fixture.enable_agent();
+    fixture
+        .command()
+        .args(["agent", "antigravity", "--write", "--scope", "user"])
+        .assert()
+        .success();
+    let user_hooks = fixture.home.path().join(".gemini/config/hooks.json");
+    assert!(user_hooks.is_file());
+    let report = fixture.agent_report("antigravity");
+    assert_eq!(report["host"]["configured"], true);
+    assert_eq!(report["host"]["config"], json!(user_hooks));
+}
+
+#[test]
+fn test_agent_antigravity_mcp_only_writes_user_config_and_rejects_project_scope() {
+    let fixture = Fixture::new();
+    fixture.enable_agent();
+
+    fixture
+        .command()
+        .args(["agent", "antigravity", "--mcp-only"])
+        .assert()
+        .success()
+        .stdout(contains("\"mcpServers\""))
+        .stdout(contains("mcp_config.json"));
+
+    fixture
+        .command()
+        .args([
+            "agent",
+            "antigravity",
+            "--mcp-only",
+            "--write",
+            "--scope",
+            "project",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("--scope user"));
+
+    let mcp_path = fixture.home.path().join(".gemini/config/mcp_config.json");
+    std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &mcp_path,
+        json!({"mcpServers": {"existing": {"command": "echo"}}}).to_string(),
+    )
+    .unwrap();
+
+    fixture
+        .command()
+        .args([
+            "agent",
+            "antigravity",
+            "--mcp-only",
+            "--write",
+            "--scope",
+            "user",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Wrote"))
+        .stdout(contains("run_command"));
+
+    let value: Value = serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+    assert_eq!(value["mcpServers"]["existing"]["command"], "echo");
+    let args = value["mcpServers"]["apexe"]["args"].as_array().unwrap();
+    assert_eq!(args[0], "serve");
+    assert!(args.iter().any(|arg| arg == "--acl"));
+    assert!(args.iter().any(|arg| arg == "--bindings-dir"));
+}
+
+#[test]
+fn test_setup_dry_run_detects_antigravity_desktop_home_directory() {
+    let fixture = Fixture::new();
+    std::fs::create_dir_all(fixture.home.path().join(".gemini/antigravity")).unwrap();
+    fixture
+        .command()
+        .env("PATH", "/usr/bin:/bin")
+        .args(["setup", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(contains("antigravity"))
+        .stdout(contains("would configure"));
+}

@@ -270,6 +270,7 @@ mod tests {
             AgentHost::Pi,
             AgentHost::Codex,
             AgentHost::Claude,
+            AgentHost::Antigravity,
         ] {
             assert_eq!(action_for(host, true), HostAction::Configured);
         }
@@ -283,6 +284,10 @@ mod tests {
         );
         assert_eq!(action_for(AgentHost::Pi, false), HostAction::Configure);
         assert_eq!(action_for(AgentHost::Claude, false), HostAction::Configure);
+        assert_eq!(
+            action_for(AgentHost::Antigravity, false),
+            HostAction::Configure
+        );
         assert_eq!(action_for(AgentHost::Codex, false), HostAction::Manual);
     }
 

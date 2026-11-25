@@ -14,15 +14,21 @@ AGENT_DIRECTORIES = {
     "claude": Path(".claude/skills/apexe"),
     "codex": Path(".agents/skills/apexe"),
     "pi": Path(".agents/skills/apexe"),
+    "antigravity": Path(".agents/skills/apexe"),
+}
+USER_AGENT_DIRECTORIES = {
+    **AGENT_DIRECTORIES,
+    "antigravity": Path(".gemini/config/skills/apexe"),
 }
 SKILL_SOURCE = Path(__file__).resolve().parents[1] / "skills/apexe/SKILL.md"
 
 
 def plan_installation(base: Path, agent: str, content: bytes,
-                      force: bool) -> list[tuple[Path, bool]]:
+                      force: bool, scope: str = "project") -> list[tuple[Path, bool]]:
     """Check all destinations before writing any skill file."""
-    agents = AGENT_DIRECTORIES if agent == "all" else [agent]
-    directories = dict.fromkeys(AGENT_DIRECTORIES[name] for name in agents)
+    directory_map = USER_AGENT_DIRECTORIES if scope == "user" else AGENT_DIRECTORIES
+    agents = directory_map if agent == "all" else [agent]
+    directories = dict.fromkeys(directory_map[name] for name in agents)
     plan = []
     for relative in directories:
         directory = base
@@ -64,8 +70,12 @@ def main() -> None:
         description=__doc__,
         epilog="Prefer `apexe agent <host>` for shell/hook integration; this installer is the fallback.",
     )
-    parser.add_argument("--agent", choices=[*AGENT_DIRECTORIES, "all"], default="all",
-                        help="Target agent; Codex and pi share the Agent Skills directory")
+    parser.add_argument(
+        "--agent",
+        choices=[*AGENT_DIRECTORIES, "all"],
+        default="all",
+        help="Target agent; Codex, pi and Antigravity (project scope) share .agents/skills/apexe",
+    )
     parser.add_argument("--scope", choices=["project", "user"], default="project",
                         help="Install for one project (default) or the current user")
     parser.add_argument("--project-dir", type=Path,
@@ -81,7 +91,7 @@ def main() -> None:
     base = base.expanduser().resolve()
     try:
         content = SKILL_SOURCE.read_bytes()
-        plan = plan_installation(base, args.agent, content, args.force)
+        plan = plan_installation(base, args.agent, content, args.force, args.scope)
         for destination, unchanged in plan:
             if unchanged:
                 print(f"Unchanged: {destination}")

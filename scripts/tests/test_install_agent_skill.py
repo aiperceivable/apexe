@@ -38,7 +38,7 @@ class InstallationTests(unittest.TestCase):
         "HOME is empty" is an assertion about the interpreter, not about the
         installer. These are the only directories a user-scope install writes.
         """
-        for name in (".claude", ".agents"):
+        for name in (".claude", ".agents", ".gemini"):
             self.assertFalse((self.home / name).exists(), name)
 
     def test_all_agents_receive_identical_self_contained_skill(self) -> None:
@@ -54,7 +54,7 @@ class InstallationTests(unittest.TestCase):
 
     def test_individual_agent_installation_does_not_install_other_hosts(self) -> None:
         for agent, directory in [("claude", ".claude"), ("codex", ".agents"),
-                                 ("pi", ".agents")]:
+                                 ("pi", ".agents"), ("antigravity", ".agents")]:
             with self.subTest(agent=agent):
                 project = self.project / agent
                 result = self.run_installer("--agent", agent, "--project-dir", str(project))
@@ -66,7 +66,8 @@ class InstallationTests(unittest.TestCase):
     def test_user_scope_writes_only_the_isolated_home(self) -> None:
         result = self.run_installer("--scope", "user")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(list(self.home.rglob("SKILL.md"))), 2)
+        self.assertEqual(len(list(self.home.rglob("SKILL.md"))), 3)
+        self.assertTrue((self.home / ".gemini/config/skills/apexe/SKILL.md").is_file())
         self.assertEqual(list(self.project.iterdir()), [])
 
     def test_identical_reinstallation_does_not_touch_installed_files(self) -> None:

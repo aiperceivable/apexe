@@ -68,6 +68,7 @@ Replace the example project path. The default installer writes both directories:
 | Agent | User-level file | Project-level file | Explicit selection |
 | --- | --- | --- | --- |
 | Claude Code | `~/.claude/skills/apexe/SKILL.md` | `.claude/skills/apexe/SKILL.md` | `/apexe` |
+| Antigravity | `~/.gemini/config/skills/apexe/SKILL.md` | `.agents/skills/apexe/SKILL.md` | Ask it to load the `apexe` Skill |
 | Codex | `~/.agents/skills/apexe/SKILL.md` | `.agents/skills/apexe/SKILL.md` | `$apexe` |
 | pi | `~/.agents/skills/apexe/SKILL.md` | `.agents/skills/apexe/SKILL.md` | `/skill:apexe` |
 | OpenCode | `~/.agents/skills/apexe/SKILL.md` | `.agents/skills/apexe/SKILL.md` | Ask it to load the `apexe` Skill |

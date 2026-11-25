@@ -8,7 +8,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 0.15.2 |
+| **Version** | 0.16.0 |
 | **Date** | 2026-11-15 |
 | **Platform** | macOS / Linux |
 
@@ -1236,12 +1236,14 @@ does not execute commands itself.
 
 | Argument / option | Default | Behavior |
 |---|---|---|
-| `<HOST>` | required | Hook protocol; currently `claude` |
-| `--persistent` | off | Route every Bash call through a persistent governed shell session, preserving cwd, variables, functions and aliases |
+| `<HOST>` | required | Hook protocol; `claude` or `antigravity` |
+| `--persistent` | off | Route every shell tool call through a persistent governed shell session, preserving cwd, variables, functions and aliases |
 
 ```bash
 # Claude Code PreToolUse hook
 apexe hook claude
+# Antigravity PreToolUse hook
+apexe hook antigravity
 ```
 
 `--persistent` is experimental. It keeps one detached session per host session
@@ -1268,6 +1270,13 @@ The hook uses `updatedInput`; the tested Claude Code 2.1.318 release
 (verified 2026-11-05) executes the rewritten command. Verify the current host
 version before relying on enforcement; without `updatedInput` support the hook
 can only deny or ask.
+
+For Antigravity, configure `apexe hook antigravity` as a `PreToolUse` hook
+matching `run_command` in `.agents/hooks.json` or `~/.gemini/config/hooks.json`.
+Simple external commands are rewritten through `overwrite.CommandLine` with
+`decision: "allow"`; pass-through commands exit `0` with empty stdout, and a
+missing shim manifest returns `decision: "deny"`. See
+[Antigravity integration](agent-shell.md#antigravity).
 
 ### 4.13 `apexe acl`
 
@@ -1302,11 +1311,11 @@ nobody reviewed, and a newly scanned readonly module does not become a grant.
 Print the supported host configuration, or check the launcher and host
 configuration without changing any files. This is the quickest way to copy the
 correct `apexe-sh` path into OpenCode or pi, and to see the PATH/hook guidance
-for Codex and Claude Code.
+for Codex, Claude Code and Antigravity.
 
 | Argument / option | Default | Behavior |
 |---|---|---|
-| `<HOST>` | required | `opencode`, `pi`, `codex` or `claude` |
+| `<HOST>` | required | `opencode`, `pi`, `codex`, `claude` or `antigravity` |
 | `--check` | off | Check launcher readiness, the shim installation's bound ACL and the host configuration |
 | `--format <text\|json>` | `text` | Diagnostic format; requires `--check` |
 | `--write` | off | Write the host configuration instead of printing it; preserves other keys and refuses invalid JSON |
@@ -1318,9 +1327,12 @@ apexe agent opencode
 apexe agent --check pi
 apexe agent --check codex --format json
 apexe agent --check claude
+apexe agent --check antigravity
 apexe agent opencode --write
 apexe agent claude --write
+apexe agent antigravity --write
 apexe agent opencode --mcp-only --write
+apexe agent antigravity --mcp-only --write --scope user
 ```
 
 `--write` is atomic and merges into existing JSON. It refuses to overwrite a
@@ -1330,7 +1342,10 @@ already exists. For OpenCode and pi it also refuses when the installed
 that path. Codex has no shell file to write: `agent codex --write` runs
 `apexe env --reload --shell zsh` instead. Claude Code project scope writes
 `.claude/settings.json`; MCP-only also writes `.mcp.json` at the project root
-and adds `Bash` to `permissions.deny`. OpenCode MCP-only writes a V2 shell deny
+and adds `Bash` to `permissions.deny`. Antigravity writes a `PreToolUse` hook
+to `.agents/hooks.json` (project) or `~/.gemini/config/hooks.json` (`--scope
+user`), and `--mcp-only --write --scope user` merges `mcpServers.apexe` into
+`~/.gemini/config/mcp_config.json`. OpenCode MCP-only writes a V2 shell deny
 rule for OpenCode 2.3.0 only after checking for conflicting configuration. See
 [host merge and scope behavior](agent-shell.md#mcp-only-deployment). Codex
 MCP-only prints a `config.toml` snippet; pi has no

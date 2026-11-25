@@ -74,6 +74,7 @@ pub(crate) struct HostConfig {
     pub(crate) pi: String,
     pub(crate) codex: String,
     pub(crate) claude_code: String,
+    pub(crate) antigravity: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -556,11 +557,33 @@ fn host_config(entry_point: &Path, shim_dir: &Path) -> HostConfig {
          Activating shims in the launching terminal first has the same effect.\n\
          Its shell snapshot copies the launch environment's PATH, so startup-file edits alone are not enough."
     );
+    let apexe_command = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.canonicalize().ok())
+        .and_then(|path| path.to_str().map(str::to_owned))
+        .unwrap_or_else(|| "apexe".into());
+    let antigravity = serde_json::json!({
+        "apexe": {
+            "PreToolUse": [
+                {
+                    "matcher": "run_command",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": format!("{} hook antigravity", shell_words::quote(&apexe_command)),
+                            "timeout": 30
+                        }
+                    ]
+                }
+            ]
+        }
+    });
     HostConfig {
         opencode: serde_json::to_string_pretty(&opencode).unwrap_or_default(),
         pi: serde_json::to_string_pretty(&pi).unwrap_or_default(),
         codex,
         claude_code,
+        antigravity: serde_json::to_string_pretty(&antigravity).unwrap_or_default(),
     }
 }
 
@@ -650,6 +673,10 @@ fn print_text(report: &CheckReport) {
     println!(
         "Host setup (Claude Code):\n{}",
         report.host_config.claude_code
+    );
+    println!(
+        "Host config (Antigravity hooks.json):\n{}",
+        report.host_config.antigravity
     );
 }
 

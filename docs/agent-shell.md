@@ -4,9 +4,9 @@
 Hosts that allow a custom shell path can use it directly. Hosts that do not can
 use PATH shims, a pre-tool hook, or an MCP-only deployment.
 
-This guide covers Claude Code, OpenCode, Codex and pi. It records the tested
-versions; host behavior changes between releases, so re-run the verification
-steps after upgrading.
+This guide covers Claude Code, Antigravity, OpenCode, Codex and pi. It records
+the tested versions; host behavior changes between releases, so re-run the
+verification steps after upgrading.
 
 ## How it works
 
@@ -45,9 +45,9 @@ apexe sh --check
 
 `apexe sh --check` reports the real shell, the entry point, the manifest, ACL
 state, verified and scanned routes, and host configuration snippets. For one
-host, `apexe agent opencode` (or `pi`, `codex`, `claude`) prints the supported
-configuration, and `apexe agent --check <host>` checks launcher and host
-readiness without writing files. The entry point is normally:
+host, `apexe agent opencode` (or `pi`, `codex`, `claude`, `antigravity`) prints
+the supported configuration, and `apexe agent --check <host>` checks launcher
+and host readiness without writing files. The entry point is normally:
 
 ```text
 ~/.apexe/bin/apexe-sh
@@ -193,6 +193,61 @@ Claude Code's shell snapshot copies the launch environment's `PATH`; editing
 through PATH shims, but does not cover absolute paths or compound commands the
 same way the hook does.
 
+## Antigravity
+
+Antigravity (Desktop, IDE and `agy` CLI) supports lifecycle `PreToolUse` hooks
+and Stdio MCP servers. It does not require installing `gemini` CLI.
+
+### PreToolUse hook (recommended)
+
+Add an `apexe` hook entry matching `run_command` in `.agents/hooks.json`
+(project) or `~/.gemini/config/hooks.json` (user):
+
+```json
+{
+  "apexe": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/you/.apexe/bin/apexe hook antigravity",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Use the real `apexe` executable path, not `apexe-sh`. The hook reads
+Antigravity's camelCase `PreToolUse` JSON payload (`toolCall.name ==
+"run_command"`, `toolCall.args.CommandLine`) and rewrites simple external
+commands to `<apexe> sh -c '<command>'` through `overwrite.CommandLine` with
+`decision: "allow"`. Commands already routed through `apexe`/`apexe-sh`,
+stateful builtins, pipelines, redirections, command substitution, compound
+commands and `sudo` exit `0` with empty stdout so Antigravity leaves them
+unchanged and PATH shims govern eligible external commands (returning `{}`
+without a `decision` is treated as a denial by Antigravity). A missing shim
+manifest makes the hook return `decision: "deny"` with a remedy.
+
+Verified on Antigravity Desktop (macOS arm64, 2026-11-25): simple `run_command`
+calls (`ls README.md`) were rewritten through `overwrite.CommandLine`, resolved
+to `~/.apexe/bin/ls` and recorded both ACL `allow` and `execution` entries in
+`~/.apexe/audit.jsonl`; compound commands and already-routed `apexe` commands
+passed through unchanged; a missing shim manifest denied `run_command` with the
+hook's remedy text. Note that Antigravity's Terminal Sandbox blocks
+`run_command` from reading or writing `~/.apexe` outside the workspace (`os
+error 1`), so disable Terminal Sandbox for the project or allow access to
+`~/.apexe` when using the local hook integration.
+
+`apexe setup` and `apexe agent --check antigravity` detect Antigravity through
+`agy`/`antigravity` on `PATH` or an existing `~/.gemini/antigravity*`
+directory (covering Antigravity Desktop and IDE installations that do not put a
+CLI binary on `PATH`).
+
 ## Automatic host configuration
 
 `apexe agent <host> --write` merges the supported configuration into the host's
@@ -201,6 +256,7 @@ JSON file without replacing unrelated keys:
 ```bash
 apexe agent opencode --write
 apexe agent claude --write
+apexe agent antigravity --write
 apexe agent pi --write
 apexe agent codex --write
 ```
@@ -210,6 +266,8 @@ apexe agent codex --write
 - pi writes `shellPath` to `~/.pi/agent/settings.json`.
 - Claude Code writes a `PreToolUse` hook to `.claude/settings.json`; use
   `--scope user` for `~/.claude/settings.json`.
+- Antigravity writes a `PreToolUse` hook to `.agents/hooks.json`; use
+  `--scope user` for `~/.gemini/config/hooks.json`.
 - Codex has no apexe-specific shell file; `--write` reloads startup files for
   the resolved real shell (`APEXE_REAL_SHELL`, then `SHELL`, then the launcher
   fallback), preserving the selected shim directory. The check reads that
@@ -313,6 +371,7 @@ must do arbitrary coding.
 ```bash
 apexe agent opencode --mcp-only --write
 apexe agent claude --mcp-only --write
+apexe agent antigravity --mcp-only --write --scope user
 apexe agent codex --mcp-only
 ```
 
@@ -331,6 +390,10 @@ apexe agent codex --mcp-only
   In project scope, approve the server if Claude Code prompts. The acceptance
   fixture verified MCP invocation and Bash refusal after restart in both
   scopes with Claude Code 2.1.318 on macOS in non-interactive `dontAsk` mode.
+- Antigravity: user scope merges `mcpServers.apexe` into
+  `~/.gemini/config/mcp_config.json`. Antigravity keeps its terminal tool
+  (`run_command`), so restrict it in Antigravity Settings (Permission Grants /
+  Command Denylist) if you require strict MCP-only access.
 - Codex: prints a `[mcp_servers.apexe]` TOML block. Codex keeps its shell, so
   this is not strict MCP-only; combine it with a sandbox.
 - pi: no stable MCP-only profile in the tested version.
@@ -379,9 +442,10 @@ that the child command did not run.
 - `apexe sh --check` fails when the entry point or manifest is missing and
   warns when no ACL is loaded.
 - `apexe env --disable` warns when OpenCode/pi still selects `apexe-sh`, or a
-  Claude hook remains and would refuse Bash without its manifest. Re-enable
-  the installation, or explicitly remove the corresponding host setting/hook.
-  Uninstall does not silently edit another application's configuration.
+  Claude/Antigravity hook remains and would refuse shell tool calls without its
+  manifest. Re-enable the installation, or explicitly remove the corresponding
+  host setting/hook. Uninstall does not silently edit another application's
+  configuration.
 - Login shells may reset `PATH`; keep the managed startup block after
   `path_helper` or use the hook.
 - A host upgrade can change config discovery or shell behavior. Re-run the

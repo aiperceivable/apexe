@@ -8,7 +8,7 @@ locally, and serves CLI and imported OpenAPI operations through MCP and A2A.
 Configured access controls, approval checks and audit records accompany the
 execution path.
 
-**Version:** 0.15.2
+**Version:** 0.16.0
 
 **Status:** CLI discovery, initialization, binding/Skill generation, local
 module execution, reviewed native argv and PATH shims, MCP/A2A serving, OpenAPI
@@ -25,15 +25,15 @@ git/docker scan tests and the macOS native example are opt-in.
 | Reviewed source initialization | `corpus`, `cli::init`; `init` | Cached rules from release archives or Git, revision pinning, version-range checks, offline use, refresh and binding/policy preservation |
 | One-step machine preparation | `cli::setup`, `scripts/install.sh`; `setup` | Composes `init`, shim installation without shell-startup edits, and host configuration for detected agents; the installer verifies the release checksum and never uses `sudo` |
 | Installed corpus management | `cli::corpus`; `corpus` | Lists installed corpora with source and identity, and removes one without touching the rest |
-| Terminal-agent execution routing | `skills/apexe/SKILL.md`, `scripts/install_agent_skill.py` | Fallback Claude Code/Codex/pi/OpenCode Skill for hosts without shell/hook integration; host integration uses `apexe agent` and `apexe sh`, and the Skill routes exec only when no host integration is active |
+| Terminal-agent execution routing | `skills/apexe/SKILL.md`, `scripts/install_agent_skill.py` | Fallback Claude Code/Antigravity/Codex/pi/OpenCode Skill for hosts without shell/hook integration; host integration uses `apexe agent` and `apexe sh`, and the Skill routes exec only when no host integration is active |
 | Binding and agent guidance output | `output`; `scan --skills-dir` | YAML bindings and optional Claude Skills; Rust API tool-definition export |
 | Policy authorship | `governance::acl`; `acl` | `acl init` writes a starter policy once (`--profile developer\|strict`), `acl sync` refreshes only the destructive and open-world denials, `acl explain` names the rule that decided a module. `scan` writes bindings and never policy |
 | Discovery and policy inspection | `list --verbose`, `paths` | Module schemas, annotations, ACL context, validated evidence and filesystem boundary checks |
 | Local execution | `cli::exec`, `module`, `cli::child_exec`; `exec` | Module JSON and reviewed native argv; preflight dry-run, child status and native streams; embedded child commands (`find -exec`) default to refusal, with `analyze` and per-match `delegate` policies |
 | Shell integration | `cli::env`, `shim`, `shell_init`; `env` | Eligible external-command PATH shims, startup activation, refresh, removal and diagnostics; `--scanned` routes execute the original argv after schema validation |
 | Agent shell launcher | `cli::sh`; `sh` | Executes a real shell with the installed shim environment; readiness diagnostics and host config snippets. Not a full-governance boundary |
-| Host hook translation | `cli::hook`; `hook` | Rewrites simple Claude Code Bash calls to `apexe sh -c` through `updatedInput`; stateful and compound commands rely on PATH shims |
-| Host configuration helper | `cli::agent`; `agent` | Prints OpenCode/pi/Codex/Claude Code setup, checks launcher/host readiness, and merges configuration only with `--write`; OpenCode/pi `--write` refuses when the launcher is not installed |
+| Host hook translation | `cli::hook`; `hook` | Rewrites simple Claude Code (`Bash`) and Antigravity (`run_command`) calls to `apexe sh -c` through `updatedInput` / `overwrite`; stateful and compound commands rely on PATH shims |
+| Host configuration helper | `cli::agent`; `agent` | Prints OpenCode/pi/Codex/Claude Code/Antigravity setup, checks launcher/host readiness, and merges configuration only with `--write`; OpenCode/pi `--write` refuses when the launcher is not installed |
 | MCP serving | `mcp`; `serve` | stdio, streamable HTTP, legacy SSE, structured results, Explorer, client snippets and optional metrics |
 | A2A serving | `a2a`; `a2a` | Authenticated agent server and agent card over the shared executor |
 | HTTP API import | `openapi`; `serve/a2a --openapi` | OpenAPI 3.0/3.1 file/URL import at startup; supported JSON proxy operations |

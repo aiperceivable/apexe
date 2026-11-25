@@ -6,6 +6,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versioning follo
 
 ---
 
+## [0.16.0] - 2026-11-25
+
+### Added
+
+- First-class Antigravity host integration across `apexe hook antigravity`,
+  `apexe agent antigravity`, `apexe sh --check`, `apexe setup` and
+  `apexe env --disable`.
+  - `apexe hook antigravity` (including `--persistent`) translates
+    Antigravity's camelCase `PreToolUse` events for `run_command`: simple
+    external commands are rewritten to `apexe sh -c` via
+    `overwrite.CommandLine` with `decision: "allow"`, builtins/pipelines/
+    compound/already-routed commands exit `0` with empty stdout to pass
+    through, and a missing shim manifest fails closed with `decision: "deny"`.
+  - `apexe agent antigravity --write` atomically merges and repairs the
+    `apexe` hook in `.agents/hooks.json` (project scope) or
+    `~/.gemini/config/hooks.json` (`--scope user`), re-enabling a disabled
+    `apexe` hook while preserving unrelated named hooks.
+  - `apexe agent antigravity --mcp-only [--write --scope user]` prints or
+    merges `mcpServers.apexe` into `~/.gemini/config/mcp_config.json`.
+  - `apexe setup` and `apexe agent --check antigravity` detect Antigravity via
+    `agy`/`antigravity` on `PATH` or `~/.gemini/antigravity*` (covering
+    Antigravity Desktop and IDE installations without a CLI binary on `PATH`).
+  - `scripts/install_agent_skill.py` supports `--agent antigravity`
+    (`.agents/skills/apexe` in project scope, `~/.gemini/config/skills/apexe`
+    in user scope).
+  - Verified end to end on Antigravity Desktop (macOS arm64): `run_command`
+    rewrote `ls`, hit `~/.apexe/bin/ls` and recorded ACL + execution entries
+    in `~/.apexe/audit.jsonl`; compound and already-routed commands passed
+    through unchanged; a missing shim manifest blocked execution with the
+    hook's remedy message.
+
+### Changed
+
+- Reorganized `README.md` with a table of contents, an Integrations section,
+  and clearer capability, coverage-limit, `env`, OpenAPI and `exec` guidance.
+
+### Fixed
+
+- `scripts/install.sh` now rebinds the terminal on the `apexe setup` handoff
+  rather than the outer shell so piped `curl | sh` installs do not stall
+  reading the script from the TTY.
+
 ## [0.15.2] - 2026-11-20
 
 ### Changed
