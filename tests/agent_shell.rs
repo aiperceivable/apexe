@@ -191,6 +191,8 @@ impl Fixture {
     fn agent_report(&self, host: &str) -> Value {
         let output = self
             .command()
+            // Keep host detection independent of developer-installed binaries.
+            .env("PATH", self.home.path())
             .args(["agent", "--check", host, "--format", "json"])
             .assert()
             .success()
@@ -1901,7 +1903,8 @@ fn test_antigravity_persistent_hook_routes_compound_commands_to_a_session() {
 fn test_agent_antigravity_write_check_repair_and_disable_warning() {
     let fixture = Fixture::new();
     fixture.enable_agent();
-    std::fs::create_dir_all(fixture.home.path().join(".gemini/antigravity")).unwrap();
+    let desktop_home = fixture.home.path().join(".gemini/antigravity");
+    std::fs::create_dir_all(&desktop_home).unwrap();
 
     // Project write preserves sibling hooks and sets configured = true.
     let path = fixture.home.path().join(".agents/hooks.json");
@@ -1924,10 +1927,7 @@ fn test_agent_antigravity_write_check_repair_and_disable_warning() {
     // Stale executable is rejected by --check even when Desktop home exists.
     let stale_report = fixture.agent_report("antigravity");
     assert_eq!(stale_report["host"]["configured"], false);
-    assert!(stale_report["host"]["binary"]
-        .as_str()
-        .unwrap()
-        .ends_with(".gemini/antigravity"));
+    assert_eq!(stale_report["host"]["binary"], json!(desktop_home));
     assert!(stale_report["host"]["note"]
         .as_str()
         .unwrap()
