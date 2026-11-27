@@ -114,7 +114,13 @@ impl<'a> SubcommandDiscovery<'a> {
         } else if !stdout.trim().is_empty() {
             stdout
         } else {
-            warn!(command = %full_cmd.join(" "), "Empty help output");
+            warn!(
+                command = %full_cmd.join(" "),
+                status = %output.status,
+                stdout_bytes = output.stdout.len(),
+                stderr_bytes = output.stderr.len(),
+                "Empty help output"
+            );
             return None;
         };
         Some(strip_overstrike(&text).into_owned())
@@ -164,22 +170,29 @@ mod tests {
     fn test_run_help_strips_man_page_overstrike() {
         use std::os::unix::fs::PermissionsExt;
 
+        let _diagnostics = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::DEBUG)
+                .with_test_writer()
+                .with_ansi(false)
+                .without_time()
+                .finish(),
+        );
+
         // A controlled --help fixture avoids external printf implementations
         // that interpret the appended --help as their own help request.
         let directory = tempfile::tempdir().unwrap();
         let binary = directory.path().join("man-help");
         let pipeline = ParserPipeline::new(None);
         let discovery = SubcommandDiscovery::new(&pipeline, 2, Duration::from_secs(5));
-        for redirect in ["", ">&2"] {
+        for (stream, redirect) in [("stdout", ""), ("stderr", ">&2")] {
             std::fs::write(&binary, format!(
                 "#!/bin/sh\n[ \"$1\" = '--help' ] || exit 2\nprintf '%b' 'N\\bNA\\bAM\\bME\\bE\\n' {redirect}\n"
             )).unwrap();
             std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
             let tool = binary.to_str().unwrap();
-            let result = discovery
-                .run_help(tool, &[tool.into()])
-                .expect("fixture emits help");
-            assert_eq!(result, "NAME\n", "overstrike not collapsed ({redirect})");
+            let result = discovery.run_help(tool, &[tool.into()]);
+            assert_eq!(result.as_deref(), Some("NAME\n"), "help from {stream}");
         }
     }
 

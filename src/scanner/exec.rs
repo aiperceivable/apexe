@@ -9,6 +9,8 @@ use std::io;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+use tracing::debug;
+
 /// Drain a pipe on its own thread.
 ///
 /// Both pipes are read concurrently with the wait loop: reading one to
@@ -53,6 +55,28 @@ fn drain_pipe(mut pipe: impl io::Read + Send + 'static) -> std::thread::JoinHand
 /// Own a probe and terminate its process group on every exit path.
 struct ProbeProcess(std::process::Child);
 
+impl ProbeProcess {
+    fn spawn(program: &str, args: &[&str]) -> io::Result<Self> {
+        let mut command = Command::new(program);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        command
+            .args(args)
+            .env("PATH", crate::runtime_path::search_path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map(Self)
+            .inspect_err(|error| {
+                debug!(program, error = %error, "Failed to start probe subprocess");
+            })
+    }
+}
+
 impl Drop for ProbeProcess {
     fn drop(&mut self) {
         #[cfg(unix)]
@@ -81,21 +105,7 @@ impl Drop for ProbeProcess {
 /// `std::process::Command::output()` drains both pipes concurrently). This
 /// matters for big-help tools (`kubectl`, `docker`, `--help all`).
 pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> io::Result<Output> {
-    let mut command = Command::new(program);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    let mut child = ProbeProcess(
-        command
-            .args(args)
-            .env("PATH", crate::runtime_path::search_path())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?,
-    );
+    let mut child = ProbeProcess::spawn(program, args)?;
 
     // INVARIANT: stdout/stderr were configured Stdio::piped() above, so take() is Some.
     let out_reader = drain_pipe(child.0.stdout.take().expect("stdout was piped"));
@@ -105,7 +115,9 @@ pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> io::
     let mut exit_status = None;
     let status = loop {
         if exit_status.is_none() {
-            exit_status = child.0.try_wait()?;
+            exit_status = child.0.try_wait().inspect_err(|error| {
+                debug!(program, error = %error, "Failed to wait for probe subprocess");
+            })?;
         }
         if let Some(status) =
             exit_status.filter(|_| out_reader.is_finished() && err_reader.is_finished())
@@ -113,6 +125,12 @@ pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> io::
             break status;
         }
         if Instant::now() >= deadline {
+            debug!(
+                program,
+                ?timeout,
+                ?exit_status,
+                "Probe subprocess timed out"
+            );
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!("`{program}` timed out after {timeout:?}"),
